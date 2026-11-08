@@ -98,6 +98,12 @@ const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
  * loginPattern). */
 const loginPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+/** How `agent-secrets` refuses a name this deployment's broker holds no secret under: the code
+ * and the text of that one refusal. It is the one token-command failure whose fix is an input of
+ * the run rather than anything on GitHub, so it is told apart from the rest; nothing here asks
+ * the broker anything of its own, since a probe of a human-tier secret raises a person's
+ * approval card. */
+const unknownSecretPattern = /UNKNOWN_SECRET|no agent secret has this name/;
 
 /** `text` with every GitHub token in it replaced. */
 export function redactTokens(text: string): string {
@@ -280,7 +286,9 @@ async function githubRead(read: string, url: string, token: string, init: Reques
  * answer `source.appId` and its role's write permission (roleWrites). Every failure names the App
  * by its role and id: a command that fails or prints no release, a GitHub that never answered, an
  * answer that is not 2xx, a viewer that is no App's bot, one whose App id is not `source.appId`
- * (naming both ids), and one without its role's write permission. */
+ * (naming both ids), and one without its role's write permission. A command the secrets broker
+ * refused outright, holding no secret under the name it gave, also names the input that names
+ * that secret, since the fix is there and not on GitHub. */
 export async function appLogin(
   role: AppRole,
   source: AppTokenSource,
@@ -294,7 +302,17 @@ export async function appLogin(
   try {
     token = firstInstallationToken(await runTokenCommand(field, source.tokenCommand), field, now());
   } catch (error) {
-    throw new Error(`${app}: ${error instanceof Error ? error.message : String(error)}`);
+    const reason = error instanceof Error ? error.message : String(error);
+    // The command's whole stderr is in `reason`, wherever in it the broker's refusal landed, and
+    // the role is in hand here, so the one failure an input fixes can name that input. `role` is
+    // one of two literals, so the name formed is `LEGION_E2E_IMPLEMENT_APP_SECRET` or
+    // `LEGION_E2E_REVIEW_APP_SECRET`, the two inputs lib/github-apps.sh reads and no other.
+    if (unknownSecretPattern.test(reason)) {
+      throw new Error(
+        `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): set LEGION_E2E_${role.toUpperCase()}_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App`
+      );
+    }
+    throw new Error(`${app}: ${reason}`);
   }
   const viewer = await githubRead(`GraphQL viewer as ${app}`, `${base}/graphql`, token, {
     method: "POST",
