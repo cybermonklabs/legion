@@ -253,6 +253,7 @@ import * as path from "node:path";
 import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import {
   bytesDigest,
+  clearRefusal,
   type FileDigest,
   type FileOperand,
   fileOperands,
@@ -260,6 +261,7 @@ import {
   mintMarker,
   operandPath,
   uploadIsDocument,
+  writeRefusal,
 } from "@legion/envoy-client/askgate-marker";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
@@ -2141,11 +2143,15 @@ const NO_VERDICT_REFUSAL: Record<"abandoned" | "shutdown", string> = {
 const NO_MODEL_ROLE_REFUSAL = `AskGate did not send this call: it reviews each Dispatch write before it posts, and this session has no model for it. Set modelRoles.askgate or modelRoles.default in the Oh My Pi settings, then send the call again. To turn AskGate off for this session, set askgate.enabled to false in the session's envoy.json.`;
 /**
  * The refusal for a write that no review stands behind and whose record could not be written.
- * Every such write is recorded, so that a reader of the session knows what went out unreviewed;
- * with no record the write does not go.
+ *
+ * The CLI, meeting the same failure, posts the write and says the record failed: there a hold
+ * costs a write that has to go out. Here it costs a resend that will work, because nothing of
+ * the call has run yet, so the gate holds and the CLI does not. That asymmetry is the decision,
+ * not an oversight; what is not true, and used to be written here, is that every unreviewed
+ * write is recorded (dispatch://INFRA-2079, row 3.5).
  */
 const recordFailureRefusal = (message: string, configFile: string) =>
-  `AskGate did not send this call: no review stands behind it, and AskGate could not record that in the session (${message}). Every Dispatch write that posts unreviewed is recorded, so AskGate holds this one back. Send it again once the session takes its entries. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
+  `AskGate did not send this call: no review stands behind it, and AskGate could not record that in the session (${message}). Nothing of this call has run yet, so AskGate holds it rather than let a write go out that its session has no account of. Send it again once the session takes its entries. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
 /**
  * The refusal for a call whose marker could not be minted. The CLI would now post such a write
  * with a warning rather than refuse it (dispatch://INFRA-2079, row 3.5), so this refusal is the
@@ -3719,10 +3725,12 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       try {
         pi.appendEntry(ADVISOR_GATE_ENTRY_TYPE, entry);
       } catch (error) {
-        // A write no review stands behind posts only when the record of that is written: the
-        // record is the whole account of what went out unreviewed. So a record that fails
-        // refuses the call, in both modes. A write the model allowed was reviewed, and still
-        // posts; a call already refused keeps its own refusal.
+        // A write no review stands behind is held here when the record of it cannot be written,
+        // in both modes. Not because every unreviewed write is recorded — the CLI, meeting the
+        // same failure on its own ledger, posts and says so (dispatch://INFRA-2079, row 3.5) —
+        // but because nothing of this call has run yet, so the hold costs a resend that will
+        // work, where the CLI's would cost a write that has to go out. A write the model
+        // allowed was reviewed, and still posts; a call already refused keeps its own refusal.
         if (decision.fields.decision === "allow" && decision.fields.outcome !== "verdict") {
           notices.delete(event.toolCallId);
           refusal = {
@@ -3748,6 +3756,40 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           outcome,
           checks
         );
+        // The review that allows this write replaces any this session already refused it by, so
+        // the no goes with the verdict that stood behind it. Only a review of these very
+        // arguments clears them: a pass no verdict stands behind (`bound` null) leaves a
+        // standing refusal where it is.
+        if (bound !== null && minted === undefined && base !== undefined) {
+          try {
+            clearRefusal(deps.markerStore, base.tool, bound.args);
+          } catch (error) {
+            deps.runtimeLogger.warn(
+              `askgate: the refusal this call's review replaces could not be removed: ${messageOf(error)}`
+            );
+          }
+        }
+      }
+      // A review that rejects mints nothing, so the CLI would find no marker and could not tell
+      // this write from one no review ever saw: it is sent again in any form the gate does not
+      // read and posts. So the verdict is written where the CLI looks for it, keyed by the tool
+      // and the arguments the review judged rather than by the words of the command
+      // (dispatch://INFRA-2079, row 3.5). A failure here leaves that one bypass open and is said
+      // in the log: the call itself is refused either way, so nothing of it runs now.
+      if (decision.result?.block === true && dryRun !== undefined && base !== undefined) {
+        try {
+          writeRefusal(
+            deps.markerStore,
+            base.tool,
+            dryRun.args,
+            decision.fields.deliveredReason ?? decision.fields.reason ?? "no reason was recorded",
+            deps.now()
+          );
+        } catch (error) {
+          deps.runtimeLogger.warn(
+            `askgate: this refusal could not be recorded for the dispatch CLI, so the same write sent outside the gate would post: ${messageOf(error)}`
+          );
+        }
       }
       // The entry above reaches only this machine's disk, so a rules decision also goes to
       // Dispatch, where a session with no access to this machine counts it (`decision-record.ts`).

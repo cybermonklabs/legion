@@ -1,16 +1,25 @@
 kind: Fixed
 body: |-
   A refusal of a Dispatch write by the `dispatch` CLI is now only ever the verdict of an AskGate
-  review that ran. A write no review stands behind posts, with a warning naming the call and why
-  no review ran, where it used to be refused: a call carrying no marker at all (the gate never
-  read the command that ran it, so a write from a subagent, a script, an eval cell, `xargs`,
-  `python3 -c` or any other form outside the literal grammar), a session record that cannot be
-  read or that names a marker store that is gone, a marker check that threw, and a ledger that
-  cannot take the line recording the unreviewed write. The warning reads
-  `dispatch: warning: dispatch <command> posted without review: …`, and the session's ledger
-  carries the write as `askgate.mode: warn` with its `asksCarried` count, as it did for warn
-  mode. A review that ran and does not cover the write still refuses where the session chose
-  block, unchanged: arguments that differ from the reviewed ones, a file whose bytes changed
-  after AskGate read them, and a marker past its age. `consumeMarker` answers which of the two a
-  rejected call is, as `Consumed.reviewed`, and the CLI decides in that one place.
-  dispatch://INFRA-2079, row 3.5.
+  review that ran, and a write posts unreviewed only where the CLI can positively establish that
+  no verdict exists. A call the gate never read — from a subagent, a script, an eval cell,
+  `xargs`, `python3 -c` or any form outside the literal grammar — posts with a warning naming the
+  call and why no review ran, in every mode, where it used to be refused in `block`. AskGate's
+  own refusals are read first, so a write its review did not send stays refused however it is
+  sent again (`readRefusal`, keyed by the Dispatch tool and the arguments the review judged, so
+  another spelling of the same write meets the same no), and evidence that exists and cannot be
+  read — a marker of this call that is corrupt, unreadable, a link or keyed to another argv; a
+  store that cannot be listed; a session record that cannot be read — refuses rather than
+  counting as absence. `consumeMarker` answers which of the four states a call is in as
+  `Consumed.verdict`, and the CLI decides in that one place.
+  A refusal now consumes nothing: an expired marker is left where it is for the sweep at the
+  gate's next mint, so the same call sent again meets the same answer instead of an emptier
+  store. Both AskGate warnings go to standard error as well as standard output, since a trailing
+  `| tail`, which AskGate's own grammar blesses, would otherwise take the only account of a
+  write whose ledger line could not be written; that ledger failure no longer holds the write
+  back. The ledger line carries `askgate.chose`, the mode the session set, beside `askgate.mode`,
+  which says what became of the write.
+  Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
+  leave the loser refused, and now both post, one of them with the warning. A resent literal call
+  is read by the gate and reviewed afresh, so a duplicate the gate can see still gets its own
+  verdict. dispatch://INFRA-2079, row 3.5.

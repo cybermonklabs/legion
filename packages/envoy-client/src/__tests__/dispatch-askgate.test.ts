@@ -7,22 +7,31 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
+import {
+  keepStore,
+  MARKER_MAX_AGE_MS,
+  mintMarker,
+  setRecordMode,
+  writeRefusal,
+} from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { pruneSessions } from "../dispatch-session-state";
 
 // AskGate's enforcement at the posting CLI. A live Oh My Pi process whose gate is bound leaves an
 // owner file in the session's state directory (`askgate/<pid>-<start>.json`) that names it and
-// its marker store; the gate mints one single-use marker for each literal call it lets run. The
-// CLI consumes a marker before it posts a gated write, and refuses one with no marker, whatever
-// form ran it. These tests write the record and the markers by hand, in the format the gate
-// writes, so they hold the CLI to that format and to nothing of the gate's.
+// its marker store; the gate mints one single-use marker for each literal call it lets run, and
+// writes down each write its review refuses. The CLI consumes a marker before it posts a gated
+// write; with none it refuses only where a verdict stands behind the refusal, and otherwise
+// posts with a warning (dispatch://INFRA-2079, row 3.5). These tests write the record, the
+// markers and the refusals by hand, in the format the gate writes, so they hold the CLI to that
+// format and to nothing of the gate's.
 
 interface Recorded {
   readonly method: string;
@@ -435,13 +444,20 @@ describe("AskGate at the dispatch CLI", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  test("a marker older than the longest tool limit is refused and removed", async () => {
+  // The review Sol ran at 21146dfe: the refusal used to remove the expired marker on its way
+  // out, so the identical call sent again found an empty store, read that as "no review ran"
+  // and posted. A refusal consumes nothing now, and the sweep at the gate's next mint is what
+  // takes an expired marker.
+  test("an expired marker is refused, left where it is, and refused again on the next attempt", async () => {
     writeRecord();
     const marker = mint(MESSAGE, null, Date.now() - 121 * 60_000);
-    const { code, stdout } = await run(MESSAGE);
-    expect(code).toBe(1);
-    expect(stdout).toContain("expired");
-    expect(existsSync(marker)).toBe(false);
+    const first = await run(MESSAGE);
+    expect(first.code).toBe(1);
+    expect(first.stdout).toContain("expired");
+    expect(existsSync(marker)).toBe(true);
+    const again = await run(MESSAGE);
+    expect(again.code).toBe(1);
+    expect(again.stdout).toContain("expired");
     expect(messagePosts()).toHaveLength(0);
   });
 
@@ -607,28 +623,28 @@ describe("AskGate at the dispatch CLI", () => {
     }
   });
 
-  // No review can run for this session at all, and the call is not at fault: the write posts,
-  // and the warning names the record or the store it could not read.
-  test("a record that cannot be read, or that names a missing store, posts with the cause named", async () => {
+  // A record that cannot be read is not a record that says nothing: what it would have said may
+  // be that AskGate refused this write (Sol's `record-unreadable` row at 21146dfe). So the write
+  // is held, and the refusal names the path and what to do about it, since this is the one
+  // refusal here that a fault on the box rather than the call can bring on.
+  test("a record that cannot be read, or that names a missing store, refuses and names its recovery", async () => {
     const self = { pid: process.pid, start: startOf(process.pid) };
     const file = ownerFile("ses-1", self);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, "{not json");
     const broken = await run(MESSAGE);
-    expect(broken.code).toBe(0);
-    expect(broken.stdout).toContain(
-      "dispatch: warning: dispatch message posted without review: AskGate's record"
-    );
+    expect(broken.code).toBe(1);
+    expect(broken.stdout).toStartWith("dispatch message was not called: AskGate's record");
     expect(broken.stdout).toContain(file);
-    expect(cliRefusals(broken.stdout)).toEqual([]);
+    expect(broken.stdout).toContain("Tell whoever owns the session if it is live.");
     writeFileSync(
       file,
       JSON.stringify({ v: 2, ...self, store: join(stateDir, "gone"), mode: "warn" })
     );
     const missing = await run(MESSAGE);
-    expect(missing.code).toBe(0);
+    expect(missing.code).toBe(1);
     expect(missing.stdout).toContain(join(stateDir, "gone"));
-    expect(messagePosts()).toHaveLength(2);
+    expect(posts).toHaveLength(0);
   });
 
   test("pruning keeps an idle session whose record is live, and removes it once the process is gone", () => {
@@ -741,28 +757,38 @@ describe("AskGate at the dispatch CLI", () => {
     mint(MESSAGE, null);
     rmSync(store(), { recursive: true });
     const broken = await run(MESSAGE);
-    expect(broken.code).toBe(0);
+    expect(broken.code).toBe(1);
     expect(broken.stdout).toContain(`names the marker store ${store()}`);
     setRecordMode(join(stateDir, "sessions", "ses-1"), self, "block");
     expect(readdirSync(markers())).toEqual([]);
+    // The store is whole and empty again, so absence is a statement once more: this write is
+    // one no review ever saw, and it posts with its warning.
     const unmarked = await run(MESSAGE);
     expect(unmarked.code).toBe(0);
     expect(unmarked.stdout).toContain("carries no AskGate marker");
-    expect(messagePosts()).toHaveLength(2);
+    expect(messagePosts()).toHaveLength(1);
   });
 });
 
-// INFRA-2079, row 3.5: a refusal is only ever the verdict of a review that ran. Where no review
-// stands behind a call at all — the gate never saw the command that ran it, its record cannot be
-// read, the marker check itself failed, the ledger line cannot be written — the write posts with a
-// warning that names the call and why no review ran, and the CLI refuses nothing. A review that
-// ran and does not cover this write (other arguments, a file changed since it was read, a marker
-// past its age) still refuses where the session chose block: the rows above hold that.
-describe("a write no review could run for posts with its warning", () => {
+// INFRA-2079, row 3.5. A refusal is only ever the verdict of a review that ran, and a write
+// posts unreviewed only where the CLI can positively establish that no verdict exists. Absence
+// counts as a statement only when the evidence store was readable and complete: cannot tell is
+// never nothing there.
+//
+// The second half is the correction Sol's review forced at 21146dfe. AskGate mints nothing when
+// its review rejects, so a missing marker was three statements at once — never reviewed,
+// reviewed and rejected, reviewed and rejected with the evidence unreadable — and reading it as
+// the first let a rejected write post by being sent again in any form the gate does not read.
+// So a rejection writes itself down, and evidence that exists and will not be read is its own
+// answer.
+describe("absence is a statement only when the store was read whole", () => {
   /** The start of the warning the CLI prints for a write it posted with no review behind it. */
   const POSTED = "dispatch: warning: dispatch message posted without review:";
+  /** A standing refusal, as the gate writes one for a write its review did not send. */
+  const refused = async (reason = "failure 7: say what changed, not that something did") =>
+    writeRefusal(store(), "dispatch_message", await dryArgs(MESSAGE), reason, Date.now());
 
-  test("a live record and no marker: no review ever saw this call, so nothing refuses it", async () => {
+  test("a live record, no marker and no refusal: no review ever saw this call, so it posts", async () => {
     writeRecord();
     const { code, stdout } = await run(MESSAGE);
     expect(code).toBe(0);
@@ -780,51 +806,186 @@ describe("a write no review could run for posts with its warning", () => {
     });
   });
 
-  test("a record that cannot be read: whether a review ran cannot be told, so nothing refuses it", async () => {
+  // Sol's first finding: the gate mints nothing when it rejects, so the rejected write came back
+  // through a form the gate does not read and posted, with a warning claiming no review ran.
+  test("a standing refusal: the write is held, and the refusal says what the review said", async () => {
+    writeRecord();
+    await refused();
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toStartWith(
+      "dispatch message was not called: AskGate reviewed this write and did not send it:"
+    );
+    expect(stdout).toContain("say what changed, not that something did");
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // A refusal is not permission and is not spent by being read, so it must not expire into
+  // absence: that would be Sol's replay with a two-hour fuse. It lives outside `markers/`, where
+  // nothing sweeps it, and the sweep that takes every expired marker leaves it alone.
+  test("a standing refusal outlives the sweep that takes an expired marker", async () => {
+    writeRecord();
+    await refused();
+    const stale = mint(MESSAGE, null, Date.now() - 3 * MARKER_MAX_AGE_MS);
+    // The sweep goes by the file's own mtime, as `sweepMarkers` reads it.
+    const old = (Date.now() - 3 * MARKER_MAX_AGE_MS) / 1000;
+    utimesSync(stale, old, old);
+    // The gate's next mint sweeps the markers directory, which is the only sweep there is.
+    mintMarker(
+      store(),
+      { argv: ["unrelated"], args: null, files: [], toolCallId: "later", outcome: "verdict" },
+      Date.now()
+    );
+    expect(existsSync(stale)).toBe(false);
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // The respelling Sol sent: another argv, the same arguments. The refusal is keyed by the tool
+  // and the arguments the review judged, so it is the same no.
+  test("a standing refusal is read by the arguments, so another spelling meets it", async () => {
+    writeRecord();
+    await refused();
+    const respelled = ["message", "--issue=DSP-1", "--body=Deliverable landed."];
+    expect(await dryArgs(respelled)).toEqual(await dryArgs(MESSAGE));
+    const { code, stdout } = await run(respelled);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // Scope: the key covers the tool and every argument, so a no about one write never reaches
+  // another issue or other text.
+  test("a standing refusal reaches no other issue and no other text", async () => {
+    writeRecord();
+    await refused();
+    // The fake Dispatch answers only DSP-1's routes, so the claim is read from the output: the
+    // write went out unreviewed rather than meeting the stored no.
+    for (const other of [
+      ["message", "--issue", "DSP-2", "--body", "Deliverable landed."],
+      ["message", "--issue", "DSP-1", "--body", "Something else entirely."],
+    ]) {
+      const { stdout } = await run(other);
+      expect(stdout).toContain("posted without review");
+      expect(stdout).not.toContain("AskGate reviewed this write and did not send it");
+    }
+  });
+
+  test("a record that cannot be read: whether a review refused this write cannot be told", async () => {
     const self = { pid: process.pid, start: startOf(process.pid) };
     const file = ownerFile("ses-1", self);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, "{not json");
     const { code, stdout } = await run(MESSAGE);
-    expect(code).toBe(0);
-    expect(cliRefusals(stdout)).toEqual([]);
-    expect(stdout).toContain(POSTED);
+    expect(code).toBe(1);
     expect(stdout).toContain(file);
-    expect(messagePosts()).toHaveLength(1);
+    expect(stdout).toContain("Tell whoever owns the session if it is live.");
+    expect(messagePosts()).toHaveLength(0);
   });
 
-  test("a record naming a store that is gone: nothing refuses it either", async () => {
-    const self = { pid: process.pid, start: startOf(process.pid) };
-    const file = ownerFile("ses-1", self);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ v: 2, ...self, store: join(stateDir, "gone") }));
-    const { code, stdout } = await run(MESSAGE);
+  // Sol's `marker-unreadable` row: a marker of this very call that will not say what it holds.
+  // A marker is written whole under a temporary name and renamed, mode 0600 in a 0700 directory,
+  // so no crash, full disk or umask leaves one in this state — only something else did.
+  test("a marker of this call that cannot be read is not a marker that is absent", async () => {
+    writeRecord();
+    const marker = mint(MESSAGE, await dryArgs(MESSAGE));
+    chmodSync(marker, 0o000);
+    try {
+      const { code, stdout } = await run(MESSAGE);
+      expect(code).toBe(1);
+      expect(stdout).toContain("AskGate's marker for this call cannot be read");
+      expect(stdout).toContain(marker);
+      expect(messagePosts()).toHaveLength(0);
+    } finally {
+      chmodSync(marker, 0o600);
+    }
+  });
+
+  // The same state reached four ways, each for this call's own argv, and each a file that
+  // exists and will not say what it holds. The second review's N3 is the corrupt body: it made
+  // `readMarker` answer undefined, the scan skip the file, and the CLI report that the call
+  // carried no marker at all.
+  test("a marker of this call that is corrupt, a link, or keyed to another argv is not absent", async () => {
+    for (const [name, damage] of [
+      ["a corrupt body", (file: string) => writeFileSync(file, "{broken")],
+      ["an empty file", (file: string) => writeFileSync(file, "")],
+      [
+        "another argv in its body",
+        (file: string) => {
+          const marker = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+          writeFileSync(file, JSON.stringify({ ...marker, argv: "another" }));
+        },
+      ],
+      [
+        "a link in its place",
+        (file: string) => {
+          const target = join(stateDir, "binding");
+          writeFileSync(target, readFileSync(file));
+          rmSync(file);
+          symlinkSync(target, file);
+        },
+      ],
+    ] as const) {
+      posts.length = 0;
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      writeRecord();
+      damage(mint(MESSAGE, await dryArgs(MESSAGE)));
+      const { code, stdout } = await run(MESSAGE);
+      expect({ name, code }).toEqual({ name, code: 1 });
+      expect(stdout).toContain("AskGate's marker for this call cannot be read");
+      expect(messagePosts()).toHaveLength(0);
+    }
+  });
+
+  // The compensating control has to survive the pipes AskGate's own literal grammar blesses. A
+  // trailing `| tail -n 1` takes standard output alone, so a warning that went only there left
+  // a reader of a broken-ledger write with no account of it at all.
+  test("both warnings reach standard error, where a trailing tail cannot take them", async () => {
+    writeRecord();
+    mkdirSync(join(stateDir, "sessions", "ses-1", "results.jsonl"), { recursive: true });
+    const { code, stdout, stderr } = await run(MESSAGE);
     expect(code).toBe(0);
-    expect(stdout).toContain(POSTED);
-    expect(stdout).toContain(join(stateDir, "gone"));
     expect(messagePosts()).toHaveLength(1);
+    for (const stream of [stdout, stderr]) {
+      expect(stream).toContain(POSTED);
+      expect(stream).toContain("could not be recorded");
+    }
+    // A reader that keeps the last line of standard output alone still has the account.
+    expect(cliRefusals(stderr)).toEqual([]);
   });
 
-  // The store passes the record's own check and then cannot be listed: the check throws, which is
-  // no review's verdict.
-  test("a marker store that cannot be listed: the check itself failed, so nothing refuses it", async () => {
+  test("a marker store that cannot be listed is held, and the refusal names the recovery", async () => {
     writeRecord();
     chmodSync(markers(), 0o000);
     try {
       const { code, stdout } = await run(MESSAGE);
-      expect(code).toBe(0);
-      expect(cliRefusals(stdout)).toEqual([]);
-      expect(stdout).toContain(POSTED);
+      expect(code).toBe(1);
       expect(stdout).toContain("could not be checked");
-      expect(messagePosts()).toHaveLength(1);
+      expect(stdout).toContain("tell whoever owns the session if it is live");
+      expect(messagePosts()).toHaveLength(0);
     } finally {
       chmodSync(markers(), 0o700);
     }
   });
 
+  // A marker swept or consumed between the listing and the open is absent, not unreadable: that
+  // race is AskGate's own sweep doing its job and must never stall a write.
+  test("a marker that vanished between the listing and the read is absence, and posts", async () => {
+    writeRecord();
+    const marker = mint(MESSAGE, await dryArgs(MESSAGE));
+    rmSync(marker);
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(0);
+    expect(stdout).toContain(POSTED);
+    expect(messagePosts()).toHaveLength(1);
+  });
+
   // The ledger line that records an unreviewed write is written before the write goes out. A
-  // ledger that cannot take it is not a verdict either: the write posts, and says the record
-  // failed, so the call's own output is the only account of it.
+  // ledger that cannot take it is accounting, not a verdict: the write posts, and says the
+  // record failed, so the call's own output is the only account of it.
   test("a ledger that cannot take the line: the write posts and the failure is said", async () => {
     writeRecord();
     mkdirSync(join(stateDir, "sessions", "ses-1", "results.jsonl"), { recursive: true });
@@ -836,7 +997,7 @@ describe("a write no review could run for posts with its warning", () => {
     expect(messagePosts()).toHaveLength(1);
   });
 
-  // The one outcome that must never change: a review that ran and does not cover this write still
+  // The outcome that must never change: a review that ran and does not cover this write still
   // refuses where the session chose block.
   test("a review that ran and does not cover this write still refuses", async () => {
     writeRecord();

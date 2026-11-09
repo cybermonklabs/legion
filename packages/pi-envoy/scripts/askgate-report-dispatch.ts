@@ -242,12 +242,20 @@ export interface DecisionCounts {
    */
   unjudged: number;
   /**
-   * Writes that reached the `dispatch` CLI outside the form the gate reads and carried an ask for
-   * a person (`outcome` `unmarked`), in block mode: the CLI refused each, so it did not post.
+   * Writes that reached the `dispatch` CLI outside the form the gate reads and carried an ask
+   * for a person (`outcome` `unmarked`), and that the CLI refused. Since
+   * dispatch://INFRA-2079 that is no longer every such write in a block-mode session: the CLI
+   * refuses only where a review stands behind the refusal — AskGate reviewed the write and did
+   * not send it, or a marker of this call exists that its verdict does not cover or that cannot
+   * be read. A write no review ever saw posts in either mode and is counted below.
    */
-  unmarkedBlock: number;
-  /** The same in warn mode: each posted, with no check of the asks it carries. */
-  unmarkedWarn: number;
+  unmarkedRefused: number;
+  /**
+   * The unmarked writes that posted: no review had seen them, so nothing refused them, and no
+   * check judged the asks they carry. A session that chose `block` lands here too, which is the
+   * row to look at: the gate never read the command that ran the write.
+   */
+  unmarkedPosted: number;
   /**
    * The asks those unmarked writes carried, summed. The CLI counts them from the write's own
    * text, so a re-upload of ask blocks a stored version already holds counts them as carried.
@@ -300,8 +308,8 @@ function countDecisions(
     cut: calls.filter((record) => record.ruleAsksCut > 0).length,
     partial: calls.filter((record) => record.ruleAsksPartial).length,
     unjudged: calls.filter((record) => record.ruleOutcome === "unjudged").length,
-    unmarkedBlock: unmarked.filter((record) => record.verdictMode === "block").length,
-    unmarkedWarn: unmarked.filter((record) => record.verdictMode === "warn").length,
+    unmarkedRefused: unmarked.filter((record) => record.verdictMode === "block").length,
+    unmarkedPosted: unmarked.filter((record) => record.verdictMode === "warn").length,
     unmarkedAsks: unmarked.reduce((sum, record) => sum + record.asksCarried, 0),
   };
 }
@@ -340,7 +348,7 @@ export function formatDispatchReport(report: DispatchReport): string[] {
   return [
     "A rules call is one decision record whose rules check ran; every count below but the overrides and the unmarked writes is over those alone.",
     "An override is another record a document holds: a refused call the agent sent again, which no rules check judged and which no rules call count holds.",
-    "An unmarked write is the third: a write that reached the dispatch CLI outside the form the gate reads, carrying at least one ask for a person. No check judged it, so it is in no rules call count and in no override count.",
+    "An unmarked write is the third: a write that reached the dispatch CLI outside the form the gate reads, carrying at least one ask for a person. No check judged it, so it is in no rules call count and in no override count. It was refused only where a review stood behind the refusal, and otherwise posted, whatever mode its session chose.",
     "A rules refusal is a rules call with a rule. It was overridden when the next record on its target, in its session, is a rebuttal or a breaker.",
     "A document that could not be read, and a line that is not a record, are counted below: the decisions they held are missing from every other count.",
     "A duplicate record is a second copy of one decision, which Dispatch stored where a write given up here landed there all the same: it is counted below and in nothing else.",
@@ -367,8 +375,8 @@ export function formatDispatchReport(report: DispatchReport): string[] {
     `rules calls with asks cut: ${bySource(report, (c) => c.cut)}`,
     `rules calls judged on part of their asks: ${bySource(report, (c) => c.partial)}`,
     `rules calls that judged none of their asks: ${bySource(report, (c) => c.unjudged)}`,
-    `unmarked writes refused in block mode: ${bySource(report, (c) => c.unmarkedBlock)}`,
-    `unmarked writes posted in warn mode: ${bySource(report, (c) => c.unmarkedWarn)}`,
+    `unmarked writes refused, a review standing behind each: ${bySource(report, (c) => c.unmarkedRefused)}`,
+    `unmarked writes posted, no review having seen them: ${bySource(report, (c) => c.unmarkedPosted)}`,
     `asks those unmarked writes carried: ${bySource(report, (c) => c.unmarkedAsks)}`,
     `rules error rate: ${share(report.total.errors, report.total.calls)} (pod ` +
       `${share(report.pod.errors, report.pod.calls)}, machine ` +

@@ -44,14 +44,18 @@ import { hasErrnoCode, messageFor } from "./errors";
  *
  * The CLI. Before a gated write posts, with a live record, it reads each file the argv names once,
  * and consumes one matching marker by unlinking it: exactly one process wins an unlink, so a
- * marker posts one write and a replay finds none. A file whose bytes differ from the reviewed ones
- * matches no marker. An upload's `--path` sends the bytes the CLI read for that check. A record
- * that is there but cannot be read, or names a store that is gone, is a refusal; the process makes
- * its store again before each write of its own owner file (`keepStore`), so a store another process
- * removed never outlives the owner's next call. Each owner file of the session's record carries
- * that owner's check mode, so the mode is the session's and no other session of the same process
- * can change it: `block` refuses an unmarked write, and `warn`, which is a file with no mode, lets
- * it post with a warning.
+ * marker is spent by one write alone. What it does when no marker is consumed rests on one
+ * question, since AskGate mints nothing for a call its review rejects: did a verdict exist? A
+ * refusal AskGate wrote down (`readRefusal`) holds the write in either mode; a marker of this
+ * argv that the verdict does not cover — other arguments, a file whose bytes changed, one past
+ * its age — holds it where the session chose block; evidence that exists and cannot be read does
+ * the same, since a refusal may be what it holds. Only a store read whole and holding neither
+ * lets the write post, with a warning on both streams, whatever mode the session chose: that is
+ * a call no review ever saw. A refusal consumes nothing, so the same call meets the same answer
+ * when it is sent again. The process makes its store again before each write of its own owner
+ * file (`keepStore`), so a store another process removed never outlives the owner's next call.
+ * Each owner file of the session's record carries that owner's check mode, so the mode is the
+ * session's and no other session of the same process can change it; a file with no mode is warn.
  */
 
 /** The record's directory in a session's state directory: one file for each owner. */
@@ -664,8 +668,17 @@ export function mintMarker(store: string, input: MarkerInput, now: number): stri
   return file;
 }
 
-/** A marker's binding, read without following a link; undefined when it is gone or malformed. */
-function readMarker(file: string): Marker | undefined {
+/**
+ * A marker's binding, read without following a link. `"gone"` where the file is no longer there,
+ * which a concurrent sweep or another process's consume does in the window between the listing
+ * and this open: that is a marker that is absent, not one that cannot be read. `"unreadable"` for
+ * anything else — a link in its place (`O_NOFOLLOW`), a mode this process cannot open, a body
+ * that is not a marker. A mint writes its file under a temporary name and renames it, so no
+ * marker is ever half written under its real name: `"unreadable"` is a file that exists, says it
+ * is a marker of this call, and will not say what it holds, which the CLI must not read as "no
+ * review ran" (dispatch://INFRA-2079, row 3.5).
+ */
+function readMarker(file: string): Marker | "gone" | "unreadable" {
   let text: string;
   try {
     const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -674,49 +687,54 @@ function readMarker(file: string): Marker | undefined {
     } finally {
       closeSync(fd);
     }
-  } catch {
-    return undefined;
+  } catch (error) {
+    return hasErrnoCode(error, "ENOENT") ? "gone" : "unreadable";
   }
   try {
     const data: unknown = JSON.parse(text);
-    if (typeof data !== "object" || data === null) return undefined;
+    if (typeof data !== "object" || data === null) return "unreadable";
     const { v, argv, args, files, createdAt } = data as Record<string, unknown>;
-    if (v !== 2 || typeof argv !== "string" || typeof createdAt !== "number") return undefined;
-    if (args !== null && typeof args !== "string") return undefined;
-    if (!Array.isArray(files) || !files.every(isFileDigest)) return undefined;
+    if (v !== 2 || typeof argv !== "string" || typeof createdAt !== "number") return "unreadable";
+    if (args !== null && typeof args !== "string") return "unreadable";
+    if (!Array.isArray(files) || !files.every(isFileDigest)) return "unreadable";
     return { argv, args, files, createdAt };
   } catch {
-    return undefined;
+    return "unreadable";
   }
 }
 
 /**
- * Whether the CLI may post: one marker consumed, or why none was. `changed` names the first file
- * whose bytes differ from the ones AskGate read for the call, when that is why.
+ * What the stores say about AskGate's review of this call. One of four, and the CLI's whole
+ * decision rests on telling them apart (dispatch://INFRA-2079, row 3.5): a refusal requires a
+ * verdict, and a write posts unreviewed only where no verdict can positively be shown to exist.
+ *
+ * - `stale`: a marker AskGate minted for this exact argv was found and rejected, so a review ran
+ *   and this write is not what its verdict covers — other arguments, a file whose bytes changed
+ *   since the review read them, a marker past its age. `changed` names the first such file.
+ * - `unknown`: evidence exists for this call and cannot be read. Absence of a marker is not a
+ *   statement here, since the thing that cannot be read may be a refusal.
+ * - `none`: the stores were read whole and hold no marker for this argv. Only this is a positive
+ *   showing that no marker was minted; a stored refusal is looked for separately (`readRefusal`),
+ *   since AskGate mints nothing when it rejects.
  */
 export type Consumed =
   | { readonly ok: true }
   | {
       readonly ok: false;
-      /**
-       * Whether AskGate reviewed this call: a marker it minted for this exact argv was found and
-       * then rejected, so a review ran and this write is not what its verdict covers (other
-       * arguments, a file changed since it was read, a marker past its age). False where the
-       * stores hold no marker for this argv at all, which is a call no review ever saw — the
-       * gate never read the command that ran it, or there is no gate. The CLI refuses only the
-       * first: a refusal is the verdict of a review that ran (dispatch://INFRA-2079, row 3.5).
-       */
-      readonly reviewed: boolean;
+      readonly verdict: "stale";
       readonly why: string;
       readonly changed?: FileOperand;
-    };
+    }
+  | { readonly ok: false; readonly verdict: "unknown"; readonly why: string; readonly path: string }
+  | { readonly ok: false; readonly verdict: "none"; readonly why: string };
 
 /**
  * Consumes one marker for `argv` from `stores`: a marker bound to `args` and to `files` (each file
- * the argv names, as the CLI read it) first, else an argv-only one. A marker past
- * MARKER_MAX_AGE_MS is removed and never used; one bound to other files or other arguments is left
- * for the call it was minted for. A lost race for a marker (another process unlinked it first)
- * goes on to the next.
+ * the argv names, as the CLI read it) first, else an argv-only one. One bound to other files or
+ * other arguments, and one past MARKER_MAX_AGE_MS, is left where it is: a refusal consumes
+ * nothing, so the same call sent again meets the same answer rather than an emptier store. The
+ * sweep at the gate's next mint takes an expired marker, and the store goes with its session. A
+ * lost race for a marker (another process unlinked it first) goes on to the next.
  */
 export function consumeMarker(
   stores: readonly string[],
@@ -730,6 +748,8 @@ export function consumeMarker(
   let changed: FileOperand | undefined;
   let mismatched = false;
   let expired = false;
+  /** The first file of this call's own key that exists and will not say what it holds. */
+  let unreadable: string | undefined;
   const usable: Array<{ file: string; bound: boolean }> = [];
   for (const store of stores) {
     const dir = join(store, MARKERS);
@@ -737,10 +757,16 @@ export function consumeMarker(
       if (!name.startsWith(`${key}.`)) continue;
       const file = join(dir, name);
       const marker = readMarker(file);
-      if (marker === undefined || marker.argv !== key) continue;
+      // Swept or consumed since the listing: absent, which is this call's answer and no fault.
+      if (marker === "gone") continue;
+      // A file of this call's key that cannot be read, or that is no marker of this argv at all:
+      // what it would have said cannot be told, and one thing it can say is no.
+      if (marker === "unreadable" || marker.argv !== key) {
+        unreadable ??= file;
+        continue;
+      }
       if (now - marker.createdAt > MARKER_MAX_AGE_MS) {
         expired = true;
-        rmSync(file, { force: true });
         continue;
       }
       if (marker.args !== null) {
@@ -776,20 +802,134 @@ export function consumeMarker(
   if (changed !== undefined)
     return {
       ok: false,
-      reviewed: true,
+      verdict: "stale",
       why: `a file this write posts changed after AskGate read it (\`${changed.flag} ${changed.operand}\`)`,
       changed,
     };
-  // A marker for this argv was found and rejected (`mismatched`, `expired`): AskGate reviewed
-  // this call, and this write is not what its verdict covers. With neither, the stores held no
-  // marker for this argv at all, and no review ever saw the call.
-  return {
-    ok: false,
-    reviewed: mismatched || expired,
-    why: mismatched
-      ? "its arguments differ from the ones AskGate reviewed"
-      : expired
-        ? "its AskGate marker expired before it ran"
-        : "this call carries no AskGate marker",
-  };
+  if (mismatched)
+    return {
+      ok: false,
+      verdict: "stale",
+      why: "its arguments differ from the ones AskGate reviewed",
+    };
+  if (expired)
+    return { ok: false, verdict: "stale", why: "its AskGate marker expired before it ran" };
+  // A readable marker is gone or says no to this call; an unreadable one is read before absence
+  // is reported, since a file that will not speak is no proof that nothing was said.
+  if (unreadable !== undefined)
+    return {
+      ok: false,
+      verdict: "unknown",
+      why: `AskGate's marker for this call cannot be read (${unreadable})`,
+      path: unreadable,
+    };
+  return { ok: false, verdict: "none", why: "this call carries no AskGate marker" };
+}
+
+/**
+ * Where a store keeps AskGate's refusals. A marker is permission and lives in `markers/`, swept
+ * at each mint and spent by the one call it was minted for. A refusal is not permission and is
+ * not spent by being read, so it lives here, is never swept, and goes only when the review that
+ * refused it is replaced by one that allows (`clearRefusal`) or when the store goes with its
+ * session (`closeStore`). A refusal that expired into absence would be Sol's replay with a
+ * two-hour fuse: an expired permission must refuse, and an expired refusal must never become
+ * permission.
+ */
+const REFUSALS = "refusals";
+
+/**
+ * The key of a stored refusal: the digest of the Dispatch tool and the arguments the review
+ * judged, as the call's dry run printed them and as the CLI parses them again.
+ *
+ * Scope, exactly. It covers the tool name and every argument of the write — the issue, the body
+ * or content, the artifact name, the path — so a refusal of one write never reaches another
+ * issue, another tool or other text, and a corrected resend has another key and is untouched. It
+ * does not cover how the command spelled them, so `--issue=DSP-1` and `--issue DSP-1`, a flag
+ * order, and text sent inline or through `--body-file -` all meet the same refusal: that is the
+ * respelling the argv key could not hold. It names no session, store, machine or time: the
+ * refusal is found only in the stores of the live owners of this session's own record
+ * (`askgateState`), so one session's no is unreadable to another, and it lives no longer than
+ * the process that wrote it.
+ */
+export function refusalKey(tool: string, args: Readonly<Record<string, unknown>>): string {
+  return digest({ tool, args });
+}
+
+/** A refusal as it is stored. */
+interface Refusal {
+  readonly reason: string;
+}
+
+/**
+ * Records that AskGate reviewed this write and did not send it. Written whole under a temporary
+ * name and renamed, as a marker is, and rewritten freely: one refusal per tool and arguments.
+ * Throws when the store cannot take it, which the gate reports rather than swallows.
+ */
+export function writeRefusal(
+  store: string,
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  reason: string,
+  now: number
+): string {
+  const dir = join(store, REFUSALS);
+  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
+  const temporary = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
+  writeFileSync(temporary, JSON.stringify({ v: 1, reason, createdAt: now }), {
+    flag: "wx",
+    mode: PRIVATE_FILE,
+  });
+  const file = join(dir, refusalKey(tool, args));
+  renameSync(temporary, file);
+  return file;
+}
+
+/**
+ * Removes the refusal of this tool and these arguments, where there is one: a later review that
+ * allows the same write replaces the verdict that refused it, so the no must not outlive it.
+ */
+export function clearRefusal(
+  store: string,
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): void {
+  rmSync(join(store, REFUSALS, refusalKey(tool, args)), { force: true });
+}
+
+/**
+ * AskGate's standing refusal of this write in `stores`, if any: its reason, `"unknown"` where a
+ * refusal is there and cannot be read, and undefined where the stores were read whole and hold
+ * none. A store with no refusals directory at all has none: an older gate wrote none.
+ */
+export function readRefusal(
+  stores: readonly string[],
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): Refusal | "unknown" | undefined {
+  const name = refusalKey(tool, args);
+  for (const store of stores) {
+    const file = join(store, REFUSALS, name);
+    let text: string;
+    try {
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        text = readFileSync(fd, "utf-8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch (error) {
+      if (hasErrnoCode(error, "ENOENT")) continue;
+      return "unknown";
+    }
+    try {
+      const data: unknown = JSON.parse(text);
+      if (typeof data !== "object" || data === null) return "unknown";
+      const { reason } = data as Record<string, unknown>;
+      if (typeof reason !== "string") return "unknown";
+      return { reason };
+    } catch {
+      return "unknown";
+    }
+  }
+  return undefined;
 }

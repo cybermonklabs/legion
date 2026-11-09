@@ -483,11 +483,21 @@ gated write only when it consumes one, so a write sent any other way is refused 
   an eval cell, `xargs`, any form outside the literal grammar), a record that cannot be read or
   that names a store that is gone, and a marker check that threw. Each of those posts, in every
   mode, with `dispatch: warning: dispatch <command> posted without review: …` naming the call and
-  why no review ran. The CLI records the write in the session's ledger before it sends, and a
-  ledger that cannot take that line no longer holds the write back: the warning says the record
-  failed instead. Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. A
+  why no review ran, on both the command's output and its standard error, since a trailing
+  `| tail` that the literal form itself blesses would otherwise take the only account of it. The
+  CLI records the write in the session's ledger before it sends, and a ledger that cannot take
+  that line no longer holds the write back: the warning says the record failed instead, and
+  pi-envoy then has no `advisor-gate` entry for it, the warnings being the whole account. Where
+  the ledger took the line, pi-envoy records an entry with outcome `unmarked`. A
   session no live record names needs no marker: a terminal, CI, Claude Code, a pod without
   pi-envoy, a session with no Dispatch and one with `askgate.enabled: false`.
+- **The refusal the gate writes down.** A review that rejects mints no marker, so the CLI could
+  not tell a rejected write from one no review ever saw, and the rejected write posted when it
+  was sent again in any form the gate does not read. The gate now writes each refusal into the
+  store beside the markers, keyed by the Dispatch tool and the arguments its review judged
+  rather than by the words of the command, so another spelling of the same write meets the same
+  no. A refusal is not spent by being read and is never swept: it goes when a later review of
+  the same write allows it, or with the store at session end.
 - **The cause note.** When a `bash` call outside the literal form holds a `dispatch` word and a
   gated subcommand, and its result holds the CLI's refusal (or warn-mode warning) of a write with
   no marker, the gate appends an `AskGate note:` to that result. It names the first cause it found
@@ -511,13 +521,14 @@ The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `artifact` that uploads a markdown document. `--help`, `--dry-run` and every other command need no
 marker. So a pipe to a program other than one trailing `head` or `tail`, a loop, a variable,
 `xargs`, an alias, a script, `python3 -c`, `node -e`, or a process an eval cell starts runs, and
-its gated write is refused by the CLI in `block` mode with the form to send; a call that holds no
-Dispatch write, such as a commit message or a search pattern that names one, runs and posts
-nothing. A literal call whose last command gives no argument vector is refused in `block` mode. A
-gate that did not load refuses each literal call at the hook, so those never reach the CLI; it
-writes the record and mints nothing, so every gated write that does reach the CLI — one outside the
-literal form, and a subagent's literal one — is refused where the session set `OMP_ASKGATE=block`,
-and at the warn default posts with a warning and an `unmarked` entry.
+its gated write posts with the CLI's warning, in either mode, unless AskGate's review had already
+refused that write — in which case the stored refusal holds it, in either mode. A call that holds
+no Dispatch write, such as a commit message or a search pattern that names one, runs and posts
+nothing. A literal call whose last command gives no argument vector is refused at the gate in
+`block` mode. A gate that did not load refuses each literal call at the hook, so those never
+reach the CLI; it writes the record and mints nothing, and it writes down no refusals either, so
+every gated write that does reach the CLI — one outside the literal form, and a subagent's
+literal one — posts with a warning and an `unmarked` entry.
 
 **Where the gate binds.** AskGate binds only in a session that has Dispatch, judged at load from
 the session's own envoy.json and the variables over it (`DISPATCH_URL` and the other Dispatch

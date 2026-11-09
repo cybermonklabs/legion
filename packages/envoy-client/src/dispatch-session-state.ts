@@ -42,15 +42,24 @@ export interface ResultEntry {
   readonly details?: unknown;
   readonly error?: string;
   /**
-   * A gated write AskGate's record required a marker for, and which carried none or one whose
-   * file or arguments differ: refused in `block` mode (`error` holds the refusal); in `warn` mode a
-   * line of its own, with neither `details` nor `error`, written before the write is sent, and the
-   * result's own line after it. pi-envoy turns each into an `advisor-gate` entry, so the report
-   * counts it. `asksCarried` is how many asks for a person the write's own text carries, which
-   * pi-envoy records on Dispatch; the line carries that count and never the ask text.
+   * A gated write AskGate's record required a marker for, and which carried none, one whose
+   * file or arguments differ, one that cannot be read, or which AskGate's review refused
+   * outright.
+   *
+   * `mode` is what became of the write, not what the session chose: `block` is a write that was
+   * refused (`error` holds the refusal), `warn` one that posted, on a line of its own with
+   * neither `details` nor `error`, written before the write is sent and followed by the
+   * result's own line. pi-envoy turns each into an `advisor-gate` entry, so the report counts
+   * it. `chose` is the mode the session set, which since dispatch://INFRA-2079 no longer
+   * decides this on its own: a write no review ever saw posts in either mode, so a `warn` line
+   * with `chose: "block"` is a write that went out unreviewed in a session that had asked for
+   * block, which is the row an operator looks for. `asksCarried` is how many asks for a person
+   * the write's own text carries, which pi-envoy records on Dispatch; the line carries that
+   * count and never the ask text.
    */
   readonly askgate?: {
     readonly mode: "warn" | "block";
+    readonly chose?: "warn" | "block";
     readonly why: string;
     readonly asksCarried?: number;
   };

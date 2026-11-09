@@ -1,10 +1,20 @@
 kind: Fixed
 body: |-
-  AskGate's enforcement at the `dispatch` CLI no longer refuses a write no review ran for. A
-  gated write that reaches the CLI with no marker — one the gate never read, from a subagent, a
-  script, an eval cell or any `bash` call outside the literal grammar — posts with the CLI's
-  warning in every mode, and pi-envoy records it as an `unmarked` entry with `decision: allow`
+  AskGate writes down each Dispatch write its review refuses, so the `dispatch` CLI can tell a
+  rejected write from one no review ever saw. It mints no marker when it rejects, and the CLI
+  read that missing marker as "nobody looked": a write the model had refused posted when the
+  agent sent it again through any form the gate does not read. The refusal is written into the
+  marker store, keyed by the Dispatch tool and the arguments the review judged rather than by
+  the words of the command, is never swept, and goes when a later review of the same write
+  allows it or with the store at session end. A gated write the gate never read now posts with
+  the CLI's warning in every mode, and pi-envoy records it as `unmarked` with `decision: allow`
   and `verdictMode: warn`, where a session that chose `block` used to see `revise` and a refusal.
-  The in-process gate is unchanged: a review that runs and returns a revise still blocks the call
-  in block mode, a rules match still refuses in either mode, and a call given up without a
-  verdict is still held back in block mode. dispatch://INFRA-2079, row 3.5.
+  The operator report's two unmarked-write lines are renamed to what they now count: "unmarked
+  writes refused, a review standing behind each" and "unmarked writes posted, no review having
+  seen them".
+  The in-process gate's decisions are unchanged: a review that runs and returns a revise still
+  blocks the call in block mode, a rules match still refuses in either mode, and a call given up
+  without a verdict is still held back. Its refusal for a decision record that could not be
+  written is kept and its reason corrected: the gate holds because nothing of the call has run
+  yet, so the hold costs a resend that works, where the CLI's would cost a write that has to go
+  out. dispatch://INFRA-2079, row 3.5.

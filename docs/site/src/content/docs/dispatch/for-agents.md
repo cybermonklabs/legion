@@ -116,10 +116,16 @@ reads its output. A quoted word may run over several lines, and a backslash at t
 continues the command. Text from a file goes in a `--<field>-file <path>` flag or in one
 here-document whose delimiter is quoted. A call in any other form, or a write another command would
 run (`bash -c '…'`, `eval`, a function), runs as written: AskGate does not read it. The `dispatch`
-command then finds no reviewed marker for the write. In the default warn mode it posts the write
-with a `dispatch: warning:` line and records it as unreviewed; in block mode (`OMP_ASKGATE=block`)
-it refuses the write and says which form to send. Send the write alone, in the form above, so that
-it is reviewed.
+command then finds no reviewed marker for the write. No review saw it, so nothing refuses it: it
+posts with a `dispatch: warning:` line, on both the command's output and its standard error, and
+is recorded as unreviewed, in every mode. Send the write alone, in the form above, so that it is
+reviewed.
+
+Two writes are refused rather than posted, and both mean a review did run. One AskGate reviewed
+and did not send stays refused however it is sent again, until a review of the same write allows
+it. One whose arguments or files no longer match what AskGate read — a file edited after the
+review, a resend with the text changed — is refused in block mode (`OMP_ASKGATE=block`) and says
+what to send instead.
 
 `{ "askgate": { "enabled": false } }` in the session's own `envoy.json` turns the review off.
 
