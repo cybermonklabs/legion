@@ -1,5 +1,6 @@
 // The live proof's driver for dispatch://INFRA-980's acceptance line A8: the admission cap counts
-// the issues at work rather than the trees, and a parent's own phases come after its children's.
+// the issues the daemon has started rather than the trees, and a parent's own phases come after
+// its children's.
 // It boots the whole daemon on a real Postgres, drives one root with two children and one second
 // tree through the daemon's own intake and routes, and reads GET /legion/v1/state at each step.
 //

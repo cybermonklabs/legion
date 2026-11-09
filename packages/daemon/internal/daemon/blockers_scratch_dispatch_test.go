@@ -77,12 +77,12 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	cfg.Project = "B" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
 	cfg.PostgresDSN = blockersDatabase(t)
-	// The cap counts the issues at work, not the trees (dispatch://INFRA-980), and this run puts
-	// ten issues of one project through the workflow, a tree's children among them. It is set
-	// above every count this run reaches so that no step here is ever the cap's doing: the slot
-	// the blocked root of step 1 does not take stands free because its link holds it, and the
-	// child of step 4 starts at its release because it reaches the front of a line nothing is
-	// waiting in. Each step that needs a free slot says so against the cap itself.
+	// The cap counts the issues the daemon has started, not the trees (dispatch://INFRA-980), and
+	// this run puts ten issues of one project through the workflow, a tree's children among them.
+	// It is set above every count this run reaches so that no step here is ever the cap's doing:
+	// the slot the blocked root of step 1 does not take stands free because its link holds it,
+	// and the child of step 4 starts at its release because it reaches the front of a line
+	// nothing is waiting in. Each step that needs a free slot says so against the cap itself.
 	cfg.AdmissionCap = 16
 	// The controller tick admits a root whose blocker is done whatever the event did, so it must
 	// not be what step 6 sees: an hour before the runtime's first tick (o.controllerFirstWake,

@@ -351,7 +351,7 @@ func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string 
 }
 
 // assertNoAwaitingEffects fails when key's architect was suspended or the controller was told the
-// root returned its slot to wait on a person.
+// root waits on a person.
 func assertNoAwaitingEffects(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	for _, effect := range effects(t, pool) {

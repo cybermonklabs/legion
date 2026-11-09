@@ -479,9 +479,9 @@ func (r *mergedRootWaitsLive) rootMergeWaits() {
 	}
 	r.note("read back: %s is in %s, pullRequest.state %s, status %s, no production check",
 		r.parent, got.Phase, got.PullRequest.State, got.Status)
-	// The cap counts the issues at work: the merge's own admission pass takes the root's slot,
-	// since a root waiting in awaiting_merge is at work no longer, and leaves the slot of the
-	// child whose phase holds that close open.
+	// The cap counts the issues the daemon has started: the merge's own admission pass takes the
+	// root's row, since an issue waiting only for its merge keeps none (record.KeepsSlot), and
+	// leaves the row of the child whose phase holds that close standing.
 	r.waitFor("the merged root holding no slot", r.parent, func(got api.Issue) bool { return got.Slot == nil })
 	child := r.waitFor("the child at work keeping the tree's one slot", r.child, func(got api.Issue) bool { return got.Slot != nil })
 	r.note("read back: %s holds no admission slot in its wait, and %s, implementing beneath it, keeps slot %d",

@@ -295,7 +295,8 @@ type DeliveryHold struct {
 func (i Issue) AwaitingPerson() bool { return i.Phase == phase.AwaitingPerson && i.Awaiting != nil }
 
 // Answered says whether the issue is a root a person's answer released from awaiting_person, which
-// waits for its slot.
+// waits in the line for the resume of its architect, on the row it held through the wait
+// (KeepsSlot).
 func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.AnsweredAt != nil }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and

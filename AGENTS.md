@@ -779,8 +779,8 @@ every worker of a waiting issue stays live in the issue's pod and answers questi
 A transition applies at once — the phase, the Dispatch status, the new assignment, a READY withdrawal and the notices — and only the outbox row that delivers the worker's start waits for a slot;
 when a second transition happens before the slot, its start replaces the first one, so one worker starts and a completion of the earlier assignment is refused.
 The waiting line is a line of issues:
-first the issues whose work came back, which hold their row throughout — one owed its worker a start, an answered `awaiting_person` root, and a tree's own root at `admitted` whose design gate has opened — oldest first by the time the work came back;
-then the issues whose first phase can start and hold no row, by the Dispatch rank of their tree's root and then by their own.
+first the issues whose work came back, oldest first by the time it came back — one owed its worker a start, which holds no row and waits here for one, and two that hold the row they were started with: an answered `awaiting_person` root and a tree's own root at `admitted` whose design gate has opened;
+then the issues whose first phase can start, by the Dispatch rank of their tree's root and then by their own, which hold no row either, but for a root another tree handed over with the row it held there.
 A tree is live while its lifecycle is open and it does not linger, or while its root waits in the line or on a person, whether or not any issue of it holds a slot.
 `legion state` counts the slot holders against the cap and prints the live trees;
 its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.

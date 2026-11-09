@@ -208,7 +208,9 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 // the three deletions that are left — a phase of done while Dispatch still shows the issue
 // in_progress, a Dispatch status of backlog while the phase is still in the workflow, and a
 // tree whose root closed — and reads that those three rows go and no others. A child the daemon
-// has not started holds no row in either reading.
+// has not started holds no row in either reading, and a child it has started, which a person's
+// todo re-entered at admitted, keeps its row through both: the last reading is the two of them
+// together.
 //
 // A row is accounting and nothing else: the pass suspends no claim, moves no phase and writes
 // no Dispatch status, which the three unchanged reads around each pass pin.
@@ -276,6 +278,18 @@ func TestSlotPerPhase(t *testing.T) {
 	putIssue(t, pool, record.Issue{Key: "LEGION-31", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: "LEGION-31", Tree: "LEGION-30", Parent: &unstarted, Phase: phase.Admitted, Generation: 1,
 		Status: "todo", DispatchStatus: "todo", Rank: "D1", LastDispatchSeq: 2})
+	// A child of the same tree the daemon did start, which a person's todo re-entered: a
+	// re-entry writes the phase back to admitted, bumps the generation and leaves the Dispatch
+	// status at todo (workflow.ReenterChild), and none of the four deletions reads any of that,
+	// so the row its first run took stands (record.KeepsSlot). The unstarted child above is
+	// read beside it in the same assertion, still holding none: the two stand in the same
+	// phase, in the same status, under the same root's wait, so what tells them apart is that
+	// the daemon started one of them and never started the other — which is the distinction a
+	// child at admitted holding no row is about, and a re-entered child is not that child.
+	putIssue(t, pool, record.Issue{Key: "LEGION-32", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: "LEGION-32", Tree: "LEGION-30", Parent: &unstarted, Phase: phase.Admitted, Generation: 2,
+		Status: "todo", DispatchStatus: "todo", Rank: "D2", LastDispatchSeq: 4})
+	takeSlot(t, pool, "LEGION-32")
 
 	// pass runs one admission pass and reads, around it, the three things a row never moves.
 	pass := func(stage, eventID string) {
@@ -305,7 +319,7 @@ func TestSlotPerPhase(t *testing.T) {
 	pass("the first reading", "rows-per-phase")
 
 	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7",
-		"LEGION-8", "LEGION-9", "LEGION-20", "LEGION-30")
+		"LEGION-8", "LEGION-9", "LEGION-20", "LEGION-30", "LEGION-32")
 	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
 		t.Fatalf("blocked = %#v, want %#v: the root keeps its row at admitted because an open Dispatch child holds it there",
 			blockedNow(t, pool, admission), want)
@@ -325,7 +339,16 @@ func TestSlotPerPhase(t *testing.T) {
 
 	pass("the second reading", "rows-after-the-three-deletions")
 
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-5", "LEGION-6", "LEGION-8", "LEGION-9", "LEGION-30")
+	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-5", "LEGION-6", "LEGION-8", "LEGION-9",
+		"LEGION-30", "LEGION-32")
+
+	t.Run("a re-entered child keeps its row and an unstarted child at admitted holds none", func(t *testing.T) {
+		reentered, never := holdsSlot(t, pool, "LEGION-32"), holdsSlot(t, pool, "LEGION-31")
+		if !reentered || never {
+			t.Fatalf("after both readings LEGION-32 holds a row = %t and LEGION-31 holds one = %t, want true and false: both children stand at admitted in todo under the same root's wait, and the row says which of them the daemon has started",
+				reentered, never)
+		}
+	})
 }
 
 // A2. The cap counts issues, so one tree holds one row for each issue the daemon has started:

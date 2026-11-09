@@ -158,7 +158,7 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 }
 
 // awaitingNotices is the reason of every awaiting-person notice the outbox holds for issue: the
-// row that tells the controller the root gave its slot back.
+// row that tells the controller the root waits on a person.
 func awaitingNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select payload->>'reason' from outbox where kind = 'controller_notice' and issue = $1
@@ -243,7 +243,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	for _, slot := range slots {
 		issue, recorded := byKey[slot.Issue]
 		_, running := live[issue.Tree]
-		if recorded && record.NeedsSlot(issue, byKey[issue.Tree], facts.Gates[issue.Tree], running) {
+		if recorded && record.NeedsSlot(issue, byKey[issue.Tree], running) {
 			continue
 		}
 		if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
@@ -641,9 +641,9 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 // A step nobody has registered holds the work, and that is all it does: the wait a registered
 // step after it raised still reaches the person. Under the decisions step and the spec, with the
 // decisions step unregistered and the spec registered, unapproved and its approval request with
-// the person, the root enters the wait on its primary document and gives its slot back. Reading
-// the unregistered step as the step the person has would leave the root holding a slot while the
-// person holds its request, with nothing to answer the wait that never began.
+// the person, the root enters the wait on its primary document and the controller is told.
+// Reading the unregistered step as the step the person has would leave the root with nothing to
+// answer the wait that never began, while the person holds its request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)

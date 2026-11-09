@@ -103,8 +103,8 @@ func TestAFinishedPhaseStartsTheNextOneWithNoNewRow(t *testing.T) {
 	seedSlotted(t, pool, "LEGION-100", "A")
 	capMember(t, pool, "LEGION-100", "LEGION-101", phase.Implementing, "in_progress", "A1")
 	takeSlot(t, pool, "LEGION-101")
-	// A root that never ran, waiting in line, so the cap is full of issues at work and the line
-	// is not empty: a pass that handed out a row would hand it to this one.
+	// A root that never ran, waiting in line, so the cap is full of issues the daemon has
+	// started and the line is not empty: a pass that handed out a row would hand it to this one.
 	seedWaiting(t, pool, "LEGION-200", "B")
 
 	// The implementer completes and the transition into testing owes the tester its start.
@@ -152,10 +152,10 @@ func TestAReleasedChildWaitsForAFreeRow(t *testing.T) {
 	assertWaiting(t, pool, nil)
 }
 
-// This change writes no row back for an issue that holds none at the deploy, so a deployment
-// running when it lands keeps issues in phases that now hold a row and hold none. Such an issue
-// waits in the line once, at its next start, and from then on it keeps the row it was given:
-// the phases that gave a row back before — accepting among them — give none back now.
+// An issue standing in a phase that keeps a row while holding none, which is what a deployment
+// of this release finds in every issue its predecessor left in accepting, in held or in
+// awaiting_person: no row is written back for it. Such an issue waits in the line once, at its
+// next start, and from then on it keeps the row it was given, accepting included.
 func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)

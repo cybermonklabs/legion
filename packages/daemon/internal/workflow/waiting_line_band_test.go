@@ -22,13 +22,8 @@ import (
 // record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate
 // opened, and never the position that placement gives an issue, which depends on what else waits
 // (record.Waiting, record/project.go). The ban is what that rule needed. It runs over the
-// sixteen files of the one list this test holds, which is every file held to the fragment at
-// all: the list of files that named the waiting-line notice went with that notice when
-// INFRA-1909 deleted it, since an issue now keeps its admission slot until it is done, leaves
-// the workflow or waits only for its merge, and no answered root waits for a slot to resume.
-// The list grew by the three files that deletion left held to neither check — concepts.md, the
-// architect's acceptance reference and the controller's wakes reference — each of which states
-// the placement and only ever stood in the list that went.
+// sixteen files of the one list this test holds, which is every file that states the placement
+// at all.
 //
 // Presence alone let a position claim through: AGENTS.md carried record.WaitingLineBand word for
 // word in a sentence about a root's own first phase, two lines below a sentence that claimed a
@@ -41,12 +36,12 @@ import (
 // phrases these texts used and no more.
 //
 // It bans rather than judges because the judgement is fuzzy and a plain substring is not.
-// Whether a sentence claims a position or merely defines the ordinal 1 is a reading, and the
-// program that tried it here was a sentence parser with two escape hatches — about 170 lines of
-// guesswork — which this repository does not keep: a programmatic gate checks what a program
-// checks easily and leaves the fuzzy reading to the agent who writes the text. The ban needs no
-// escape hatch because its phrases are narrow enough to leave running-legion.md's honest
-// definition of the ordinal, `1 being first in the line`, standing.
+// Whether a sentence claims a position or merely defines the ordinal 1 is a reading, and a
+// program that reads sentences to decide it is guesswork this repository does not keep: a
+// programmatic gate checks what a program checks easily and leaves the fuzzy reading to the
+// agent who writes the text. The ban needs no escape hatch because its phrases are narrow
+// enough to leave running-legion.md's honest definition of the ordinal, `1 being first in the
+// line`, standing.
 func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {

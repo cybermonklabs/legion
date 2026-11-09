@@ -297,12 +297,11 @@ func (a *Admission) applyReread(ctx context.Context, tx pgx.Tx, reread map[strin
 }
 
 // wakeForFreeSlot wakes the controller when this transaction released a slot that promotion left
-// free: an issue stopped having work of its own, or left the workflow, and nothing waiting in
-// the line took its place. The controller
-// names the free slot in its summary and takes no issue for it (skill://legion-controller, "Free
-// slots"). It is one `slot-free` notice on the first issue whose slot was released, under the same
-// rules as every slot wake: a slot free by slotFree, a registered controller, none already unsent
-// (wakeController).
+// free: an issue reached its done or its wait for a merge, or left the workflow, and nothing
+// waiting in the line took its place. The controller names the free slot in its summary and takes
+// no issue for it (skill://legion-controller, "Free slots"). It is one `slot-free` notice on the
+// first issue whose slot was released, under the same rules as every slot wake: a slot free by
+// slotFree, a registered controller, none already unsent (wakeController).
 func (a *Admission) wakeForFreeSlot(ctx context.Context, tx pgx.Tx, released []string) error {
 	if len(released) == 0 {
 		return nil
@@ -323,13 +322,14 @@ const todoWakeDelay = 30 * time.Second
 // counting a slot a waiting issue will take as taken. The cap counts the issues the daemon has
 // started, so the line it counts against is a line of issues, children included. A candidate
 // promotion passes over because it waits on an unfinished Dispatch issue (blockers.LineWaitsOn)
-// will take none, and neither will one that already holds a row or whose promotion leaves it in
-// a phase that keeps none (slotFor), so none of them hides free capacity from the project: the
-// controller hears of the slot and may hand Legion work that can actually run. A candidate
-// already holding a row is no taker: the line carries issues that hold one — an answered root,
-// a tree's own root at admitted — and counting such a candidate would say the cap was full
-// while rows stood free, so the wake would not fire. The controller is woken about it and takes
-// nothing for it; only a person hands Legion work (skill://legion-controller, "Free slots").
+// will take none, and neither will one that already holds a row or whose phase keeps none
+// (slotFor), so none of them hides free capacity from the project: the controller hears of the
+// slot and may hand Legion work that can actually run. A candidate already holding a row is no
+// taker: the line carries issues that hold one — an answered root, an issue at admitted the
+// daemon has started, a root that arrived from another tree with its row — and counting such a
+// candidate would say the cap was full while rows stood free, so the wake would not fire. The
+// controller is woken about it and takes nothing for it; only a person hands Legion work
+// (skill://legion-controller, "Free slots").
 //
 // The line is the one the promotion itself would read (blockers.JudgeLine), held by the same
 // blocker hold and the same children-first wait: a line built here from its own reads would
@@ -356,11 +356,9 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	holders := slotHolders(own)
 	taking := 0
 	for _, candidate := range line {
-		_, holdsRow := holders[candidate.Issue.Key]
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate, holdsRow) {
+		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) {
 			taking++
 		}
 	}
@@ -1080,9 +1078,9 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // (intake.ApplyFact), so a read per slot cost every fact of every consumer, the API and the
 // boot's replay a round trip to the database for each slot of the shared table, and a read of
 // every record would grow with every issue the project has ever recorded. The read leaves out
-// another project's slot, whose own daemon releases it. The two further facts the predicate needs
-// of each slotted issue — its tree root and that root's design gate — come from issues and facts,
-// which the pass read once for all of them, so this still makes exactly one query.
+// another project's slot, whose own daemon releases it. The further facts the predicate needs of
+// each slotted issue — its tree root, and whether that root's tree is live — come from issues
+// and facts, which the pass read once for all of them, so this still makes exactly one query.
 func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
@@ -1099,7 +1097,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		// A slotted issue whose root the live records do not hold belongs to a tree that has
 		// finished: LiveRoots does not name it either, so the predicate releases it.
 		_, running := live[issue.Tree]
-		if record.NeedsSlot(issue, byKey[issue.Tree], facts.Gates[issue.Tree], running) {
+		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
 			continue
 		}
 		if err := a.store.ReleaseSlot(ctx, tx, issue.Key); err != nil {
@@ -1229,10 +1227,6 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	admitted := 0
 	for {
 		own := ownSlots(issues, slots)
-		// A row this loop hands out changes the answer slotFor gives the candidates behind it,
-		// so the keys holding one are read from the slots themselves and the set grows with the
-		// grant below.
-		holders := slotHolders(own)
 		stopped, opened := false, false
 		for _, candidate := range line {
 			issue := candidate.Issue
@@ -1263,12 +1257,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				a.log.Info("admission waits for what this issue waits on", "issue", issue.Key, "blockers", waits)
 				continue
 			}
-			// A candidate that already holds a row, or whose promotion leaves it in a phase
-			// that keeps none, takes no slot and so is never held by the cap: a handed-over
-			// root carrying accepting opens its tree at once, and an answered root resumes its
-			// architect on the row it kept through the wait.
-			_, holdsRow := holders[issue.Key]
-			takes := slotFor(candidate, holdsRow)
+			// A candidate that already holds a row, or that stands in a phase keeping none,
+			// takes no slot and so is never held by the cap: a root another tree handed to
+			// Legion carrying awaiting_merge opens its tree at once, and an answered root
+			// resumes its architect on the row it kept through the wait.
+			takes := slotFor(candidate)
 			if takes && len(own) >= a.cap {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
@@ -1335,12 +1328,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			}
 			now := a.now()
 			if takes {
+				// The line holds each issue once, and an entry carries whether its issue held a
+				// row when the line was built (record.LineEntry.Holds), so no grant here
+				// changes the answer slotFor gives a candidate behind it; what the grant does
+				// change, the count against the cap, is own, which grows with it.
 				slot := record.Slot{Issue: issue.Key, Index: nextSlotIndex(slots), AdmittedAt: now}
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
 				}
 				slots, own = append(slots, slot), append(own, slot)
-				holders[issue.Key] = struct{}{}
 				a.logSlot(ctx, "taken", issue.Key, len(own))
 			}
 			switch candidate.Kind {
@@ -1386,12 +1382,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// it says a root arrived from another tree and has still to open a tree of its
 				// own, and this is the write that opens it. Left standing it would make the
 				// record say for ever that this generation never ran (record.QueuedRoot, ran),
-				// so a person's todo on the running root — which holds no slot in accepting or
-				// awaiting_merge — would queue it again and promote it a second time, moving its
-				// awaiting_merge to merging, where its merge closes nothing. Nothing else reads
-				// the mark after the tree is open: a root with an opened lifecycle is no tree's
-				// to adopt whatever the mark says (workflow's RanAsRoot), and its own record
-				// says it is a root (record.ChildOpen).
+				// so a person's todo on the running root would queue it again and promote it a
+				// second time, moving its awaiting_merge to merging, where its merge closes
+				// nothing. The row the root holds would not stop that: the line passes over a
+				// queued root holding one only where the mark is gone (record.Waiting), and a
+				// root waiting for its merge holds none at all. Nothing else reads the mark
+				// after the tree is open: a root with an opened lifecycle is no tree's to adopt
+				// whatever the mark says (workflow's RanAsRoot), and its own record says it is
+				// a root (record.ChildOpen).
 				issue.HandedOverFrom = ""
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
@@ -1484,33 +1482,28 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 	return issues, slots, facts, err
 }
 
-// slotFor says whether promoting this candidate must take one of the cap's slots for it. The
-// grant and the release read the one predicate (record.KeepsSlot), over the issue as the
-// promotion leaves it, so no pass hands out a row the next pass would take back. holdsRow says
-// the candidate already holds a row, and such a candidate takes none: an issue keeps the row it
-// has from its start until it is done, leaves the workflow or waits only for its merge, and the
-// line carries two kinds that hold one while they wait in it — an answered root and a tree's
-// own root at admitted under an open gate.
+// slotFor says whether promoting this candidate must take one of the cap's slots for it: it
+// holds none already (record.LineEntry.Holds, which the line sets from the slots it was built
+// from) and its phase keeps one (record.KeepsSlot). The grant and the release read that one
+// predicate, so no pass hands out a row the next pass would take back.
 //
-// The promotion leaves each kind of candidate in a phase of its own: a returning issue keeps
-// the worker phase it stands in, a first phase starts at phase.Planning, an answered root goes
-// back to phase.Admitted, and a root whose tree is opened keeps the phase its record carries.
-// That last one is the single candidate the phase test refuses: a root another tree handed to
-// Legion carrying awaiting_merge would otherwise take a row the next pass deletes. A candidate
-// that takes no slot is promoted whatever the cap: holding it back would bound nothing and
-// would leave its tree closed for no reason.
-func slotFor(entry record.LineEntry, holdsRow bool) bool {
-	if holdsRow {
-		return false
-	}
-	left := entry.Issue
-	switch entry.Kind {
-	case record.LineFirstPhase:
-		left.Phase = phase.Planning
-	case record.LineAnswered:
-		left.Phase = phase.Admitted
-	}
-	return record.KeepsSlot(left)
+// It reads the phase the candidate's record carries rather than the phase its promotion leaves
+// it in, and the two agree wherever this is asked: KeepsSlot refuses done and awaiting_merge
+// alone, and no promotion leaves an issue in either. A first phase starts at phase.Planning
+// from a record standing at admitted, an answered root goes from awaiting_person back to
+// admitted, a returning issue keeps the worker phase it stands in, and a root whose tree is
+// opened keeps the phase its record carries — which is the one candidate the phase test
+// refuses, a root another tree handed to Legion carrying awaiting_merge, and it carries that
+// phase before the promotion as well as after it.
+//
+// A candidate that holds a row takes no second one: an issue keeps the row it has from its
+// start until it is done, leaves the workflow or waits only for its merge, so the line carries
+// holders — an answered root, an issue at admitted the daemon has started, and a root that
+// arrived from another tree with the row of the tree it left. A candidate that takes no slot
+// is promoted whatever the cap: holding it back would bound nothing and would leave its tree
+// closed for no reason.
+func slotFor(entry record.LineEntry) bool {
+	return !entry.Holds && record.KeepsSlot(entry.Issue)
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
@@ -1851,17 +1844,6 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 	return own
 }
 
-// slotHolders is the issue key of each of slots, which is what the grant asks of a candidate
-// (slotFor): an issue that already holds a row takes no second one, and an issue keeps its row
-// while it waits in the line for a promotion that is not a slot.
-func slotHolders(slots []record.Slot) map[string]struct{} {
-	holders := make(map[string]struct{}, len(slots))
-	for _, slot := range slots {
-		holders[slot.Issue] = struct{}{}
-	}
-	return holders
-}
-
 // startMidPhaseMembers brings back every role of every member of the tree promotion has just
 // opened, and gives the one role whose phase the member stands in the task that carries that
 // phase on. A hand-over turns a child into that root while preserving its phase, so its phase
@@ -1979,11 +1961,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
 // no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
-// passed over. The gate that question takes decides nothing on any phase that reaches this
-// test: AtWork reads it in the phase.Admitted arm alone, and the loop has already passed over
-// every issue whose phase has no role (workflow.RoleFor), admitted among them. The pass hands
-// this its own facts all the same, so the issue's real gate is what AtWork is asked with and
-// the call stays honest against its contract, at one map lookup a holder.
+// passed over, at the skip the loop below states. The pass hands this its own facts, so the
+// gate AtWork is asked with is the issue's real one and the call stays honest against its
+// contract, at one map lookup a holder.
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
 ) error {
@@ -2019,7 +1999,8 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		// approve. Every other phase the rule keeps a row for has no worker role of its own —
 		// workflow.RoleFor answers the architect for accepting, which the skip above passes
 		// over, and the empty role for held, awaiting_person, admitted, awaiting_merge and
-		// done.
+		// done. So the gate decides nothing here either: AtWork reads it in the phase.Admitted
+		// arm alone, and no issue at admitted reaches this line.
 		if !record.AtWork(issue, facts.Gates[issue.Tree]) {
 			continue
 		}

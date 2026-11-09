@@ -30,9 +30,12 @@
 -- 20261108055000_awaiting_slot_notice.up.sql:54 names this very row as a step the release that
 -- cannot decode it owes, and this is that release: the boot applies every migration before the
 -- API serves and before any outbox lane claims a row (st.Migrate in daemon.Run), so the last
--- statement below is the whole of the upgrade's side of it. The operator step in
--- docs/kubernetes.md stays for the rolling-restart window, where a daemon of the earlier
--- release can still write such a row after this migration has run.
+-- statement below is the whole of the upgrade's side of it. The same delete stands in
+-- docs/kubernetes.md as an operator step, to run with the daemon stopped, and it stays there as
+-- a precaution with no window behind it: a daemon of the earlier release cannot write such a row
+-- after this migration has run, since it names awaiting_slot_notice_at among the columns it
+-- reads an issue with and so fails every issue read before it reaches the code that would queue
+-- the notice, and that queue and the issue write marking the root are one transaction.
 --
 -- There is no down file: migrations here are forward-only. This one supersedes
 -- 20261108055000_awaiting_slot_notice.up.sql rather than editing it, so a database that ran that
