@@ -51,6 +51,12 @@ interface Fixture {
   readonly stop: () => void;
   /** Makes every later review allow, so only the marker it mints decides. */
   readonly allow: () => void;
+  /**
+   * Switches the session's chosen mode after the opening review has run. A warn-mode revise
+   * records no verdict — it neither records nor clears, which is the model's `leave` — so a
+   * state that is a recorded refusal can only be seeded in block and then switched.
+   */
+  readonly setMode: (mode: "warn" | "block") => void;
   /** The gate reading one literal call, as the host would hand it over. */
   readonly gate: (
     who: "main" | "sub",
@@ -147,6 +153,10 @@ function session(answer: "allow" | "revise" = "revise"): Fixture {
     stop: () => server.stop(true),
     allow: () => {
       verdict = "allow";
+    },
+    setMode: (mode) => {
+      setRecordMode(dir(), owner, mode);
+      env.OMP_ASKGATE = mode;
     },
     /** The gate reading one literal call, as the host would hand it over. */
     gate: (who: "main" | "sub", command: string = COMMAND) =>
@@ -416,7 +426,7 @@ describe("every remedy the CLI prints, followed", () => {
    * that never reached its state, one that minted a different argv, one that built a marker no
    * clock produces, and one that omitted the very arm its round's derivation was written for. A
    * product cannot omit the cell nobody thought of, which is the only property that has
-   * mattered here. Fifty rows is the right size for that.
+   * mattered here. The product of twelve faults, five session conditions and two modes is the right size for that.
    */
   const conditions: Array<[string, (s: Fixture) => void]> = [
     ["a healthy session", () => {}],
@@ -451,68 +461,140 @@ describe("every remedy the CLI prints, followed", () => {
     ],
   ];
 
+  // Mode is one of the caveat's inputs and was held at `block` for every row, so dropping
+  // the guard that stops a message announcing a **post** from carrying one left the suite
+  // green. The axes are what the function reads, not what anyone enumerated.
   for (const { name, arrange, repair, call } of states)
     for (const [condition, apply] of conditions)
-      test(`${name} with ${condition}`, async () => {
-        const held = async (who: "main" | "sub") => {
-          const s = session();
-          try {
-            expect((await s.gate("main"))?.block).toBe(true);
-            if (name !== "a recorded refusal of this write") clearVerdict(s.dir(), identity());
-            arrange(s);
-            apply(s);
-            const made = call?.(s) ?? { command: COMMAND, argv: BASE };
-            const printed = await s.cli(made.argv);
-            // The two caveat sentences themselves, not any mention of a subagent: the
-            // record-recovery lead says a subagent never rewrites the record, which is its own
-            // true statement and not a caveat on a resend.
-            const caveat =
-              /That is the main agent's to send/.test(printed.out) ||
-              /None of that works from a task subagent/.test(printed.out);
-            repair?.(s);
-            s.allow();
-            const again = await resend(s, who, made);
-            return { printed: printed.code, caveat, posted: again.posts === 1, out: printed.out };
-          } finally {
-            for (const locked of [
-              "askgate-verdicts-v2",
-              join("..", "..", "..", "store", "markers"),
-            ])
-              if (existsSync(join(s.dir(), locked))) chmodSync(join(s.dir(), locked), 0o700);
-            if (existsSync(join(s.store, "markers"))) chmodSync(join(s.store, "markers"), 0o700);
-            s.stop();
+      for (const mode of ["block", "warn"] as const)
+        test(`${name} with ${condition}, ${mode} mode`, async () => {
+          const held = async (who: "main" | "sub") => {
+            const s = session();
+            try {
+              // Seeded in block, since a warn-mode revise records nothing, then switched to
+              // the mode under test before the CLI reads anything.
+              expect((await s.gate("main"))?.block).toBe(true);
+              s.setMode(mode);
+              if (name !== "a recorded refusal of this write") clearVerdict(s.dir(), identity());
+              arrange(s);
+              apply(s);
+              const made = call?.(s) ?? { command: COMMAND, argv: BASE };
+              const printed = await s.cli(made.argv);
+              // The two caveat sentences themselves, not any mention of a subagent: the
+              // record-recovery lead says a subagent never rewrites the record, which is its own
+              // true statement and not a caveat on a resend.
+              // Which caveat, not whether one: a boolean OR cannot tell the all-session
+              // sentence from the one-clause sentence, so transposing them, or rendering the
+              // wrong one at every persistent site, left the whole tree green.
+              const caveat = /None of that works from a task subagent/.test(printed.out)
+                ? "all"
+                : /That is the main agent's to send/.test(printed.out)
+                  ? "clause"
+                  : "none";
+              repair?.(s);
+              s.allow();
+              const again = await resend(s, who, made);
+              // A refusal of AskGate's, not any non-zero exit: an upload whose file is missing
+              // fails at the request in warn mode, where AskGate let it through.
+              return {
+                printed: / was not called:/.test(printed.out),
+                caveat,
+                posted: again.posts === 1,
+                out: printed.out,
+              };
+            } finally {
+              for (const locked of [
+                "askgate-verdicts-v2",
+                join("..", "..", "..", "store", "markers"),
+              ])
+                if (existsSync(join(s.dir(), locked))) chmodSync(join(s.dir(), locked), 0o700);
+              if (existsSync(join(s.store, "markers"))) chmodSync(join(s.store, "markers"), 0o700);
+              s.stop();
+            }
+          };
+          const sub = await held("sub");
+          // Advice that asks nothing of the agent — tell whoever owns the session — has no
+          // resend to caveat, and the rule is about resends. Read from the message itself, so a
+          // state that gains a resend later is covered without anyone listing it.
+          if (!/\bsend (it|the |this |a write)/i.test(sub.out)) {
+            expect({ name, condition, caveat: sub.caveat }).toEqual({
+              name,
+              condition,
+              caveat: "none",
+            });
+            return;
           }
-        };
-        const sub = await held("sub");
-        // Advice that asks nothing of the agent — tell whoever owns the session — has no
-        // resend to caveat, and the rule is about resends. Read from the message itself, so a
-        // state that gains a resend later is covered without anyone listing it.
-        if (!/\bsend (it|the |this |a write)/i.test(sub.out)) {
-          expect({ name, condition, caveat: sub.caveat }).toEqual({
-            name,
-            condition,
-            caveat: false,
-          });
-          return;
-        }
-        // The rule, as one fact for the renderer and this suite: a refusal carries the caveat
-        // exactly where following its advice as a subagent is refused. The cell it does not
-        // cover is named in the body: an unreadable upload whose repaired write is itself
-        // refused needs two steps, and the CLI cannot compute an identity while the bytes are
-        // unreadable, so step two is where the caveat lands.
-        if (sub.printed === 1)
-          expect({ name, condition, caveat: sub.caveat }).toEqual({
-            name,
-            condition,
-            caveat: !sub.posted,
-          });
-        else
-          expect({ name, condition, caveat: sub.caveat }).toEqual({
-            name,
-            condition,
-            caveat: false,
-          });
-      }, 60_000);
+          // Which caveat the state calls for, derived rather than listed: where the session's
+          // own uncertainty outlives every repair the message names, none of the advice works
+          // and the all-session sentence is the true one; where only the marker-bound clause is
+          // beyond a subagent, the one-clause sentence is; where its resend works, neither.
+          //
+          // The cell this rule does not cover is named in the body: an unreadable upload whose
+          // repaired write is itself refused takes two steps, and the CLI cannot compute an
+          // identity while the bytes are unreadable, so the caveat lands on step two.
+          // Either axis can supply it: the base fault is one of these in its own right, and so
+          // is the session condition crossed with it.
+          const outlivesRepair = new Set([
+            "no verdict capability",
+            "a foreign verdict store",
+            "a lost verdict",
+            "its own verdict store unreadable",
+          ]);
+          const persistent = outlivesRepair.has(name) || outlivesRepair.has(condition);
+          if (!sub.printed)
+            expect({ name, condition, caveat: sub.caveat }).toEqual({
+              name,
+              condition,
+              caveat: "none",
+            });
+          else
+            expect({ name, condition, caveat: sub.caveat }).toEqual({
+              name,
+              condition,
+              caveat: persistent ? "all" : sub.posted ? "none" : "clause",
+            });
+        }, 60_000);
+
+  // The clause a message offers that is *not* a resend of the same write: `REFUSAL_STANDS`
+  // tells the agent to send a corrected write, which is a different write and meets no
+  // refusal. Every row above follows the same-write resend, which is the clause that is not in
+  // question — so swapping the two clauses, which would tell a subagent the corrected write
+  // needs its parent and the refused one does not, left the tree green.
+  for (const [condition, apply] of conditions)
+    test(`a recorded refusal with ${condition}: the corrected write is followed, not the resend`, async () => {
+      const s = session();
+      try {
+        expect((await s.gate("main"))?.block).toBe(true);
+        apply(s);
+        const printed = await s.cli();
+        expect(printed.code).toBe(1);
+        const corrected = ["comment", "--issue", "DSP-1", "--body", "corrected-content"];
+        s.allow();
+        const after = await resend(s, "sub", {
+          command: "dispatch comment --issue DSP-1 --body corrected-content",
+          argv: corrected,
+        });
+        // In a healthy session the corrected write is a different write and posts from a
+        // subagent, so the caveat must be on the same-write clause alone. Where the session's
+        // own uncertainty stands, it covers every write of that session and neither works.
+        expect({ condition, posted: after.posts === 1 }).toEqual({
+          condition,
+          posted: condition === "a healthy session",
+        });
+        expect({
+          condition,
+          caveat: /None of that works from a task subagent/.test(printed.out)
+            ? "all"
+            : /That is the main agent's to send/.test(printed.out)
+              ? "clause"
+              : "none",
+        }).toEqual({ condition, caveat: condition === "a healthy session" ? "clause" : "all" });
+      } finally {
+        for (const locked of ["askgate-verdicts-v2"])
+          if (existsSync(join(s.dir(), locked))) chmodSync(join(s.dir(), locked), 0o700);
+        s.stop();
+      }
+    }, 60_000);
 
   // The one state no resend clears, for either kind, and the reason it is worse than a refusal:
   // `askgateState` answers `broken`, so no marker is ever reached, and each attempt spends a

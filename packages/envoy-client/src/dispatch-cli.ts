@@ -164,6 +164,21 @@ const SUBAGENT_HELD_ALL_SESSION =
   "None of that works from a task subagent: repairing what this message names leaves the session's own uncertainty standing, and only a marker bound to this write answers that, which a subagent's literal write is never given. The main agent has to send it, or the session has to end.";
 
 /**
+ * Whether a resend's own mint would sweep an expired marker sitting in `store`.
+ *
+ * `mintMarker` sweeps the store its own gate mints into, and the CLI cannot name which of
+ * several live owners will review a resend — so this answers yes only where the session has one
+ * live store and the marker is in it. Counting the stores instead, which is what this replaces,
+ * was wrong both ways: it dropped the caveat for a single owner whose marker sat outside that
+ * store, and kept it wherever a session had two owners, including the ordinary case where the
+ * marker is in the very store the resending gate sweeps. With more than one owner the caveat
+ * stands and over-states that case, which the body names as a cell rather than a condition this
+ * can decide; no session on this box has two owner files.
+ */
+const sweptByAResend = (store: string, stores: readonly string[]): boolean =>
+  stores.length === 1 && stores[0] === store;
+
+/**
  * Renders advice, with the caveat the state makes true and no other.
  *
  * The caveat is a property of the clause **and** of the state, which two rounds got wrong in
@@ -767,11 +782,10 @@ export async function runDispatchCli(
                         // resend's own mint sweeps it, and the subagent's argv-only marker is
                         // then honoured.
                         // An expired marker is swept by the resend's own mint, so a
-                        // subagent's resend posts — but `mintMarker` sweeps the store its gate
-                        // mints into, and `askgateState` returns every live owner's. Where
-                        // this session has more than one, the marker may sit in a store no
-                        // mint here touches, and nothing but a bound marker gets past it.
-                        ...(spent.expired && gate.stores.length === 1
+                        // subagent's resend posts — but only where that mint reaches the store
+                        // holding it (`sweptByAResend`).
+                        ...(spent.expiredIn !== undefined &&
+                        sweptByAResend(spent.expiredIn, gate.stores)
                           ? {
                               anywhere:
                                 "Send the write again in that form, as a bash call of its own.",
