@@ -438,20 +438,81 @@ func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiti
 // where this still refuses a turn that moved or a claim whose turn was taken.
 func assertTurnsUnmoved(t *testing.T, d *daemon, why string, before []api.WakeWaiting) {
 	t.Helper()
-	held := map[claim.Token]time.Time{}
-	for _, wake := range waitingWakes(t, d) {
+	if moved, at, found := movedTurn(before, waitingWakes(t, d)); found {
+		if at.IsZero() {
+			t.Fatalf("the wake of %s does not wait after %s, want the turn it held at %s: %s took nobody's turn",
+				moved.Claim, why, moved.DueAt, why)
+		}
+		t.Fatalf("the wake of %s is due at %s after %s, want the turn it already held, %s: %s moved nobody's turn",
+			moved.Claim, at, why, moved.DueAt, why)
+	}
+}
+
+// movedTurn is that judgement as a function of its arguments: the first turn of before the queue
+// no longer holds at its own moment, with the moment it holds instead — the zero time for a claim
+// whose turn is gone — and whether there was one. A turn held is a turn unmoved whatever else the
+// queue has gained, which is the tolerance the rig needs and the half of it a passing wave never
+// exercises (TestAHeldTurnIsUnmovedByATurnTheQueueGains).
+func movedTurn(before, queue []api.WakeWaiting) (api.WakeWaiting, time.Time, bool) {
+	held := make(map[claim.Token]time.Time, len(queue))
+	for _, wake := range queue {
 		held[wake.Claim] = wake.DueAt
 	}
 	for _, wake := range before {
 		at, waits := held[wake.Claim]
 		if !waits {
-			t.Fatalf("the wake of %s does not wait after %s, want the turn it held at %s: %s took nobody's turn",
-				wake.Claim, why, wake.DueAt, why)
+			return wake, time.Time{}, true
 		}
 		if !at.Equal(wake.DueAt) {
-			t.Fatalf("the wake of %s is due at %s after %s, want the turn it already held, %s: %s moved nobody's turn",
-				wake.Claim, at, why, wake.DueAt, why)
+			return wake, at, true
 		}
+	}
+	return api.WakeWaiting{}, time.Time{}, false
+}
+
+// A queue that has GAINED a turn still holds every turn it held: the stale-plugin lane arms the
+// claim whose wake the burst released as soon as the next sweep runs (awaitArmedWave), and a wave
+// is entitled to that. So movedTurn answers nothing for a gained turn and answers for a turn that
+// moved or went — the tolerance and its limit, which a passing wave never exercises, since the
+// wait ends long before a sweep gets its turn on an idle machine.
+func TestAHeldTurnIsUnmovedByATurnTheQueueGains(t *testing.T) {
+	t.Parallel()
+	at := func(s int) time.Time { return time.Date(2026, 11, 9, 7, 0, s, 0, time.UTC) }
+	turn := func(name string, s int) api.WakeWaiting {
+		return api.WakeWaiting{Claim: claim.Token(name), Kind: supervise.WakePluginTask, DueAt: at(s)}
+	}
+	before := []api.WakeWaiting{turn("one", 10), turn("two", 22)}
+	for _, tc := range []struct {
+		name  string
+		queue []api.WakeWaiting
+		moved string
+		holds time.Time
+	}{
+		{name: "the queue is as it was", queue: before},
+		{name: "the queue gained a turn at the back", queue: append(slices.Clone(before), turn("three", 34))},
+		{name: "the queue gained the released claim's own next turn", queue: append(slices.Clone(before), turn("burst", 46))},
+		{name: "a turn moved", queue: []api.WakeWaiting{turn("one", 10), turn("two", 23)}, moved: "two", holds: at(23)},
+		{name: "a turn moved earlier", queue: []api.WakeWaiting{turn("one", 9), turn("two", 22)}, moved: "one", holds: at(9)},
+		{name: "a turn is gone", queue: []api.WakeWaiting{turn("one", 10)}, moved: "two"},
+		{name: "every turn is gone", queue: nil, moved: "one"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			moved, holds, found := movedTurn(before, tc.queue)
+			if found != (tc.moved != "") {
+				t.Fatalf("movedTurn answered %v (%s at %s), want answered %v", found, moved.Claim, holds, tc.moved != "")
+			}
+			if !found {
+				return
+			}
+			if string(moved.Claim) != tc.moved {
+				t.Fatalf("movedTurn named %s, want %s", moved.Claim, tc.moved)
+			}
+			if !holds.Equal(tc.holds) {
+				t.Fatalf("movedTurn says the queue holds %s for %s, want %s (the zero time for a turn that is gone)",
+					holds, moved.Claim, tc.holds)
+			}
+		})
 	}
 }
 
