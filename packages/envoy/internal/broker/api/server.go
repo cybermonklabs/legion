@@ -455,10 +455,11 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 // that account log in as. It is the token login's own check
 // (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
 // login accept exactly the same credential: the same verifier, the same hour-from-issue bound on a
-// copied token, and the same list. It answers the ServiceAccount beside the service, since
-// BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service, and then a pod of
-// that account logs its service in and calls these routes: a handler reading what such a caller
-// may do needs the account it logs in as. An account the list does
+// copied token, and the same list. It answers the ServiceAccount and the pod that token was
+// bound to beside the service, since BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES
+// binds to a service, and then a pod of that account logs its service in and calls these
+// routes: a handler reading what such a caller may do needs to know which pod it is. An
+// account the list does
 // not name is 403 ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a
 // broker that trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's
 // routes then authenticate no one. No refusal repeats the token.
@@ -481,7 +482,7 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
 		return caller{}, false
 	}
-	return caller{service: account.Service, serviceSubject: account.Subject}, true
+	return caller{service: account.Service, serviceSubject: account.Subject, servicePodUID: account.PodUID}, true
 }
 
 // proofSubject verifies r's Proof header and returns who it authenticates, unwrapped: authLauncher

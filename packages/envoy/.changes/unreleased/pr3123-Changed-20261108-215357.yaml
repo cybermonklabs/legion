@@ -13,11 +13,12 @@ body: |-
   pods of another account is unchanged: a replaced pod still ends the enrollments its
   predecessor made.
 
-  Beside it, `POST /v1/oauth/exchange/pod-sessions` now refuses a pod token whose account is the
-  one the caller logs in as, `403 POD_ACCOUNT_IS_THE_CALLER`. A registrar records which pod may
-  exchange under which session name, and registers pods of another account; a pod of a listed
-  account that registered itself would pick the name it writes under, which is the one choice
-  that row takes from it.
+  Beside it, `POST /v1/oauth/exchange/pod-sessions` now refuses a pod token naming the account
+  the caller logs in as and the very pod the caller's own token names, `403
+  POD_CALLER_IS_THE_POD`. A registrar records which pod may exchange under which session name,
+  and a pod of a listed account that wrote its own row would pick the name it writes under,
+  which is the one choice that row takes from it. A registrar whose own token names no pod, and
+  one registering any pod but the one it runs in, are unchanged.
 time: 2026-11-08T21:53:57.588549598Z
 custom:
     Issue: pr3123
