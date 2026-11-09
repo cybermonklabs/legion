@@ -106,8 +106,9 @@ func requireBusSettings(t *testing.T, js natsgo.JetStreamContext, want busSettin
 //
 // A handling is counted at the pull request's own fetch, GET /repos/{owner}/{repo}/pulls/{number}
 // (delivery.FetchPullRequest), as the multiprocess suite's mergedPullRequestFake counts one: the
-// merge path's first GitHub call, and the one call it makes exactly once however the handling
-// then ends. The commit listing is counted by neither suite, and a merged pull request whose
+// merge path's first GitHub call after its head write (recordPullRequestHead pages the commits
+// before it), and the one call it makes exactly once however the handling then ends. The commit
+// listing is counted by neither suite, and a merged pull request whose
 // payload names its head is paged twice for it -- once to attribute the head row, once for the
 // completion's session trailers.
 //
