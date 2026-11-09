@@ -22,8 +22,9 @@ import process from "node:process";
  * The step a growth check compares across: the full shape against an eighth of it.
  *
  * With `linearSlack` the check's bound is 32. The highest healthy ratio measured in this pod is
- * 14.46, and a cost growing with the square of its input reads about 64 at this step, so a healthy
- * parse and a quadratic one fall on opposite sides of the bound. `growthStep` in
+ * 17.20 (the read-only engine's chain of 15,999 list markers on one line, under 12 busy loops,
+ * 2026-11-09), and a cost growing with the square of its input reads about 64 at this step, so a
+ * healthy parse and a quadratic one fall on opposite sides of the bound. `growthStep` in
  * `packages/envoy/internal/dispatch/pmdoc/linear_test.go`, which this one mirrors, is 8 as well.
  */
 export const growthStep = 8;
@@ -53,16 +54,13 @@ export const linearSlack = 4;
  */
 const parseCpuBudgetMs = 12_000;
 
-// What these three constants do not catch (INFRA-1629):
-//
-// - A parse 3 times slower than today and still linear passes both the budget and the growth
-//   check: 3 times the worst healthy reading is 10,710 ms, inside the budget, and a constant
-//   factor leaves a ratio where it was.
-// - A quadratic parse of a shape no row holds is caught by nothing here. The shapes the rows do
-//   hold are the ones in tests/heavy-bodies.test.ts and tests/nested-directive.test.ts.
-// - The slack is not a tight bound. The growth check reads two measurements, each wrong by up to
-//   4 per cent from the clock (see `windowSteps`) before the machine's own noise, and the slack
-//   of 4 is the room the healthy ratio of 14.46 above needs, against the bound of 32.
+// The figures behind the slack and the budget (INFRA-1629). The growth check reads two
+// measurements, each wrong by up to 4 per cent from the clock (see `windowSteps`) before the
+// machine's own noise, and the highest healthy ratio, 17.20 above, needs the slack of 4 to stay
+// under the bound of 32: the slack is that room, not a tight bound. 3 times the worst healthy
+// reading is 10,710 ms, still inside the budget, and a constant factor leaves a ratio where it
+// was, so a parse 3 times slower and still linear passes both. What the rows do not catch is
+// listed once, in packages/proof-editor/AGENTS.md.
 
 /**
  * The wall-clock ceiling every row of tests/heavy-bodies.test.ts carries, and the two measured
@@ -307,6 +305,8 @@ function costsWithinBounds(
 ): { small: CostReading; full: CostReading } {
   const smallBody = shape.grow(Math.floor(shape.full / growthStep));
   const fullBody = shape.grow(shape.full);
+  // The full size is measured second, and `parsedWithinCostBounds` returns the document of that
+  // measurement's last run, so the two readings stay in this order.
   const small = fastestCpuTimeOf(() => parse(smallBody));
   const full = fastestCpuTimeOf(() => parse(fullBody));
   expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(

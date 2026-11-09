@@ -270,12 +270,14 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 `tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` are what holds two of these four
 patches in place, `micromark@4.0.2` and `micromark-core-commonmark@2.0.3`, each on the shapes
 named below. Each row reads its shape at two sizes, the longest body a caller may write and an
-eighth of its growing dimension, and asserts three things: the document the parse returns, that
-the full size costs less than `parseCpuBudgetMs` of CPU time, and that the full size's cost grew
-no faster than that dimension did. Each size is read more than once and the least reading kept,
-and one reading repeats the parse until its window lasts 50 clock steps, so a cheap shape is
-parsed many times over at each size and only a shape whose one parse outlasts a window is parsed
-once a reading. The constants and the measurement itself are in `tests/cpu-time.ts`.
+eighth of its growing dimension, and asserts three things: the document the parse returns, or,
+where the mode refuses the shape, the refusal at both sizes; that the full size costs less than
+`parseCpuBudgetMs` of CPU time; and that the full size's cost grew no faster than that dimension
+did. Each size is read twice and the least reading kept, unless the first reading is already over
+the budget, and one reading repeats the parse until its window lasts `windowSteps` clock steps, so
+a cheap shape is parsed many times over at each size and only a shape whose one parse outlasts a
+window is parsed once a reading. The constants and the measurement itself are in
+`tests/cpu-time.ts`.
 
 The rows read CPU time rather than wall time, because wall time counts every moment the scheduler
 leaves the process off a core. On the two-CPU pod these were measured on, the read-only parse of
@@ -285,18 +287,20 @@ time grew about 6 times while the CPU time of the same work fell. The rows befor
 asserted wall time against a constant, and one run of the two files under 12 busy loops failed six
 of them where the same run at rest failed none.
 
-Each constant rests on a measurement taken on that pod on 2026-11-07, under bun 1.4.4, where
-`process.cpuUsage()` moves in 10 ms steps. The figures stand beside the constants in
-`tests/cpu-time.ts` rather than here: what the worst healthy parse costs and what the nearest
-break costs against `parseCpuBudgetMs`, the healthy ratio and a quadratic's against the bound
-`linearSlack` and `growthStep` make, and the clock error the slack pays for. The two per-test
+Each constant rests on measurements taken on that pod on 2026-11-07 and 2026-11-09, under bun
+1.4.4, where `process.cpuUsage()` moves in 10 ms steps. The figures each constant rests on stand
+beside it in `tests/cpu-time.ts` rather than here: what the worst healthy parse costs and what the
+nearest break costs against `parseCpuBudgetMs`, the healthy ratio and a quadratic's against the
+bound `linearSlack` and `growthStep` make, the clock error the slack pays for, and the slowest rows
+under load against each ceiling. The figures of each break stand below. The two per-test
 ceilings there, `measuredRowCeilingMs` and `plainRowCeilingMs`, are wall-clock ceilings set far
 above any healthy row, not hang guards: a row that runs past one fails on it once its body
 returns, and what ends a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in
 `.github/workflows/ci.yaml`.
 
 Six things these rows do not catch. A parse 3 times slower than today and still linear passes both
-the budget and the growth check. A quadratic parse of a shape no row holds is caught by nothing
+the budget and the growth check, since 3 times the worst healthy reading is still inside the
+budget. A quadratic parse of a shape no row holds is caught by nothing
 here. The growth check reads two measurements, each wrong by a few per cent from the clock before
 the machine's own noise, so the slack is the room a healthy ratio needs rather than a tight bound.
 Of the four patches, `mdast-util-from-markdown@2.0.3` is held by nothing here: reverted, it turns
@@ -307,7 +311,9 @@ patch at all. And six instances are kept by `parseCpuBudgetMs` alone, reddened b
 cost assertion: `a plain list of 8,000 items`, `49 items nested by indentation then blank lines`
 and `100 items nested by indentation then blank lines`, each in both modes, whose worst available
 break costs 1,350 ms to 4,620 ms of CPU time over two rounds of control measurements, inside the
-budget.
+budget. Nor does the growth check see a cost that grows with the square of the whole body in the
+two nested shapes: their small body keeps the whole nesting, so the full body is only 5.14 and 2.46
+times as long as the small one, and such a cost would read about 26 and 6 against the bound of 32.
 
 To check that a row still catches the defect it guards, break the thing its shape rests on. The
 figures below are CPU time measured in this pod, over both modes of each shape.

@@ -13,10 +13,9 @@
  *    its row names, within `parseCpuBudgetMs` of CPU time, and at a cost that grows no faster
  *    than its growing dimension does: a row reads the shape at its full size and at an eighth of
  *    that dimension, in CPU time rather than wall time (tests/cpu-time.ts). The one shape the
- *    default mode refuses is read the same way and then asked for its refusal. With
- *    `patches/micromark@4.0.2.patch` reverted the two lazy shapes cost 35,030 to 55,440 ms of CPU
- *    time, against 500 to 840 ms with it; with `patches/micromark-core-commonmark@2.0.3.patch`
- *    reverted the two bracket shapes cost 18,230 to 37,460 ms, against 150 to 380 ms with it.
+ *    default mode refuses is read the same way and then asked for its refusal. Which dependency
+ *    patch holds which shape, and what each shape costs with that patch reverted, is in
+ *    packages/proof-editor/AGENTS.md.
  * 2. The nesting bound, at the boundaries the document service draws them at
  *    (`maxNesting`, packages/envoy/internal/dispatch/pmdoc/nesting.go: a quote, a list, a list
  *    item, a typed block and a footnote definition each count one). A list opener opens a list and
