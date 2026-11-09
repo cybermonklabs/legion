@@ -8,6 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { consumerDelivery } from "../../test/subscribe-answer";
 import { forgetBrokerClients, forgetBrokerSession } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient } from "../dispatch-http";
@@ -351,19 +352,12 @@ function sessionBoundListener(): { url: string; acted: Acted[] } {
           { status: 403 }
         );
       }
-      // Every registration this listener answers carries a delivery object: a session receives
-      // only what its own consumer holds, and the client refuses an answer without one.
       return Response.json({
         session_id: body,
         machine_id: "box",
         dir: "/work",
         topics: [],
-        delivery: {
-          mode: "consumer",
-          subject: `notifications.envoy.deliver.${body}`,
-          stream_id: "stream-1",
-          gap: false,
-        },
+        delivery: consumerDelivery(body),
       });
     },
   });

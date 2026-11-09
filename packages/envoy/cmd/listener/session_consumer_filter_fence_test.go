@@ -41,6 +41,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -394,8 +395,10 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	})
 	t.Cleanup(func() { rig.deps.consumers.consumers.SetCreateFault(nil) })
 
-	// Nothing of this case's own stands between the two passes: the faulted call of the first
-	// pass is what sends the fence round again.
+	// This case hands the drive no hook: what it is about is the faulted call of the first
+	// pass, which is what makes that pass count as landed with nothing read back. The row the
+	// drive stores under that write is what sends the fence round again, here as in every case
+	// (requireRestoreMakesACorrectivePass).
 	requireRestoreMakesACorrectivePass(t, rig, sessionID, added, nil)
 	rig.deps.consumers.consumers.SetCreateFault(nil)
 
@@ -535,7 +538,7 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 	const added = "notifications.dispatch.issue.FENCERECGONEADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-	requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
+	registered, _ := requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
 		// The record delete of a reaper pass or a clean stop, landing between the restore's
 		// write and the corrective pass over the row stored under it.
 		if err := rig.deps.sessions.Delete(context.Background(), sessionID); err != nil {
@@ -552,9 +555,15 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 
 	// What the pass reports instead, and the consumer it reports it of: the restore created it
 	// again before the record was deleted, and it stands filtered on the row that write was
-	// built from, for a session the bucket holds no record of.
-	if wrote := requireRepairRecordGoneLogged(t, rig, sessionID); wrote == 0 {
-		t.Errorf("the line names revision 0 as the one written from, want the revision of the row the restore's own write was built from")
+	// built from, for a session the bucket holds no record of. The line names that row's
+	// revision rather than the one the bucket answered under it, and names the delete this
+	// repair follows: the two say which write of this listener's left the filter standing.
+	reported := requireRepairRecordGoneLogged(t, rig, sessionID)
+	if reported.Wrote != registered {
+		t.Errorf("the line names revision %d as the one written from, want the %d the restore's own write was built from", reported.Wrote, registered)
+	}
+	if reported.After != repairAfterDelete {
+		t.Errorf("the line names %q as what the repair follows, want %q: the delete whose restore left that filter", reported.After, repairAfterDelete)
 	}
 	requireFilters(t, rig, sessionID, kept)
 }
@@ -647,6 +656,56 @@ func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T
 	if logs := rig.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
 		t.Errorf("a fence whose corrective pass found no consumer must report nothing left behind: no filter of its own stands anywhere:\n%s", logs)
 	}
+}
+
+// A corrective pass that finds the record asking for no consumer of the session ends the fence
+// with nothing left behind to report: nothing delivers to a session whose record records no
+// consumer delivery (session.DeliveryConsumer), so the filter an earlier pass of this loop left
+// is a window in no delivery of that session's, and the record the bucket holds is not the
+// gone session the fence's other line reports (registeredNoConsumerDelivery,
+// filterWriteSettled).
+//
+// The order is built rather than waited for. The restore's first pass writes the row it read
+// and creates the consumer the delete took, and the drive below
+// (requireRestoreMakesACorrectivePass) stores a newer row under that write - a role claim's
+// write, which sets no filter - so the fence reads the bucket again. The hook this case hands
+// that drive then replaces the session's record with one that records no consumer delivery,
+// before the corrective pass reads it: a rolling deploy puts a build older than that field
+// beside this listener, and its registration of the same session writes such a record over
+// this one (sessionEntryFromSubscribe, registeredNoConsumerDelivery).
+func TestACorrectivePassThatFindsTheRecordAskingForNoConsumerReportsNothingLeftBehind(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_core_record"
+	const kept = "notifications.dispatch.issue.FENCECORERECKEPT.>"
+	const added = "notifications.dispatch.issue.FENCECORERECADD.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	registered := rig.entry(t, sessionID)
+
+	requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
+		// The record an earlier build writes for the same session, which records no consumer
+		// delivery, landing between the restore's write and the corrective pass over the row
+		// stored under it.
+		onTheCorePath := registered
+		onTheCorePath.Delivery, onTheCorePath.Epoch, onTheCorePath.ConsumerStart = "", "", 0
+		if err := rig.deps.sessions.Put(sessionID, onTheCorePath); err != nil {
+			t.Errorf("replace the record of %s with one that records no consumer delivery: %v", sessionID, err)
+		}
+	})
+
+	entry, err := rig.deps.sessions.Refresh(context.Background(), sessionID)
+	if err != nil || entry.Delivery == session.DeliveryConsumer {
+		t.Fatalf("the bucket answers record %+v (%v) for %s, want one it holds that records no consumer delivery: that is what the corrective pass must find", entry, err, sessionID)
+	}
+	logs := rig.harness.logs.String()
+	if strings.Contains(logs, repairRecordGoneLine) {
+		t.Errorf("the repair of a session whose record asks for no consumer reported that session gone; the bucket holds its record, and what no record would cost - a filter standing on the consumer of a session nothing registers again - is not what this pass found:\n%s", logs)
+	}
+	if strings.Contains(logs, fenceExhaustionLine) {
+		t.Errorf("a fence whose corrective pass found the record asking for no consumer must report nothing left behind: nothing delivers to that session, so no filter of this loop's is a window in it:\n%s", logs)
+	}
+	// The filter the first pass left, which stands and is no window: the record the bucket
+	// holds names no consumer for the relay to deliver through.
+	requireFilters(t, rig, sessionID, kept)
 }
 
 // A fence whose read of the bucket after a write answers no row for the session plans no pass
@@ -778,19 +837,22 @@ func requireFenceReadFailureLogged(t *testing.T, rig *sessionConsumerRig, sessio
 const repairRecordGoneLine = "listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold"
 
 // requireRepairRecordGoneLogged fails the test unless the listener logged that line for
-// sessionID, and answers the revision it names: the row the filter standing was built from.
-func requireRepairRecordGoneLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) uint64 {
+// sessionID, and answers it: the revision it names is the row the filter standing was built
+// from, and what it names the repair as following is that repair's own caller.
+func requireRepairRecordGoneLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) loggedFilterLine {
 	t.Helper()
 	return requireFilterLineLogged(t, rig, sessionID, repairRecordGoneLine,
-		"the repair of "+sessionID+" found the bucket holding no record of it").Wrote
+		"the repair of "+sessionID+" found the bucket holding no record of it")
 }
 
 // loggedFilterLine is what one of the lines above names: the session whose consumer it is
-// about, the revision the filter standing on that consumer was built from, the revision the
-// bucket answered after that write, and the failure of a read that judged nothing. Each line
-// names the fields of its own case and leaves the rest zero, which is what its require reads.
+// about, what the write the fence drove follows (repairAfterDelete), the revision the filter
+// standing on that consumer was built from, the revision the bucket answered after that write,
+// and the failure of a read that judged nothing. Each line names the fields of its own case and
+// leaves the rest zero, which is what its require reads.
 type loggedFilterLine struct {
 	SessionID string `json:"session_id"`
+	After     string `json:"after"`
 	Wrote     uint64 `json:"wrote_revision"`
 	Newest    uint64 `json:"newest_revision"`
 	Error     string `json:"error"`
@@ -841,10 +903,10 @@ func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, 
 //
 // The order is built rather than waited for. added is stored on the session's row from inside
 // the first pass, as a write that sets no filter - a role claim's - lands under the restore's
-// own write, which is what sends the fence round again. underTheCorrectivePass runs before the
-// second pass plans, and is where each case puts what it is about; it is nil for a case whose
-// second pass the consumer call of the first brings about on its own. Both hooks are off before
-// this answers, so nothing a case asserts afterwards drives another pass.
+// own write, which is what sends the fence round again, in every case this drives.
+// underTheCorrectivePass runs before the second pass plans, and is where each case puts what it
+// is about; it is nil for a case whose own subject is in the first pass. Both hooks are off
+// before this answers, so nothing a case asserts afterwards drives another pass.
 //
 // It answers the revision the row held when the restore started, which the first pass's write
 // is built from, and the revision the row moved to under that write.

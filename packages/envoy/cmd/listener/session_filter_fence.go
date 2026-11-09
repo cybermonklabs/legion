@@ -41,12 +41,15 @@ const (
 	// an older row's filter.
 	filterWriteSettled
 	// filterWriteSessionGone is a pass that found the session gone: the bucket holds no record
-	// of it, so nothing of this listener's sets a filter this loop leaves - a session whose
-	// record a stop or a reap deleted registers no more, and one whose record lapsed out of the
-	// bucket sets its filter only when it registers again, which no pass of this loop waits for
-	// (repairRegistered, sessionRelays.release, which tells the same two cases apart in its own
-	// line). The fence ends on it by logging what stands rather than on the line that leaves
-	// the filter to the next heartbeat, since this loop has none to wait on (fenceFilterWrite).
+	// of it, so nothing of this listener's sets a filter this loop leaves, and the session
+	// registers no more. Only the repair of a session's consumer answers it (repairRegistered),
+	// and that repair runs inside the five-second budget of the act it follows
+	// (sessionConsumerCallTimeout): a clean stop and a reaper pass each delete the record
+	// before the consumer delete the repair after a delete follows (deleteConsumer), and the
+	// record a registration wrote is gone to the repair after that registration only where such
+	// a delete ran after that write (confirmRegistered). The fence ends on it by logging what
+	// stands rather than on the line that leaves the filter to the next heartbeat, since this
+	// loop has none to wait on (fenceFilterWrite).
 	filterWriteSessionGone
 	// filterWriteNotMade is a pass that planned no write, or whose write the server refused with
 	// an answer of its own: nothing of this pass reached the consumer. The fence ends on it, and
@@ -160,8 +163,14 @@ const filterFenceAttempts = 5
 // before it left standing. Every failure is logged by write itself, which names what it was
 // doing. A caller whose first write is already made answers that write from its first pass and
 // writes nothing in it (sessionRelays.settleFilter), so that write is one of the passes below.
-// after names what the write the fence drives follows, for the one line that carries it
-// (repairAfterDelete, filterAfterRestart).
+// after names what the write the fence drives follows, for the session-gone line, the one line
+// of the fence's own that carries it: only the repair of a session's consumer answers that
+// outcome, so the label that line names is a repair's (repairRegistered,
+// repairAfterRegistration, repairAfterDelete). A caller whose passes go through
+// storedFilterStep passes the label those passes log their own failures under, and the fence's
+// other two lines leave it unnamed (storedFilterWrite, sessionRelays.settleFilter): both of
+// those end on a filter the session's next heartbeat sets, which is the same act whatever the
+// write followed.
 func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome)) {
 	// stands is the revision of the row whose filter is on the consumer, and landed says a pass
 	// put one there, which stands alone cannot: a write built for a session the bucket holds no

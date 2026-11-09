@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { consumerDelivery } from "../../test/subscribe-answer";
 import { DEFAULT_HEARTBEAT_MS, DEFAULT_TMUX_PLACE_CACHE_MS } from "../envoy-settings";
 import type { TmuxPlace, TmuxPlaceReading } from "../tmux-place";
 import { createTmuxPlaceCache } from "../tmux-place-cache";
@@ -265,14 +266,7 @@ describe("createTmuxPlaceCache", () => {
           machine_id: "host-a",
           dir: body.dir,
           topics: body.topics,
-          // Every registration asks for a consumer and is refused without one
-          // (`parseSubscribeAnswer`), so the stand-in answers the consumer the client asked for.
-          delivery: {
-            mode: "consumer",
-            subject: `notifications.envoy.deliver.${body.session_id as string}`,
-            stream_id: "stream-1",
-            gap: false,
-          },
+          delivery: consumerDelivery(body.session_id as string),
         });
       },
     });

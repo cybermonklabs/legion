@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
 import type { TmuxPlace } from "../tmux-place";
@@ -48,12 +49,10 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe("EnvoyClient", () => {
-  const CONSUMER: DeliveryAnswer = {
-    mode: "consumer",
-    subject: "notifications.envoy.deliver.ses_sender",
-    stream_id: "stream-1",
-    gap: false,
-  };
+  // The answer every stand-in listener here gives a registration, built the one way they all
+  // build it (`consumerDelivery`). The malformed answers below, which no listener of this
+  // build writes, are the ones this file builds by hand.
+  const CONSUMER: DeliveryAnswer = consumerDelivery("ses_sender");
   const DELIVERY_REQUEST = {
     consumer: true,
     epoch: "epoch-1",

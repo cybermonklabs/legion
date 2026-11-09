@@ -297,46 +297,26 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 // TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands holds the half of it this
 // row does not.
 //
-// The row reads the line's words, its reason and its count, since those are what a reader and
-// an alert key on, and it reads the consumer after the stop, which is the fact behind the line.
-func TestACleanStopsRelayHandOverSaysTheMessagesItHeldAreDeliveredToNobody(t *testing.T) {
-	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the
-	// frame it holds, before the stop takes the session away.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
-	sessionID := "ses_stopped_handover_" + id.New()
-	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
-	// stays delivered and unacked: the relay holds it when the stop lands.
-	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
-	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), stored)
-	awaitAckState(t, rig.consumers, sessionID, 1, 0)
+// The row reads the line's words, its reason and its count (requireHandOverOfAGoneSession),
+// since those are what a reader and an alert key on. What is its own is the absence of either
+// unqualified promise of a further delivery from the whole log, and the consumer after the stop,
+// which is the fact behind the half of the line this case falls on.
+func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
+	rig, sessionID, _, _ := relayHoldingOneMessage(t, "ses_stopped_handover_")
 
 	stopSession(t, rig.mux, sessionID, "")
 
-	const nobody = "session relay stopped; the session has no record, so nothing relays it; the messages it held stand on the session's consumer, which delivers them when the session registers again, and nobody is delivered them where a stop or a reap deleted that consumer with the record"
+	// The promises are read from the log the hand-over line was read from, taken once that line
+	// is in it: before that the run has written no line at all, and a missing promise of a
+	// further delivery would say nothing.
+	logs := requireHandOverOfAGoneSession(t, rig, sessionID, "stopped")
 	const againAtOnce = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
 	const afterTheAckWait = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
-	awaitLogLine(t, rig, "session relay stopped;", 15*time.Second)
-	// The log is read once the hand-over is in it: before that the run has written no line at
-	// all, and a missing promise of a further delivery would say nothing.
-	logs := rig.harness.logs.String()
 	for _, promise := range []string{againAtOnce, afterTheAckWait} {
 		if strings.Contains(logs, promise) {
 			t.Fatalf("the hand-over of the stopped session %s reports its messages delivered again; the stop deleted the consumer they were naked into, so nothing delivers them:\n%s",
 				sessionID, logs)
 		}
-	}
-	report := handOverLineNaming(t, logs, sessionID)
-	if report["msg"] != nobody {
-		t.Fatalf("the hand-over line of the stopped session %s reads %q, want %q", sessionID, report["msg"], nobody)
-	}
-	if report["reason"] != "session_gone" {
-		t.Fatalf("the hand-over line of the stopped session %s names reason %#v, want session_gone: the session was deregistered, not moved", sessionID, report["reason"])
-	}
-	// A number of a log record decodes from JSON as a float64, so the count reads as one here.
-	if returned, ok := report["returned"].(float64); !ok || returned != 1 {
-		t.Fatalf("the hand-over line of the stopped session %s counts returned %#v, want the number 1: the relay held one message:\n%v", sessionID, report["returned"], report)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -367,6 +347,55 @@ func handOverLineNaming(t *testing.T, logs, sessionID string) map[string]any {
 		t.Fatalf("%d hand-over lines name session %s, want exactly 1:\n%s", len(found), sessionID, logs)
 	}
 	return found[0]
+}
+
+// handOverRecordGoneLine is what the one hand-over line of a cancelled relay reads for a session
+// the bucket holds no record of, whichever way that record went - a stop, a reap or a lapse
+// (relayHandOverLines, relayCancelSessionGone). The two rows hold this copy of the wording rather
+// than reading relayHandOverLines, so a change to what the listener writes is read against what
+// each of them says the line means.
+const handOverRecordGoneLine = "session relay stopped; the session has no record, so nothing relays it; the messages it held stand on the session's consumer, which delivers them when the session registers again, and nobody is delivered them where a stop or a reap deleted that consumer with the record"
+
+// relayHoldingOneMessage registers a session in consumer mode on a new relay rig and leaves its
+// relay holding one message delivered and unacked, which is where both hand-over rows start: the
+// session's record goes next, and that one message is what the hand-over line counts returned.
+// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message stays
+// delivered and unacked, and the rig's receipt wait is longer than either row, so the relay
+// cannot pause, and so forget the frame it holds, before the record goes. It returns the rig, the
+// session, its stand-in and the message the relay holds.
+func relayHoldingOneMessage(t *testing.T, prefix string) (*relayRig, string, *sessionStandIn, contracts.Envelope) {
+	t.Helper()
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	sessionID := prefix + id.New()
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), stored)
+	awaitAckState(t, rig.consumers, sessionID, 1, 0)
+	return rig, sessionID, standIn, stored
+}
+
+// requireHandOverOfAGoneSession fails the test unless the one hand-over line sessionID's
+// cancelled relay wrote is the line of a session with no record: its words, the reason
+// session_gone, and the one message the relay held counted returned. went is how that record
+// went, which the failures name. It answers the log it read the line from, taken once the line is
+// in it, so a row reads what else the run wrote from the same log.
+func requireHandOverOfAGoneSession(t *testing.T, rig *relayRig, sessionID, went string) string {
+	t.Helper()
+	awaitLogLine(t, rig, "session relay stopped;", 15*time.Second)
+	logs := rig.harness.logs.String()
+	report := handOverLineNaming(t, logs, sessionID)
+	if report["msg"] != handOverRecordGoneLine {
+		t.Fatalf("the hand-over line of the %s session %s reads %q, want %q", went, sessionID, report["msg"], handOverRecordGoneLine)
+	}
+	if report["reason"] != "session_gone" {
+		t.Fatalf("the hand-over line of the %s session %s names reason %#v, want session_gone: the cache holds no record of it", went, sessionID, report["reason"])
+	}
+	// A number of a log record decodes from JSON as a float64, so the count reads as one here.
+	if returned, ok := report["returned"].(float64); !ok || returned != 1 {
+		t.Fatalf("the hand-over line of the %s session %s counts returned %#v, want the number 1: the relay held one message:\n%v", went, sessionID, report["returned"], report)
+	}
+	return logs
 }
 
 // answerReceived answers a frame received and nothing more: the session holds it and has not
