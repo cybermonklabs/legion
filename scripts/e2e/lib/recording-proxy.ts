@@ -4,7 +4,7 @@
 // and cache marks the daemon's loop sends, the usage a cost line is recomputed from).
 //
 //   bun scripts/e2e/lib/recording-proxy.ts --port <port> --upstream <url> --record <file.jsonl>
-//     [--hold-dir <dir>] [--stand-in-dir <dir>]
+//     [--hold-dir <dir>] [--stand-in-dir <dir>] [--api-key-as-bearer]
 //
 // It prints `recording-proxy listening on 127.0.0.1:<port>` once it serves (--port 0 picks a free
 // port and prints it), and forwards every request to --upstream with the path and query it came
@@ -19,6 +19,17 @@
 // was answered (`forwarded` or `stand-in`) and its duration. The credential headers (x-api-key,
 // authorization, proxy-authorization, cookie, set-cookie) are recorded as `<redacted>`: the key
 // reaches the upstream and never the record.
+//
+// --api-key-as-bearer is for one route alone: answer-loop.sh's `gateway` with
+// LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND, whose gateway reads the caller's token from
+// `Authorization: Bearer <token>` and not from `x-api-key`. Every client of that run keys an
+// Anthropic call with `x-api-key` and cannot be told otherwise — Oh My Pi's anthropic provider
+// sends the profile's `apiKey` there, Claude Code's `apiKeyHelper` likewise, and the daemon's
+// answer loop sets `X-Api-Key` for agentloop.AnthropicMessages
+// (packages/envoy/agentloop/transport.go) — so the one hop they share translates: with the flag, a
+// forwarded request's `x-api-key` is dropped and its value sent as `Authorization: Bearer <value>`
+// instead. Without the flag the headers go upstream as they arrived. The record keeps both headers
+// `<redacted>` either way.
 //
 // Two controls, each a file named for a label, let a proof time a step against a model call:
 //   --hold-dir   while <dir>/<label> exists, a request of that label whose ordinal (1 for the
@@ -41,6 +52,8 @@ export interface ProxyOptions {
   record: string;
   holdDir?: string;
   standInDir?: string;
+  /** Send a request's `x-api-key` upstream as `Authorization: Bearer <key>` instead. */
+  apiKeyAsBearer?: boolean;
   /** Called with each entry once it is appended to the record. */
   onRecord?: (entry: Record<string, unknown>) => void;
   /** Called when a request starts waiting on its hold file. */
@@ -243,6 +256,13 @@ export function startProxy(options: ProxyOptions) {
         if (!droppedRequestHeaders[name.toLowerCase()]) headers.set(name, value);
       });
       headers.set("accept-encoding", "identity");
+      if (options.apiKeyAsBearer) {
+        const apiKey = headers.get("x-api-key");
+        if (apiKey !== null) {
+          headers.delete("x-api-key");
+          headers.set("authorization", `Bearer ${apiKey}`);
+        }
+      }
       let response: Response;
       try {
         response = await fetch(`${upstream}${path}${url.search}`, {
@@ -306,11 +326,21 @@ export function startProxy(options: ProxyOptions) {
 
 function parseArgs(argv: string[]): ProxyOptions | string {
   const values: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i += 2) {
+  // Every argument but --api-key-as-bearer, which stands alone, takes the value after it.
+  const flags: Record<string, true> = { "api-key-as-bearer": true };
+  for (let i = 0; i < argv.length; ) {
     const name = argv[i];
+    if (!name?.startsWith("--")) return `bad argument ${name ?? ""}`;
+    const key = name.slice(2);
+    if (flags[key]) {
+      values[key] = "yes";
+      i += 1;
+      continue;
+    }
     const value = argv[i + 1];
-    if (!name?.startsWith("--") || value === undefined) return `bad argument ${name ?? ""}`;
-    values[name.slice(2)] = value;
+    if (value === undefined) return `bad argument ${name}`;
+    values[key] = value;
+    i += 2;
   }
   const known: Record<string, true> = {
     port: true,
@@ -318,6 +348,7 @@ function parseArgs(argv: string[]): ProxyOptions | string {
     record: true,
     "hold-dir": true,
     "stand-in-dir": true,
+    ...flags,
   };
   for (const name of Object.keys(values)) if (!known[name]) return `unknown argument --${name}`;
   const port = Number(values.port);
@@ -330,6 +361,7 @@ function parseArgs(argv: string[]): ProxyOptions | string {
     record: values.record,
     holdDir: values["hold-dir"],
     standInDir: values["stand-in-dir"],
+    apiKeyAsBearer: values["api-key-as-bearer"] !== undefined,
   };
 }
 
@@ -338,7 +370,7 @@ if (import.meta.main) {
   if (typeof options === "string") {
     console.error(`recording-proxy: ${options}`);
     console.error(
-      "usage: bun scripts/e2e/lib/recording-proxy.ts --port <port> --upstream <url> --record <file.jsonl> [--hold-dir <dir>] [--stand-in-dir <dir>]"
+      "usage: bun scripts/e2e/lib/recording-proxy.ts --port <port> --upstream <url> --record <file.jsonl> [--hold-dir <dir>] [--stand-in-dir <dir>] [--api-key-as-bearer]"
     );
     process.exit(2);
   }

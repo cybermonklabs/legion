@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
-# Routes a named OMP profile's model turns to the Hawk model gateway (middleman) on the operator's
-# own identity, so a tmux stage proof's panes reach Anthropic with no provider key: the route a
-# devbox's agent sessions use when it is configured for the gateway (~/.omp/agent/models.yml:
-# `X-Api-Key: !hawk-token`).
+# Routes a named OMP profile's model turns to the model gateway, so a proof's panes reach Anthropic
+# with no provider key. Two ways to key it, and the caller picks one:
 #
-#   scripts/e2e/lib/install-model-gateway.sh --profile <name> --home <dir> --dest <dir> --cache-dir <dir>
+#   --cache-dir <dir>       the Hawk gateway (middleman) on the operator's own hawk login, the
+#                           route a devbox's agent sessions use when it is configured for the
+#                           gateway (~/.omp/agent/models.yml: `X-Api-Key: !hawk-token`). hawk-token
+#                           mints the key, and it is kept until shortly before it expires.
+#   --token-command <path>  the caller's own command, run again for every model call, for a gateway
+#                           whose bearer is minted outside this tree (a CI runner's federated
+#                           identity, say: scripts/e2e/answer-loop.sh's
+#                           LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND). Nothing is kept: the token
+#                           expires inside a run, and a cache would serve an expired one for the
+#                           rest of it.
+#
+#   scripts/e2e/lib/install-model-gateway.sh --profile <name> --home <dir> --dest <dir>
+#     { --cache-dir <dir> | --token-command <path> }
 #
 # --home is the HOME Oh My Pi runs under for the profile, made by make_omp_home (lib/omp-home.sh): the
 # profile's files go under <home>/.omp/profiles/<name>, and the caller's own HOME is refused.
@@ -12,7 +22,8 @@
 # LEGION_E2E_MODEL_GATEWAY_URL is required: the gateway's Anthropic endpoint, the one hawk-token's
 # default HAWK_API_URL mints for, checked by lib/model-gateway-url.sh.
 #
-# Stdout is one line, the key command's path; every refusal goes to stderr. It writes:
+# Stdout is one line, the key command's path; every refusal goes to stderr. It writes, under
+# --cache-dir:
 #   <dir>/hawk-token      the key command the profile names: hawk-token, run with the caller's
 #                         HOME, session bus address and XDG base directories for that one command
 #   <dir>/hawk-token.log  one line per invocation, one per mint, one per call that got no key and
@@ -20,7 +31,14 @@
 #   <dir>/hawk-token.calls   one line per call and its outcome, read by lib/model-gateway-unserved.sh
 #   <cache-dir>/hawk-token.key   the minted key, 0600, kept until shortly before it expires
 #   <cache-dir>/hawk-token.key.lock   the lock one call holds while it mints
-#   the profile's agent/models.yml and agent/config.yml (see the heredocs below)
+# and under --token-command the same three under the name `gateway-token` (no key file and no lock:
+# there is nothing to keep and nothing to serialise).
+# Either way it writes the profile's agent/models.yml and agent/config.yml (see the heredocs below).
+#
+# The profile sends the key in x-api-key, which is what the Hawk gateway reads. A gateway that
+# reads `Authorization: Bearer <token>` instead takes it from the hop the caller already puts in
+# front of the endpoint — answer-loop.sh's recording proxy, with --api-key-as-bearer, which is the
+# one place that translation lives (lib/recording-proxy.ts).
 #
 # A pane cannot run hawk-token itself. Its XDG base directories are the daemon's own, under
 # <state_dir>/home (LEGION-206 P1), and its HOME is the run's own (make_omp_home), so mise finds no
@@ -28,7 +46,9 @@
 # DBUS_SESSION_BUS_ADDRESS, the only address the keyring client reads (jeepney/bus.py
 # find_session_bus), so the hawk login is out of reach. Handing the key command all of them, and
 # only it, keeps every pane's environment as it is: panes run as the operator's uid and can reach
-# /run/user/<uid>/bus anyway, so the command gains nothing a pane lacks.
+# /run/user/<uid>/bus anyway, so the command gains nothing a pane lacks. A --token-command is the
+# caller's own script and gets none of this: the caller writes whatever environment it needs into
+# it (answer-loop.sh does).
 #
 # Run it under the operator's own HOME, before the caller moves an XDG directory of its own (the
 # stage proofs point XDG_STATE_HOME at their work directory): the key command takes the caller's
@@ -37,6 +57,8 @@
 # refused by name before any pane exists, and hawk-token's first-run build on a fresh machine (in
 # the foreground, about a minute) runs now rather than inside a pane's ten-second `!command`. The
 # installer runs this one call with --preflight, which exempts it from the key command's deadline.
+# A --token-command route's preflight is the same one call, and proves the command prints a token
+# before any pane exists.
 set -euo pipefail
 
 me=install-model-gateway
@@ -56,6 +78,7 @@ profile=
 home=
 dest=
 cache_dir=
+token_command=
 have_profile=
 have_home=
 have_dest=
@@ -82,13 +105,24 @@ while [ $# -gt 0 ]; do
     cache_dir=$2 have_cache_dir=1
     shift 2
     ;;
-  *) refuse "unknown argument: $1 (usage: $0 --profile <name> --home <dir> --dest <dir> --cache-dir <dir>)" ;;
+  --token-command)
+    [ $# -ge 2 ] || refuse "--token-command needs a value: the command that prints the gateway's token"
+    token_command=$2
+    shift 2
+    ;;
+  *) refuse "unknown argument: $1 (usage: $0 --profile <name> --home <dir> --dest <dir> { --cache-dir <dir> | --token-command <path> })" ;;
   esac
 done
 [ -n "$have_profile" ] || refuse "--profile is required: the OMP profile to route"
 [ -n "$have_home" ] || refuse "--home is required: the HOME Oh My Pi runs under for the profile"
 [ -n "$have_dest" ] || refuse "--dest is required: the directory the key command is written to"
-[ -n "$have_cache_dir" ] || refuse "--cache-dir is required: the private directory the minted key is kept in"
+if [ -n "$token_command" ]; then
+  [ -z "$have_cache_dir" ] ||
+    refuse "--cache-dir is the Hawk route's key cache; a --token-command route keeps no key, since the gateway's token expires inside a run"
+else
+  [ -n "$have_cache_dir" ] ||
+    refuse "one of --cache-dir (the private directory hawk-token's minted key is kept in) and --token-command (the command that prints the gateway's token) is required"
+fi
 
 # OMP reads an empty name or "default" as the profile every plain `omp` uses (the same rule as
 # install-plugin-profile.sh).
@@ -108,15 +142,26 @@ for file in models.yml config.yml; do
   [ ! -e "$agent/$file" ] || refuse "$agent/$file exists; this installs a fresh profile's model route only"
 done
 
-hawk_token=$(command -v hawk-token) ||
-  fail "hawk-token is not on PATH: it mints the gateway key from the operator's hawk login"
-hawk_token=$(realpath -- "$hawk_token")
-# One call mints at a time under flock, and a call gives up before Oh My Pi kills it under timeout;
-# both are named by path in the key command, which runs on a pane's PATH.
-flock=$(command -v flock) || fail "flock is not on PATH: the key command holds a lock while it mints"
-timeout=$(command -v timeout) || fail "timeout is not on PATH: the key command bounds its mint by it"
-[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] ||
-  fail "DBUS_SESSION_BUS_ADDRESS is unset: hawk-token reads the hawk login from the keyring over the session bus"
+# A call gives up before Oh My Pi kills it under timeout, which both routes name by path in the
+# key command, since that command runs on a pane's PATH.
+timeout=$(command -v timeout) || fail "timeout is not on PATH: the key command bounds its call by it"
+hawk_token=
+flock=
+if [ -n "$token_command" ]; then
+  resolved=$(realpath -e -- "$token_command" 2>/dev/null) ||
+    refuse "--token-command $token_command does not exist"
+  token_command=$resolved
+  { [ -f "$token_command" ] && [ -x "$token_command" ]; } ||
+    refuse "--token-command $token_command is not an executable file"
+else
+  hawk_token=$(command -v hawk-token) ||
+    fail "hawk-token is not on PATH: it mints the gateway key from the operator's hawk login"
+  hawk_token=$(realpath -- "$hawk_token")
+  # One call mints at a time under flock, named by path for the same reason.
+  flock=$(command -v flock) || fail "flock is not on PATH: the key command holds a lock while it mints"
+  [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] ||
+    fail "DBUS_SESSION_BUS_ADDRESS is unset: hawk-token reads the hawk login from the keyring over the session bus"
+fi
 # The helper names the variable in its own refusal.
 gateway=$(bash "$(dirname -- "${BASH_SOURCE[0]}")/model-gateway-url.sh") || exit 1
 
@@ -128,25 +173,127 @@ if [ -e "$dest" ] && { [ ! -d "$dest" ] || [ -n "$(ls -A -- "$dest")" ]; }; then
 fi
 mkdir -p "$dest"
 chmod 0700 "$dest"
-key_command=$dest/hawk-token
-log=$dest/hawk-token.log
-[ -n "$cache_dir" ] || refuse "--cache-dir is empty"
-cache_dir=$(realpath -m -- "$cache_dir")
-# A key already there would be served without a mint, so the directory starts empty.
-if [ -e "$cache_dir" ] && { [ ! -d "$cache_dir" ] || [ -n "$(ls -A -- "$cache_dir")" ]; }; then
-  refuse "--cache-dir $cache_dir exists and is not an empty directory"
+# The route's own name, which its key command, log and call record are all written under.
+route='hawk-token'
+[ -z "$token_command" ] || route='gateway-token'
+key_command=$dest/$route
+log=$dest/$route.log
+if [ -z "$token_command" ]; then
+  [ -n "$cache_dir" ] || refuse "--cache-dir is empty"
+  cache_dir=$(realpath -m -- "$cache_dir")
+  # A key already there would be served without a mint, so the directory starts empty.
+  if [ -e "$cache_dir" ] && { [ ! -d "$cache_dir" ] || [ -n "$(ls -A -- "$cache_dir")" ]; }; then
+    refuse "--cache-dir $cache_dir exists and is not an empty directory"
+  fi
+  mkdir -p "$cache_dir"
+  chmod 0700 "$cache_dir"
+  # env takes every -u before any assignment.
+  unsets=()
+  sets=("HOME=$HOME" "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
+  for name in XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; do
+    if [ -n "${!name+set}" ]; then sets+=("$name=${!name}"); else unsets+=(-u "$name"); fi
+  done
 fi
-mkdir -p "$cache_dir"
-chmod 0700 "$cache_dir"
-
-# env takes every -u before any assignment.
-unsets=()
-sets=("HOME=$HOME" "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
-for name in XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; do
-  if [ -n "${!name+set}" ]; then sets+=("$name=${!name}"); else unsets+=(-u "$name"); fi
+if [ -n "$token_command" ]; then
+  {
+    cat <<'EOF'
+#!/bin/bash
+# Written by scripts/e2e/lib/install-model-gateway.sh: the caller's --token-command, run again for
+# every model call. Stdout is the gateway's bearer token.
+#
+# Nothing is kept. The gateway's token expires inside a run (a federated identity's lives about an
+# hour, and a live proof runs longer), so a cache would serve an expired token for the rest of the
+# run; and the command is the caller's own, already as fast as it can be made. Oh My Pi caches the
+# value for a running agent and runs the command again on a 401, which is its own affair.
+#
+# Oh My Pi kills a `!command` 10 s after starting it, so the call is bounded by timeout and logs
+# why rather than dying mid-write. The installer's own call (--preflight) is in no agent's ten
+# seconds and has no deadline.
+#
+# Every agent's call appends its outcome to the record, one tab-separated line: time, caller pid,
+# caller working directory, agent, outcome and detail. What each field holds, and the values agent
+# and outcome take, is stated once, in lib/model-gateway-unserved.sh's header; this route never
+# waits behind another call, so its timeout means its own deadline alone.
+# The installer's preflight is no agent, so it is not recorded; a call that gets no token also says
+# why on stderr, which is where the installer reads it. A caller whose environment names
+# MODEL_GATEWAY_CALLS_FILE gets its line there too.
+EOF
+    printf 'log=%q\n' "$log"
+    printf 'record=%q\n' "$dest/$route.calls"
+    printf 'token_command=%q\n' "$token_command"
+    printf 'timeout=%q\n' "$timeout"
+    cat <<'EOF'
+deadline=9.5
+case "${1-}" in
+"") preflight= ;;
+--preflight) preflight=1 ;;
+*)
+  echo "gateway-token key command: unknown argument $1 (Oh My Pi passes none; the installer passes --preflight)" >&2
+  exit 2
+  ;;
+esac
+set -o pipefail
+umask 077
+TZ=UTC printf '%(%FT%TZ)T invoked by pid %s\n' -1 "$PPID" >>"$log"
+# PWD names the directory Oh My Pi ran the call in, physically.
+cd -P . || exit
+# The caller as the record's agent field names it (lib/model-gateway-unserved.sh's header).
+agent=${LEGION_ROLE:-}${LEGION_ROLE:+${LEGION_GENERATION:+/$LEGION_GENERATION}}
+agent=${agent:--}
+# record OUTCOME DETAIL appends an agent's call to the record, and to the caller's
+# MODEL_GATEWAY_CALLS_FILE when its environment names one. No field is empty: read splits on runs
+# of tabs.
+record() {
+  [ -z "$preflight" ] || return 0
+  local at line detail=${2//[$'\t\n']/ }
+  TZ=UTC printf -v at '%(%FT%TZ)T' -1
+  printf -v line '%s\t%s\t%s\t%s\t%s\t%s' "$at" "$PPID" "${PWD//[$'\t\n']/ }" "${agent//[$'\t\n']/ }" "$1" "${detail:--}"
+  printf '%s\n' "$line" >>"$record"
+  [ -z "${MODEL_GATEWAY_CALLS_FILE:-}" ] || printf '%s\n' "$line" >>"$MODEL_GATEWAY_CALLS_FILE"
+}
+# no_token OUTCOME DETAIL records, logs and says on stderr why this call gets no token, and ends
+# it. The token itself is printed nowhere but stdout.
+no_token() {
+  record "$1" "$2"
+  TZ=UTC printf '%(%FT%TZ)T no token for pid %s (%s): %s\n' -1 "$PPID" "$1" "$2" >>"$log"
+  printf 'gateway-token key command: no token (%s): %s\n' "$1" "$2" >&2
+  exit 1
+}
+err=$(mktemp "${log%.log}.err.XXXXXXXX") || no_token failed "mktemp beside the log exited $?"
+status=0
+if [ -n "$preflight" ]; then
+  token=$("$token_command" 2>"$err") || status=$?
+else
+  token=$("$timeout" --kill-after=0.2 "$deadline" "$token_command" 2>"$err") || status=$?
+fi
+mapfile -t errlines <"$err"
+rm -f "$err"
+[ "${#errlines[@]}" = 0 ] || printf '%s\n' "${errlines[@]}" >>"$log"
+why=
+for line in "${errlines[@]}"; do
+  [[ ! $line =~ [^[:space:]] ]] || why=$line
 done
-{
-  cat <<'EOF'
+if [ "$status" != 0 ]; then
+  if [ -z "$preflight" ] && [ "$status" = 124 ]; then
+    no_token timeout "the token command ran past the call's $deadline s and was stopped"
+  fi
+  [ "$status" -le 128 ] || no_token killed "a signal ended the token command (exit $status)"
+  no_token failed "the token command exited $status without a token: ${why:-no output}"
+fi
+# A bearer travels in one header, so every space, tab and newline around it goes, and anything
+# left that a header line cannot carry is refused rather than sent.
+token=${token//[$' \t\r\n']/}
+[ -n "$token" ] || no_token failed "the token command printed no token: ${why:-no output}"
+case $token in
+*[!!-~]*) no_token failed "the token command printed something other than one header-safe word" ;;
+esac
+record served "the token command"
+printf '%s\n' "$token"
+EOF
+  } >"$key_command"
+else
+  {
+    cat <<'EOF'
 #!/bin/bash
 # Written by scripts/e2e/lib/install-model-gateway.sh: hawk-token under the operator's HOME, session
 # bus and XDG base directories, for this one command. Stdout is the gateway key.
@@ -176,14 +323,14 @@ done
 # run and names a file of that run's own, which does not exist before the run
 # (lib/model-gateway-unserved.sh --record).
 EOF
-  printf 'log=%q\n' "$log"
-  printf 'cache=%q\n' "$cache_dir/hawk-token.key"
-  printf 'record=%q\n' "$dest/hawk-token.calls"
-  printf 'flock=%q\n' "$flock"
-  printf 'timeout=%q\n' "$timeout"
-  words=$(printf '%q ' "${unsets[@]}" "${sets[@]}" "$hawk_token")
-  printf 'command=(%s)\n' "${words% }"
-  cat <<'EOF'
+    printf 'log=%q\n' "$log"
+    printf 'cache=%q\n' "$cache_dir/hawk-token.key"
+    printf 'record=%q\n' "$dest/hawk-token.calls"
+    printf 'flock=%q\n' "$flock"
+    printf 'timeout=%q\n' "$timeout"
+    words=$(printf '%q ' "${unsets[@]}" "${sets[@]}" "$hawk_token")
+    printf 'command=(%s)\n' "${words% }"
+    cat <<'EOF'
 margin=300
 window=300
 deadline_ms=9500
@@ -308,34 +455,51 @@ TZ=UTC printf '%(%FT%TZ)T minted a key for pid %s in %s ms, kept until %(%FT%TZ)
 record served "minted in $elapsed_ms ms"
 printf '%s\n' "$key"
 EOF
-} >"$key_command"
+  } >"$key_command"
+fi
 chmod 0700 "$key_command"
 
-# The preflight mint: the value is checked for a JWT's shape and never printed. A call that gets no
-# key says why on stderr.
+# The preflight call: the value is checked for shape and never printed. A call that gets no key
+# says why on stderr. Under the Hawk route this is the first mint, and the key it keeps is checked
+# for a JWT's shape; a --token-command route's bearer is whatever its gateway takes, so only that
+# the command prints one is checked.
 status=0
-key=$("$key_command" --preflight 2>"$cache_dir/hawk-token.preflight") || status=$?
-reason=$(<"$cache_dir/hawk-token.preflight")
-rm -f "$cache_dir/hawk-token.preflight"
+preflight_stderr=${log%.log}.preflight
+key=$("$key_command" --preflight 2>"$preflight_stderr") || status=$?
+reason=$(<"$preflight_stderr")
+rm -f "$preflight_stderr"
 if [ "$status" != 0 ]; then
   unset key
-  if grep -qi keyring "$log"; then
+  if [ -z "$token_command" ] && grep -qi keyring "$log"; then
     fail "the operator's keyring is locked, so hawk-token cannot read the hawk login: unlock it (the unlock-keyring skill) and rerun ($reason; log: $log)"
   fi
   fail "the preflight got no gateway key: ${reason:-$key_command exited $status and said nothing} (log: $log)"
 fi
-if ! [[ "$key" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+if [ -n "$token_command" ]; then
+  [ -n "$key" ] || fail "$key_command printed no token (log: $log)"
+elif ! [[ "$key" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
   unset key
   fail "$key_command printed something other than one JWT (log: $log)"
 fi
 unset key
 
-mkdir -p "$agent"
-cat >"$agent/models.yml" <<EOF
-# Written by scripts/e2e/lib/install-model-gateway.sh: anthropic through the Hawk model gateway,
+# The anthropic provider's note, which says where its key comes from and which header carries it.
+if [ -n "$token_command" ]; then
+  models_note="# Written by scripts/e2e/lib/install-model-gateway.sh: anthropic through the model gateway,
+# keyed by --token-command, which is run again for every call. The provider sends the key in
+# x-api-key; a gateway that reads it from \`Authorization: Bearer\` takes it from the caller's own
+# hop (answer-loop.sh's recording proxy, --api-key-as-bearer). OMP caches the command's value for
+# the process and runs it again on a 401. OMP runs a !command through /bin/sh -c, so exec makes the
+# key command the process OMP started."
+else
+  models_note="# Written by scripts/e2e/lib/install-model-gateway.sh: anthropic through the Hawk model gateway,
 # keyed by the operator's hawk login. The gateway reads the key from x-api-key; OMP caches the
 # command's value for the process and runs it again on a 401. OMP runs a !command through
-# /bin/sh -c, so exec makes the key command the process OMP started.
+# /bin/sh -c, so exec makes the key command the process OMP started."
+fi
+mkdir -p "$agent"
+cat >"$agent/models.yml" <<EOF
+$models_note
 providers:
   anthropic:
     baseUrl: $gateway

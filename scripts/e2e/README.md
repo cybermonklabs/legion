@@ -1234,6 +1234,9 @@ CI does not run it.
 
 - [`lib/recording-proxy.ts`](lib/recording-proxy.ts), in front of the model route's own endpoint:
   every model call of the run, the agents' (`/tag/agents`), Claude Code's (`/tag/claude-<store>`) and the daemon's loop's (`/tag/daemon-<store>`), goes through it, and each request and response body is a line of `model-calls.jsonl` in the evidence, the key redacted.
+  All three send their key as `x-api-key` and none can be told otherwise, so under `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND`, whose gateway reads `Authorization: Bearer`, the run starts the proxy with `--api-key-as-bearer`:
+  a forwarded request's `x-api-key` is dropped and its value sent as `Authorization: Bearer <token>`, and the record keeps both headers `<redacted>`.
+  That translation is for that route alone; every other run forwards the headers as they arrived.
   A label's ordinal counts every request it proxies, and not all of them are model calls:
   Claude Code sends a `HEAD /api/hello` reachability preflight as each session starts and an Oh My Pi agent a `GET /v1/models`, both with no body.
   A check that waits for an agent's next model call, or reads the request it sent, counts and selects the requests that carry a `messages` body (`proxy_count`, `first_request_after`);
@@ -1439,7 +1442,12 @@ Under `key-file` the key comes from `LEGION_E2E_ANTHROPIC_KEY_FILE`, `LEGION_E2E
 the key is copied once into a 0600 file in the work directory, held to `model_key_preflight` ([`lib/model-endpoint.sh`](#libmodel-endpointsh):
 the endpoint takes it and refuses a call without one), unset from the run's environment and never printed, and the agents' key command, Claude Code's `apiKeyHelper` and the daemon's `api_key_file` all read that copy.
 The work directory goes on every exit.
-Under `gateway` the endpoint is `LEGION_E2E_MODEL_GATEWAY_URL` and `hawk-token` keys all three, the daemon's answers block through `api_key_command`.
+Under `gateway` the endpoint is `LEGION_E2E_MODEL_GATEWAY_URL` and one key command keys all three, the daemon's answers block through `api_key_command`: `hawk-token`, or the shell text `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND` holds.
+That input is for a gateway keyed by a short-lived bearer rather than by a hawk login — a CI runner's federated identity, say, whose token expires long before a run of this length ends — and with it set `hawk-token` is not required.
+`prerequisites` writes the text into a `0700` script of the work directory, never the evidence, removed with that directory on exit.
+The script carries this shell's `PATH`, `HOME`, XDG base directories and `DBUS_SESSION_BUS_ADDRESS`, since the daemon runs a key command under `env -i` and a pane's `HOME` is the run's own; a command that needs anything else names it itself.
+Every model call runs it again and nothing is kept, so a token that expires mid-run is never served, and `prerequisites` runs it once before anything is created, refusing a command that fails or prints something no `Authorization` header can carry.
+The token is echoed nowhere and written to no evidence, and the recording proxy sends it on as `Authorization: Bearer <token>` ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), the header shape none of the three clients can be told to send itself.
 
 The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and the rig holds no App key:
 every token of the run, the daemon's and the rig's own, comes from an App's `token_command`, which runs `agent-secrets` against the broker's github-app secret.
@@ -4863,14 +4871,20 @@ Its refusal names the variable on stderr and never prints the value.
 
 ## lib/install-model-gateway.sh
 
-Routes a named OMP profile's model turns to the Hawk model gateway (middleman) on the operator's own hawk login, the route a devbox's agent sessions use when it is configured for the gateway (`~/.omp/agent/models.yml`:
-`X-Api-Key: !hawk-token`), so the tmux stage proofs' panes reach Anthropic with no provider key.
+Routes a named OMP profile's model turns to the model gateway, so a proof's panes reach Anthropic with no provider key.
+Two ways to key it, and the caller picks one.
+`--cache-dir` is the Hawk model gateway (middleman) on the operator's own hawk login, the route a devbox's agent sessions use when it is configured for the gateway (`~/.omp/agent/models.yml`:
+`X-Api-Key: !hawk-token`): `hawk-token` mints the key, and it is kept until shortly before it expires.
+`--token-command` is the caller's own command, run again for every model call, for a gateway whose bearer is minted outside this tree (a CI runner's federated identity: [`answer-loop.sh`](#answer-loopsh)'s `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND`);
+nothing is kept, since such a token expires inside a run.
 Stage 2 and Stage 3 run it under the operator's own `HOME`, before they move any XDG directory of their own.
 
 ```sh
 export LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic
 key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e-$$ --home "$work/omp-home" --dest "$work/model-gateway" --cache-dir "$work/model-gateway-cache")
 # → $work/model-gateway/hawk-token
+key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e-$$ --home "$work/omp-home" --dest "$work/model-gateway" --token-command "$work/model-gateway-token")
+# → $work/model-gateway/gateway-token
 ```
 
 `LEGION_E2E_MODEL_GATEWAY_URL` is required:
@@ -4899,11 +4913,21 @@ Each item below names a flag, then what it means.
   where the key command keeps the key it minted; created `0700`.
   Refused when it exists and is not an empty directory, so a key left there is never served.
   A private directory of the run, never its evidence: the key is a live gateway credential.
+  One of this and `--token-command` is required.
+
+- `--token-command <path>`
+
+  an executable that prints the gateway's bearer, run again for every call.
+  Refused when it does not exist or is not an executable file, and when `--cache-dir` is given too: this route keeps no key, so there is nothing to cache.
+  Under it `hawk-token`, `flock` and `DBUS_SESSION_BUS_ADDRESS` are not required, and the key command, its log and its call record are named `gateway-token`, `gateway-token.log` and `gateway-token.calls` in place of the three below.
+  The command is the caller's own script and gets none of the operator's environment: whatever it needs, the caller writes into it ([`answer-loop.sh`](#answer-loopsh) does).
 
 It writes `<dir>/hawk-token`, the key command:
 `hawk-token` (resolved on `PATH`) run under the caller's `HOME`, `DBUS_SESSION_BUS_ADDRESS` and XDG base directories (a variable the caller has unset is unset for it), for that one command.
 It appends one line per invocation, one per mint, one per call that got no key and why, and `hawk-token`'s own stderr to `<dir>/hawk-token.log`, and one line per call and its outcome to `<dir>/hawk-token.calls` ([`lib/model-gateway-unserved.sh`](#libmodel-gateway-unservedsh) reads it); stdout carries the key alone.
-The profile's `agent/models.yml` points the `anthropic` provider at `LEGION_E2E_MODEL_GATEWAY_URL` with `apiKey` and `X-Api-Key` both `!exec <dir>/hawk-token` (Oh My Pi runs a `!command` through `/bin/sh -c`, and `exec` makes the key command the process it started, so the call's clock starts when Oh My Pi started it), and its `agent/config.yml` pins every model role, the roles Legion's task agents name included, to `anthropic/claude-opus-4-8`, sets `enabledModels: [anthropic/*]`, disables `amazon-bedrock`, `bedrock-mantle`, `google`, `ollama`, `llama.cpp` and `lm-studio`, and sets `startup.setupWizard: false`, so Oh My Pi opens no setup wizard in the fresh profile, whatever setup version its build counts to.
+A `--token-command` route's `<dir>/gateway-token` is the same shape with nothing to mint: it runs the command under `timeout`, logs each invocation and each call that got no token, records the call as `served` or `failed`, and prints the token alone, with every space and tab stripped and anything an `Authorization` header cannot carry refused.
+The profile's `agent/models.yml` points the `anthropic` provider at `LEGION_E2E_MODEL_GATEWAY_URL` with `apiKey` and `X-Api-Key` both `!exec <dir>/<key command>` (Oh My Pi runs a `!command` through `/bin/sh -c`, and `exec` makes the key command the process it started, so the call's clock starts when Oh My Pi started it), and its `agent/config.yml` pins every model role, the roles Legion's task agents name included, to `anthropic/claude-opus-4-8`, sets `enabledModels: [anthropic/*]`, disables `amazon-bedrock`, `bedrock-mantle`, `google`, `ollama`, `llama.cpp` and `lm-studio`, and sets `startup.setupWizard: false`, so Oh My Pi opens no setup wizard in the fresh profile, whatever setup version its build counts to.
+The key goes out in `x-api-key`, which is what the Hawk gateway reads; a gateway that reads `Authorization: Bearer` takes it from the hop the caller already puts in front of the endpoint ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), which is the one place that translation lives.
 Stdout is the key command's path.
 
 A pane cannot run `hawk-token` itself, which is why the command, and only it, gets the operator's environment.
@@ -4927,6 +4951,7 @@ Its first mint is the preflight, before any pane exists.
 It exits 1 naming the cause when `hawk-token`, `flock` or `timeout` is not on `PATH`, when `DBUS_SESSION_BUS_ADDRESS` is unset, when `lib/model-gateway-url.sh` refuses `LEGION_E2E_MODEL_GATEWAY_URL`, when the keyring is locked (`the operator's keyring is locked, so hawk-token cannot read the hawk login: unlock it (the
 unlock-keyring skill) and rerun`), when the key command gets no key (quoting its own reason:
 the outcome and `hawk-token`'s last stderr line), and when `hawk-token` prints anything but one JWT; an argument refusal exits 2.
+A `--token-command` route needs `timeout` alone, and refuses only a command that fails or prints nothing: its gateway's bearer need not be a JWT.
 The installer runs that one call with `--preflight`, which exempts it from the key command's deadline (below):
 on a machine where `hawk-token` has never run, its first-run build takes about a minute in the foreground, and it happens here rather than inside a pane's ten-second `!command`.
 The key is never printed.

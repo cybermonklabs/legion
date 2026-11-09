@@ -406,3 +406,180 @@ describe("the model gateway key command", () => {
     expect(config.extensionHandlers?.toolCallTimeoutMs).toBe(120_000);
   });
 });
+
+// The --token-command route: the caller's own command in place of hawk-token, run again for every
+// call. The command below prints tok-1, tok-2, … from a counter beside itself, so a call that was
+// served a kept token would show it.
+const counter = `count=$(dirname "$0")/count
+n=$(cat "$count" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\\n' "$n" >"$count"
+printf 'tok-%s\\n' "$n"`;
+let tokenInstalls = 0;
+
+// installToken writes the command, then installs the route on it. The environment carries no
+// DBUS_SESSION_BUS_ADDRESS and no fake hawk-token: this route needs neither.
+function installToken(body: string, extra: { cacheDir?: boolean; command?: string } = {}) {
+  const run = join(dir, `token-${++tokenInstalls}`);
+  const home = join(run, "omp-home");
+  mkdirSync(join(home, ".omp"), { recursive: true });
+  const written = join(run, "mint-token");
+  writeFileSync(written, `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  const dest = join(run, "model-gateway");
+  const args = [
+    "bash",
+    join(lib, "install-model-gateway.sh"),
+    "--profile",
+    "legion-e2e-test",
+    "--home",
+    home,
+    "--dest",
+    dest,
+    "--token-command",
+    extra.command ?? written,
+  ];
+  if (extra.cacheDir) args.push("--cache-dir", join(run, "cache"));
+  const result = Bun.spawnSync(args, {
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: operatorHome,
+      LEGION_E2E_MODEL_GATEWAY_URL: "https://gateway.internal.example/anthropic",
+    },
+  });
+  return { run, dest, result, keyCommand: result.stdout.toString().trim() };
+}
+
+// callToken runs the key command as Oh My Pi does, in a pane's own working directory.
+async function callToken(keyCommand: string, cwd: string) {
+  mkdirSync(cwd, { recursive: true });
+  const started = performance.now();
+  const child = Bun.spawn(["/bin/sh", "-c", `exec ${keyCommand}`], {
+    cwd,
+    env: { PATH: process.env.PATH ?? "", HOME: operatorHome },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { code, stdout: stdout.trim(), stderr: stderr.trim(), ms: performance.now() - started };
+}
+
+describe("the model gateway key command on a token command", () => {
+  test("runs the command again for every call and keeps nothing, so no call is served a stale token", async () => {
+    const { run, dest, result, keyCommand } = installToken(counter);
+
+    expect(result.exitCode).toBe(0);
+    expect(keyCommand).toBe(join(dest, "gateway-token"));
+    // The installer's preflight is the first call.
+    expect(readFileSync(join(run, "count"), "utf8").trim()).toBe("1");
+    const first = await callToken(keyCommand, join(run, "pane-1"));
+    const second = await callToken(keyCommand, join(run, "pane-2"));
+    expect([first.code, second.code]).toEqual([0, 0]);
+    expect([first.stdout, second.stdout]).toEqual(["tok-2", "tok-3"]);
+    // Nothing of the token is kept: the route has no cache directory at all.
+    expect(existsSync(join(run, "cache"))).toBe(false);
+    const record = readFileSync(join(dest, "gateway-token.calls"), "utf8")
+      .split("\n")
+      .filter(Boolean);
+    expect(record).toHaveLength(2);
+    for (const line of record) expect(line).toContain("\tserved\tthe token command");
+    expect(readFileSync(join(dest, "gateway-token.log"), "utf8")).not.toContain("tok-");
+    const models = readFileSync(
+      join(run, "omp-home/.omp/profiles/legion-e2e-test/agent/models.yml"),
+      "utf8"
+    );
+    expect(models).toContain(`apiKey: "!exec ${keyCommand}"`);
+    expect(models).toContain(`X-Api-Key: "!exec ${keyCommand}"`);
+  });
+
+  test("needs no hawk login: the key command names neither hawk-token nor a lock, and no session bus is read", () => {
+    const { result, keyCommand } = installToken(counter);
+    expect(result.exitCode).toBe(0);
+    const script = readFileSync(keyCommand, "utf8");
+    expect(script).not.toContain("hawk-token");
+    expect(script).not.toContain("flock");
+    expect(script).not.toContain("DBUS_SESSION_BUS_ADDRESS");
+  });
+
+  test("refuses --cache-dir beside it, a command that is not an executable file, and neither of the two", () => {
+    const both = installToken(counter, { cacheDir: true });
+    expect(both.result.exitCode).toBe(2);
+    expect(both.result.stderr.toString()).toContain("--cache-dir is the Hawk route's key cache");
+
+    const missing = installToken(counter, { command: join(dir, "no-such-token-command") });
+    expect(missing.result.exitCode).toBe(2);
+    expect(missing.result.stderr.toString()).toContain("does not exist");
+
+    const plain = join(dir, "not-executable");
+    writeFileSync(plain, "#!/bin/sh\necho tok\n", { mode: 0o644 });
+    const unrunnable = installToken(counter, { command: plain });
+    expect(unrunnable.result.exitCode).toBe(2);
+    expect(unrunnable.result.stderr.toString()).toContain("is not an executable file");
+
+    const run = join(dir, "token-neither");
+    mkdirSync(join(run, "omp-home", ".omp"), { recursive: true });
+    const neither = Bun.spawnSync(
+      [
+        "bash",
+        join(lib, "install-model-gateway.sh"),
+        "--profile",
+        "legion-e2e-test",
+        "--home",
+        join(run, "omp-home"),
+        "--dest",
+        join(run, "model-gateway"),
+      ],
+      {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: operatorHome,
+          LEGION_E2E_MODEL_GATEWAY_URL: "https://gateway.internal.example/anthropic",
+        },
+      }
+    );
+    expect(neither.exitCode).toBe(2);
+    expect(neither.stderr.toString()).toContain(
+      "one of --cache-dir (the private directory hawk-token's minted key is kept in) and --token-command"
+    );
+  });
+
+  test("the preflight refuses a command that fails, prints nothing, or prints what no header can carry, and records none of it", () => {
+    const cases: [string, string][] = [
+      [
+        "echo the runner has no gateway identity >&2; exit 7",
+        "the token command exited 7 without a token: the runner has no gateway identity",
+      ],
+      ["printf '  \\n'", "the token command printed no token"],
+      [
+        "printf 'tok\\001\\n'",
+        "the token command printed something other than one header-safe word",
+      ],
+    ];
+    for (const [body, want] of cases) {
+      const { dest, result } = installToken(body);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain(
+        `the preflight got no gateway key: gateway-token key command: no token (failed): ${want}`
+      );
+      // The preflight is no agent: it leaves no line in the record, and no stray stderr capture.
+      expect(existsSync(join(dest, "gateway-token.calls"))).toBe(false);
+      expect(existsSync(join(dest, "gateway-token.preflight"))).toBe(false);
+    }
+  });
+
+  test("gives up on a call that outlasts Oh My Pi's ten seconds, and says so in the record", async () => {
+    // Real time: the deadline is the key command's own wall clock, in another process.
+    const { run, dest, result, keyCommand } = installToken("sleep 0.1; printf 'tok\\n'");
+    expect(result.exitCode).toBe(0);
+    writeFileSync(join(run, "mint-token"), "#!/usr/bin/env bash\nsleep 30\n", { mode: 0o755 });
+    const slow = await callToken(keyCommand, join(run, "pane-slow"));
+    expect([slow.code, slow.stdout]).toEqual([1, ""]);
+    expect(slow.ms).toBeLessThan(10_000);
+    expect(readFileSync(join(dest, "gateway-token.calls"), "utf8")).toContain(
+      "\ttimeout\tthe token command ran past the call's 9.5 s"
+    );
+  }, 30_000);
+});

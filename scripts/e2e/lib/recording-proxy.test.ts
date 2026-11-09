@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { messageAsEvents, startProxy } from "./recording-proxy";
 
-type Seen = { path: string; key: string | null; body: string };
+type Seen = { path: string; key: string | null; auth: string | null; body: string };
 type Entry = Record<string, unknown> & { request_headers: Record<string, string> };
 
 const cleanups: (() => void)[] = [];
@@ -21,7 +21,12 @@ function upstream(seen: Seen[]) {
     async fetch(request) {
       const url = new URL(request.url);
       const body = await request.text();
-      seen.push({ path: url.pathname + url.search, key: request.headers.get("x-api-key"), body });
+      seen.push({
+        path: url.pathname + url.search,
+        key: request.headers.get("x-api-key"),
+        auth: request.headers.get("authorization"),
+        body,
+      });
       const message = {
         id: "msg_1",
         type: "message",
@@ -44,7 +49,7 @@ function upstream(seen: Seen[]) {
 /** A proxy in front of the stand-in provider, its record and hold files in a scratch directory;
  * `recorded` resolves with the first entry the proxy appends, and `holding` once a request waits on
  * its hold file. */
-function rig(seen: Seen[]) {
+function rig(seen: Seen[], options: { apiKeyAsBearer?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "recording-proxy-test."));
   const provider = upstream(seen);
   let entered: (entry: Entry) => void = () => {};
@@ -61,6 +66,7 @@ function rig(seen: Seen[]) {
     record: join(dir, "record.jsonl"),
     holdDir: dir,
     standInDir: dir,
+    apiKeyAsBearer: options.apiKeyAsBearer,
     onRecord: (entry) => entered(entry as Entry),
     onHold: (label) => waiting(label),
   });
@@ -91,6 +97,7 @@ describe("recording proxy", () => {
       {
         path: "/v1/messages?beta=true",
         key: "sk-secret-value",
+        auth: null,
         body: '{"model":"m","messages":[]}',
       },
     ]);
@@ -158,5 +165,61 @@ describe("recording proxy", () => {
     unlinkSync(join(dir, "gone"));
     await (await pending).json();
     expect(seen).toHaveLength(1);
+  });
+
+  test("sends the x-api-key upstream as Authorization: Bearer with --api-key-as-bearer, and records neither", async () => {
+    const seen: Seen[] = [];
+    const { base, recorded } = rig(seen, { apiKeyAsBearer: true });
+    await post(`${base}/tag/daemon/v1/messages`, { model: "m" });
+    expect(seen).toEqual([
+      {
+        path: "/v1/messages",
+        key: null,
+        auth: "Bearer sk-secret-value",
+        body: '{"model":"m"}',
+      },
+    ]);
+    const entry = await recorded;
+    expect(entry.request_headers["x-api-key"]).toBe("<redacted>");
+    expect(JSON.stringify(entry)).not.toContain("sk-secret-value");
+  });
+
+  test("the command line takes --api-key-as-bearer with no value of its own", async () => {
+    const seen: Seen[] = [];
+    const provider = upstream(seen);
+    const dir = mkdtempSync(join(tmpdir(), "recording-proxy-cli."));
+    const child = Bun.spawn(
+      [
+        "bun",
+        join(import.meta.dir, "recording-proxy.ts"),
+        "--port",
+        "0",
+        "--api-key-as-bearer",
+        "--upstream",
+        `http://127.0.0.1:${provider.port}`,
+        "--record",
+        join(dir, "record.jsonl"),
+      ],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    cleanups.push(() => {
+      child.kill();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const first = Promise.withResolvers<string>();
+    void (async () => {
+      const decoder = new TextDecoder();
+      let text = "";
+      for await (const chunk of child.stdout) {
+        text += decoder.decode(chunk, { stream: true });
+        const end = text.indexOf("\n");
+        if (end !== -1) return first.resolve(text.slice(0, end));
+      }
+      first.resolve(text);
+    })();
+    const port = /listening on 127\.0\.0\.1:(\d+)/.exec(await first.promise)?.[1];
+    expect(port).toBeDefined();
+    await post(`http://127.0.0.1:${port}/tag/agents/v1/messages`, { model: "m" });
+    expect(seen.map((s) => [s.key, s.auth])).toEqual([[null, "Bearer sk-secret-value"]]);
   });
 });

@@ -24,10 +24,25 @@
 #   LEGION_E2E_MODEL_BASE_URL, ANTHROPIC_BASE_URL
 #                                the endpoint that key is for (lib/model-endpoint.sh), Anthropic's
 #                                own when neither is set: the recording proxy's upstream.
-#   LEGION_E2E_MODEL_GATEWAY_URL under `gateway`, the Hawk model gateway's Anthropic endpoint
-#                                (lib/install-model-gateway.sh): the proxy's upstream, with
-#                                `hawk-token` keying every call, the daemon's answers block through
-#                                api_key_command and Claude Code through its apiKeyHelper.
+#   LEGION_E2E_MODEL_GATEWAY_URL under `gateway`, the model gateway's Anthropic endpoint
+#                                (lib/install-model-gateway.sh): the proxy's upstream. `hawk-token`
+#                                keys every call — the agents' key command, the daemon's answers
+#                                block through api_key_command and Claude Code through its
+#                                apiKeyHelper — unless the next input names another command.
+#   LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND
+#                                under `gateway`, optional: shell text that prints the bearer the
+#                                gateway takes, for a gateway keyed by a short-lived token instead
+#                                of by `hawk-token` (a CI runner's federated identity, whose token
+#                                expires long before a run ends). The run writes it into a 0700
+#                                script of its work directory, carrying this shell's PATH, HOME,
+#                                XDG base directories and session bus address, and the agents', the
+#                                daemon's and Claude Code's commands all call that script, which
+#                                runs the text again for every model call and keeps nothing. The
+#                                token is echoed nowhere and written to no evidence, and the
+#                                recording proxy sends it to the gateway as
+#                                `Authorization: Bearer <token>` (--api-key-as-bearer), the header
+#                                shape none of the three clients can be told to send itself. Set,
+#                                `hawk-token` is not required.
 #   LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET
 #   LEGION_E2E_REVIEW_APP_ID, LEGION_E2E_REVIEW_APP_SECRET
 #                                Legion's two role Apps: each App's numeric id and the secrets
@@ -118,11 +133,14 @@ second_repo=${LEGION_E2E_REPO_SECOND_OWNER:-}
 # The model route, settled in prerequisites: which route was taken, the endpoint the recording
 # proxy forwards to, and the key the daemon's answers block, Claude Code's apiKeyHelper and the
 # agents' route are keyed by — a 0600 file of the run's own under `key-file`, a command under
-# `gateway`. Exactly one of the two is set.
+# `gateway`. Exactly one of the two is set. gateway_token_helper is the run's 0700 script holding
+# LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND, set only when that input is, and the one thing the
+# gateway route's key commands then run.
 model_route=
 model_upstream=
 model_key_file=
 model_key_command=
+gateway_token_helper=
 # LEGION_E2E_ANSWER_LOOP_ONLY (criteria, e.g. "boot A1 A6") and LEGION_E2E_ANSWER_LOOP_STORES
 # (default "files postgres") narrow a run while a check is being fixed: the bring-up and the stopped
 # agents are made as always, and only the named checks run. A run that proves the criteria sets
@@ -535,20 +553,28 @@ install_plugins() {
 }
 
 # install_model_route HOME PROFILE LABEL installs the run's model route into the profile — the key
-# file route (lib/install-key-file-model-route.sh) or the Hawk gateway's (lib/install-model-gateway.sh),
+# file route (lib/install-key-file-model-route.sh) or the gateway's (lib/install-model-gateway.sh),
 # whichever LEGION_E2E_MODEL_ROUTE named — then points it at the recording proxy under LABEL and at
 # the questions file's model, so every agent turn is recorded and reaches the route's own endpoint
 # through the proxy.
 install_model_route() {
   local home=$1 profile=$2 label=$3 agent_dir model proxy_url key_command
+  local -a keying=()
   model=$(jq -r .model "$questions_file")
   proxy_url=http://127.0.0.1:$port_proxy/tag/$label
   if [ "$model_route" = gateway ]; then
+    # hawk-token mints and keeps one key; the run's own token helper is run again for every call,
+    # since the token it prints expires long before the run ends.
+    if [ -n "$gateway_token_helper" ]; then
+      keying=(--token-command "$gateway_token_helper")
+    else
+      keying=(--cache-dir "$work/key-$label-cache")
+    fi
     key_command=$(bash "$root/scripts/e2e/lib/install-model-gateway.sh" --profile "$profile" --home "$home" \
-      --dest "$evidence/model-route-$label" --cache-dir "$work/key-$label-cache") ||
-      fail "the agents' model route through the Hawk model gateway could not be installed (the reason is above)"
+      --dest "$evidence/model-route-$label" "${keying[@]}") ||
+      fail "the agents' model route through the model gateway could not be installed (the reason is above)"
     # The daemon's answers block and Claude Code's apiKeyHelper take the first profile's key
-    # command: every one of them mints the same operator's key for the same gateway.
+    # command: every one of them keys the same gateway the same way.
     [ -n "$model_key_command" ] || model_key_command=$key_command
   else
     bash "$root/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$home" \
@@ -585,12 +611,18 @@ start_nats() {
 
 start_proxy() {
   local offset
+  local -a bearer=()
+  # Oh My Pi, Claude Code and the daemon's answer loop all key an Anthropic call with x-api-key.
+  # A gateway keyed by LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND reads the token from
+  # `Authorization: Bearer` instead, and this hop, the one every call of the run already goes
+  # through, is where that translation lives (lib/recording-proxy.ts).
+  [ -z "$gateway_token_helper" ] || bearer=(--api-key-as-bearer)
   pick_port port_proxy
   mkdir -p "$work/proxy-hold" "$work/proxy-stand-in"
   offset=$(log_size proxy)
   start_process proxy "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/recording-proxy.ts" --port "$port_proxy" \
     --upstream "$model_upstream" --record "$evidence/model-calls.jsonl" \
-    --hold-dir "$work/proxy-hold" --stand-in-dir "$work/proxy-stand-in"
+    --hold-dir "$work/proxy-hold" --stand-in-dir "$work/proxy-stand-in" "${bearer[@]}"
   await_start proxy "$proxy_pid" 30 "the recording proxy" \
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/proxy.log' | grep -q 'recording-proxy listening'"
 }
@@ -846,9 +878,11 @@ await_turn() {
 }
 
 # write_claude_route TOKEN LABEL gives a Claude Code claim its model before the claim exists:
-# settings.json in its claim directory names the model, the model route's key command (the one that
-# prints the run's key copy under `key-file`, hawk-token's under `gateway`), and
-# ANTHROPIC_BASE_URL at the recording proxy.
+# settings.json in its claim directory names the model, the model route's key command (the one
+# that prints the run's key copy under `key-file`, the gateway route's own under `gateway`), and
+# ANTHROPIC_BASE_URL at the recording proxy. Claude Code sends what its apiKeyHelper prints as
+# x-api-key; a gateway that reads `Authorization: Bearer` gets it from the proxy
+# (lib/recording-proxy.ts, --api-key-as-bearer).
 write_claude_route() {
   local dir=$state/claude/$1 helper=$model_key_command
   if [ -n "$model_key_file" ]; then
@@ -1072,17 +1106,58 @@ bun_running=$(bun --version 2>/dev/null | tr -d '[:space:]') || bun_running=
 # The model route, as Stage 2's and Stage 3's proofs take it: where every model call of the run
 # goes and what keys it. Under `key-file` one 0600 copy of the key, made here and removed on exit,
 # serves the agents' key command, Claude Code's apiKeyHelper and the daemon's answers block; under
-# `gateway` hawk-token's key command serves all three and the gateway is the endpoint.
+# `gateway` one key command serves all three and the gateway is the endpoint — hawk-token's, or
+# the run's own helper when LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND names the command that prints
+# the gateway's bearer.
 model_route=${LEGION_E2E_MODEL_ROUTE:-key-file}
 case "$model_route" in
 key-file | gateway) ;;
 *) fail "LEGION_E2E_MODEL_ROUTE must be key-file or gateway, not '$model_route'" ;;
 esac
 if [ "$model_route" = gateway ]; then
-  command -v hawk-token >/dev/null || fail "hawk-token is required under LEGION_E2E_MODEL_ROUTE=gateway"
   model_upstream=$(bash "$root/scripts/e2e/lib/model-gateway-url.sh") ||
     fail "LEGION_E2E_MODEL_GATEWAY_URL is not a model gateway endpoint (the reason is above)"
-  note "model route: gateway, every call through the recording proxy to $model_upstream, keyed by hawk-token"
+  if [ -n "${LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND:-}" ]; then
+    # The caller's own shell text, in a 0700 script of the work directory (never the evidence, and
+    # removed with the work directory on exit) that the run's three key commands call. The daemon
+    # runs a key command under `env -i` and a pane's HOME is the run's own, so the script carries
+    # this shell's values for the variables such a command reads; anything else it needs it names
+    # itself. It keeps nothing: the token expires long before a run of this length ends, so every
+    # model call runs the text again.
+    gateway_token_helper=$work/model-gateway-token
+    (umask 077 && {
+      printf '#!/bin/sh\n'
+      printf '# Written by scripts/e2e/answer-loop.sh: LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND, run\n'
+      printf '# again for every model call of the run. Stdout is the gateway bearer.\n'
+      for var in PATH HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME \
+        XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
+        [ -z "${!var:-}" ] || printf 'export %s=%q\n' "$var" "${!var}"
+      done
+      printf '%s\n' "$LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND"
+    } >"$gateway_token_helper")
+    chmod 0700 "$gateway_token_helper"
+    # One call before anything is created, as the key-file route's own preflight read is: the
+    # command runs, and what it prints is a bearer an Authorization header can carry. Its value is
+    # checked and dropped, never printed, and its stderr is quoted only on a failure.
+    token_status=0
+    token=$("$gateway_token_helper" 2>"$work/model-gateway-token.err") || token_status=$?
+    token_reason=$(tr -d '\r' <"$work/model-gateway-token.err" | grep -v '^[[:space:]]*$' | tail -1) || token_reason=
+    rm -f "$work/model-gateway-token.err"
+    [ "$token_status" = 0 ] ||
+      fail "LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND exited $token_status without a token${token_reason:+ ($token_reason)}"
+    token=${token//[$' \t\r\n']/}
+    [ -n "$token" ] ||
+      fail "LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND printed no token${token_reason:+ ($token_reason)}"
+    case $token in
+    *[!!-~]*) fail "LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND printed something other than one word an Authorization header can carry" ;;
+    esac
+    unset token
+    note "model route: gateway, every call through the recording proxy to $model_upstream, keyed by LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND through $gateway_token_helper (0700, run again for every call, printed nowhere), which the proxy sends on as Authorization: Bearer"
+  else
+    command -v hawk-token >/dev/null ||
+      fail "hawk-token is required under LEGION_E2E_MODEL_ROUTE=gateway, unless LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND names the command that prints the gateway's bearer"
+    note "model route: gateway, every call through the recording proxy to $model_upstream, keyed by hawk-token"
+  fi
 else
   model_upstream=${LEGION_E2E_MODEL_BASE_URL:-${ANTHROPIC_BASE_URL:-$anthropic_base_url}}
   why=$(model_base_url_refusal "$model_upstream")
