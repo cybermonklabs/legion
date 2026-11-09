@@ -130,11 +130,16 @@ function fail(error: unknown): never {
 const playwrightEngines = ["chromium", "firefox", "webkit"] as const;
 type PlaywrightEngine = (typeof playwrightEngines)[number];
 
-/** The one project of e2e/playwright.config.ts whose name does not hold its engine's: `iphone`
- *  is an iPhone's viewport in Chromium. Every other project is named for its engine
- *  (`chromium-plain-http`, `firefox-alone`, `webkit-iphone`), and a name this cannot read takes
- *  every engine of the mode, so a project added there is never skipped here. */
-const namedProjectEngines: Readonly<Record<string, PlaywrightEngine>> = { iphone: "chromium" };
+/** The projects of e2e/playwright.config.ts whose names do not hold their engine's: `iphone`
+ *  and `stub-phone` are an iPhone's viewport in Chromium, and `stub` is Chromium at the desktop
+ *  width. Every other project is named for its engine (`chromium-plain-http`, `firefox-alone`,
+ *  `webkit-iphone`), and a name this cannot read takes every engine of the mode, so a project
+ *  added there is never skipped here. */
+const namedProjectEngines: Readonly<Record<string, PlaywrightEngine>> = {
+  iphone: "chromium",
+  stub: "chromium",
+  "stub-phone": "chromium",
+};
 
 /** Whether `argv` runs Playwright's test runner, the only command this starts that launches a
  *  browser: `playwright test`, with or without the runner that resolves it (`bunx`, `npx`). A

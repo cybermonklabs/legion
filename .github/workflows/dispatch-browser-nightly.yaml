@@ -130,9 +130,14 @@ jobs:
           path: ~/apt-archives
           key: ${{ steps.apt-debs-key.outputs.key }}
       # Chromium alone: both stub projects launch it (`stub-phone` is an iPhone 13 on Chromium).
+      # From packages/dispatch, as the shard job runs it: the script resolves Playwright from
+      # the working directory, and from the repository root it installs a revision this
+      # package's own Playwright does not look for.
       - name: Install Chromium
         timeout-minutes: 22
-        run: .github/scripts/playwright-install.sh chromium
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/playwright-install.sh" chromium
+        working-directory: packages/dispatch
       # The committed set, kept before the re-recording writes over it in place.
       - name: Keep the committed recordings
         run: cp -r e2e/__recordings__ "$RUNNER_TEMP/committed"
