@@ -9,6 +9,7 @@ export type {
   AnchorInput,
   AnswerAskInput,
   ApproverGrantResp,
+  ApproverGrantsResponse,
   ArchitectureSource,
   ArchitectureTree,
   ArchitectureTreeComponent,

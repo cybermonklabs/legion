@@ -11,11 +11,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The cadence the relay and the delivery hub share (eventGapReread), step by step: a gap only the
+// The cadence a relay generation reads a gap on (eventGapReread), step by step: a gap only the
 // read's own observation holds is re-read at once; a held one waits for the next notification,
 // read without the coalescing window, or the fallback, which doubles while the horizon stands
 // still and drops the eager read until it moves; an immediate re-read is never asked twice
@@ -67,11 +66,7 @@ const cadenceXid = uint64(1) << 40
 func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
 	_, database, deps := newTestServer(t, testServerOptions{})
 	relay, horizon := newCadenceRelay(t, deps, database, time.Millisecond)
-	subscription, cancel, _, _, err := relay.subscribe(context.Background())
-	if err != nil {
-		t.Fatalf("subscribe to the relay: %v", err)
-	}
-	defer cancel()
+	subscription, _, _ := subscribeRelay(t, relay)
 	horizon.settle(t)
 	if observed := horizon.observedDuring(600 * time.Millisecond); observed != 0 {
 		t.Fatalf("an idle relay took %d observations in 600 ms, want none", observed)
@@ -108,11 +103,7 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
 	waitForQuietEventLog(t, database, 500*time.Millisecond)
 	relay, horizon := newCadenceRelay(t, deps, database, coalesce)
-	subscription, cancel, _, _, err := relay.subscribe(context.Background())
-	if err != nil {
-		t.Fatalf("subscribe to the relay: %v", err)
-	}
-	defer cancel()
+	subscription, _, _ := subscribeRelay(t, relay)
 	// The listener's first LISTEN wakes one catch-up read, a coalescing window later; once it has
 	// run no wake is pending, so the next read is the one the higher id's commit wakes.
 	time.Sleep(coalesce + 500*time.Millisecond)
@@ -134,7 +125,7 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 	horizon.awaitTaken(t, 2, coalesce+10*time.Second)
 	select {
 	case event := <-subscription:
-		t.Fatalf("the relay published event %d while the write holding %d is open", event.ID, lowID)
+		t.Fatalf("the relay published event %d while the write holding %d is open", event.Event.ID, lowID)
 	case <-time.After(200 * time.Millisecond):
 	}
 
@@ -329,7 +320,7 @@ func commitCadenceEvent(t *testing.T, database *store.Store) int64 {
 
 // requireRelayPublishes requires the relay to publish exactly ids, in order, each within within
 // of the call.
-func requireRelayPublishes(t *testing.T, subscription <-chan model.Event, within time.Duration, ids ...int64) {
+func requireRelayPublishes(t *testing.T, subscription <-chan relayedEvent, within time.Duration, ids ...int64) {
 	t.Helper()
 	timeout := time.After(within)
 	for _, id := range ids {
@@ -338,8 +329,8 @@ func requireRelayPublishes(t *testing.T, subscription <-chan model.Event, within
 			if !open {
 				t.Fatal("the relay's subscription ended")
 			}
-			if event.ID != id {
-				t.Fatalf("the relay published event %d, want %d (of %v)", event.ID, id, ids)
+			if event.Event.ID != id {
+				t.Fatalf("the relay published event %d, want %d (of %v)", event.Event.ID, id, ids)
 			}
 		case <-timeout:
 			t.Fatalf("the relay did not publish event %d (of %v) within %s", id, ids, within)
