@@ -1126,23 +1126,52 @@ func (p *mpPublisher) all() []mpMessage {
 }
 
 // quiesce runs fault between two publishes, once every message published so far has reached its
-// session and the machine's durable holds none unacknowledged: a fault then cuts no delivery in
-// flight, whose outcome the row would otherwise have to allow for.
+// session, the machine's durable holds none unacknowledged, and the own consumer of every
+// session published to holds none either: a fault then cuts no delivery in flight, whose
+// outcome the row would otherwise have to allow for.
+//
+// The session consumers are waited for because a frame the session answered `done` is acked on
+// that consumer, and the reply and the ack ride the link a cut takes down: a cut landing in the
+// milliseconds between the answer and its ack leaves the ack unmade, so the relay's restart at
+// the consumer's ack floor sends that message again and the row sees it twice. Waiting for the
+// durable alone does not cover it, since the durable's own ack is made when the relay takes the
+// message, well before the session answers.
 func (p *mpPublisher) quiesce(t *testing.T, serving *mpNATSSession, fault func()) time.Time {
 	t.Helper()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	sent := slices.Clone(p.sent)
-	mpEventually(t, 10*time.Second, "every message published so far delivered and acknowledged", func() bool {
+	sessions := mpSessionsOf(sent)
+	mpEventually(t, 10*time.Second, "every message published so far delivered and acknowledged, by the durable and by each session's own consumer", func() bool {
 		if !serving.tookAll(sent) {
 			return false
 		}
 		info, err := p.client.JS().ConsumerInfo(bus.Stream, p.consumer)
-		return err == nil && info.NumAckPending == 0
+		if err != nil || info.NumAckPending != 0 {
+			return false
+		}
+		for _, sessionID := range sessions {
+			if p.sessionAckPending(sessionID) != 0 {
+				return false
+			}
+		}
+		return true
 	})
 	at := time.Now()
 	fault()
 	return at
+}
+
+// mpSessionsOf is each session the messages were published to, once and in the order they were
+// first published to.
+func mpSessionsOf(messages []mpMessage) []string {
+	var sessions []string
+	for _, m := range messages {
+		if m.session != "" && !slices.Contains(sessions, m.session) {
+			sessions = append(sessions, m.session)
+		}
+	}
+	return sessions
 }
 
 // ackPending is how many messages the machine's durable has handed out and not had acknowledged.
