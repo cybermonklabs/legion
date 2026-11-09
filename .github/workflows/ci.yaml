@@ -52,8 +52,8 @@ name: CI
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the shard, alone and
-# multiprocess jobs of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
+# listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the binaries and multiprocess
+# jobs of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
 # binary of every package of the envoy module, a set no other job builds), go-envoy-infra
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
@@ -64,13 +64,16 @@ name: CI
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
-# older Go built, and no run here saves any more. Beside the Go families, dispatch-browser.yaml's
-# shard and alone jobs restore the Playwright browsers of the version bun.lock pins, which
-# ci-caches.yaml's browsers job fills on that same push. setup-bun reads and writes its cache
-# only on main (.github/actions/setup-bun), which of this workflow's events is the dispatched
-# run alone, and not in the tool-fallback and tool-fallback-arm jobs at all: that action reads
-# the id of the job that called it and passes no-cache for those two on every ref, so a
-# restored Bun cannot stand in for the install each of their cases is a reading of.
+# older Go built, and no run here saves any more. There is no browser cache beside the Go
+# families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
+# repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
+# ~/.cache/ms-playwright restore would carry nothing they do not already have, and
+# ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores
+# (dispatch://INFRA-1443). setup-bun reads and writes its cache only on main
+# (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
+# not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
+# job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
+# stand in for the install each of their cases is a reading of.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -168,7 +171,8 @@ env:
       "tool-fallback": "tool_fallback",
       "tool-fallback-arm": "tool_fallback",
       "proof-sdk-offline": "proof_sdk_offline",
-      "worker-image": "worker_image"
+      "worker-image": "worker_image",
+      "browser-image": "browser_image"
     }
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
   # The jobs that run on every change: no `changes` output gates one, so CI_OK_SELECTED_BY maps
@@ -237,6 +241,11 @@ jobs:
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
       worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker_image }}
+      # The browser image's build. No `full-ci` term, and none is wanted: the image is what the
+      # jobs below pin, so gating its build behind a label would leave a pull request that edits
+      # the Dockerfile writing a row whose digest the package does not hold, which the
+      # ci-images job then refuses.
+      browser_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.browser_image }}
       contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.conflicts_script }}
@@ -1171,8 +1180,12 @@ jobs:
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
-              # The Dispatch server e2e/run-server.sh builds (run-server.sh:340), on the socket
-              # scripts/e2e/lib/held-port.py holds (run-server.sh:80).
+              # The Dispatch server this suite runs: dispatch-browser.yaml's binaries job
+              # builds it, with the real broker's three commands, for the shard and alone jobs,
+              # and the two-process job builds it in a step of its own and again in
+              # e2e/run-server.sh (run-server.sh:340), on the socket
+              # scripts/e2e/lib/held-port.py holds
+              # (run-server.sh:80).
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
@@ -1188,20 +1201,32 @@ jobs:
               # started from the default branch alone, answers for no pull request.
               - '.github/workflows/dispatch-browser.yaml'
               - '.github/workflows/dispatch-browser-nightly.yaml'
-              # The install both browser jobs run, which reads the pinned apt list and ends with
-              # the check that the list has not fallen behind Playwright; the key their apt
-              # archive cache is read and written under, which their "Compute the apt archive
-              # cache key" steps call; the memory and CPU sampler their browser steps start and
-              # read back; the script the merge job runs to take each leg's newest attempt; and
-              # the script that makes the merge job's two reads of its own run, which reads this
-              # run's own attempt's jobs and says a refused blob download was a refused read.
-              - '.github/scripts/playwright-install.sh'
-              - '.github/playwright-apt-packages.txt'
-              - '.github/scripts/playwright-deps-current.sh'
-              - '.github/scripts/apt-archive-cache-key.sh'
+              # The memory and CPU sampler the shard and alone jobs' browser steps start and read
+              # back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
+              # the script the merge job runs to take each leg's newest attempt, and the script
+              # that makes the merge job's two reads of its own run, which reads this run's own
+              # attempt's jobs and says a refused blob download was a refused read. The
+              # Playwright install both jobs ran stood here too, with the pinned apt list it
+              # installed, the key their apt archive cache was read under and the check that the
+              # list had not fallen behind Playwright: those two jobs run in the image this
+              # repository builds now, which carries the browsers and their host packages, so
+              # all four files are gone (dispatch://INFRA-1443).
               - '.github/scripts/dispatch-browser-samples.sh'
+              - '.github/scripts/dispatch-browser-postgres.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
               - '.github/scripts/dispatch-browser-run-reads.sh'
+              # The container image the shard and alone jobs run in and everything that decides
+              # which bytes it is: the row that pins its digest, the Dockerfile it is built from
+              # and the workflow that builds it. A change to any of them changes what those jobs
+              # run inside, so they run (dispatch://INFRA-1443). The row is named as the whole
+              # file because a paths filter matches files and not rows, so any row change
+              # re-runs the browser jobs; that is correct and cheap. The two-process and merge
+              # jobs are on this same filter and run in no container, so an image change runs
+              # them too, which costs a five-minute Chromium job and keeps one list rather than
+              # two.
+              - '.github/ci-images.yaml'
+              - '.github/docker/browser.Dockerfile'
+              - '.github/workflows/browser-image.yaml'
               # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its own
               # process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with its
               # sources, through packages/envoy-client/src/broker-credential.ts:21-22
@@ -1223,15 +1248,15 @@ jobs:
               # with every comment added above it, and one entry's line number took four values in
               # two rounds that way.
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
-              # The file store image: the pull step names its declaration to the pull-test-images
-              # action, and the S3 step reads the same declaration for its docker run.
-              - 'packages/envoy/internal/tests3/seaweedfs.go'
-              - '.github/actions/pull-test-images/**'
+              # What stood here was the file store's own image declaration and the
+              # pull-test-images action: no job of this suite pulls an image or runs a docker
+              # command now, since a job inside a container can do neither. The shard job starts
+              # the `weed` binary its own image carries instead, so neither file reaches it.
               # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, the dev
               # OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
               # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
               # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
-              # Dispatch server's, which e2e/run-broker.sh:95 builds in one go build.
+              # Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -1835,6 +1860,46 @@ jobs:
               # builds no worker image, and a fragment stays where it was written, so no pattern
               # here matches nothing.
               - '!packages/*/.changes/**'
+            # Every file the browser image's build reads, for the browser-image job
+            # (.github/workflows/browser-image.yaml, which the build reads too): that build's
+            # context is .github/docker, so every file under it reaches the build, and the
+            # Dockerfile it builds is the only file there today.
+            # .github/ci-images.yaml is deliberately not named, and adding it back fails the
+            # build. The build does read that file: its `row` step reads the registry and the
+            # digest of the row built from that Dockerfile out of it at run time, and its
+            # publish decision is that digest and the label the image at it carries. But
+            # .github/scripts/check-image-trigger-paths.sh reads what a build reads from its
+            # context and its Dockerfile alone, and it refuses a path matched by a filter that
+            # decides nothing but an image build and that no build reads by that reading:
+            # "browser_image matches .github/ci-images.yaml, which no image build reads, so a
+            # pull request touching only that builds an image for nothing; narrow the filter".
+            # worker_image above leaves .github/scripts/repo-paths.sh out for that same reason,
+            # though its build job runs that script.
+            # Nothing is lost by leaving it out. A change to the row alone builds nothing, and
+            # the digest a row names is one the package already holds: the ci-images job, whose
+            # filter does name that file, is what reads whether it does
+            # (.github/scripts/check-ci-images.sh package), and the push that writes the row
+            # needs no build of its own: the image that row names was built and pushed by the
+            # earlier push, the one that changed the Dockerfile under .github/docker, which
+            # this filter does name. The `container:` jobs that run the image are in
+            # .github/workflows/dispatch-browser.yaml, and this file declares no `container:`.
+            # That check also fails the build when this list misses a file the image build reads;
+            # it reads this filter only as a flat list, so it names no anchor.
+            # .github/scripts/ci_images.py is named, and is the one file here the build does
+            # not read as a file: the build's `labels:` is
+            # legion.browser-image.source-sha256=<the row step's source output>, and that step
+            # computes the output with that file's recipe_sha256, so the file's own bytes
+            # decide a label of the image this build pushes. Without it a change to the rule
+            # that defines the hash selected the ci-images job, whose rule 10 then refused the
+            # published image for carrying a hash this tree no longer computes, while no build
+            # ran and no row could move. check-image-trigger-paths.sh reads it as an input of
+            # this build for that reason, from the COMPUTED_BUILD_INPUTS entry that writes the
+            # argument down, and that entry is what refuses this filter if it stops naming it.
+            browser_image:
+              - '.github/workflows/ci.yaml'
+              - '.github/workflows/browser-image.yaml'
+              - '.github/docker/**'
+              - '.github/scripts/ci_images.py'
             # lint's notices step: the Go packages it loads for every release target (`legion`,
             # the listener, the agent-secrets binaries and client, every envoy-infra command), the
             # workspaces they build in, the target lists, the script holding the loops and the
@@ -1941,8 +2006,13 @@ jobs:
             # through the crane .github/actions/install-crane installs), the package mode of
             # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
             # (.github/scripts/mirror-ci-tools.sh), which fills the second source of every tool
-            # install. These files are what decides what those three steps do. The gate's other
-            # half reads the whole tree and is a step of lint, which runs on every change.
+            # install. These files are what decides what those three steps do, the built row's
+            # whole build recipe among them: the package mode hashes the recipe - the browser
+            # Dockerfile's own path, every file of .github/docker and
+            # .github/workflows/browser-image.yaml, folded by the recipe_sha256 of
+            # .github/scripts/ci_images.py - and holds the built row's published image to that
+            # hash. The gate's other half reads the whole tree and is a step of lint, which
+            # runs on every change.
             # It names the tool_fallback filter above through that filter's own anchor, which
             # dorny/paths-filter flattens into this list, so this filter is a superset of that
             # one by construction and not by a copy kept in step by hand. The tool-fallback job
@@ -1955,6 +2025,8 @@ jobs:
               - '.github/scripts/mirror-ci-images.sh'
               - '.github/scripts/check-ci-images.sh'
               - '.github/scripts/ci_images.py'
+              - '.github/docker/**'
+              - '.github/workflows/browser-image.yaml'
               - *tool_fallback
             # ci.yaml's proof-sdk-offline job: a frozen install behind a proxy that answers 504
             # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
@@ -1997,6 +2069,11 @@ jobs:
       # one that touches a package.
       - name: Check every Bun install reads .bun-version
         run: .github/scripts/check-bun-version.sh
+
+      # This job runs on every change too, and the gate reads only the tree: bun.lock, the
+      # browser image's Dockerfile and that image's row.
+      - name: Check the browser image's Playwright is the one bun.lock resolves
+        run: .github/scripts/check-playwright-version.sh
 
       - name: Check frozen Bun installs copy every workspace manifest
         run: .github/scripts/check-bun-workspace-manifests.sh
@@ -2152,7 +2229,7 @@ jobs:
   # package to check that it holds every row. The order is the point: the read fails a row the
   # package does not hold, so the copy for this change runs first. The ci_images filter selects
   # this job, and names the files that decide what its steps do: the rows, the scripts, the
-  # module both image scripts read a reference with, the actions and this file. The gate's
+  # module every reader of an image row goes through, the actions and this file. The gate's
   # other half reads the whole tree, and is a step of lint, which runs on every change: a file
   # that names a third-party registry again can be any file, and this filter names few of them.
   # This job is the one copy path: it runs on a pull request and on a merge group, which is every
@@ -2972,6 +3049,9 @@ jobs:
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh
 
+      - name: Test the Playwright version check
+        run: .github/scripts/check-playwright-version.test.sh
+
       - name: Test the frozen Bun workspace manifest check
         run: .github/scripts/check-bun-workspace-manifests.test.sh
 
@@ -3026,9 +3106,6 @@ jobs:
       - name: Test the repository path derivation
         run: .github/scripts/repo-paths.test.sh
 
-      - name: Test the Playwright dependency list check
-        run: .github/scripts/playwright-deps-current.test.sh
-
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
       - name: Test the e2e proof selector
@@ -3075,13 +3152,6 @@ jobs:
       # notice titles are held here, where no browser and no runner are needed.
       - name: Test the browser lane's memory and CPU sampler
         run: .github/scripts/dispatch-browser-samples.test.sh
-
-      # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
-      # ci-caches.yaml's apt-debs job fills under, over fixture checkouts: a key that changes
-      # misses every entry saved under the old one, so the whole string and the refusals that
-      # keep it from naming nothing are held here.
-      - name: Test the apt archive cache key
-        run: .github/scripts/apt-archive-cache-key.test.sh
 
       - name: Test the race memory sampler
         run: .github/scripts/race_memory.test.sh
@@ -3572,6 +3642,9 @@ jobs:
     # 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-session-activity 28 s,
     # daemon-pane 21 s and legion-role-tools 11 s are 620 of the 646, and the 25 rows left the
     # other 26.
+    # The stall watchdog's suites among them are cybermonklabs/legion#2922's, merged
+    # 2026-11-08T18:46:47Z, and the 10 minutes that stood here came from #2512 (a limit above
+    # each job's slowest green run, 2026-10-30), which is before them.
     # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
     # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
     # concluded `success`. A ceiling a little above today's sum is back inside the test step's
@@ -3754,8 +3827,9 @@ jobs:
           job-status: ${{ job.status }}
 
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the shard legs, the three `-alone` projects a machine each, the two-process job and
-  # the merge job that joins their reports into one and posts this job's ci-ok report.
+  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the
+  # three `-alone` projects a machine each, the two-process job and the merge job that joins
+  # their reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
@@ -3766,8 +3840,10 @@ jobs:
   # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
   # lane, from main) runs it again on main's tip.
   #
-  # One input decides that: the called workflow reads `lane` for the projects each job runs and
-  # for the browsers each one installs, so nothing here chooses the engines a second time.
+  # One input decides that: the called workflow reads `lane` for the projects each job runs, so
+  # nothing here chooses them a second time. It picks no browser to install any more: the shard
+  # and alone jobs run in the image this repository builds, which carries all three engines
+  # (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
   #
   # The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
   # job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from
@@ -4406,17 +4482,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The step's -timeout 29m must fire before the runner cancels the job, so a hung test prints
+    # The step's -timeout 34m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. Both numbers come from this job's own green runs, the slowest of
-    # them 128148376484: 1022 s in the package, against 950 s in 127770782204 and 927 s in
-    # 127053239518, and 55 s of checkout, setup and compile before any of them. The package has
-    # grown twice under this pull request, first when main took in #2414's tests (953 services
-    # built to 1068) and again on the merge of #2870, which moved work into this lane. The step's
-    # deadline is the smallest whole minute at which the slowest package time is at most 60 % of
-    # it, and this limit is six minutes above that. Measure again before changing either, and
-    # from the slowest run rather than the newest: a package that has grown past 60 % of its
-    # deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 35
+    # them 128761197501: 1136.829 s in the package, against 1016.966 s in 128809181011,
+    # 1012.796 s in 128790317116 and 864.037 s in 128751128912, and about 71 s of checkout,
+    # setup and compile before any of them. The package has grown three times under this pull
+    # request, first when main took in #2414's tests (953 services built to 1068), again on the
+    # merge of #2870, which moved work into this lane, and now with #2960's wedged-commit row,
+    # measured at 56 s in series in an issue pod (the row's own 47.69 s, and 8.29 s more in the
+    # residency case, which gives each of its trials a connection of its own). The step's
+    # deadline is the smallest whole minute at which the slowest package time, that growth
+    # included, is at most 60 % of it, and this limit is six minutes above that. Measure again
+    # before changing either, and from the slowest run rather than the newest: a package that
+    # has grown past 60 % of its deadline is a deadline to raise, not a flake to re-run.
+    timeout-minutes: 40
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4463,7 +4542,7 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -5304,6 +5383,32 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # The browser image's build: browser-image.yaml builds .github/docker/browser.Dockerfile and
+  # pushes it when the package does not already hold an image built from it. Unlike worker-image
+  # above, this job has no `pull_request` term: it runs on a merge group too, so the image a
+  # merged head's `container:` jobs pin — the shard and alone jobs of
+  # .github/workflows/dispatch-browser.yaml — is built from that head.
+  browser-image:
+    needs: changes
+    if: needs.changes.outputs.browser_image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/browser-image.yaml
+    # GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
+    # whatever their `if:`: its workflow-level block (the build's packages: write, and the
+    # actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
+    # and attestations: write. That `attest` job runs whenever the build pushed, whatever the
+    # event, a pull request's run included, because the two-push order AGENTS.md describes has
+    # a pull request's run push the image the rows then pin (browser-image.yaml's `attest` job
+    # says why).
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+      checks: write
+      id-token: write
+      attestations: write
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # pr-title, the other check main's ruleset requires of this router, and with `ci-ok` one of the
   # two jobs of this file named for a required check. A pull request's title, body and commit
   # messages reach main's squash commit, the generated release notes and GitHub's pages, and its
@@ -5532,6 +5637,7 @@ jobs:
       - ci-filters
       - proof-sdk-offline
       - worker-image
+      - browser-image
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
