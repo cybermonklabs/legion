@@ -284,6 +284,13 @@ type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// execQuerier is the part of a transaction this package both writes through and reads under its
+// own lock, where what a write means depends on the row it replaces.
+type execQuerier interface {
+	execer
+	queryRower
+}
+
 func schemaVersionExists(ctx context.Context, db queryRower) (bool, error) {
 	var exists bool
 	if err := db.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {

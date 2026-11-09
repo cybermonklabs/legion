@@ -435,9 +435,23 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // previous delivery held it under; the write that records the confirmation tells them. Both are in
 // the caller's transaction, so no row is ever held by a delivery the store does not hold, and no
 // confirmation commits without telling what it confirmed.
-func putDelivery(ctx context.Context, db execer, token claim.Token, d supervise.Delivery) error {
+//
+// An unconfirmed write over a confirmed row is the machine taking its own confirmation back, and
+// that is the one write whose rows are put back (kept_decisions.go). It is read here, from the
+// row this write replaces and before it replaces it, since afterwards nothing says what the
+// write undid.
+func putDelivery(ctx context.Context, db execQuerier, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
+	}
+	kept := keptDecisions(d.Kept)
+	unconfirmed := d.ConfirmedAt.IsZero()
+	var retaken bool
+	if unconfirmed && len(kept) > 0 {
+		var err error
+		if retaken, err = confirmationTaken(ctx, db, token); err != nil {
+			return err
+		}
 	}
 	_, err := db.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, assignment, check_look, check_opened_at, queued_at, delivered_at, marked_by,
@@ -458,14 +472,14 @@ func putDelivery(ctx context.Context, db execer, token claim.Token, d supervise.
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Assignment,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
-		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, keptDecisions(d.Kept),
+		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
 		d.ProviderErrorRetries, d.ProviderErrorNote,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
 	}
-	if d.ConfirmedAt.IsZero() {
-		return holdKeptDecisions(ctx, db, token, d.ID, keptDecisions(d.Kept))
+	if unconfirmed {
+		return holdKeptDecisions(ctx, db, token, d.ID, kept, retaken)
 	}
 	return tellKeptDecisions(ctx, db, token, d.ID)
 }
