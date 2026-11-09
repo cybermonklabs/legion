@@ -172,6 +172,41 @@ describe("running a person's command", () => {
     }
   });
 
+  // The row above closes the login shell's door; `BASH_ENV` is the one a non-login,
+  // non-interactive bash still reads, and the shell this caller starts is exactly that. A
+  // session launched with it set hands the command a file that runs before it, so the person
+  // reads a banner they did not ask for and the command runs wherever that file left it - the
+  // two things the architect ruled on 2026-11-09 that R4 forbids, through another door.
+  // Measured at f9e21e78492b: with `BASH_ENV` naming a file that prints and runs a `cd`, the
+  // command `pwd -P` answered that file's banner and that file's directory. `ENV` is the same
+  // door for a `sh` the host resolves, and this row holds both out of the environment the
+  // command runs with. A zsh `$SHELL` has a door of its own that no environment closes, since
+  // zsh reads `.zshenv` whatever its args; this machine resolves bash, so this row cannot see
+  // it, and whether to pass `-f` there is the implementer's to decide.
+  test("reads no `BASH_ENV` file, so nothing runs before the command", async () => {
+    const directory = scratch();
+    const home = scratch();
+    const startup = join(home, "startup.sh");
+    await Bun.write(startup, `printf 'banner\\n'\ncd ${home}\n`);
+    const beforeBashEnv = process.env.BASH_ENV;
+    const beforeEnv = process.env.ENV;
+    process.env.BASH_ENV = startup;
+    process.env.ENV = startup;
+    try {
+      const result = await runShellCommand("pwd -P", { cwd: directory, limitMs: 10_000 });
+      expect(result.output).toBe(realpathSync(directory));
+      expect(procmgr.getShellConfig().env.BASH_ENV).toBeUndefined();
+      expect(procmgr.getShellConfig().env.ENV).toBeUndefined();
+    } finally {
+      if (beforeBashEnv === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = beforeBashEnv;
+      if (beforeEnv === undefined) delete process.env.ENV;
+      else process.env.ENV = beforeEnv;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   // The environment is the host's own for a child shell, not this process's: the host drops the
   // git location variables from it (`filterChildShellEnv`), because forwarding them makes `git`
   // ignore the command's `cwd` and write to the worktree or index they name. A session launched
