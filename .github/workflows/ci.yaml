@@ -1528,6 +1528,9 @@ jobs:
               # broker-token stand-in (internal/brokertoken/brokertokentest), which signs its
               # proofs with the key and the transport a real caller holds.
               - 'packages/envoy/internal/broker/proof/*'
+              # The relayed shapes internal/dispatch/api names (routes_shapes.go), which this run
+              # compiles with that package.
+              - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
@@ -4149,7 +4152,7 @@ jobs:
       # no container. The two-image matrix, which proves a rendered authorization on nats:2.15.1
       # and on the image the hub runs, is the one thing an in-process server cannot reproduce: it
       # sits behind the natslive tag, and this step is where it runs (INFRA-250). internal/bus has
-      # one test of its own on that matrix: the module links nats-server v2.15.2 in process, which
+      # one test of its own on that matrix: the module links nats-server v2.15.1 in process, which
       # caps a stream that sets no cap at a default of its own and takes a change of MaxConsumers
       # on a stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the
       # consumer cap this binary compiles and the keeper's restore of a cap an operator lowered or

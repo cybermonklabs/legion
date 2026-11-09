@@ -46,11 +46,14 @@ func TestAWSConfigReachesTheEndpointAndLogsNothing(t *testing.T) {
 }
 
 func TestAWSCheck(t *testing.T) {
-	// Python's str of the datetime boto3 parses DeletedDate into, in the machine's zone: botocore
-	// 1.40.61's parse_timestamp under TZ=America/Los_Angeles gave these two for these epochs.
-	zone := time.Local
-	time.Local = time.FixedZone("PDT", -7*60*60)
-	t.Cleanup(func() { time.Local = zone })
+	// check prints DeletedDate as awsStore.Describe formats it, pythonDate in the machine's zone,
+	// so each row reads its date the same way rather than setting the zone here: time.Local is a
+	// process-wide variable, and a test that writes it races every goroutine reading it, among
+	// them time.Now's (gcpstore_test.go leaves it alone for the same reason). That the format is
+	// Python's str of the datetime boto3 parses these epochs into -- botocore 1.40.61's
+	// parse_timestamp under TZ=America/Los_Angeles -- is TestPythonDate's.
+	deletedAt := time.Unix(1759190400, 500_000_000)
+	deletedOnTheSecond := time.Unix(1759190400, 0)
 	seedValue, _ := testnats.User(t)
 	rows := []struct {
 		name  string
@@ -60,9 +63,9 @@ func TestAWSCheck(t *testing.T) {
 	}{
 		{"absent", func(f *fakeAWS) *fakeAWS { f.exists = false; return f }, awsSecret + ": absent", []string{"DescribeSecret"}},
 		{"scheduled for deletion", func(f *fakeAWS) *fakeAWS { f.deletedAt = 1759190400.5; return f.holding(seedValue) },
-			awsSecret + ": present, scheduled for deletion (2025-09-29 17:00:00.500000-07:00)", []string{"DescribeSecret"}},
+			awsSecret + ": present, scheduled for deletion (" + pythonDate(deletedAt, time.Local) + ")", []string{"DescribeSecret"}},
 		{"scheduled for deletion on the second", func(f *fakeAWS) *fakeAWS { f.deletedAt = 1759190400; return f },
-			awsSecret + ": present, scheduled for deletion (2025-09-29 17:00:00-07:00)", []string{"DescribeSecret"}},
+			awsSecret + ": present, scheduled for deletion (" + pythonDate(deletedOnTheSecond, time.Local) + ")", []string{"DescribeSecret"}},
 		{"empty", func(f *fakeAWS) *fakeAWS { return f }, awsSecret + ": present; AWSCURRENT: no", []string{"DescribeSecret"}},
 		{"seeded", func(f *fakeAWS) *fakeAWS { return f.holding(seedValue, seedValue) }, awsSecret + ": present; AWSCURRENT: yes (version v2)",
 			[]string{"DescribeSecret"}},
@@ -163,9 +166,9 @@ func TestAWSOverlappingGenerateRunsLeaveTheFirstSeedServed(t *testing.T) {
 // AWSCURRENT; GetSecretValue's ResourceNotFoundException matches ErrNotServed; and a failure names
 // the call, the secret and the AWS error code.
 func TestAWSStoreAnswersFromTheCallItMakes(t *testing.T) {
-	zone := time.Local
-	time.Local = time.UTC
-	t.Cleanup(func() { time.Local = zone })
+	// The deletion row's date is read in the zone Describe formats it in, time.Local, and that
+	// variable is left alone: writing it races every goroutine that reads it (TestAWSCheck).
+	deletedAt := time.Unix(1759190400, 0)
 	seedValue, _ := testnats.User(t)
 	ctx := context.Background()
 	describe := func(s Store) (any, error) { return s.Describe(ctx, awsSecret) }
@@ -194,7 +197,7 @@ func TestAWSStoreAnswersFromTheCallItMakes(t *testing.T) {
 		{"a secret that does not exist", func(f *fakeAWS) *fakeAWS { f.exists = false; return f }, describe,
 			Description{}, "", nil, []string{"DescribeSecret"}},
 		{"a secret scheduled for deletion", func(f *fakeAWS) *fakeAWS { f.deletedAt = 1759190400; return f.holding(seedValue) }, describe,
-			Description{Exists: true, ScheduledForDeletion: true, DeletionDate: "2025-09-30 00:00:00+00:00"}, "", nil, []string{"DescribeSecret"}},
+			Description{Exists: true, ScheduledForDeletion: true, DeletionDate: pythonDate(deletedAt, time.Local)}, "", nil, []string{"DescribeSecret"}},
 		{"describe-secret denied", failing("DescribeSecret", "AccessDeniedException"), describe,
 			Description{}, "describe-secret " + awsSecret + " failed: AccessDeniedException", nil, []string{"DescribeSecret"}},
 		{"a deprecated version DescribeSecret does not show", func(f *fakeAWS) *fakeAWS {

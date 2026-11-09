@@ -101,7 +101,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 // TestWhichFilterShapeDeliversAWorkflowSubject measures, on the server this module links, what
 // each filter shape hands over. It stores the same workflow-run messages, then reads them through
 // each shape in turn, and reports both what each claims (NumPending) and what it hands over. Every
-// shape claims all of them. On nats-server v2.15.2 every shape hands all of them over too, the old
+// shape claims all of them. On nats-server v2.15.1 every shape hands all of them over too, the old
 // filter set -- the wildcard pull-request subject beside the workflow subject -- included; below
 // v2.15 that set handed over none of the runs while handing over every pull request, which is why
 // the durable an earlier release left never recorded a workflow run and why githubIntakeSubject is

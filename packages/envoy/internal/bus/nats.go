@@ -1152,10 +1152,10 @@ func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
 // subscriptionRefusal reads the server's refusal of a subscription: the subject, the queue group
 // when there is one, and the sid when the refusal is a configuration reload's revocation of a
 // subscription it had accepted. A refusal of a subscription the client sent reads `Permissions
-// Violation for Subscription to "<subject>" using queue "<queue>"` (nats-server v2.15.2
-// client.go:5926-5930); a revocation reads `Permissions Violation for Subscription to "<subject>"
+// Violation for Subscription to "<subject>" using queue "<queue>"` (nats-server v2.15.1
+// client.go:5915-5919); a revocation reads `Permissions Violation for Subscription to "<subject>"
 // (sid "<sid>")`, with `using queue "<queue>"` before the sid when the subscription has one
-// (client.go:6279-6282; nats-server before v2.15.0 named no queue group in a revocation at all).
+// (client.go:6268-6271; nats-server before v2.15.0 named no queue group in a revocation at all).
 // The server writes each name with %q, so each is matched as a whole Go-quoted string, escapes
 // included, and unquoted before it is compared: a name holding a double quote or a backslash
 // reaches the text escaped. nats.go's own reading (permissionsRe and permissionsQueueRe, nats.go

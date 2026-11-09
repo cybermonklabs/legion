@@ -61,7 +61,7 @@ func applyListenerConsumerPolicy(config *nats.ConsumerConfig) {
 
 // consumerFilterAll is the durable's filter: every subject, which is every message the stream
 // stores. It is a filter rather than none because nats-server 2.10 (2.10.29 measured, the version
-// this module built its test server from until v2.15.2) accepts an update that clears a push
+// this module built its test server from until v2.15.1) accepts an update that clears a push
 // durable's filter and then delivers nothing published after it, and every durable an earlier
 // listener created carries a filter (its build's stream subjects); an update to the full wildcard
 // delivers everything. The durable keeps a filter whatever the server runs: the full wildcard

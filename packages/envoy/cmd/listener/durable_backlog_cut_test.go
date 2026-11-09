@@ -49,7 +49,7 @@ const (
 // `o.rdc[sseq] -= 1` into a map of unsigned counts, leaving 2^64-1, so with MaxDeliver set
 // (consumerMaxDeliver) hasMaxDeliveries (`:1738-1765`) drops the message at the ack wait with no
 // redelivery and no advisory, and nothing brings it back. v2.15.0 fixed that subtraction, and
-// v2.15.2's decDeliveryCount (`server/consumer.go:4866-4883`) leaves a first delivery's count
+// v2.15.1's decDeliveryCount (`server/consumer.go:4866-4883`) leaves a first delivery's count
 // alone, so the message comes back one ack wait later like every other outstanding message. That
 // is why the listener requires nats-server v2.15.0 or later (`cmd/listener/README.md`, "The
 // delivery lease"); on anything older this row fails with messages missing.

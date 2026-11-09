@@ -299,7 +299,7 @@ func flatPayload(fields map[string]json.RawMessage) (map[string]string, error) {
 // shape that delivers everything and filters in the handler. It also means the filter no longer
 // depends on the settings row, so a settings change needs no rebind.
 //
-// nats-server v2.15.2, the server the Go tests link from the release that requires v2.15.0 or
+// nats-server v2.15.1, the server the Go tests link from the release that requires v2.15.0 or
 // later, hands every one of those shapes every message, the whole old set included
 // (TestWhichFilterShapeDeliversAWorkflowSubject, which measures the table on the linked server).
 // The one subject stays: it is what a hub below v2.15 needs, it costs nothing on one at or above

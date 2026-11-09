@@ -220,7 +220,7 @@ func startDispatchNATS(t *testing.T, urls []string, overrides map[string]string)
 // missing members again finds the start's stream at the three copies the settings ask of it, once
 // the cluster is ready again.
 //
-// A lost quorum is what both nats-server v2.10.29 and v2.15.2 refuse. One member of three down is
+// A lost quorum is what both nats-server v2.10.29 and v2.15.1 refuse. One member of three down is
 // no longer such a refusal: v2.15 places a copy on the stopped peer and the create comes up
 // (internal/bus, TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp), where
 // v2.10.29 refused it. A count the cluster has no servers for refuses on both too, and is no use

@@ -1,8 +1,8 @@
 //go:build natslive
 
 // The cases of the consumer cap that no server in this process can show, each against a real
-// nats-server image. packages/envoy/go.mod links nats-server v2.15.2, the server every in-process
-// test of this package runs, and the hub runs v2.15.1 of the same line: the raise of an uncapped
+// nats-server image. packages/envoy/go.mod links nats-server v2.15.1, the server every in-process
+// test of this package runs, which is the version the hub runs: the raise of an uncapped
 // stream, the keeper's restore of a cap an operator lowered or unset and the version read each
 // pass makes are therefore proved in process
 // (TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOrUnset). What is
