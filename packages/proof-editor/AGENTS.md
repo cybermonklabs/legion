@@ -283,9 +283,10 @@ The rows read CPU time rather than wall time, because wall time counts every mom
 leaves the process off a core. On the two-CPU pod these were measured on, the read-only parse of
 `49 items nested by indentation then blank lines` cost 2,649 ms of wall time and 2,630 ms of CPU
 time at rest, and 16,201 ms of wall time and 1,800 ms of CPU time under 12 busy loops: the wall
-time grew about 6 times while the CPU time of the same work fell. The rows before INFRA-1629
-asserted wall time against a constant, and one run of the two files under 12 busy loops failed six
-of them where the same run at rest failed none.
+time grew about 6 times. The two CPU readings were taken differently, one unrepeated parse against
+a windowed least of two, so what they say about each other is not read here. The rows before
+INFRA-1629 asserted wall time against a constant, and one run of the two files under 12 busy loops
+failed six of them where the same run at rest failed none.
 
 Each constant rests on measurements taken on that pod on 2026-11-07 and 2026-11-09, under bun
 1.4.4, where `process.cpuUsage()` moves in 10 ms steps. The figures each constant rests on stand

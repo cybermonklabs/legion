@@ -56,11 +56,12 @@ const parseCpuBudgetMs = 12_000;
 
 // The figures behind the slack and the budget (INFRA-1629). The growth check reads two
 // measurements, each wrong by up to 4 per cent from the clock (see `windowSteps`) before the
-// machine's own noise, and the highest healthy ratio, 17.20 above, needs the slack of 4 to stay
-// under the bound of 32: the slack is that room, not a tight bound. 3 times the worst healthy
-// reading is 10,710 ms, still inside the budget, and a constant factor leaves a ratio where it
-// was, so a parse 3 times slower and still linear passes both. What the rows do not catch is
-// listed once, in packages/proof-editor/AGENTS.md.
+// machine's own noise, and the highest healthy ratio measured is 17.20 against the bound of 32,
+// 1.9 times of room. The slack is that room: this pod's throughput moves by tens of per cent
+// between windows, which 1.4 times of room, the bound a slack of 3 gives, does not cover. 3 times
+// the worst healthy reading is 10,710 ms, still inside the budget, and a constant factor leaves a
+// ratio where it was, so a parse 3 times slower and still linear passes both. What the rows do
+// not catch is listed once, in packages/proof-editor/AGENTS.md.
 
 /**
  * The wall-clock ceiling every row of tests/heavy-bodies.test.ts carries, and the two measured
@@ -71,8 +72,11 @@ const parseCpuBudgetMs = 12_000;
  * above any healthy row, not a hang guard. Under the calibrated load of 12 busy loops the slowest
  * of these rows, "the default mode parses 49 items nested by indentation then blank lines", took
  * 64.4 s of wall time, and the next three took 61.3 s, 54.8 s and 52.4 s, so this ceiling is about
- * 4.7 times the slowest (bun's junit reporter, one loaded run of the two files, 2026-11-09). What
- * ends a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
+ * 4.7 times the slowest (bun's junit reporter, one loaded run of the two files, 2026-11-09). In
+ * CI that ceiling never decides anything: the twenty measured rows carry 100 minutes of it
+ * between them inside the `dispatch-ui` job's own `timeout-minutes: 15`, so the job ends first
+ * and this number is a guard for a run at a desk. What ends a real hang is that job's
+ * `timeout-minutes: 15` in .github/workflows/ci.yaml.
  */
 export const measuredRowCeilingMs = 300_000;
 
