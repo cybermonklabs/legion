@@ -2099,11 +2099,17 @@ GATES = [
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:52 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
         ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:71 COPY, run by :72 and :100"),
         ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:71 COPY, run by :102"),
-        (f"{ENVOY}/cmd/**", "packages/envoy/docker/Dockerfile:76 COPY packages/envoy/cmd ./cmd, which :100-123 builds the four binaries from"),
-        (f"{ENVOY}/going/**", "packages/envoy/docker/Dockerfile:84 COPY packages/envoy/going ./going"),
-        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:80 COPY packages/envoy/listenfd ./listenfd"),
-        (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:87 COPY packages/envoy/migrationid ./migrationid"),
-        (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:89 COPY packages/envoy/roleholder ./roleholder"),
+        (f"{ENVOY}/cmd/**", "packages/envoy/docker/Dockerfile:100 COPY packages/envoy/cmd ./cmd, which :119-142 builds the four binaries from"),
+        # agentloop: the model loop cmd/broker's judge compiles in, a package outside internal/,
+        # so the image build copies it beside cmd and internal (main's #2984). No go command of
+        # this gate reaches it, so rule 9 of check-ci-filters.sh reads the filter's pattern as
+        # dead without this row, while check-image-trigger-paths.sh refuses the filter without
+        # the pattern: the read is the image build's, and this is where the two checks meet.
+        (f"{ENVOY}/agentloop/**", "packages/envoy/docker/Dockerfile:105 COPY packages/envoy/agentloop ./agentloop"),
+        (f"{ENVOY}/going/**", "packages/envoy/docker/Dockerfile:112 COPY packages/envoy/going ./going"),
+        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:108 COPY packages/envoy/listenfd ./listenfd"),
+        (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:115 COPY packages/envoy/migrationid ./migrationid"),
+        (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:117 COPY packages/envoy/roleholder ./roleholder"),
         # The second image this job builds. Its context is that directory alone, test file and
         # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
         # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write

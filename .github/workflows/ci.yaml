@@ -3214,6 +3214,7 @@ jobs:
               - 'scripts/assemble-third-party-notices.sh'
               - 'packages/envoy/go.mod'
               - 'packages/envoy/go.sum'
+              - 'packages/envoy/agentloop/**'
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
