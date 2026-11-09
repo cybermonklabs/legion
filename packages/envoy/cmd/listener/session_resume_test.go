@@ -132,3 +132,41 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 		t.Fatalf("the frame carries stream sequence %d, want %d, the message stored while the session was away", frames[0].seq, awaySeq)
 	}
 }
+
+// The rollout guard: the listener's deletes meet sessions whose plugin predates the
+// consumer_start floor, since the hub is pinned before a fleet's sessions relaunch on a new
+// pi-envoy or claude-envoy. Such a session has received nothing, so it holds no resume point of
+// its own and its registration carries none, and the listener alone keeps its position: the
+// floor recorded on the stream before the delete (bus.SessionResumeSubject) is where its next
+// consumer is created. Without that record the consumer would start at the stream's end and
+// every message stored while the session was away would be lost to it.
+//
+// The messages below are a followed issue topic's and the session's own inbox, which is where a
+// role message reaches a holder too: the listener forwards a role message onto the holder's
+// agent subject, which the stream stores, where the role lane itself is core NATS and in no
+// consumer's filter.
+func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing.T) {
+	rig := newRelayRig(t)
+	const sessionID = "ses_resume_old_plugin"
+	const followed = "notifications.dispatch.issue.INFRA-2365.comment"
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
+	// It is handed nothing at all, which is the population this guard is for.
+	standIn.none(t, 200*time.Millisecond)
+
+	rig.deregister(t, sessionID, "")
+	rig.requireNoConsumer(t, sessionID)
+	onTopic, topicSeq := rig.storeEvent(t, followed)
+	toSession, sessionSeq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+
+	// The old plugin's registration: a consumer, and no resume point of any kind.
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2", followed))
+
+	frames := standIn.collect(t, 2, 5*time.Second)
+	requireFrames(t, frames, onTopic, toSession)
+	if frames[0].seq != topicSeq || frames[1].seq != sessionSeq {
+		t.Fatalf("the frames carry stream sequences %d and %d, want %d and %d, the two messages stored while the session was away",
+			frames[0].seq, frames[1].seq, topicSeq, sessionSeq)
+	}
+	standIn.none(t, time.Second)
+}
