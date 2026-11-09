@@ -156,7 +156,10 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 // handed meanwhile, those NATS had already delivered to the client's buffer included, so the server
 // redelivers them at once -- to the next holder, which can then not start a pull request's or run's
 // next message while this process still works on the one before it. A message the callback is
-// handed after that is handed back at once. It returns once the drain has ended -- at the latest
+// handed after that is handed back at once. Every one of those hand-backs is withheld once the
+// hold's loss deadline has passed (handBack), since from that moment the durable they would
+// answer may be one a take-over recreated; the messages stay outstanding, and that take-over
+// hands them to the new holder. It returns once the drain has ended -- at the latest
 // intakeDrainWait after the last handler returned, or as ctx ends if that is sooner, when it
 // unsubscribes instead. The drain gives up the subscription's registration on the client
 // (bus.Client.DrainSubscription), so that no reconnect binds it again and a later subscribe on the
@@ -205,7 +208,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.held = nil
 		d.mu.Unlock()
 		for _, msg := range held {
-			redeliverAfter(msg, 0)
+			d.handBack(msg)
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid.
@@ -225,10 +228,10 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 }
 
 // giveBack hands msg back to NATS for the next holder: once no handler of this delivery is
-// running, at once; until then it is held, and the stop hands it back with the rest. Handed back
-// earlier, a message of a key whose handler is still running here could be redelivered to the
-// next holder and run there beside it, and two fetches of one pull request or run at once can
-// write the older answer last.
+// running, at once (handBack); until then it is held, and the stop hands it back with the rest.
+// Handed back earlier, a message of a key whose handler is still running here could be
+// redelivered to the next holder and run there beside it, and two fetches of one pull request or
+// run at once can write the older answer last.
 func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 	d.mu.Lock()
 	if !d.released {
@@ -237,6 +240,37 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 		return
 	}
 	d.mu.Unlock()
+	d.handBack(msg)
+}
+
+// handBack publishes msg's hand-back to the durable, so the server redelivers it at once, while
+// the hold still covers this delivery (holdCovers), and withholds it once the hold's loss
+// deadline has passed.
+//
+// Every hand-back this process makes is a publish at the message's reply subject, which names
+// the durable rather than the consumer this message was fetched on. A take-over deletes the
+// durable and creates it again under the same name (heldDurable.takeOver), so a hand-back
+// published after the lapse lands on the new holder's consumer, where it moves that message's
+// pending entry and has the new holder delivered it a second time -- two processes fetching one
+// pull request or run at once, which is what the hold exists to stop. Nothing is lost by
+// withholding it: the message was never acknowledged, so it stays outstanding, and the
+// take-over's recreate at the durable's ack floor hands it to the new holder once.
+//
+// A holder whose hold is live still hands its messages back at once, which is what makes a
+// graceful stop's hand-back reach the standby within seconds rather than after the ack wait: a
+// stop begins intakeHoldMargin before the hold's loss deadline at the latest (heldDurable.run),
+// and only the part of it that runs past that deadline -- a handler given up late, a process
+// frozen and resumed -- is withheld.
+//
+// It reads the hold alone, and not the stop's flag as mayAnswer does: the stop is itself one of
+// the callers, and a hand-back of a message this delivery was handed is sound while the hold
+// covers it whether or not this subscription still delivers.
+func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
+	if !d.holdCovers() {
+		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
+			"subject", msg.Subject)
+		return
+	}
 	redeliverAfter(msg, 0)
 }
 
@@ -250,8 +284,9 @@ const intakeDrainWait = natsgo.DefaultDrainTimeout
 
 // receive is the subscription's callback, and only routes: a message once stopping is set, or once
 // the hold's loss deadline has passed, is handed back (giveBack) -- this intake may no longer act
-// on the durable's messages, and the server redelivers them to the next holder; a subject the
-// intake's key does not want is acknowledged; and any other message goes to its key's handler
+// on the durable's messages, and the server redelivers them to the next holder, or, once that
+// deadline has passed, the next holder's take-over hands them over instead (handBack); a subject
+// the intake's key does not want is acknowledged; and any other message goes to its key's handler
 // (deliver).
 func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 	if d.stopping.Load() || !d.holdCovers() {

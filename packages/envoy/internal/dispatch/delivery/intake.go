@@ -296,10 +296,12 @@ func consumerGenerationMetadata() map[string]string {
 // decided.
 //
 // The one message it does not ack is one whose handling the stop gave up (handling cancelled,
-// StopDelivering): that is negatively acknowledged, so the next holder of the durable redoes it at
-// once rather than this event waiting five minutes for the reconcile. Its writes are the upserts
+// StopDelivering): that is handed back, so the next holder of the durable redoes it at once
+// rather than this event waiting five minutes for the reconcile. Its writes are the upserts
 // reconcile makes too, so redoing what had in fact finished just before the stop gave it up
-// writes the same facts again.
+// writes the same facts again. That hand-back is withheld once the hold's loss deadline has
+// passed (intakeDelivery.handBack), as the stop's own hand-backs are, and the message is then
+// the next holder's take-over to hand over.
 //
 // The other message it does not acknowledge, for as many deliveries as the bound below allows,
 // is one whose pull request's head row could not be stored at all (ErrHeadNotStored,
@@ -336,16 +338,16 @@ func consumerGenerationMetadata() map[string]string {
 // made, and nothing else calls deliver.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg, handling := message.msg, d.handling
-	// handBack is set by the one route error NATS must redeliver, which the deferred answer
+	// headNotStored is set by the one route error NATS must redeliver, which the deferred answer
 	// below reads: every other path acknowledges.
-	handBack := false
+	headNotStored := false
 	defer func() {
 		if handling.Err() != nil {
 			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
-			redeliverAfter(msg, 0)
+			d.handBack(msg)
 			return
 		}
-		if handBack {
+		if headNotStored {
 			if !d.mayAnswer() {
 				slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
 					"subject", msg.Subject)
@@ -387,7 +389,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
 			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
 			"redeliver_after", headWriteRedeliverAfter, "error", err)
-		handBack = true
+		headNotStored = true
 		return
 	case err != nil:
 		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)

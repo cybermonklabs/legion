@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -383,6 +384,100 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	if got := holder.fetches(inFlight); got != 1 {
 		t.Errorf("with nothing left with the durable, the stopping holder fetched pull request %d %d times; want the one its handler held and no more: standby %d, holder %d; %s",
 			inFlight, got, standby.fetches(inFlight), got, consumerState(publisher))
+	}
+}
+
+// A holder whose stop runs on past its hold's loss deadline publishes no hand-back at all, and
+// the standby that takes the durable over handles each of its messages once.
+//
+// Every hand-back is a publish at the message's reply subject, which names the durable and not
+// the consumer the message was fetched on. A take-over deletes the durable and creates it again
+// under the same name at its ack floor (heldDurable.takeOver), so a hand-back published after
+// the lapse lands on the new holder's consumer, moves that message's pending entry and has the
+// new holder delivered it a second time. Two hand-backs of the stop's take that path: the
+// messages it held, which are the ones that were waiting behind their key, and the message of
+// the handler it gave up (Intake.deliver). Both are withheld once the hold has lapsed
+// (intakeDelivery.handBack), and nothing is lost: no message was acknowledged, so the
+// take-over's recreate at the ack floor hands every one of them to the new holder.
+//
+// The row drives the sequence a frozen holder makes of that, which the multiprocess suite drives
+// with a real SIGSTOP (TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed): the holder's
+// handler is held inside its GitHub fetch, its lease pool is cut so no renewal of its hold
+// lands, and its stop -- which cannot publish anything until that handler returns -- therefore
+// runs its hand-backs after the loss deadline, since the handler is given up only when the
+// stop's own budget (intakeHoldMargin) ends, a margin past that deadline.
+//
+// What it measures is the answers published to the durable, read off the ack subject itself
+// rather than from the consumer's counts, as the head-write row does
+// (TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce): a
+// hand-back is a publish, and whether the server still has a consumer to act on it depends on
+// how far the take-over has got. None of them may be a hand-back, and the standby's own
+// acknowledgements are there to be read beside them, so a recorder that saw nothing at all
+// cannot pass the row by silence.
+func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessageOnce(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsURL := testnats.URL(t)
+	publisher := intakeTestClient(t)
+	answers := durableAnswers(t, publisher)
+
+	// One message in the holder's handler and the rest waiting behind it on its key, which is
+	// what fills the durable's in-flight slots (intakeMaxAckPending). The handler is held for
+	// the whole row: intakeMessageTimeout is left at its minute, so what ends that fetch is the
+	// stop giving the handler up and not a deadline of the handler's own.
+	const inFlight = 300
+	queued := intakeMaxAckPending - 1
+	holder := startIntakeProcess(t, pool, natsURL, func(number int) bool { return number == inFlight })
+	awaitBoundDurable(t, publisher)
+	standby := startIntakeProcess(t, pool, natsURL, nil)
+
+	publishMergedPullRequest(t, publisher, inFlight)
+	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+		return "the holder never started on the first message: " + consumerState(publisher)
+	})
+	for range queued {
+		publishMergedPullRequest(t, publisher, inFlight)
+	}
+	awaitAckPending(t, publisher, 1+queued)
+
+	// The cut takes the holder off the lease pool its hold is renewed on, as a network that took
+	// it off Postgres would, or as a freeze leaves a process that renews nothing: the hold
+	// lapses, and the holder stops delivering.
+	cut := time.Now()
+	holder.leases.cut.Store(true)
+	waitFor(t, 30*time.Second, holder.keyedRunnerStopped, func() string {
+		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
+	})
+
+	// 60 s: the handler given up when the stop's budget ends, the hold's lapse (intakeHoldTTL,
+	// 15 s), the standby's poll (durableBindInterval, 2 s) and its take-over.
+	waitFor(t, 60*time.Second, func() bool { return standby.fetches(inFlight) == 1+queued }, func() string {
+		return fmt.Sprintf("the standby handled %d of the lapsed holder's %d messages: holder %d; %s",
+			standby.fetches(inFlight), 1+queued, holder.fetches(inFlight), consumerState(publisher))
+	})
+	t.Logf("the standby handled the lapsed holder's messages %s after its lease pool was cut", time.Since(cut))
+	awaitEverythingAcknowledged(t, publisher)
+
+	published := answers()
+	var handedBack []string
+	for _, answer := range published {
+		if strings.HasPrefix(answer, "-NAK") {
+			handedBack = append(handedBack, answer)
+		}
+	}
+	if len(handedBack) > 0 {
+		t.Errorf("hand-backs published to the delivery durable = %q, want none: the holder's hold had lapsed before its stop answered, so each of them lands on the durable the standby's take-over recreated",
+			handedBack)
+	}
+	if len(published) == 0 {
+		t.Fatal("no answer to the delivery durable was recorded at all, so the row measured nothing: the standby's acknowledgements are among them")
+	}
+	if got := standby.fetches(inFlight); got != 1+queued {
+		t.Errorf("with nothing left with the durable, the standby fetched pull request %d %d times; want the lapsed holder's %d messages, each once: holder %d; %s",
+			inFlight, got, 1+queued, holder.fetches(inFlight), consumerState(publisher))
+	}
+	if got := holder.fetches(inFlight); got != 1 {
+		t.Errorf("the holder fetched pull request %d %d times; want the one its given-up handler held: %s", inFlight, got, consumerState(publisher))
 	}
 }
 

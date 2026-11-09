@@ -1320,6 +1320,9 @@ The messages in their handlers get until the stop's deadline
 — `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
 — to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
 Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
+Every one of those answers, a given-up handler's and a held message's alike, is withheld once the hold's loss deadline has passed (`intakeDelivery.handBack`), as the head-write hand-back above is:
+from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.
+A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — therefore publishes nothing, and the take-over's recreate at the ack floor hands those messages to the new holder once.
 Last it waits for the drain to end, cut short by that deadline, and the run loop releases the durable's hold, so a standby takes it over at once rather than at the hold's lapse.
 A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:

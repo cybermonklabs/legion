@@ -148,8 +148,24 @@ func jobConsumerConfig() natsgo.ConsumerConfig {
 // deliver acks a job message on receipt, then hands its payload to receive. Acking first is safe:
 // the run's end event (Intake) and the reconcile both read every job of a run, so a process that
 // dies with a read pending loses only the early signal, and a message never waits on GitHub.
-func (j *JobIntake) deliver(_ *intakeDelivery, message intakeMessage) {
+//
+// A message it is handed once this intake has stopped is handed back instead, unread and
+// unacknowledged (intakeDelivery.giveBack): its read would run under the cancelled Run context
+// and fail there ("read whether a job's run is tracked"), so acknowledging it would spend the
+// event's early signal on nothing. The two readings are the two ends of the stop. The delivery's
+// own flag covers a message the callback routes once the stop has begun; Run's context covers
+// the moment between run returning on its ctx (heldDurable.run) and the stop setting that flag,
+// in which the keyed runner can still start a job queued behind the one in hand. What the
+// hand-back answers, and whether it is published at all, is the stop's and the hold's to decide
+// (intakeDelivery.handBack): the message stays outstanding either way, and the next holder is
+// handed it.
+func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
+	if j.ctx.Err() != nil || d.stopping.Load() {
+		slog.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
+		d.giveBack(msg)
+		return
+	}
 	if err := msg.Ack(); err != nil {
 		slog.Error("dispatch delivery: acknowledge job message", "subject", msg.Subject, "error", err)
 	}

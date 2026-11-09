@@ -175,11 +175,14 @@ func (t *bindThrottle) reportStandby(name, message string) {
 //     subject no hold recorded is a process of the build before holds, which binds by lookup and
 //     holds nothing: it is never taken from it, and the take-over waits until it lets go.
 //   - The holder stops delivering at once when its hold is lost, and when its check finds the
-//     durable delivering to another subject (check); it hands a message back rather than handle
-//     it once its hold's loss deadline has passed (intakeDelivery.receive).
+//     durable delivering to another subject (check); it does not handle a message it is handed
+//     once its hold's loss deadline has passed, and leaves it with the durable rather than
+//     answering for it (intakeDelivery.receive, intakeDelivery.handBack).
 //   - When its process stops, it stops delivering, handing back every message it was delivered
 //     and did not handle, and then releases the hold (stop), so a standby takes over at once and
-//     is redelivered those messages within seconds rather than after the ack wait.
+//     is redelivered those messages within seconds rather than after the ack wait. A stop that
+//     runs past the hold's loss deadline publishes no hand-back at all: those messages are the
+//     next holder's take-over to hand over.
 //
 // The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
 // from any goroutine.
