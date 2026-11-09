@@ -8,7 +8,11 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { searchResponse } from "../../__tests__/search-fixture";
+import {
+  architectureTree,
+  issueCollaborators,
+  searchResponse,
+} from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -179,27 +183,8 @@ let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 let architectureRead: Mock<typeof api.getArchitecture>;
 let searchRead: Mock<typeof api.search>;
 beforeEach(() => {
-  collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue({
-    agents: [],
-    issue_key: "CORE-1",
-    legion_registry: "ok",
-    people: [],
-  });
-  architectureRead = spyOn(api, "getArchitecture").mockResolvedValue({
-    components: [],
-    not_architectural: [],
-    retired_links: [],
-    sources: [],
-    totals: {
-      components_without_work: 0,
-      issues_done: 0,
-      issues_total: 0,
-      not_architectural: 0,
-      retired_links: 0,
-      unassigned: 0,
-    },
-    unassigned: [],
-  });
+  collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators());
+  architectureRead = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   searchRead = spyOn(api, "search").mockResolvedValue(searchResponse([]));
 });
 afterEach(() => {
@@ -259,6 +244,30 @@ test("a draft whose only party is a person strips /btw and sends a mode nobody i
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// Each pill under the draft is a link to the page its reference opens, written through the one
+// gate between a typed reference and an `href` (`routes.ts`'s `appHref`). A person has no page,
+// so the draft that names one shows no pill for them: an empty `href` navigates to this very
+// page, which would drop the draft the reader is writing.
+test("a person named in the draft gets no pill, and a reference with a page gets one", async () => {
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("[Alice](dispatch://person/alice@example.com) and dispatch://CORE-2");
+    const pills = await screen.findByRole("region", { name: "References" });
+    expect(
+      within(pills)
+        .getAllByRole("link")
+        .map((pill) => pill.getAttribute("href"))
+    ).toEqual(["/issues/CORE-2"]);
+  } finally {
+    view.unmount();
   }
 });
 

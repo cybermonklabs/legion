@@ -11,7 +11,6 @@ import {
   REF_PICKER_HEADINGS,
   type RefPickerRow,
   readTrigger,
-  stepRow,
 } from "./ref-picker";
 
 function row(kind: RefPickerRow["kind"], label: string, reference: string): RefPickerRow {
@@ -151,10 +150,4 @@ test("an insertion replaces the trigger through the caret and keeps the text aft
     caret: "see dispatch://CORE-1".length,
     text: "see dispatch://CORE-1 and the rest",
   });
-});
-
-test("the highlight wraps at either end of the list", () => {
-  expect(stepRow(0, -1, 3)).toBe(2);
-  expect(stepRow(2, 1, 3)).toBe(0);
-  expect(stepRow(0, 1, 0)).toBe(0);
 });

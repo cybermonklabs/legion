@@ -65,7 +65,8 @@ const READING_CONSTRUCTS: readonly Construct[] = [
     name: "a mount of the body or the preview renderer",
     pattern: /<MarkdownBody\b|<MarkdownPreview\b/,
   },
-  { name: "a mount of the reference card", pattern: /<Unfurl\b|<RefPreviewHost\b/ },
+  // `<UnfurlRead` is the mount the renderer itself makes, with the readings it already has.
+  { name: "a mount of the reference card", pattern: /<Unfurl|<RefPreviewHost\b/ },
 ];
 
 /** A reader this change folded into the shared one. Nothing may import it back: a second reader
@@ -126,9 +127,9 @@ const SCANNED_FILES = SCANNED_ROOTS.flatMap(collectSourceFiles).sort();
 type Mode = "block" | "code" | "line" | "quoted";
 
 /**
- * One file's lines with every comment blanked, so prose that names a construct - a `<textarea>`
- * an interface documents, a `createProofEditor()` an explanation mentions - is not read as a
- * mount of it. Blanks rather than drops, so a line number below is the file's own.
+ * One file's lines with every comment of `text` blanked, so prose that names a construct - a
+ * `<textarea>` an interface documents, a `createProofEditor()` an explanation mentions - is not
+ * read as a mount of it. Blanks rather than drops, so a line number below is the file's own.
  *
  * It reads character by character because a comment's opening characters are also ordinary text
  * inside a string: `path="/issues/:key/*"` in `app.tsx` opens no comment, and a regex that
@@ -136,8 +137,8 @@ type Mode = "block" | "code" | "line" | "quoted";
  * seeing a hundred lines of the shell. A string's own characters are left as they are: no
  * construct is written in one, and the import check below reads module specifiers.
  */
-function sourceLines(file: string): string[] {
-  const chars = [...readFileSync(join(REPO_ROOT, file), "utf8")];
+function sourceLines(text: string): string[] {
+  const chars = [...text];
   let mode: Mode = "code";
   let quote = "";
   let at = 0;
@@ -186,7 +187,15 @@ function sourceLines(file: string): string[] {
   return chars.join("").split("\n");
 }
 
-const LINES_BY_FILE = new Map(SCANNED_FILES.map((file) => [file, sourceLines(file)] as const));
+/** Each scanned file's own text, read once: the row checks below read a word anywhere in it,
+ *  and the walk reads it with its comments blanked. */
+const TEXT_BY_FILE = new Map(
+  SCANNED_FILES.map((file) => [file, readFileSync(join(REPO_ROOT, file), "utf8")] as const)
+);
+
+const LINES_BY_FILE = new Map(
+  SCANNED_FILES.map((file) => [file, sourceLines(TEXT_BY_FILE.get(file) ?? "")] as const)
+);
 
 /** Whether `file` holds any of `constructs`. */
 function holdsAny(file: string, constructs: readonly Construct[]): boolean {
@@ -200,8 +209,7 @@ function holdsAny(file: string, constructs: readonly Construct[]): boolean {
 /** Whether `file` writes `word`, comments included: a row's id is written at its site as a
  *  pointer to the row, and a pointer is a comment. */
 function writesWord(file: string, word: string): boolean {
-  const text = readFileSync(join(REPO_ROOT, file), "utf8");
-  return text.includes(word);
+  return TEXT_BY_FILE.get(file)?.includes(word) === true;
 }
 
 /** One place the walk found a construct. */
@@ -371,13 +379,17 @@ describe("no file imports a reader this change deleted", () => {
   test.each(
     DELETED_READERS.map((reader) => [reader.what, reader] as const)
   )("%s is imported nowhere", (_what: string, reader: DeletedReader) => {
+    // The patterns are the reader's own, so one is built per deleted reader rather than per
+    // line of every file the walk reads.
+    const importPattern =
+      reader.module === undefined ? undefined : new RegExp(`from "[^"]*${reader.module}"`);
+    const namePatterns = reader.names.map((name) => new RegExp(`\\b${name}\\b`));
     const offenders: string[] = [];
     for (const file of SCANNED_FILES) {
       const lines = LINES_BY_FILE.get(file) ?? [];
       lines.forEach((line, index) => {
-        const importsModule =
-          reader.module !== undefined && new RegExp(`from "[^"]*${reader.module}"`).test(line);
-        const writesName = reader.names.some((name) => new RegExp(`\\b${name}\\b`).test(line));
+        const importsModule = importPattern?.test(line) === true;
+        const writesName = namePatterns.some((pattern) => pattern.test(line));
         if (importsModule || writesName) {
           offenders.push(`${file}:${index + 1}`);
         }

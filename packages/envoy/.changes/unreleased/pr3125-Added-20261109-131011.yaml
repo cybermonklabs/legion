@@ -1,0 +1,5 @@
+kind: Added
+body: Dispatch reads an agent, a role and a person out of a text as references, and `GET /api/v1/search` takes a repeated `kind` over the five kinds its index holds, ranking, counting and paging those alone. A comment resolves its deliveries from the party references in its body as well as from the `mentions` array a caller sends, so a mention written as text is delivered; a party is read and never stored, the reference graph holding no node for one.
+time: 2026-11-09T13:10:11.868223632Z
+custom:
+    Issue: pr3125

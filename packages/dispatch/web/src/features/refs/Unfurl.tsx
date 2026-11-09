@@ -15,7 +15,12 @@ import { ReferenceHostIs } from "./reference-host";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
-import { readTextReferences, type TextReference, type TextSource } from "./text-references";
+import {
+  readTextReferences,
+  type TextReading,
+  type TextReference,
+  type TextSource,
+} from "./text-references";
 import { useTextReferences } from "./useTextReferences";
 
 interface UnfurlProps {
@@ -272,12 +277,13 @@ function referenceCards(
 }
 
 /**
- * The cards under a body that is nothing but references: one card per distinct reference, in
- * the margin, the Inbox thread and the Conversation alike. The predicate is one
- * (`referenceCards`), over the one reader of what a text cites (`text-references.ts`), so every
- * form a reference is written in counts the same - a `dispatch://` reference, a dashboard
- * address, an issue key on its own, and a `#` and the id of a question block of `source`'s
- * document - and a GitHub issue or pull-request URL, which Dispatch does not read, counts too.
+ * The cards under a body that is nothing but references, for a caller that has already read
+ * that body: one card per distinct reference, in the margin, the Inbox thread and the
+ * Conversation alike. The predicate is one (`referenceCards`), over the one reader of what a
+ * text cites (`text-references.ts`), so every form a reference is written in counts the same -
+ * a `dispatch://` reference, a dashboard address, an issue key on its own, and a `#` and the
+ * id of a question block of the body's source - and a GitHub issue or pull-request URL, which
+ * Dispatch does not read, counts too.
  *
  * A reference may end its sentence: a word is still one reference when everything it holds
  * beyond it is what the reference grammar itself trims (`trimmedTail`), so `dispatch://CORE-1.`
@@ -286,21 +292,26 @@ function referenceCards(
  * there would say the same thing twice. A word that names nothing shows none either, so a body
  * of one bare key whose issue does not exist stays the text it is.
  *
- * Only a body already shaped like one asks the server anything: the shape is read first, from
- * the text alone, and the queries behind the keys, the `#id`s and the id prefixes
- * (`useTextReferences`) are started only for a body that passed it. Almost every body is prose
- * and starts none.
+ * Both readings are the caller's (`useTextReferences`): `written`, the text alone, which the
+ * shape is read from, and `reading`, the same text with everything the queries answered, which
+ * the cards are. The renderer that mounts this has made both for the body it painted, so a
+ * body costs one reading however many readers of it there are.
  */
-export function Unfurl({ body, source }: UnfurlProps): ReactNode {
-  const origin = window.location.origin;
+export function UnfurlRead({
+  body,
+  reading,
+  written,
+}: {
+  body: string;
+  /** The body's references with every fact its queries answered: what the cards are. */
+  reading: TextReading;
+  /** The body's references as the text alone reads: what its shape is read from. */
+  written: TextReading;
+}): ReactNode {
   const shaped = useMemo(
-    () =>
-      referencesOnly(body, referenceWords(body, readTextReferences(body, { origin }).references)),
-    [body, origin]
+    () => referencesOnly(body, referenceWords(body, written.references)),
+    [body, written]
   );
-  // The hook's own reading of the same body, made with everything its queries answered: the
-  // cards are read from it rather than from a second pass over the text.
-  const { reading } = useTextReferences(shaped ? body : "", source);
   const cards = useMemo(
     () => (shaped ? referenceCards(body, reading.references) : undefined),
     [body, reading, shaped]
@@ -319,4 +330,24 @@ export function Unfurl({ body, source }: UnfurlProps): ReactNode {
       ))}
     </section>
   );
+}
+
+/**
+ * `UnfurlRead` for a caller that has read nothing: it makes both readings itself.
+ *
+ * Only a body already shaped like a card list asks the server anything: the shape is read
+ * first, from the text alone, and the queries behind the keys, the `#id`s and the id prefixes
+ * (`useTextReferences`) are started only for a body that passed it. Almost every body is prose
+ * and starts none. The rendered body mounts `UnfurlRead` with its own readings instead
+ * (`MarkdownBody`), having started those queries for the links in the text itself.
+ */
+export function Unfurl({ body, source }: UnfurlProps): ReactNode {
+  const origin = window.location.origin;
+  const written = useMemo(() => readTextReferences(body, { origin }), [body, origin]);
+  const shaped = useMemo(
+    () => referencesOnly(body, referenceWords(body, written.references)),
+    [body, written]
+  );
+  const { reading } = useTextReferences(shaped ? body : "", source);
+  return <UnfurlRead body={body} reading={reading} written={written} />;
 }

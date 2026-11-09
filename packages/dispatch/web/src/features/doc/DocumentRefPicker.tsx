@@ -88,7 +88,6 @@ export function DocumentRefPicker({
           style={{ left: `${caret.left}px`, top: `${caret.bottom + LIST_GAP_PX}px` }}
         >
           <RefPickerList
-            label="References"
             onTake={(insertion) => editor?.insertReference(insertion)}
             picker={picker}
           />

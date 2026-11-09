@@ -33,11 +33,11 @@ export const REF_PICKER_KINDS = [
 export type RefPickerKind = (typeof REF_PICKER_KINDS)[number];
 
 /** The parties: the kinds whose pick inserts a worded link rather than a bare address (R4). */
-export const REF_PICKER_PARTY_KINDS = ["person", "agent", "role"] as const;
+const REF_PICKER_PARTY_KINDS = ["person", "agent", "role"] as const;
 
 export type RefPickerPartyKind = (typeof REF_PICKER_PARTY_KINDS)[number];
 
-export function isPartyKind(kind: RefPickerKind): kind is RefPickerPartyKind {
+function isPartyKind(kind: RefPickerKind): kind is RefPickerPartyKind {
   return REF_PICKER_PARTY_KINDS.some((party) => party === kind);
 }
 
@@ -285,11 +285,6 @@ export type RefPickerKeyResult =
   | { readonly action: "closed" }
   | { readonly action: "opened-parts" }
   | { readonly action: "took"; readonly insertion: RefPickerInsertion };
-
-/** The next highlighted row after a move, wrapping at either end of the list. */
-export function stepRow(index: number, delta: 1 | -1, count: number): number {
-  return count === 0 ? 0 : (index + delta + count) % count;
-}
 
 /** What the list is, while it is not a list of rows. A host draws the words below. */
 export type RefPickerState = "rows" | "loading" | "empty" | "unreachable";

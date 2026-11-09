@@ -11,7 +11,6 @@ import { TruncatedText } from "../../components/TruncatedText";
 import {
   card,
   cardHoverBorder,
-  dangerText,
   selectedCardBg,
   selectedCardBorder,
   textMutedOnSurface,
@@ -19,13 +18,12 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
-import { RefPickerParties } from "../refs/RefPickerList";
+import { RefPickerNotes } from "../refs/RefPickerList";
 import {
   insertionText,
   REF_PICKER_HEADINGS,
   REF_PICKER_KINDS,
   REF_PICKER_TRIGGERS,
-  REF_PICKER_WORDS,
   type RefPickerDoor,
   type RefPickerKind,
   readTrigger,
@@ -48,7 +46,7 @@ import { type RefPicker, useRefPicker } from "../refs/useRefPicker";
 /** The kinds this box offers. A message of a session's live conversation belongs to no issue,
  *  so it has no `dispatch://` address and neither have its blocks: neither kind is offered
  *  here, and the search is never asked for one. */
-export const AGENT_MESSAGE_KINDS: readonly RefPickerKind[] = REF_PICKER_KINDS.filter(
+const AGENT_MESSAGE_KINDS: readonly RefPickerKind[] = REF_PICKER_KINDS.filter(
   (kind) => kind !== "message" && kind !== "message-block"
 );
 
@@ -158,31 +156,7 @@ function DoorBody({
   // The door closing takes its rows with it.
   useEffect(() => () => onQuery(door, undefined), [door, onQuery]);
   if (!open) return null;
-  return (
-    <>
-      {picker.instruction === undefined ? null : (
-        <p
-          className={`px-3 py-2 text-xs ${textMutedOnSurface}`}
-          data-testid="ref-picker-instruction"
-        >
-          {picker.instruction}
-        </p>
-      )}
-      <RefPickerParties picker={picker} />
-      {picker.state === "rows" ? null : picker.state === "unreachable" ? (
-        <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="ref-picker-unreachable">
-          {REF_PICKER_WORDS.unreachable}
-        </p>
-      ) : (
-        <p
-          className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
-          data-testid={`ref-picker-${picker.state}`}
-        >
-          {REF_PICKER_WORDS[picker.state]}
-        </p>
-      )}
-    </>
-  );
+  return <RefPickerNotes picker={picker} />;
 }
 
 /**

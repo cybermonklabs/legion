@@ -579,6 +579,12 @@ export const AGENTS_MACHINE_PARAM = "machine";
  *  opens (`buildReferencePath`), named here beside the filter it stands with. */
 export const AGENTS_ROLE_PARAM = "role";
 
+/** The `?component=` the Architecture pane holds its selected component in, the page a
+ *  `dispatch://<PROJECT>/component/<id>` reference opens (`buildReferencePath`), named once
+ *  here so the pane reading it (`features/architecture/ArchitecturePage.tsx`) and the link
+ *  building it cannot drift apart. */
+export const ARCHITECTURE_COMPONENT_PARAM = "component";
+
 /** The Agents page narrowed to one machine, `/agents?machine=<host>`: the link a machine's own
  *  page sends a reader to its sessions by. */
 export function buildAgentsMachinePath(host: string): string {
@@ -983,6 +989,14 @@ export function appHref(path: string): string | undefined {
  *  so a path that escapes it escapes any origin and nothing is ever fetched from it. */
 const SAME_SITE_PROBE_ORIGIN = "https://same-site.invalid";
 
+/** The `href` a reference opens inside this dashboard, or `undefined` for one that opens no
+ *  page of it: the path the reference builds (`buildReferencePath`), through the gate above.
+ *  The composition every sink of a typed reference makes - `RefLink`'s two writers and
+ *  `features/doc/picture-view` - named once here, beside the gate it is made of. */
+export function referenceHref(route: DispatchReferenceRoute): string | undefined {
+  return appHref(buildReferencePath(route));
+}
+
 /** The SPA path a reference navigates to, whichever side of the issue/project split it is on. A
  *  block opens its document, issue comment or message at the block (`#b-`); a pinned block of a
  *  document opens the version of its document it pins, since a version's stored text holds no
@@ -1004,9 +1018,8 @@ export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: str
     case "role":
       return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
     case "component": {
-      // The pane's own `?component=` state (`features/architecture/ArchitecturePage.tsx`).
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
-      return `${architecture}?component=${encodeURIComponent(route.id)}`;
+      return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
     // Nothing shows a person, so there is no page to open: the empty path is the answer a
     // caller acts on, drawing the reference as words rather than as a link.

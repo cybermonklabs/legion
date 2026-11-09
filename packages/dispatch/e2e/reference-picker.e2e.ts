@@ -6,7 +6,14 @@ import {
   REF_PICKER_INSTRUCTION,
   type RefPickerDoor,
 } from "../web/src/features/refs/ref-picker";
-import { highlightedRow, openRefPicker, pickerHeadings, pickerRows } from "./ref-picker";
+import {
+  commentField,
+  highlightedRow,
+  openRefPicker,
+  pickerHeadings,
+  pickerRows,
+  refPicker,
+} from "./ref-picker";
 import {
   COMPONENT_TITLE,
   PERSON_LOGIN,
@@ -66,10 +73,7 @@ test("the three doors open one list over the same rows, each ranking the kinds i
       if (url.pathname === "/api/v1/search") searched.push(url.searchParams.get("q") ?? "");
     });
     await page.goto(`/issues/${world.host.key}/conversation`);
-    // The docked composer's own box at the foot of the tab: the issue's turns mount boxes of
-    // their own part-way through a row, and `Comment` as a substring reaches an `Edit comment`
-    // too, so the box is taken by its exact name and the last of them.
-    const field = page.getByRole("textbox", { exact: true, name: "Comment" }).last();
+    const field = commentField(page);
 
     // At no characters at all: the kinds whose sources take no query - the parties and the
     // project's components - and one row for the kinds the search route answers for.
@@ -148,14 +152,14 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${world.host.key}/conversation`);
-    const field = page.getByRole("textbox", { exact: true, name: "Comment" }).last();
+    const field = commentField(page);
 
     // The words after the caret are already written: the reader goes back to the front and
     // types the mention in the middle of the sentence.
     await field.fill(" then deploy");
     await field.press("Home");
     await field.pressSequentially("Ship after @Reference");
-    const list = page.getByRole("listbox", { name: "References" });
+    const list = refPicker(page);
     await expect
       .poll(async () => (await pickerRows(list)).slice(0, 2))
       .toEqual([`Agents: ${SESSION_TITLE}`, `Roles: ${ROLE_TOKEN}`]);

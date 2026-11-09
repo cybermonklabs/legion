@@ -45,11 +45,11 @@ import { sessionIds } from "./session-ids";
 export const QUERY = "zephyr";
 
 /** A query nothing answers, which is how each box says it has no rows. */
-const NO_MATCH = "zzqqxx";
+export const NO_MATCH = "zzqqxx";
 
 /** The person who has signed in and is on no issue: the picker lists them in a box that writes
  *  on no issue, and nowhere else. `bob` is one of the two logins the database reset re-creates. */
-const OFF_ISSUE_PERSON = "bob";
+export const OFF_ISSUE_PERSON = "bob";
 
 /** The paragraph the margin's boxes are anchored to, and the line a document pick is typed on. */
 export const ANCHOR = "The anchor paragraph sits here.";
@@ -71,7 +71,7 @@ const AGENT = { actor: { id: SESSION.session_id, kind: "session" as const }, as:
 
 /** The person the issue's own people hold: they write on the host, which is what puts them
  *  among its people. A stored login is an email (`model.CanonicalLogin`). */
-export const ISSUE_PERSON = "dana@example.test";
+const ISSUE_PERSON = "dana@example.test";
 
 export interface BoxWorld {
   /** CORE-1, where every box that writes on an issue writes. */
@@ -222,7 +222,7 @@ export async function expectHint(
 
 /** The three doors over the same rows, each in its own order, and the words the box shows when
  *  the query answers nothing. */
-export async function expectDoors(field: Locator): Promise<void> {
+async function expectDoors(field: Locator): Promise<void> {
   await keyboardOnly(field);
   for (const door of ["[[", "@", "#"] as const) {
     await field.fill("");
@@ -262,7 +262,7 @@ export async function keyboardOnly(field: Locator): Promise<void> {
 
 /** A pick lands where the reader is typing: the trigger it replaces and nothing else, with the
  *  words after the caret left where they were. Enter takes the row, in every box. */
-export async function expectCaretPick(field: Locator, world: BoxWorld): Promise<void> {
+async function expectCaretPick(field: Locator, world: BoxWorld): Promise<void> {
   await keyboardOnly(field);
   await field.fill(" then deploy");
   await field.press("Home");

@@ -2,7 +2,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { getSentMessages, plannerMention, plannerSession, setLiveSessions } from "./agents";
 import { createComment, createIssue, createProject, listComments } from "./api";
-import { pickReference } from "./ref-picker";
+import { commentField, pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -22,12 +22,6 @@ import { asUser } from "./users";
 /** A role nobody holds, written as a link; the server reads `role:<token>` out of it whether or
  *  not a session holds that role, which is what the cap counts. */
 const role = (token: string) => `[${token}](dispatch://role/${token})`;
-
-/** The docked comment composer's box on the open issue, by its exact name: `Comment` as a
- *  substring reaches an `Edit comment` box too. */
-function composerField(page: Page) {
-  return page.getByRole("textbox", { exact: true, name: "Comment" }).last();
-}
 
 /** Sends the draft and answers the comment route's own answer. */
 async function send(page: Page, issueKey: string) {
@@ -60,7 +54,7 @@ test("a picked party is the text's own reference: no mentions array, and the com
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const field = composerField(page);
+    const field = commentField(page);
     await pickReference(field, "@Planner", /^Planner\b/);
     await expect(field).toHaveValue(plannerMention);
     await field.press("End");
@@ -171,7 +165,7 @@ test("one party named twice delivers once, eleven are refused, and a person alon
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const field = composerField(page);
+    const field = commentField(page);
 
     // Named twice is one party: the comment is taken and the session hears it once.
     await field.fill(`${plannerMention} and ${plannerMention} again.`);

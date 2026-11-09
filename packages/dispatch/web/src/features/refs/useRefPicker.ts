@@ -7,9 +7,11 @@ import { api, isSourceNotFound } from "../../api/client";
 import { issueCollaboratorsQuery, usersQuery } from "../../api/queries";
 import type { GraphReferences, SearchResult } from "../../api/types";
 import { useAgents } from "../conversation/useAgents";
+import { searchResultKind, stepActive } from "../search/search-model";
 import { useAgentText } from "./AgentName";
 import { withBlock } from "./block-reference";
 import { type MentionOption, mentionOptions, stoppedRoleOptions } from "./party-options";
+import { partyRouteOf } from "./party-references";
 import {
   groupRows,
   insertionFor,
@@ -30,14 +32,13 @@ import {
   type RefPickerTrigger,
   readTrigger,
   refPickerInstruction,
-  stepRow,
 } from "./ref-picker";
 import { architectureQuery } from "./reference-target";
 import { buildDispatchReference, nodeRouteFromHref, parseNodeReference, shortForm } from "./routes";
 
-/** How long after the last keystroke the search goes out. The palette's own wait, so the two
- *  surfaces put the same load on the route. */
-const SEARCH_DEBOUNCE_MS = 150;
+/** How long after the last keystroke the search goes out, here and in the search palette
+ *  (`features/search/SearchPalette.tsx`), so the two surfaces put the same load on the route. */
+export const SEARCH_DEBOUNCE_MS = 150;
 
 /** How much of a snippet or of a block's text a row shows: enough to tell two rows apart, short
  *  enough that a row stays one line. */
@@ -124,10 +125,9 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
   return hits.flatMap((hit) => {
     const route = nodeRouteFromHref(hit.href);
     // The route table carries a hit's `kind` as a plain string; the five kinds the route ranks
-    // are all the picker asked for, so a hit of any other kind is no row of its.
-    const kind: RefPickerKind | undefined = REF_PICKER_SEARCHED_KINDS.find(
-      (searched) => searched === hit.kind
-    );
+    // are all the picker asked for (`searchResultKind`, the one narrowing every surface reads
+    // a hit's kind through), so a hit of any other kind is no row of its.
+    const kind = searchResultKind(hit.kind);
     if (route === undefined || kind === undefined) return [];
     const reference = buildDispatchReference(route);
     return [
@@ -147,23 +147,23 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
  *  (`party-options.ts`), so a party offered here and the same party offered as a mention cannot
  *  be two rules about who is running. */
 function partyRow(option: MentionOption): RefPickerRow {
-  // A `role:<token>` option names a role; a `session:` one names a session, whose own half of
-  // the pair is `sessionOfAddress` (`routes.ts`).
-  const role = option.target.startsWith("role:") ? option.target.slice("role:".length) : undefined;
-  return role === undefined
+  // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
+  // `partyRouteOf` reads an address by (`party-references.ts`).
+  const party = partyRouteOf(option.target);
+  return party?.kind === "role"
     ? {
+        detail: `${option.holder} · ${option.detail}`,
+        id: `ref-picker-role-${party.role}`,
+        kind: "role",
+        label: party.role,
+        reference: buildDispatchReference({ kind: "role", role: party.role }),
+      }
+    : {
         detail: option.detail,
         id: `ref-picker-agent-${option.sessionId}`,
         kind: "agent",
         label: option.title,
         reference: buildDispatchReference({ kind: "agent-session", session: option.sessionId }),
-      }
-    : {
-        detail: `${option.holder} · ${option.detail}`,
-        id: `ref-picker-role-${role}`,
-        kind: "role",
-        label: role,
-        reference: buildDispatchReference({ kind: "role", role }),
       };
 }
 
@@ -201,6 +201,24 @@ function blockRows(
       },
     ];
   });
+}
+
+/** What the agent and role rows' own source is, which no other read can speak for: a list the
+ *  picker is still waiting on, refilling, or unreachable leaves no Agents group, and a missing
+ *  group with nothing said about it reads as "no agent". A list that answered is `listed`, and
+ *  so is one that neither answered nor is on its way, which no read of it reports. */
+function partiesState(live: {
+  /** Whether the read answered: the rows are the list it answered with. */
+  readonly current: boolean;
+  readonly isError: boolean;
+  readonly isPending: boolean;
+  readonly refilling: boolean;
+}): RefPickerParties {
+  if (live.current) return "listed";
+  if (live.refilling) return "refilling";
+  if (live.isPending) return "loading";
+  if (live.isError) return "unreachable";
+  return "listed";
 }
 
 /**
@@ -284,7 +302,10 @@ export function useRefPicker({
     queryKey: ["references", "to", openedParts, "part_of"],
   });
 
-  const rows = useMemo(() => {
+  // The rows whose source is a list rather than the query: the parties, the people and the
+  // components, built once per answer and filtered below. A keystroke changes the query alone,
+  // so it re-runs no sort of the live registry and no date of a row it already has.
+  const listed = useMemo(() => {
     if (!open) return [];
     // A live list that is not current says nothing about who is absent, so no role is offered as
     // not running under it - the rule the composer's own options follow.
@@ -319,20 +340,7 @@ export function useRefPicker({
         }),
       })
     );
-    const hits = searchRows(search.data?.results ?? []);
-    const opened = hits.find((row) => row.parts === openedParts);
-    const blocks =
-      openedParts === undefined || parts.data === undefined || opened === undefined
-        ? []
-        : blockRows(openedParts, opened.kind, parts.data);
-    // The parties, the people and the components are listed whole and filtered here; the hits
-    // the server ranked for this query are not filtered again (`matchesQuery`). A kind the box
-    // does not offer is left out whichever source found it.
-    return [
-      ...[...parties, ...people, ...components].filter((row) => matchesQuery(row, query)),
-      ...hits,
-      ...blocks,
-    ].filter((row) => offers(row.kind));
+    return [...parties, ...people, ...components];
   }, [
     agentText,
     architecture.data,
@@ -342,13 +350,24 @@ export function useRefPicker({
     live.agents,
     live.current,
     open,
-    offers,
-    openedParts,
-    parts.data,
-    query,
-    search.data,
     users.data,
   ]);
+
+  const rows = useMemo(() => {
+    if (!open) return [];
+    const hits = searchRows(search.data?.results ?? []);
+    const opened = hits.find((row) => row.parts === openedParts);
+    const blocks =
+      openedParts === undefined || parts.data === undefined || opened === undefined
+        ? []
+        : blockRows(openedParts, opened.kind, parts.data);
+    // The parties, the people and the components are listed whole and filtered here; the hits
+    // the server ranked for this query are not filtered again (`matchesQuery`). A kind the box
+    // does not offer is left out whichever source found it.
+    return [...listed.filter((row) => matchesQuery(row, query)), ...hits, ...blocks].filter((row) =>
+      offers(row.kind)
+    );
+  }, [listed, offers, open, openedParts, parts.data, query, search.data]);
 
   const groups = useMemo(
     () => (trigger === undefined || !open ? [] : groupRows(rows, trigger.door)),
@@ -380,18 +399,7 @@ export function useRefPicker({
   const failed = reads.some((read) => read.asked && read.failed);
   const state: RefPickerState =
     ordered.length > 0 ? "rows" : waiting ? "loading" : failed ? "unreachable" : "empty";
-  // What the agent and role rows' own source is, which no other read can speak for: a list the
-  // picker is still waiting on, refilling, or unreachable leaves no Agents group, and a missing
-  // group with nothing said about it reads as "no agent".
-  const parties: RefPickerParties = live.current
-    ? "listed"
-    : live.refilling
-      ? "refilling"
-      : live.isPending
-        ? "loading"
-        : live.isError
-          ? "unreachable"
-          : "listed";
+  const parties = partiesState(live);
 
   const insertion = (row: RefPickerRow | undefined): RefPickerInsertion | undefined =>
     row === undefined || trigger === undefined ? undefined : insertionFor(row, trigger, caret);
@@ -406,7 +414,7 @@ export function useRefPicker({
       if (ordered.length === 0) return { action: "ignored" };
       const index = ordered.findIndex((row) => row.id === active?.id);
       setActiveId(
-        ordered[stepRow(index < 0 ? 0 : index, key === "ArrowDown" ? 1 : -1, ordered.length)]?.id
+        ordered[stepActive(index < 0 ? 0 : index, key === "ArrowDown" ? 1 : -1, ordered.length)]?.id
       );
       return { action: "moved" };
     }

@@ -10,49 +10,14 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { searchResponse } from "../../__tests__/search-fixture";
+import {
+  architectureTree,
+  issueCollaborators,
+  plannerAgent,
+  searchResponse,
+} from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
-import type { Agent, ArchitectureTree, IssueCollaborators } from "../../api/types";
 import { MentionField } from "./MentionField";
-
-const now = Date.now();
-
-const planner: Agent = {
-  capabilities: ["steer"],
-  dir: "/workspaces/planner",
-  host: "build-host",
-  last_activity: new Date(now).toISOString(),
-  last_seen: now,
-  machine_id: "build-host",
-  open_asks: 0,
-  roles: ["planner"],
-  session_id: "planner-session",
-  state: "live",
-  title: "Planner",
-};
-
-const collaborators: IssueCollaborators = {
-  agents: [],
-  issue_key: "CORE-1",
-  legion_registry: "ok",
-  people: [{ kind: "user", last_at: null, login: "alice@theorem.dev", reasons: ["assignee"] }],
-};
-
-const architecture: ArchitectureTree = {
-  components: [],
-  not_architectural: [],
-  retired_links: [],
-  sources: [],
-  totals: {
-    components_without_work: 0,
-    issues_done: 0,
-    issues_total: 0,
-    not_architectural: 0,
-    retired_links: 0,
-    unassigned: 0,
-  },
-  unassigned: [],
-};
 
 /** Every key the field's own listener may take, and what the host saw of it. */
 interface HostKeys {
@@ -75,11 +40,14 @@ function Host({ keys, writing }: { keys: HostKeys; writing: DispatchWritingBoxRo
 }
 
 function renderField(writing = dispatchWritingBox("conversation-composer", "comment")) {
-  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]);
   const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
-    collaborators
+    // The issue has a person on it, whom the picker's People rows are read from.
+    issueCollaborators({
+      people: [{ kind: "user", last_at: null, login: "alice@theorem.dev", reasons: ["assignee"] }],
+    })
   );
-  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   const search = spyOn(api, "search").mockResolvedValue(searchResponse([]));
   const keys: HostKeys = { fromField: [], fromWindow: [] };
   const windowKeys = (event: KeyboardEvent) => keys.fromWindow.push(event.key);

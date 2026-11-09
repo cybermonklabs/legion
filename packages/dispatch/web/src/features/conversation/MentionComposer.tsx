@@ -69,7 +69,7 @@ import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
 import { draftParties, partyMention, partyMentionSpan } from "../refs/party-references";
-import { buildReferencePath } from "../refs/routes";
+import { referenceHref } from "../refs/routes";
 import { readTextReferences, textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
@@ -443,8 +443,16 @@ export function MentionComposer({
       if (found.reference === undefined || found.route === undefined || seen.has(found.reference)) {
         continue;
       }
+      // The one gate between a reference the writer typed and an `href` (`routes.ts`'s
+      // `appHref`): a reference that opens no page of this dashboard - a person, whom nothing
+      // shows - gets no pill, rather than one whose empty `href` would navigate to this very
+      // page and take the draft with it.
+      const href = referenceHref(found.route);
+      if (href === undefined) {
+        continue;
+      }
       seen.add(found.reference);
-      pills.push({ href: buildReferencePath(found.route), reference: found.reference });
+      pills.push({ href, reference: found.reference });
     }
     return pills;
   }, [body]);
@@ -540,19 +548,17 @@ export function MentionComposer({
       return;
     }
     // The parties the parent was delivered to, each mentioned once, as the links that name
-    // them: the reply's own mentions are its words, and the reader edits them as words.
+    // them: the reply's own mentions are its words, and the reader edits them as words. A
+    // mention the parent was delivered to twice is one party, and the draft they are written
+    // into is empty, which is what the channel's own seed is written into (`seededDraft`).
     const initial = replyTo.mentions ?? [];
     const deduplicated = initial.filter(
       (mention, index) =>
         initial.findIndex((candidate) => candidate.target === mention.target) === index
     );
-    replaceDraft({
-      body: deduplicated
-        .flatMap((mention) => partyMention(mention.target, mention.title) ?? [])
-        .join(" "),
-    });
+    replaceDraft({ body: seededDraft(deduplicated, "", owner) });
     takeFocus();
-  }, [replaceDraft, replyTo, standing]);
+  }, [owner, replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now

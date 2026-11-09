@@ -699,7 +699,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := s.runSearch(r.Context(), searchText, project, kinds, limit, offset)
+	request := searchParams{q: searchText, project: project, kinds: kinds, limit: limit, offset: offset}
+	response, err := s.runSearch(r.Context(), request)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -715,43 +716,66 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, response)
 }
 
-// runSearch is the search handler's own entry point. kinds are the kinds to rank, count and
-// page (searchEveryKind for a request naming none); a set naming none of the indexed kinds can
-// match no row of this index at all, so it is answered here, before the pool is read for
+// searchParams is one search as the run functions below take it: what to rank, which kinds to
+// rank it over, and the page of the ranking to answer. It is passed whole because four
+// functions hand the same values on unchanged; only runMeaningSearch adds anything of its own
+// (the query's embedding).
+type searchParams struct {
+	// q is the query text, already validated: non-empty after trimming and within the cap.
+	q string
+	// project is the project key the search is held to; empty searches every project.
+	project string
+	// kinds are the kinds to rank, count and page; a set naming none matches no row at all.
+	kinds  searchKinds
+	limit  int
+	offset int
+}
+
+// everyKindSearch is the request of a caller that names no kind: search's own default, so the
+// sentinel is spelled here rather than at each call site.
+func everyKindSearch(q, project string, limit, offset int) searchParams {
+	return searchParams{q: q, project: project, kinds: searchEveryKind, limit: limit, offset: offset}
+}
+
+// runSearch is the search handler's own entry point. request.kinds are the kinds to rank, count
+// and page (searchEveryKind for a request naming none); a set naming none of the indexed kinds
+// can match no row of this index at all, so it is answered here, before the pool is read for
 // anything. The numnode check runs next, before everything else - including before the one
 // model-service call this function ever makes - so a stopword-only or operator-only query never
 // pays for an embedding it would throw away. It tries meaning search first when an embedder is
 // configured, falling back to keyword-only (runFusedSearchQuery) only when the query's own
 // embedding could not be had - never when the meaning query itself then fails, which is a real
 // error the caller should see as a 500, not something to paper over as a degraded answer.
-func (s *server) runSearch(ctx context.Context, q, project string, kinds searchKinds, limit, offset int) (model.SearchResponse, error) {
-	if kinds == 0 {
-		return model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}, nil
+func (s *server) runSearch(ctx context.Context, request searchParams) (model.SearchResponse, error) {
+	empty := model.SearchResponse{Results: []model.SearchResult{}, Limit: request.limit, Offset: request.offset}
+	if request.kinds == 0 {
+		return empty, nil
 	}
 	var nodes int
-	if err := s.deps.Store.Pool.QueryRow(ctx, "select numnode(websearch_to_tsquery('english', $1))", q).Scan(&nodes); err != nil {
+	query := "select numnode(websearch_to_tsquery('english', $1))"
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, request.q).Scan(&nodes); err != nil {
 		return model.SearchResponse{}, err
 	}
 	if nodes == 0 {
-		return model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}, nil
+		return empty, nil
 	}
 	if s.deps.Embedder == nil {
-		return s.runKeywordOnlyDegraded(ctx, q, project, kinds, limit, offset)
+		return s.runKeywordOnlyDegraded(ctx, request)
 	}
-	vector, err := s.embedQuery(ctx, q)
+	vector, err := s.embedQuery(ctx, request.q)
 	if err != nil {
 		slog.Warn("dispatch search: query embedding unavailable, answering keyword-only", "error", err)
-		return s.runKeywordOnlyDegraded(ctx, q, project, kinds, limit, offset)
+		return s.runKeywordOnlyDegraded(ctx, request)
 	}
-	return s.runMeaningSearch(ctx, q, project, kinds, limit, offset, vector)
+	return s.runMeaningSearch(ctx, request, vector)
 }
 
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on
 // success: the one thing both of runSearch's fallback branches (no embedder configured, or the
 // query's own embedding failing) do identically. runSearch has already run the numnode check
 // before ever reaching here.
-func (s *server) runKeywordOnlyDegraded(ctx context.Context, q, project string, kinds searchKinds, limit, offset int) (model.SearchResponse, error) {
-	response, err := s.runFusedSearchQuery(ctx, q, project, kinds, limit, offset)
+func (s *server) runKeywordOnlyDegraded(ctx context.Context, request searchParams) (model.SearchResponse, error) {
+	response, err := s.runFusedSearchQuery(ctx, request)
 	if err == nil {
 		response.Degraded = contracts.SearchDegradedEmbedderUnavailable
 	}
@@ -760,18 +784,19 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, q, project string, 
 
 // runFusedSearchQuery runs the keyword statement of the kinds asked for (searchKinds.statements),
 // assuming nodes > 0 already, which its caller (runKeywordOnlyDegraded, after runSearch's check)
-// must have established first. q is assumed already validated (length, non-empty after
-// trimming); project empty searches every project, and kinds holds at least one kind.
-func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, kinds searchKinds, limit, offset int) (model.SearchResponse, error) {
+// must have established first. request.q is assumed already validated (length, non-empty after
+// trimming); an empty project searches every project, and the kinds hold at least one kind.
+func (s *server) runFusedSearchQuery(ctx context.Context, request searchParams) (model.SearchResponse, error) {
 	started := time.Now()
-	rows, err := s.deps.Store.Pool.Query(ctx, kinds.statements().keyword, q, project, limit, firstTerm(q), headlineOptions,
-		offset, contracts.SearchKindDepth, searchFusionK)
+	rows, err := s.deps.Store.Pool.Query(ctx, request.kinds.statements().keyword, request.q, request.project,
+		request.limit, firstTerm(request.q), headlineOptions,
+		request.offset, contracts.SearchKindDepth, searchFusionK)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
 	defer rows.Close()
 
-	response, err := scanSearchRows(rows, q, limit, offset)
+	response, err := scanSearchRows(rows, request.q, request.limit, request.offset)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -786,21 +811,23 @@ func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, kin
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan).
-func (s *server) runMeaningSearch(ctx context.Context, q, project string, kinds searchKinds, limit, offset int, vector []float32) (model.SearchResponse, error) {
+func (s *server) runMeaningSearch(ctx context.Context, request searchParams, vector []float32) (model.SearchResponse, error) {
 	started := time.Now()
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	rows, err := tx.Query(ctx, kinds.statements().meaning, q, project, limit, firstTerm(q), headlineOptions,
-		offset, contracts.SearchKindDepth, searchFusionK, embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
+	rows, err := tx.Query(ctx, request.kinds.statements().meaning, request.q, request.project,
+		request.limit, firstTerm(request.q), headlineOptions,
+		request.offset, contracts.SearchKindDepth, searchFusionK, embed.Literal(vector), searchMeaningFloor,
+		s.deps.Embedder.Identity())
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
 	defer rows.Close()
 
-	response, err := scanSearchRows(rows, q, limit, offset)
+	response, err := scanSearchRows(rows, request.q, request.limit, request.offset)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}

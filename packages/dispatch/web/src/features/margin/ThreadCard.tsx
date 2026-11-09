@@ -476,48 +476,51 @@ export function ThreadCard({
             {composerFirst ? replyComposer : null}
             {shown.length === 0 ? null : (
               <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
-                {shown.map((reply) => (
-                  <li
-                    aria-current={reply.id === currentReplyId ? "true" : undefined}
-                    className={`rounded-lg p-2 ${card}`}
-                    data-reply=""
-                    key={reply.id}
-                    ref={reply === newestReply ? markRead : undefined}
-                    style={{ marginLeft: "0px" }}
-                  >
-                    {editing(reply) ? (
-                      renderEditor(reply)
-                    ) : (
-                      <>
-                        {reply.reply_block == null ? null : (
-                          <ReplyQuote
-                            author={
-                              passageItem(reply.reply_block, [root, ...thread.replies])?.author
-                            }
-                            block={reply.reply_block}
-                            className="mb-2"
-                            excerpt=""
-                            source={textSourceOf(
-                              "comment",
-                              passageItem(reply.reply_block, [root, ...thread.replies])?.id
-                            )}
+                {shown.map((reply) => {
+                  // The comment the reply quotes, found once in the thread's own items: the
+                  // quote's author and the record its text is both name it.
+                  const quoted =
+                    reply.reply_block == null
+                      ? undefined
+                      : passageItem(reply.reply_block, [root, ...thread.replies]);
+                  return (
+                    <li
+                      aria-current={reply.id === currentReplyId ? "true" : undefined}
+                      className={`rounded-lg p-2 ${card}`}
+                      data-reply=""
+                      key={reply.id}
+                      ref={reply === newestReply ? markRead : undefined}
+                      style={{ marginLeft: "0px" }}
+                    >
+                      {editing(reply) ? (
+                        renderEditor(reply)
+                      ) : (
+                        <>
+                          {reply.reply_block == null ? null : (
+                            <ReplyQuote
+                              author={quoted?.author}
+                              block={reply.reply_block}
+                              className="mb-2"
+                              excerpt=""
+                              source={textSourceOf("comment", quoted?.id)}
+                            />
+                          )}
+                          <CommentBody
+                            artifactSlug={artifactSlug}
+                            comment={reply}
+                            owner={owner}
+                            showOrphan={false}
+                            showReference={showReference}
                           />
-                        )}
-                        <CommentBody
-                          artifactSlug={artifactSlug}
-                          comment={reply}
-                          owner={owner}
-                          showOrphan={false}
-                          showReference={showReference}
-                        />
-                        {renderDeliveries?.(reply)}
-                      </>
-                    )}
-                    {editing(reply) ? null : (
-                      <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
-                    )}
-                  </li>
-                ))}
+                          {renderDeliveries?.(reply)}
+                        </>
+                      )}
+                      {editing(reply) ? null : (
+                        <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </>

@@ -47,10 +47,6 @@ function ReferenceNameRead({
   return null;
 }
 
-/** The headline of a source the engine has not parsed: no address to read, and one identity, so
- *  the reads below never re-run for a fresh empty array. */
-const NO_ADDRESSES: readonly string[] = [];
-
 /**
  * One line of plain text for a place that can hold no markup - an `<option>`, a `<title>`, an
  * `aria-label` - read by the one reader every rendered body reads (`useMarkdownHeadline`), so
@@ -75,8 +71,9 @@ export function usePlainHeadline(
   const [names, setNames] = useState<ReferenceNames>(NO_REFERENCE_NAMES);
   const text = useMarkdownHeadline(markdown, max, names);
   // Keyed on the addresses themselves, never on the array: the projection answers a fresh one
-  // every time it runs, and re-reading the same addresses for it would never settle.
-  const addressKey = (text?.addresses ?? NO_ADDRESSES).join("\n");
+  // every time it runs, and re-reading the same addresses for it would never settle. A source
+  // the engine has not parsed has no address at all, which is the empty key.
+  const addressKey = (text?.addresses ?? []).join("\n");
   const routes = useMemo(() => {
     const found = new Map<string, DispatchReferenceRoute>();
     for (const address of addressKey === "" ? [] : addressKey.split("\n")) {

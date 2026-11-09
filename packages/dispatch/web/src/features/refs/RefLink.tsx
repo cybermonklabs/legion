@@ -5,9 +5,9 @@ import { useReferencePath, useReferenceTarget } from "./reference-target";
 import {
   appHref,
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
   nodeRouteFromHref,
+  referenceHref,
   referenceRouteFromHref,
 } from "./routes";
 import { readTextReferences, type TextReferenceFacts } from "./text-references";
@@ -173,8 +173,7 @@ export function linkifyDispatchRefs(root: HTMLElement, { cited, facts }: Referen
         // A reference that opens no page of this dashboard - a person, whom nothing in Dispatch
         // shows - stays the words its author wrote: there would be nothing behind the link.
         // The same gate `collectReferenceAnchors` writes the href behind, so the two agree.
-        (reference.route === undefined ||
-          appHref(buildReferencePath(reference.route)) !== undefined)
+        (reference.route === undefined || referenceHref(reference.route) !== undefined)
     );
     if (found.length === 0) {
       continue;
@@ -251,8 +250,8 @@ export function collectReferenceAnchors(
     // pass marks as it wraps one (`data-dispatch-bare`), and a link whose words are its own
     // address (`isTextUrl`), the form a document stores an autolink in. A link whose words its
     // author wrote keeps those words.
-    const addressed = anchor.hasAttribute("data-dispatch-bare") || isTextUrl(href, text);
     const textUrl = isTextUrl(href, text);
+    const addressed = anchor.hasAttribute("data-dispatch-bare") || textUrl;
     const route = textUrl
       ? referenceRouteFromHref(href, appOrigin)
       : nodeRouteFromHref(href, appOrigin);
@@ -272,7 +271,7 @@ export function collectReferenceAnchors(
     // A reference that opens no page of this dashboard is its words, as one that cites nothing
     // is: a person, whom nothing in Dispatch shows (the empty path), and anything that does not
     // resolve to this origin, which no route writes today and none may start writing unnoticed.
-    const path = appHref(buildReferencePath(route));
+    const path = referenceHref(route);
     if (path === undefined) {
       anchor.replaceWith(document.createTextNode(text));
       continue;

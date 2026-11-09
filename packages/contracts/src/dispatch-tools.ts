@@ -5,6 +5,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
+  SEARCH_RESULT_KINDS,
 } from "./dispatch-api";
 import type { paths } from "./dispatch-api.generated";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
@@ -470,16 +471,14 @@ type SearchKindParameter = NonNullable<
  * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
  * search index holds, in the order the answer's fusion lists them. A party, a component or any
  * other node is read from its own route, so the search refuses a kind outside these rather than
- * answering an empty page. The `satisfies` is the route table's own vocabulary, so a kind the
- * CLI offers that the route would refuse does not compile.
+ * answering an empty page.
+ *
+ * It is the list a result's own kind is read as (`SEARCH_RESULT_KINDS`, `dispatch-api.ts`),
+ * named once: what the route ranks and what it answers with are one vocabulary. The `satisfies`
+ * is the route table's own, so a kind the CLI offers that the route would refuse does not
+ * compile.
  */
-export const SEARCH_KINDS = [
-  "issue",
-  "document",
-  "comment",
-  "ask",
-  "message",
-] as const satisfies readonly SearchKindParameter[];
+export const SEARCH_KINDS = SEARCH_RESULT_KINDS satisfies readonly SearchKindParameter[];
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */

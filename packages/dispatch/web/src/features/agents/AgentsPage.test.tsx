@@ -11,6 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -205,27 +206,10 @@ function renderAgents({
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }]);
   // The reference picker in each box reads the issue's collaborators and the project's
   // components when a door opens, and a read no handler answers fails its test.
-  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
-    agents: [],
-    issue_key: "CORE-1",
-    legion_registry: "ok",
-    people: [],
-  });
-  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue({
-    components: [],
-    not_architectural: [],
-    retired_links: [],
-    sources: [],
-    totals: {
-      components_without_work: 0,
-      issues_done: 0,
-      issues_total: 0,
-      not_architectural: 0,
-      retired_links: 0,
-      unassigned: 0,
-    },
-    unassigned: [],
-  });
+  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
+    issueCollaborators()
+  );
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message(input.body)
   );

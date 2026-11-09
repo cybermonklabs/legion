@@ -6,7 +6,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { searchResponse } from "../../__tests__/search-fixture";
+import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -26,19 +26,7 @@ const now = Date.now();
  *  the character: this is the `[[` door typed out. */
 const BRACKETS = "[[[[";
 
-const planner: Agent = {
-  capabilities: ["btw"],
-  dir: "/workspaces/planner",
-  host: "build-host",
-  last_activity: new Date(now).toISOString(),
-  last_seen: now,
-  machine_id: "build-host",
-  open_asks: 0,
-  roles: ["planner"],
-  session_id: "planner-session",
-  state: "live",
-  title: "Planner",
-};
+const planner = plannerAgent({ capabilities: ["btw"] });
 
 const worker: Agent = {
   ...planner,

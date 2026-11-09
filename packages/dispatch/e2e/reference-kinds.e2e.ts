@@ -2,9 +2,10 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
-import { refPicker } from "./ref-picker";
+import { commentField, refPicker } from "./ref-picker";
 import {
   COMPONENT_ID,
+  COMPONENT_REFERENCE,
   COMPONENT_TITLE,
   PERSON_LOGIN,
   PERSON_REFERENCE,
@@ -205,7 +206,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       query: `@${COMPONENT_TITLE}`,
       reads: COMPONENT_TITLE,
       row: new RegExp(`^${COMPONENT_TITLE}\\b`),
-      writes: `dispatch://CORE/component/${COMPONENT_ID}`,
+      writes: COMPONENT_REFERENCE,
     },
     // A party is picked as the link that names it (R4), so its words are its name already.
     {
@@ -244,7 +245,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     const page = await alice.newPage();
     const copied = await recordClipboard(page);
     await page.goto(`/issues/${world.host.key}/conversation`);
-    const field = page.getByRole("textbox", { exact: true, name: "Comment" }).last();
+    const field = commentField(page);
     const list = refPicker(page);
 
     /** Types the kind's query at the end of the draft, opens its holder's blocks where it has
@@ -348,7 +349,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
 
     await page.goto(`/issues/${world.host.key}/conversation`);
     const third = await expandedComment(page, stored.id);
-    await third.locator(`a[data-dispatch-ref="dispatch://CORE/component/${COMPONENT_ID}"]`).click();
+    await third.locator(`a[data-dispatch-ref="${COMPONENT_REFERENCE}"]`).click();
     await expect(page).toHaveURL(`/projects/CORE/architecture?component=${COMPONENT_ID}`);
     await expect(page.getByRole("heading", { name: COMPONENT_TITLE }).first()).toBeVisible();
 

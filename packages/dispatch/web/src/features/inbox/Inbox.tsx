@@ -190,6 +190,29 @@ function MarkCheckbox({
   );
 }
 
+/** A thread row's own checkbox, named after the thread it marks. The name is an `aria-label`,
+ *  which can hold no markup: it is the one plain-text projection of the subject, the same
+ *  reader the row's own line is drawn by, never a second stripper. */
+function ThreadMarkCheckbox({
+  marked,
+  onMark,
+  row,
+  thread,
+}: {
+  marked: boolean;
+  onMark: (id: string) => void;
+  row: InboxListRow;
+  thread: MyReplyRow;
+}): ReactNode {
+  return (
+    <PlainText markdown={thread.subject}>
+      {(subject) => (
+        <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
+      )}
+    </PlainText>
+  );
+}
+
 /** The `<li>` both layouts sit in: where the row is, what the reader's hand does to it, and the
  *  marks the selected row carries. Only the short row is selectable, so only it is ever drawn
  *  as the selected one. */
@@ -386,15 +409,7 @@ function ThreadShortRow({
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
-      check={
-        // The checkbox's name is an `aria-label`, which can hold no markup: the one plain-text
-        // projection of the subject, the same reader the row's own line is drawn by.
-        <PlainText markdown={thread.subject}>
-          {(subject) => (
-            <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
-          )}
-        </PlainText>
-      }
+      check={<ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -527,12 +542,7 @@ function ThreadCardRow({
     >
       {/* The mark sits where a question card's does, on a line of its own above the card. */}
       <div className="mb-1.5 flex items-center gap-2">
-        {/* An `aria-label` again: the plain-text projection, never a stripper. */}
-        <PlainText markdown={thread.subject}>
-          {(subject) => (
-            <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
-          )}
-        </PlainText>
+        <ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />
       </div>
       <ThreadRowCard thread={thread} />
     </InboxRowShell>

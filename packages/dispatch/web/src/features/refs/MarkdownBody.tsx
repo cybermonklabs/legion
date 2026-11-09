@@ -5,7 +5,7 @@ import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markd
 import { hostDrawsMarkup, hostLinksReferences, useReferenceHost } from "./reference-host";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
-import { Unfurl } from "./Unfurl";
+import { UnfurlRead } from "./Unfurl";
 import { type PaintMarkdown, type SliceYield, useRenderedMarkdown } from "./useRenderedMarkdown";
 import { useTextReferences } from "./useTextReferences";
 
@@ -366,8 +366,11 @@ function PaintedBody({
       </div>
       {/* A card is a link, so a body inside a link or a button draws none: there is nothing for
           the card to be. One line of a card has no room for one either, which is why the
-          `inline` variant above ends there. */}
-      {hostLinksReferences(host) ? <Unfurl body={markdown} source={source} /> : null}
+          `inline` variant above ends there. The cards are read from the readings this body was
+          linked by, so the text is read once however many readers of it the page holds. */}
+      {hostLinksReferences(host) ? (
+        <UnfurlRead body={markdown} reading={references.reading} written={references.written} />
+      ) : null}
     </>
   );
 }

@@ -29,12 +29,15 @@ function readText(text: string | readonly string[], facts: TextReferenceFacts): 
  *  and the link pass it is a dependency of never re-runs for a fresh empty object. */
 const NO_MAP: Readonly<Record<string, string>> = {};
 
-/** Everything a rendered body needs to link what it cites, and the reading it was found in:
- *  the one reader's pass over the body once every fact it waits on is in (`TextReading`), so a
- *  caller that needs the references themselves - the cards under a body, the editor's
- *  decorations - reads them rather than parsing the same text again. */
+/** Everything a rendered body needs to link what it cites, and the two readings it was found
+ *  in: the one reader's pass over the body once every fact it waits on is in (`reading`), and
+ *  its first pass, over the text alone (`written`). A caller that needs the references
+ *  themselves - the cards under a body, the editor's decorations - reads them rather than
+ *  parsing the same text again, and one that needs only the shape a text is written in reads
+ *  `written`, which is the same pass whatever the queries answer. */
 export interface TextReferences extends ReferenceLinking {
   readonly reading: TextReading;
+  readonly written: TextReading;
 }
 
 /**
@@ -114,6 +117,6 @@ export function useTextReferences(
         cited.add(reference.reference);
       }
     }
-    return { cited, facts, reading };
-  }, [facts, reading]);
+    return { cited, facts, reading, written };
+  }, [facts, reading, written]);
 }

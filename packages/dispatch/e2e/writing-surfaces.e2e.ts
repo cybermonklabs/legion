@@ -24,7 +24,7 @@ import {
 } from "./editor";
 import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { pickerRows, refPicker } from "./ref-picker";
+import { commentField, pickerRows, refPicker } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 import {
@@ -35,6 +35,8 @@ import {
   expectHint,
   expectIssueRows,
   keyboardOnly,
+  NO_MATCH,
+  OFF_ISSUE_PERSON,
   QUERY,
   rowsOfBox,
   SESSION,
@@ -78,12 +80,6 @@ async function expectRow(
 ): Promise<void> {
   await expectHint(page, field, box, write);
   await expectIssueRows(field, dispatchWritingBox(box, write).issueRows);
-}
-
-/** The docked comment composer's own box: `Comment` as a substring reaches an `Edit comment`
- *  too, so the box is taken by its exact name and the last of them. */
-function docked(page: Page): Locator {
-  return page.getByRole("textbox", { exact: true, name: "Comment" }).last();
 }
 
 /** How one box is reached and driven. `seed` runs before the browser opens. */
@@ -267,7 +263,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   "conversation-composer": {
     drive: async (page, world) => {
       await page.goto(`/issues/${world.host}/conversation`);
-      const field = docked(page);
+      const field = commentField(page);
       await walkBox(field, world);
       await expectRow(page, field, "conversation-composer", "comment");
       // A Reply under a message makes the same box answer that thread's target.
@@ -343,11 +339,11 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
           .toEqual(DOOR_ROWS[door]);
         await clearLine();
       }
-      await page.keyboard.type("[[zzqqxx");
+      await page.keyboard.type(`[[${NO_MATCH}`);
       await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
       await clearLine();
       // The document belongs to an issue, so the picker offers that issue's people alone.
-      await page.keyboard.type("@bob");
+      await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
       await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
       await clearLine();
 
@@ -431,7 +427,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const thread = page.getByRole("dialog", { name: "Thread" });
       await expect(thread).toBeVisible();
       await thread.getByRole("button", { name: "Reply" }).first().click();
-      const field = docked(page);
+      const field = commentField(page);
       await expect(field).toBeVisible();
       await walkBox(field, world);
       await expectRow(page, field, "phone-thread-composer", "comment");

@@ -43,6 +43,41 @@ export function RefPickerParties({ picker }: { picker: RefPicker }): ReactNode {
 }
 
 /**
+ * What the picker says below its rows, in both the hosts that draw its chrome: what the next
+ * two letters will add while the reader has typed too little for the search (the instruction),
+ * where the agent and role rows' own source stands (`RefPickerParties`), and the words of
+ * whichever listing state holds where there are no rows. One component, so the shared field's
+ * list and the live composer's popover cannot say it two ways.
+ */
+export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
+  return (
+    <>
+      {picker.instruction === undefined ? null : (
+        <p
+          className={`px-3 py-2 text-xs ${textMutedOnSurface}`}
+          data-testid="ref-picker-instruction"
+        >
+          {picker.instruction}
+        </p>
+      )}
+      <RefPickerParties picker={picker} />
+      {picker.state === "rows" ? null : picker.state === "unreachable" ? (
+        <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="ref-picker-unreachable">
+          {REF_PICKER_WORDS.unreachable}
+        </p>
+      ) : (
+        <p
+          className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
+          data-testid={`ref-picker-${picker.state}`}
+        >
+          {REF_PICKER_WORDS[picker.state]}
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
  * The reference picker's rows, drawn for a host that has nowhere of its own to draw them: the
  * groups in the door's order, each under its kind's heading and wearing that kind's icon, with
  * the one instruction row and the words of whichever listing state holds. The host owns the
@@ -137,27 +172,7 @@ export function RefPickerList({
           {group.rows.map(row)}
         </div>
       ))}
-      {picker.instruction === undefined ? null : (
-        <p
-          className={`px-3 py-2 text-xs ${textMutedOnSurface}`}
-          data-testid="ref-picker-instruction"
-        >
-          {picker.instruction}
-        </p>
-      )}
-      <RefPickerParties picker={picker} />
-      {picker.state === "rows" ? null : picker.state === "unreachable" ? (
-        <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="ref-picker-unreachable">
-          {REF_PICKER_WORDS.unreachable}
-        </p>
-      ) : (
-        <p
-          className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
-          data-testid={`ref-picker-${picker.state}`}
-        >
-          {REF_PICKER_WORDS[picker.state]}
-        </p>
-      )}
+      <RefPickerNotes picker={picker} />
     </div>
   );
 }

@@ -260,15 +260,16 @@ func parseDispatch(value string) (Ref, bool) {
 		return Ref{}, false
 	}
 	if key == "agent" {
-		if session, _, owns := strings.Cut(tail, "/"); !owns {
-			// The session alone is the agent itself; anything under it is what its conversation
-			// owns, which is a document and nothing else.
-			if !IsSessionID(session) {
-				return Ref{}, false
-			}
+		session, rest, owns := strings.Cut(tail, "/")
+		if !IsSessionID(session) {
+			return Ref{}, false
+		}
+		// The session alone is the agent itself; anything under it is what its conversation
+		// owns, which is a document and nothing else.
+		if !owns {
 			return Ref{Kind: "session", ID: session}, true
 		}
-		return parseAgentArtifact(tail)
+		return parseAgentArtifact(session, rest)
 	}
 	if key == "role" {
 		if !roleTokenPattern.MatchString(tail) {
@@ -312,12 +313,12 @@ func parseDispatch(value string) (Ref, bool) {
 	return Ref{}, false
 }
 
-// parseAgentArtifact reads what follows `agent/` in a reference: `<session id>/artifact/<slug>`
-// with an optional `@v` version, the one thing an agent's conversation owns.
-func parseAgentArtifact(tail string) (Ref, bool) {
-	session, rest, _ := strings.Cut(tail, "/")
+// parseAgentArtifact reads what an agent's session owns, `artifact/<slug>` with an optional
+// `@v` version, the one thing an agent's conversation owns. The session is its caller's, which
+// read it out of the reference and held it to IsSessionID.
+func parseAgentArtifact(session, rest string) (Ref, bool) {
 	artifact, ok := strings.CutPrefix(rest, "artifact/")
-	if !ok || !IsSessionID(session) {
+	if !ok {
 		return Ref{}, false
 	}
 	slug, ok := parseArtifactSlug(artifact)

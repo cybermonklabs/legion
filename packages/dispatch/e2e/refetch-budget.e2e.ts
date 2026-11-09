@@ -17,7 +17,7 @@ import {
 import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { COMPONENT_ID, COMPONENT_MODEL, COMPONENT_REPO } from "./reference-surfaces";
+import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -209,7 +209,7 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
   // which a body of issue references alone would never notice.
   const extras = [
     `[${plannerSession.title}](dispatch://agent/${plannerSession.session_id})`,
-    `dispatch://CORE/component/${COMPONENT_ID}`,
+    COMPONENT_REFERENCE,
     `dispatch://${source.key}/spec#b-${await blockId(source.primary_artifact_id, anchor)}`,
   ].join("\n");
   // The live spec editor renders a link with its author's text and reads nothing, so the 50

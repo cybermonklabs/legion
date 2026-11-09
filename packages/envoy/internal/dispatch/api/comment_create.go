@@ -60,15 +60,16 @@ func askReplyTurn(actor model.Actor, requested *string) string {
 }
 
 // commentParties is who one comment names: the delivering parties, each once and in the order
-// the request's array and then the body name them, and whether a party was named at all. It is
+// the request's array and then the body name them, and whether the body named a person. It is
 // the set every mention rule is keyed on and the set the deliveries are resolved from.
 //
-// A person is in named and never in targets: a person reads the record and is never a
+// A person is in person and never in targets: a person reads the record and is never a
 // delivering party, so nothing is sent to one, nothing is resolved for one, and one never
-// counts toward the cap.
+// counts toward the cap. A comment names somebody when it has a target or a person
+// (validateCommentMentions), which is what makes a typed `/btw` the command it looks like.
 type commentParties struct {
 	targets []string
-	named   bool
+	person  bool
 }
 
 // partyTarget is the delivery route a party reference names - `session:<id>` for an agent,
@@ -104,7 +105,7 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 	}
 	for _, located := range body {
 		if located.Kind == "person" {
-			parties.named = true
+			parties.person = true
 			continue
 		}
 		target, ok := partyTarget(located.Ref)
@@ -117,7 +118,6 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		seen[target] = struct{}{}
 		parties.targets = append(parties.targets, target)
 	}
-	parties.named = parties.named || len(parties.targets) > 0
 	return parties, nil
 }
 
@@ -131,7 +131,7 @@ func validateCommentMentions(input commentInput, body []text.Located) (string, [
 	if err != nil {
 		return "", nil, err
 	}
-	if !parties.named {
+	if len(parties.targets) == 0 && !parties.person {
 		if input.Delivery != nil {
 			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery requires mentions")
 		}
@@ -659,17 +659,22 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	pool, err := s.readyPool()
-	if err != nil {
+	// No database, no comment: the refusal this route has always made before it reads anything
+	// (readyPool), kept though the read below no longer asks the database for anything, so a
+	// server without one still answers 503 rather than a 400 about the mentions.
+	if _, err := s.readyPool(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// A mention is a reference, so who this comment names is in its body (R4): the parties are
-	// read with the shared reader, beside any the request's own array carries. The reader is
-	// built over the pool and for no source of its own - the comment has no id yet, and a
-	// party reference resolves against nothing - and it reads the database only for a body
-	// that writes a bare key or a short id, which this read answers nothing about.
-	bodyParties := refs.NewReader(r.Context(), pool, "comment", "", s.deps.ServerURL).Mentions(input.Body)
+	// read beside any the request's own array carries. The grammar alone answers them
+	// (text.ExtractAt, the reading text.Mentions itself begins with), so this costs no query:
+	// a resolver can only add the issue a bare key names and the ask a `#id` names, and rewrite
+	// an ask, comment, message or block id written short, and none of those is a party. A bare
+	// key and a short id do change what a resolving read answers - a `#id` would not, the
+	// comment having no id yet, so the document its `#id`s resolve against is nothing - but
+	// none of them changes who the body names, which is all this read is for.
+	bodyParties := text.ExtractAt(input.Body, s.deps.ServerURL)
 	delivery, mentionTargets, err := validateCommentMentions(input, bodyParties)
 	if err != nil {
 		s.writeHandlerError(w, err)

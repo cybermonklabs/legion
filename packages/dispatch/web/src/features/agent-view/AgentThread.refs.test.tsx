@@ -11,9 +11,9 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import { searchResponse } from "../../__tests__/search-fixture";
+import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
-import type { Agent, SearchResult } from "../../api/types";
+import type { SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
 import { AgentThread } from "./AgentThread";
 
@@ -22,21 +22,9 @@ import { AgentThread } from "./AgentThread";
  * beside the `/` that lists the session's own commands, in assistant-ui's composer.
  */
 
-const now = Date.now();
-
-const planner: Agent = {
-  capabilities: [],
-  dir: "/workspaces/planner",
-  host: "build-host",
-  last_activity: new Date(now).toISOString(),
-  last_seen: now,
-  machine_id: "build-host",
-  open_asks: 0,
-  roles: ["planner"],
-  session_id: "planner-session",
-  state: "live",
-  title: "Planner",
-};
+// The session this conversation is with: it advertises no delivery mode, which is what a live
+// conversation's own box needs none of.
+const planner = plannerAgent({ capabilities: [] });
 
 const COMMANDS: AgentStreamCommand[] = [
   { description: "Compact the session's context", name: "compact", source: "builtin" },

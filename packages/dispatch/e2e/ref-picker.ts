@@ -17,6 +17,13 @@ export function refPicker(scope: Page | Locator): Locator {
   return scope.getByRole("listbox", { name: "References" });
 }
 
+/** The docked comment composer's own box, in the Conversation and wherever else one is docked:
+ *  `Comment` as a substring reaches an `Edit comment` box too, and a turn part-way through a
+ *  tab mounts a box of its own, so the box is taken by its exact name and the last of them. */
+export function commentField(page: Page): Locator {
+  return page.getByRole("textbox", { exact: true, name: "Comment" }).last();
+}
+
 /** The picker's rows in the order a reader moves through them, each as `<heading>: <words>`: a
  *  row's heading is the nearest element before it that is not a row. */
 export function pickerRows(list: Locator): Promise<string[]> {

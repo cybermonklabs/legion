@@ -244,7 +244,8 @@ func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
 // empty page and reads nothing: a server holding no store proves the read, since any read of its
 // nil pool would panic here.
 func TestSearchOverNoIndexedKindAnswersEmptyWithNoRead(t *testing.T) {
-	response, err := directServer(Deps{}).runSearch(context.Background(), "astrolabe", "", 0, searchDefaultLimit, 3)
+	request := searchParams{q: "astrolabe", kinds: 0, limit: searchDefaultLimit, offset: 3}
+	response, err := directServer(Deps{}).runSearch(context.Background(), request)
 	if err != nil {
 		t.Fatalf("search over no kind: %v", err)
 	}

@@ -43,6 +43,7 @@ import { referenceTriggerProps } from "../refs/RefPreview";
 import { ReferenceHostIs } from "../refs/reference-host";
 import { buildProjectPath, type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
+import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
@@ -78,9 +79,6 @@ interface ResultRow {
 
 /** One selectable line, whatever it came from: arrows, Enter and `aria-activedescendant` see only these. */
 type PaletteRow = ActionRow | ProjectRow | ResultRow;
-
-/* The hit icons are the dashboard's own, drawn by `RefKindIcon`: a search kind is one of the
-   kinds a reference names, so the palette and the reference picker wear one set. */
 
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
  *  or Space selecting it. `layout` arranges the row's own content. */
@@ -373,7 +371,7 @@ function PaletteDialog({
   const queryEnabled = searching && !tooShort && !tooLong;
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setDebouncedQuery(searchText), 150);
+    const timeout = window.setTimeout(() => setDebouncedQuery(searchText), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timeout);
   }, [searchText]);
 

@@ -172,8 +172,6 @@ export interface ReferenceWorld {
   readonly items: Readonly<Record<"ask" | "comment" | "message" | "block", ShortenableItem>>;
   /** What each kind of target reads as, by its reference. */
   readonly targets: Readonly<Record<TargetKind, Target>>;
-  /** The comment the person wrote on the host, which is what makes them one of its people. */
-  readonly personComment: ShortenableItem;
 }
 
 /** How many filler paragraphs stand between the anchor and the first question block, so a link
@@ -270,12 +268,9 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   );
   const hostBlock = await blockId(host.primary_artifact_id, ANCHOR);
   // The person: their own post on the host, which is what puts them among its people. Writing
-  // it signs them in, which is the only way Dispatch holds a person at all.
-  const personComment = await createComment(
-    host.key,
-    { body: "The cache is the slow part." },
-    { login: PERSON_LOGIN }
-  );
+  // it signs them in, which is the only way Dispatch holds a person at all. Nothing reads the
+  // comment itself; writing it is the whole point.
+  await createComment(host.key, { body: "The cache is the slow part." }, { login: PERSON_LOGIN });
 
   const questions = await settledQuestions(host.key, "spec", QUESTION_IDS);
   for (const id of ["q2", "q3"]) {
@@ -300,10 +295,6 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
       },
     },
     other,
-    personComment: {
-      id: personComment.id,
-      reference: `dispatch://${host.key}/comment/${personComment.id}`,
-    },
     questions,
     target,
     targets: {
