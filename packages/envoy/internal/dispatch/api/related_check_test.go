@@ -1201,11 +1201,12 @@ func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
 
 // The one item an issue's owner keeps is the ask, not the issue: an open ask carries its state,
 // which the issue row does not, and the dialog and the CLI show "already asked, still open" only
-// for an item of kind "ask". Only an issue's own document gives way to the issue row
-// (TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument above), because that row offers a
-// reader nothing the issue row does not and lands them on the spec tab. No fixture above catches
-// this: newAskStateFixture's asks sit on issues whose titles share no word with the text, so
-// their owners hold one row each and the loop never chooses.
+// for an item of kind "ask". An issue's own document gives way to any later row of its owner
+// that is not itself a document, the issue row among them
+// (TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument above), because the document row
+// offers a reader nothing those rows do not and lands them on the spec tab. No fixture above
+// catches this: newAskStateFixture's asks sit on issues whose titles share no word with the
+// text, so their owners hold one row each and the loop never chooses.
 //
 // The order the loop meets this owner's rows in is the fixture's doing, not the fusion's. Every
 // row of an issue's owner carries the issue's own updated_at (search.go's ask, comment and
@@ -1282,7 +1283,7 @@ func openRelatedAsk(t *testing.T, handler http.Handler, issue, question string) 
 // superset of the text's rare words, which relatedCoordinationRank sums the idf of, so no idf
 // has to be guessed at:
 //
-//   - documents: the target's spec is the only document row, because the three issues beside it
+//   - documents: the target's spec is the only document row, because the two issues beside it
 //     are filed with no spec and an empty primary document is not in document_search at all;
 //   - asks: the decoy ask's question holds all five rare words, the target's ask three of them;
 //   - issues: the two decoy titles hold five and four, and the target's issue row - its key, its
@@ -1343,5 +1344,163 @@ func TestRelatedCheckKeepsAnOpenAskWhoseDocumentRowArrivesFirst(t *testing.T) {
 		t.Fatalf("the item for %s = kind %q id %q ask %+v, want the open ask %s: the held document row "+
 			"gave way to the issue row and the ask was passed over, so a filer is not told the question "+
 			"is already open", key, item.Kind, item.ID, item.Ask, askID)
+	}
+}
+
+// addRelatedDocument attaches a further document to an issue and answers its artifact id. An
+// issue owns one document row per doc artifact, so this is how a fixture gives one owner more
+// than the single row its spec puts on the page.
+func addRelatedDocument(t *testing.T, handler http.Handler, issue, name, content string) string {
+	t.Helper()
+	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{
+		"name": name, "content": content,
+	}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("attach %s to %s: status=%d body=%s", name, issue, uploaded.Code, uploaded.Body.String())
+	}
+	return decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact.ID
+}
+
+// Where every row an owner has on the page is a document, the item it keeps is the BETTER-RANKED
+// document and not the last one to arrive. An issue owns a row per doc artifact and not its spec
+// alone (searchDocumentKeywordLeg selects every a.kind = 'doc' artifact, and the page gives each
+// the issue as owner), so a Legion issue with a spec, a plan and a verification document puts
+// three rows of kind "document" on the page under one owner. A loop that lets any later row
+// replace a held document lets the second of these replace the first, and the item for the owner
+// becomes the weaker match: the dialog's link, the CLI's link (related-check.ts) and
+// write_suggestions.suggested_id then all point at the document holding less of what was searched
+// for. The three tests above cannot see it, because each of their fixtures gives the owner a row
+// of some other kind, which under either loop takes the document's place.
+//
+// The assertion is the document's id, not its kind: both rows are documents, so a check of the
+// kind alone passes under the defect.
+//
+// The fixture leaves this owner the two document rows and nothing else. Its title holds none of
+// the text's rare words and it is filed with no spec, so no issue row of it reaches the page
+// (an empty primary document is not in document_search at all), and it has no ask and no
+// comment. Of the two documents the wider one is the better ranked, and by a margin no idf has
+// to be guessed at: relatedCoordinationRank sums the idf of each distinct chosen lexeme a row
+// holds, the wider document holds all four of the text's rare words and the narrower a strict
+// subset of two, and every idf is positive. The run reads the rows back off the check's own
+// keyword statement before it asserts the item, so a fixture that stopped seeding the second
+// document, or that let the issue row onto the page, fails here rather than passing by luck.
+//
+// Keyword-only, as the three tests above are: the ordering under test is the keyword leg's and
+// needs no model; the embedder is configured only because the check's server takes one.
+func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
+	const title = "Tender upkeep on the slipway"
+	const widerDocument = "The binnacle verdigris reaches the chronometer escapement in the damp."
+	const narrowerDocument = "The binnacle verdigris is wiped from the brass at each change of watch."
+	const text = "Binnacle verdigris chronometer escapement"
+	handler, database, srv := meaningServer(t, &fakeEmbedder{vectors: map[string][]float32{}})
+	createSuggestionProject(t, handler, "TWODOC")
+	key := createSearchIssue(t, handler, "TWODOC", title, "")
+	wider := addRelatedDocument(t, handler, key, "wider.md", widerDocument)
+	narrower := addRelatedDocument(t, handler, key, "narrower.md", narrowerDocument)
+	refreshTermStats(t, database, "TWODOC")
+
+	picked, err := recallPick(context.Background(), srv, "TWODOC", text, "", "")
+	if err != nil {
+		t.Fatalf("pick the check's terms: %v", err)
+	}
+	rows, err := recallNewSearch(context.Background(), srv, "TWODOC", picked)
+	if err != nil {
+		t.Fatalf("run the check's keyword statement: %v", err)
+	}
+	var arrived []string
+	for _, row := range rows {
+		if ownedByIssue(row, key) {
+			arrived = append(arrived, row.Kind+" "+row.ID)
+		}
+	}
+	want := []string{"document " + wider, "document " + narrower}
+	if !slices.Equal(arrived, want) {
+		t.Fatalf("%s's rows arrived %v, want %v: the fixture no longer puts two document rows and "+
+			"nothing else of this issue on the page, so it no longer covers two documents of one owner",
+			key, arrived, want)
+	}
+
+	suggestions := srv.relatedCheck(context.Background(),
+		relatedInput{project: "TWODOC", text: text, keywordsOnly: true})
+	if suggestions.Outcome != "found" {
+		t.Fatalf("suggestions = %+v, want the issue's documents found by their own words", suggestions)
+	}
+	index := slices.Index(relatedOwnerKeys(suggestions.Related), key)
+	if index < 0 {
+		t.Fatalf("related = %+v, want an item standing for %s", suggestions.Related, key)
+	}
+	item := suggestions.Related[index]
+	if item.Kind != "document" || item.ID != wider {
+		t.Fatalf("the item for %s = kind %q id %q href %q, want the wider document %s: the later document "+
+			"row took the held one's place, so the link a reader follows is to the document holding less "+
+			"of the text", key, item.Kind, item.ID, item.Href, wider)
+	}
+}
+
+// The whole rule, over every arrival order of an owner's rows: the item kept is the owner's
+// best-ranked row that is not a document, and the document only where the owner has no other row
+// on the page. Each of the three rounds before this one fixed one arrival order and left the
+// next uncovered - ask first, document first, then two documents - because each test pinned the
+// order its own fixture produced. This sweep pins all of them at once.
+//
+// It drives fillRelatedItems with constructed rows rather than seeding a fixture per case: the
+// loop is the unit under test, and given the rows directly the arrival order is literal and
+// exact instead of coaxed out of the fusion by the words a fixture's items hold. The four tests
+// above stay as they are and prove the other half, that a real corpus really does hand the loop
+// these orders; neither replaces the other. The rows need a server because fillRelatedItems
+// reads its ask states from the pool first, and an id that no ask row carries leaves Ask nil,
+// which is all these cases need.
+func TestRelatedCheckKeepsOneRowPerOwnerInEveryArrivalOrder(t *testing.T) {
+	_, _, deps := newTestServer(t, testServerOptions{})
+	srv := directServer(deps)
+	for _, test := range []struct {
+		name    string
+		arrived []string
+		want    int
+		why     string
+	}{
+		{"document, ask, issue", []string{"document", "ask", "issue"}, 1,
+			"the ask is the owner's best-ranked row that is not a document, and the issue row behind it carries no ask state"},
+		{"document, issue, ask", []string{"document", "issue", "ask"}, 1,
+			"the issue row is the owner's best-ranked row that is not a document, so the ask behind it does not displace it"},
+		{"ask, document, issue", []string{"ask", "document", "issue"}, 0,
+			"the ask leads its owner's rows, and nothing behind a row that is not a document replaces it"},
+		{"ask, issue, document", []string{"ask", "issue", "document"}, 0,
+			"the ask leads, and a document row never takes a held row's place"},
+		{"issue, ask, document", []string{"issue", "ask", "document"}, 0,
+			"the issue row leads and is not a document, so the ask behind it does not displace it"},
+		{"issue, document, ask", []string{"issue", "document", "ask"}, 0,
+			"the issue row leads, and neither the document nor the ask behind it replaces a row already kept"},
+		{"two documents alone", []string{"document", "document"}, 0,
+			"both rows are documents, ranked against each other by the fusion, so the first is the better match"},
+		{"two documents then an ask", []string{"document", "document", "ask"}, 2,
+			"the second document leaves the first in place, and the ask - the owner's only row that is not a document - takes it"},
+		{"a document alone", []string{"document"}, 0,
+			"the document is the owner's only row on the page, which is when the check does list a document"},
+		{"comment, document", []string{"comment", "document"}, 0,
+			"the comment leads and is not a document, so the document behind it does not displace it"},
+		{"document, comment", []string{"document", "comment"}, 1,
+			"the comment is the owner's only row that is not a document, and it carries what the document row does not"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			results := make([]model.SearchResult, len(test.arrived))
+			for index, kind := range test.arrived {
+				results[index] = model.SearchResult{
+					Kind: kind,
+					// One owner for every row, as an issue and everything it owns share one.
+					Owner: model.SearchOwner{Kind: "issue", Key: "SWEEP-1", Title: "Sweep", Status: "open", Project: "SWEEP"},
+					ID:    fmt.Sprintf("00000000-0000-0000-0000-%012d", index+1),
+					Href:  fmt.Sprintf("/issues/SWEEP-1#%d", index+1),
+				}
+			}
+			var suggestions model.Suggestions
+			srv.fillRelatedItems(context.Background(), relatedInput{project: "SWEEP"}, results, &suggestions)
+			if len(suggestions.Related) != 1 || suggestions.Related[0].ID != results[test.want].ID {
+				t.Fatalf("rows %v kept %+v, want the %s row at %d (%s) alone: %s",
+					test.arrived, suggestions.Related, test.arrived[test.want], test.want, results[test.want].ID, test.why)
+			}
+		})
 	}
 }

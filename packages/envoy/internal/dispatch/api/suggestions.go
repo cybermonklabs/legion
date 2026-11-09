@@ -659,10 +659,14 @@ func (s *server) fillRelatedItems(
 	// message - carries what the document row does not, an ask's state most of all, which is how
 	// a filer is told the question is already open or how it was settled (suggestionFromResult
 	// copies Ask from the row it is given, so a row standing in for an ask row says nothing of
-	// either). Which is why the held document gives way to any later row, and not to an issue row
-	// alone: an owner's rows arrive in the fused order, so an owner whose document arrives ahead
-	// of its ask would keep that document until the issue row replaced it, and the ask - the one
-	// row that tells a filer the question is already open - would be passed over.
+	// either). Which is why the held document gives way to any later row that is not itself a
+	// document, and not to an issue row alone: an owner's rows arrive in the fused order, so an
+	// owner whose document arrives ahead of its ask would keep that document until the issue row
+	// replaced it, and the ask - the one row that tells a filer the question is already open -
+	// would be passed over. A later document is the one row that does not take the held one's
+	// place: an issue owns a row per doc artifact and not its spec alone, and the fusion has
+	// already ranked those rows against each other, so the first of them to arrive is the better
+	// match and letting a second replace it would list the weaker document of the two.
 	//
 	// The owner key carries the owner's kind, so this reaches a project document's own owner too:
 	// there the held row is the document itself, and a later ask or comment on it takes its
@@ -678,7 +682,7 @@ func (s *server) fillRelatedItems(
 			related = append(related, result)
 			continue
 		}
-		if related[at].Kind == "document" {
+		if related[at].Kind == "document" && result.Kind != "document" {
 			related[at] = result
 		}
 	}
