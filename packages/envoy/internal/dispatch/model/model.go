@@ -250,7 +250,7 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
+	GatedSteps []string  `json:"gated_step_list"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
