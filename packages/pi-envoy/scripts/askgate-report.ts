@@ -17,8 +17,10 @@
 //   - refusal: a write that did not post. Every sent-back entry of a session in block mode,
 //     plus `no-model-role` and `load-failed` in warn mode too, since neither gate can review
 //     anything and a gate that cannot review is no off switch, and every entry with a `rule`,
-//     since the rules check refuses in either mode. A warn-mode `unreadable` or `unmarked` is
-//     sent back and no refusal: its write posted.
+//     since the rules check refuses in either mode. A warn-mode `unreadable` is sent back and
+//     no refusal: its write posted. An `unmarked` entry is a refusal only where the CLI
+//     refused, which since dispatch://INFRA-2079 is where this session's own review refused
+//     that write, or its evidence could not be read — not wherever the session chose block.
 //   - unreviewed: a write that posted with no review behind it. Every `allow` whose outcome is
 //     not `verdict`: timeout, error, no-verdict, halted, skipped, rebuttal, breaker, and in
 //     warn mode `unreadable`, `unmarked`, `abandoned` and `shutdown`. A warn-mode `abandoned` or
@@ -346,7 +348,9 @@ export function isSentBack(record: GateRecord): boolean {
  * A write that did not post: sent back in block mode, or refused in every mode. `no-model-role`
  * and `load-failed` mean the gate can review nothing, so each refuses in warn mode too, and a
  * rules refusal (an entry with a `rule`) refuses in either mode; an `unreadable` call is one
- * call's form, which warn mode lets through, as it lets an `unmarked` write post.
+ * call's form, which warn mode lets through. An `unmarked` entry carries the CLI's own outcome
+ * in its `verdictMode` — `block` where the CLI refused, `warn` where the write posted — rather
+ * than the mode the session chose, which no longer decides it (dispatch://INFRA-2079).
  */
 export function isRefusal(record: GateRecord): boolean {
   return (
@@ -480,7 +484,7 @@ export function formatReport(stats: Stats, seed: number): string[] {
     "every unreadable, unmarked or load-failed entry in any mode. It is counted over every",
     "gated call, since most of those never reach a review. A refusal is a write that did not",
     "post: one sent back in block mode, no-model-role and load-failed, which refuse in warn",
-    "mode too, and a rules refusal, which refuses in either mode. Unreviewed is a write that",
+    "mode too, a rules refusal, which refuses in either mode, and an unmarked write this session's review refused or whose evidence was unreadable. Unreviewed is a write that",
     "posted with no review behind it: every allow whose outcome is no verdict, a rebuttal, a",
     "breaker trip, and warn mode's unreadable, unmarked, abandoned and shutdown among them.",
     "A session named below had at least one such write, with each outcome's count.",

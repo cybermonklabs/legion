@@ -1815,7 +1815,8 @@ console.log(JSON.stringify(args, null, 2));
         toolCallId: "b1",
         decision: "allow",
         outcome: "verdict",
-        argsDigest: createHash("sha256").update(JSON.stringify(args)).digest("hex"),
+        // The production digest, so a change to the canonical encoding cannot pass unseen.
+        argsDigest: argsDigest(args),
       },
     ]);
   });

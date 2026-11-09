@@ -12,7 +12,23 @@ body: |-
   sanctioned override sent it; leave the store untouched otherwise, which includes a warn-mode
   revise — the reviewer did not pass those bytes, so it cannot clear, and warn mode's whole
   meaning is that a revise does not hold the write, so recording one would have the CLI refuse
-  the very write the gate just let through.
+  the very write the gate just let through. A rules refusal asks nothing of the charter's
+  outcome: the two checks run side by side and a rules match blocks in either mode, so a
+  completed rules refusal beside a charter that timed out, errored or gave no verdict is a
+  verdict and is recorded — a charter timeout at the default ceiling is the ordinary case.
+  Every digest over arguments is taken on one canonical encoding (`canonicalText`), type-tagged
+  so an object and an array cannot encode alike, and used by the write's identity, by the
+  marker's own `argsDigest` and by the gate entry's digest, which were three derivations of the
+  same question; the marker binding's latent order-sensitivity goes with it. One place knows how
+  an upload's bytes arrive (`uploadBytesOf`), reading them from the arguments rather than the
+  flags, so `--path`, `--content`, `--content-file` and `--path-file` are one write.
+  The gate asks on a session's first gated write whether its state directory can hold a verdict
+  at all, by writing and removing one file where a verdict would go, measured at 23.5 µs once
+  per session: it otherwise learns it cannot persist only when it has something to persist, and
+  an outcome no review stands behind never gets that far, so a restarted gate on a still-faulty
+  session minted an unbound marker and the rejected write posted. That stop is the session's and
+  a switch to another one does not inherit it, and a readable mark already saying a verdict was
+  lost is sufficient, so rewriting one that cannot be rewritten no longer reaches the stop.
   Every source that decides records and clears. A review that rejects writes the verdict into
   the session's own state directory, under the identity of the write the model judged rather than
   the words of the command; a review that allows removes the verdict it replaces; and a rebuttal

@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   type AskgateMode,
   askgateState,
@@ -9,6 +10,7 @@ import {
   gatedWrite,
   operandPath,
   readVerdict,
+  uploadBytesOf,
   writeIdentity,
 } from "./askgate-marker";
 import { newAsks } from "./askgate-new-asks";
@@ -476,13 +478,30 @@ export async function runDispatchCli(
             // Not there, or not this process's to open: no digest.
           }
           files.push({ ...file, sha256: bytes === undefined ? null : bytesDigest(bytes) });
-          if (file.flag === "--path" && file.operand === parsed.args.path) {
-            uploadBytes = bytes;
-            uploadUnread = bytes === undefined;
-          }
+          if (file.flag === "--path" && file.operand === parsed.args.path) uploadBytes = bytes;
         }
-        // An upload whose own bytes could not be read has no identity, so no verdict can be
-        // looked up for it: absence of identity is never absence of a verdict.
+        // The upload's bytes read from the arguments and never from the flags that set them
+        // (`uploadBytesOf`): `--path-file` resolves to `args.path` and `--content-file` to
+        // `args.content`, so an operand scan keyed on `--path` saw neither and each was a
+        // spelling of its own. The operand above already holds them for a plain `--path`, which
+        // is also what the upload sends; this reads the file for any other way of naming it.
+        const sends = uploadBytesOf(parsed.args, (named) => {
+          if (uploadBytes !== undefined) return uploadBytes;
+          try {
+            const fd = openSync(resolve(io.cwd, named), constants.O_RDONLY | constants.O_NONBLOCK);
+            try {
+              return fstatSync(fd).isFile() ? readFileSync(fd) : undefined;
+            } finally {
+              closeSync(fd);
+            }
+          } catch {
+            return undefined;
+          }
+        });
+        uploadBytes ??= sends;
+        // An upload whose own bytes cannot be read has no identity, and no identity is never
+        // no verdict.
+        uploadUnread = typeof parsed.args.path === "string" && sends === undefined;
         const said = uploadUnread
           ? undefined
           : readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes));

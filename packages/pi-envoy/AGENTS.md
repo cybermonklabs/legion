@@ -693,10 +693,13 @@ verdict stands behind (`UNREVIEWED_OUTCOMES`, a halt and another account among t
 for a `task` subagent's literal call. A marker goes when its call ends or at shutdown, and the CLI
 refuses one older than two hours (`MARKER_MAX_AGE_MS`). The CLI reads each named file once,
 consumes one matching marker by unlinking it before it posts a gated write under a live record,
-sends an upload's bytes from that same read, and, when the session chose block, refuses a write
-with no matching marker (`gatedWrite`, the one predicate both sides use); a file that changed after
-the gate read it matches none and gets the advice to send the call again in a later message. In warn mode,
-the default for these checks, the CLI writes the ledger line before it posts. The gate writes the
+sends an upload's bytes from that same read, and refuses a write this session's own review
+refused, in either mode, reading that verdict by the write's identity rather than by the words of
+the command (dispatch://INFRA-2079, row 3.5). A write no review ever saw carries no marker and no
+verdict: it posts with a warning in every mode, where the session's block choice used to refuse
+it. A file that changed after the gate read it, other arguments, a marker past its age, and
+evidence that cannot be read fall between the two and are refused where the session chose block.
+The CLI writes the ledger line before it posts. The gate writes the
 checks' mode into the session's own record for the CLI (`checkMode`: block only when the session
 chose it; `setRecordMode` keys it per session, so a switch never changes another session's mode),
 apart from the verdict's mode (`sessionMode`, block by default); `envoy.ts` turns each write the

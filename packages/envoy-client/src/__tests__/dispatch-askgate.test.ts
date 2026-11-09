@@ -14,6 +14,8 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
+  argsDigest,
+  argvDigest,
   keepStore,
   MARKER_MAX_AGE_MS,
   markVerdictsLost,
@@ -160,8 +162,10 @@ function mint(
     file,
     JSON.stringify({
       v: 2,
-      argv: sha(argv),
-      args: args === null ? null : sha(args),
+      argv: argvDigest(argv),
+      // The production digest, not a second one by hand: a fixture that re-derives it is the
+      // same duplication one layer out, and would hide a change to the canonical encoding.
+      args: args === null ? null : argsDigest(args),
       files,
       toolCallId: "call-1",
       outcome: "verdict",
@@ -980,6 +984,67 @@ describe("absence is a statement only when the store was read whole", () => {
       expect(stdout).toContain("AskGate reviewed this write and did not send it");
     }
     expect(postsTo(ARTIFACTS)).toHaveLength(0);
+  });
+
+  // Round five, the fourth spelling in as many rounds: `--path-file` resolves to `args.path`,
+  // which an operand scan keyed on `--path` never saw. The bytes are read from the arguments
+  // now, so no flag can be a spelling of its own.
+  test("an upload by --path-file meets the verdict on its bytes", async () => {
+    const brief = join(stateDir, "brief.md");
+    const text = "# Brief\n";
+    writeFileSync(brief, text);
+    writeFileSync(join(stateDir, "which-file"), brief);
+    writeRecord();
+    writeVerdict(
+      join(stateDir, "sessions", "ses-1"),
+      writeIdentity(
+        "dispatch_artifact",
+        await dryArgs(["artifact", "--issue", "DSP-1", "--name", "brief.md", "--path", brief]),
+        Buffer.from(text)
+      ),
+      "failure 10: the brief says nothing the issue does not",
+      Date.now()
+    );
+    const { code, stdout } = await run([
+      "artifact",
+      "--issue",
+      "DSP-1",
+      "--name",
+      "brief.md",
+      "--path-file",
+      join(stateDir, "which-file"),
+    ]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(postsTo(ARTIFACTS)).toHaveLength(0);
+  });
+
+  // An object and an array encoded alike, so allowing one cleared the verdict on the other.
+  test("the canonical encoding tags types, so no two shapes share an identity", async () => {
+    const ident = (args: Record<string, unknown>) => writeIdentity("dispatch_comment", args);
+    expect(ident({ issue: "DSP-1", extra: {} })).not.toBe(ident({ issue: "DSP-1", extra: [] }));
+    expect(ident({ issue: "DSP-1", extra: { x: 1 } })).not.toBe(
+      ident({ issue: "DSP-1", extra: [["x", 1]] })
+    );
+    // And the three rules that make one write one identity still hold.
+    expect(ident({ issue: "DSP-1", body: "hi" })).toBe(ident({ body: "hi", issue: "DSP-1" }));
+    expect(ident({ issue: "DSP-1", body: "hi\n" })).toBe(ident({ issue: "DSP-1", body: "hi" }));
+    expect(ident({ issue: "DSP-1", ops: [1, 2] })).not.toBe(ident({ issue: "DSP-1", ops: [2, 1] }));
+  });
+
+  // The second arm's regression: the rules check and the charter run side by side, and gating
+  // the rules arm behind the charter's outcome classified a completed rules refusal with a
+  // charter that timed out as no review at all. A charter timeout at the default ceiling is the
+  // ordinary case. The verdict a rules match reaches is recorded whatever the charter did.
+  test("a rules refusal is a verdict however the charter beside it ended", async () => {
+    writeRecord();
+    await refused("rule no_change: the issue already says this");
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(stdout).toContain("rule no_change");
+    expect(stdout).not.toContain("carries no AskGate marker");
+    expect(messagePosts()).toHaveLength(0);
   });
 
   test("a standing refusal reaches no other issue and no other text", async () => {

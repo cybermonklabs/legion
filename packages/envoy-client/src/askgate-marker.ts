@@ -141,9 +141,42 @@ export function argvDigest(argv: readonly string[]): string {
   return digest(argv);
 }
 
-/** The digest a reviewed marker binds: of the arguments the call's dry run printed. */
+/**
+ * The one canonical encoding of a value, which every digest over arguments is taken on: object
+ * keys sorted at every depth, arrays in their order, each string's trailing whitespace dropped,
+ * and every value tagged by type so no two shapes can encode alike.
+ *
+ * Each rule is a spelling a reviewer read as the same write. The CLI's parser inserts arguments
+ * in the order their flags appeared, so `--body X --issue Y` and `--issue Y --body X` differ
+ * without the sort. A here-document body carries the newline the shell adds and the same text in
+ * `--body` does not. Arrays keep their order, because `--ops-json` and the other repeatable
+ * fields are ordered data and not sets. And the tags are what keep `{}` from meeting `[]`, and
+ * `{extra: {x: 1}}` from meeting `{extra: [["x", 1]]}`: without them an allow of one shape
+ * cleared the verdict on the other.
+ */
+export function canonicalText(value: unknown): string {
+  if (typeof value === "string") return `s${JSON.stringify(value.replace(/\s+$/, ""))}`;
+  if (typeof value === "number") return `n${JSON.stringify(value)}`;
+  if (typeof value === "boolean") return `b${value}`;
+  if (value === null) return "z";
+  if (value === undefined) return "u";
+  if (Array.isArray(value)) return `a[${value.map(canonicalText).join(",")}]`;
+  if (typeof value !== "object") return `x${JSON.stringify(String(value))}`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0
+  );
+  return `o{${entries.map(([key, member]) => `${JSON.stringify(key)}:${canonicalText(member)}`).join(",")}}`;
+}
+
+/**
+ * The digest a reviewed marker binds: of the arguments the call's dry run printed, on the one
+ * canonical encoding. The marker is keyed by the argv as well, which disambiguated it before
+ * this was canonical, so the sort fixes an order-sensitivity nobody had yet met here: two
+ * spellings of one command would have bound different digests had the argv ever matched across
+ * them.
+ */
 export function argsDigest(args: Readonly<Record<string, unknown>>): string {
-  return digest(args);
+  return digest(canonicalText(args));
 }
 
 /** One file a `dispatch` call makes the CLI read, as its argv names it. */
@@ -855,44 +888,22 @@ const VERDICTS = "askgate-verdicts";
 const VERDICTS_LOST = "askgate-verdicts-lost";
 
 /**
- * The canonical encoding a write's identity is taken over: object keys sorted at every depth,
- * arrays left in their order, and each string's trailing whitespace dropped.
- *
- * Each of the three is a spelling the reviewer read as the same write. The CLI's parser inserts
- * arguments in the order their flags appeared, so `--body X --issue Y` and `--issue Y --body X`
- * encode differently unless the keys are sorted. A here-document body carries the newline the
- * shell adds and the same text in `--body` does not. Arrays keep their order because `--ops-json`
- * and the other repeatable fields are ordered data and not sets.
- */
-function canonical(value: unknown): unknown {
-  if (typeof value === "string") return value.replace(/\s+$/, "");
-  if (Array.isArray(value)) return value.map(canonical);
-  if (typeof value !== "object" || value === null) return value;
-  // Sorted pairs rather than an object: assigning into a `{}` swallows an own key named
-  // `__proto__`, which would give two different argument sets one identity. A list has no
-  // prototype to fall through and no ambiguity about what was encoded.
-  return Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([key, member]) => [key, canonical(member)]);
-}
-
-/**
  * The identity of a proposed write: what the reviewer judged, and nothing of how the command
- * spelled it. The Dispatch tool and every argument, canonically encoded (`canonical`), with an
- * upload's bytes standing in for the path that named them.
+ * spelled it. The Dispatch tool and every argument, on the one canonical encoding
+ * (`canonicalText`), with an upload's bytes standing in for whatever named them.
  *
  * Scope, exactly. It covers the tool and every argument of the write — the issue, the body or
- * content, the artifact name — so a no about one write never reaches another issue, another tool
- * or other text, and a corrected resend has another identity and is untouched. It covers no
- * spelling: flag order, `--issue=X` against `--issue X`, and text inline against text from a
+ * content, the artifact name — so a no about one write never reaches another issue, another
+ * tool or other text, and a corrected resend has another identity and is untouched. It covers
+ * no spelling: flag order, `--issue=X` against `--issue X`, and text inline against text from a
  * `--<field>-file`, which the parser has already resolved to the same string, all meet the same
  * verdict. For an upload it covers the bytes and not the path, so the rejected bytes sent again
- * through `--content`, or from a file under another name, meet the same no, while a file whose
- * text was corrected has a new identity and is free. It names no session, machine or time: the
- * session that owns the verdict store bounds it.
+ * through `--content`, `--content-file`, `--path-file` or a file under another name meet the
+ * same no, while a file whose text was corrected has a new identity and is free. It names no
+ * session, machine or time: the session that owns the verdict store bounds it.
  *
  * `uploadBytes` are the bytes an upload sends, where this write is one: the reviewer read them,
- * and the CLI reads them again for the marker check. Undefined for every other write, and for an
+ * and the CLI reads them again (`uploadBytesOf`). Undefined for every other write, and for an
  * upload whose bytes could not be read — which leaves no identity at all, and absence of
  * identity is never absence of a verdict.
  */
@@ -902,15 +913,27 @@ export function writeIdentity(
   uploadBytes?: Uint8Array
 ): string {
   const { path: named, content: inline, ...rest } = args;
-  // An upload is the bytes it sends, however the command named them: a file by `--path` and the
-  // same bytes inline by `--content` are one write and must be one identity, so both reduce to
-  // the digest and neither the path nor the literal text survives into the encoding. The bytes
-  // come from the caller where a file holds them, and from the inline string otherwise.
   const bytes =
     uploadBytes ?? (typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined);
   const upload = typeof named === "string" || typeof inline === "string";
   const judged = upload && bytes !== undefined ? { ...rest, content: bytesDigest(bytes) } : args;
-  return digest(canonical({ tool, args: judged }));
+  return digest(canonicalText({ tool, args: judged }));
+}
+
+/**
+ * The bytes an upload sends, read from the arguments alone and never from the flags that set
+ * them. One place knows this, because every round of review has found another spelling: the
+ * parser resolves `--path` and `--path-file` to `args.path`, and `--content` and
+ * `--content-file` to `args.content`, so reading the arguments covers each of the four and
+ * whatever is added next. Undefined where this is no upload, or where its file cannot be read.
+ */
+export function uploadBytesOf(
+  args: Readonly<Record<string, unknown>>,
+  readBytes: (path: string) => Uint8Array | undefined
+): Uint8Array | undefined {
+  const { path: named, content: inline } = args;
+  if (typeof named === "string") return readBytes(named);
+  return typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined;
 }
 
 /** `<session>/askgate-verdicts`, where that session's verdicts of no are kept. */
@@ -967,6 +990,27 @@ export function markVerdictsLost(session: string, now: number): void {
   writeFileSync(join(session, VERDICTS_LOST), JSON.stringify({ v: 1, at: now }), {
     mode: PRIVATE_FILE,
   });
+}
+
+/**
+ * Whether this session can hold a verdict at all: one file written and removed where a verdict
+ * would go. Throws what the attempt threw.
+ *
+ * The gate asks this on its first gated write rather than waiting to need it, because it only
+ * ever discovers it cannot persist when it has something to persist, and an outcome no review
+ * stands behind never gets that far: a restarted gate on a still-faulty session would mint an
+ * unbound marker and the rejected write would post. Asking first makes the recurrence actual
+ * rather than assumed.
+ */
+export function probeVerdicts(session: string, now: number): void {
+  const dir = verdictDir(session);
+  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
+  const file = join(dir, `.probe-${randomBytes(8).toString("hex")}`);
+  try {
+    writeFileSync(file, JSON.stringify({ v: 1, at: now }), { flag: "wx", mode: PRIVATE_FILE });
+  } finally {
+    rmSync(file, { force: true });
+  }
 }
 
 /** What a session's verdict store says about one write. */

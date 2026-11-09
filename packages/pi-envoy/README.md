@@ -561,10 +561,13 @@ AskGate on, and the start notice names the file.
 **The modes.** A model's revise verdict and the CLI's marker checks have separate defaults. A revise
 verdict blocks by default: the write does not post. `OMP_ASKGATE=warn`, or a session whose latest
 `experiments` entry turns its `askgate_block` arm off, lets the write post with the reason. The
-CLI's checks warn by default: a gated write with no matching marker, a file changed after the
-review, and a file missing when the gate ran each post with a warning and an `unmarked` or
-`unreadable` entry that the report counts. They refuse only when the session chose block
-explicitly: `OMP_ASKGATE=block`, or, with no such variable, an `experiments` entry whose arm is on.
+The
+CLI's checks warn by default: a file changed after the review, a marker past its age and a file
+missing when the gate ran each post with a warning and an `unmarked` or `unreadable` entry that
+the report counts, and refuse only when the session chose block explicitly — `OMP_ASKGATE=block`,
+or, with no such variable, an `experiments` entry whose arm is on. A gated write with **no**
+marker is not one of them: no review ever saw it, so it posts with a warning in either mode
+(dispatch://INFRA-2079, row 3.5).
 AskGate ignores any other value of `OMP_ASKGATE`, `off` included, and the first review shows one
 notice that names `askgate.enabled` as the switch. The gate writes the checks' mode into the
 session's own record (not a process-wide file, so a process that binds two sessions keeps each
@@ -578,10 +581,11 @@ bind: only the loaded gate reads the arm, so a session that chose block through 
 no mode on disk until the gate's first main-agent `bash` or `eval` call, and none at all when the
 gate does not load — a write outside the literal form there posts with a warning. **An operator
 who selects block through the arm should also set `OMP_ASKGATE=block` for a hard guarantee**,
-which holds from the session's start and through a failed load. Three refusals follow neither
-mode: a match of the rules check (below), which refuses the write in both modes; no model role;
-and a gate that did not load, the last two refusing each literal call they would review in both
-modes, since neither can review anything.
+which holds from the session's start and through a failed load. Four refusals follow neither
+mode: a write this session's own review refused, which the CLI holds in either mode however it is
+sent again; a match of the rules check (below), which refuses the write in both modes; no model
+role; and a gate that did not load, the last two refusing each literal call they would review in
+both modes, since neither can review anything.
 
 **The rules check.** A call that opens a new ask for the person gets a second model call, beside
 the charter call and on the same chain, deadline and transcript. That call knows two rules
@@ -766,8 +770,9 @@ rules check:
 `decision` is `revise` on a rules refusal in `warn` mode too. The gate refused a call exactly when
 `decision` is `revise` and one of these is true: `verdictMode` is `block`, `outcome` is
 `no-model-role` or `load-failed`, or `rule` is set. An `unreadable` or `unmarked` entry is a
-refusal in `block` mode only, where its `decision` is `revise`; in `warn` mode its `decision` is
-`allow`, and the write went out with the note that it was unreviewed. To find the refusals that
+refusal where its `decision` is `revise`; an `unmarked` entry carries the CLI's own outcome
+there, `revise` where the CLI refused and `allow` where the write posted, rather than the mode
+the session chose, which no longer decides it (dispatch://INFRA-2079, row 3.5). To find the refusals that
 the agent overrode, join each rules refusal to the next entry with the same `target`. The agent
 overrode the refusal when that entry's `outcome` is `rebuttal` or `breaker`.
 
@@ -776,11 +781,12 @@ reviews cost, a count for each outcome, every session that had a write the gate 
 with its counts, the markers it skipped, the outcomes and errors of the rules check, and the rules
 refusals that the agent overrode. The report counts a write as **sent back** when the gate did not
 pass it as sent: every entry whose decision is `revise` — a revise verdict, a rules refusal,
-`no-model-role`, and in block mode `abandoned`, `shutdown` and `unmarked` — and every
-`unreadable`, `unmarked` or `load-failed` entry, whatever its mode, counted over every gated call,
-since some of them never reach a review; as a **refusal** when the write did not post (one sent
-back in block mode, and `no-model-role`, `load-failed` and a rules refusal, which refuse in warn
-mode too); and as **unreviewed** when it posted with no review behind it, which is every `allow`
+`no-model-role`, in block mode `abandoned` and `shutdown`, and an `unmarked` write the CLI
+refused — and every `unreadable`, `unmarked` or `load-failed` entry, whatever its mode, counted
+over every gated call, since some of them never reach a review; as a **refusal** when the write
+did not post (one sent back in block mode, `no-model-role`, `load-failed` and a rules refusal,
+which refuse in warn mode too, and an `unmarked` write this session's review had refused, which
+the CLI holds in either mode); and as **unreviewed** when it posted with no review behind it, which is every `allow`
 whose outcome is no verdict (the table above, a rebuttal, a breaker trip and warn mode's
 `unreadable`, `unmarked`, `abandoned` and `shutdown` included).
 
