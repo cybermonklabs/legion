@@ -102,12 +102,21 @@ func requireBusSettings(t *testing.T, js natsgo.JetStreamContext, want busSettin
 // pullRequestFake is the loopback GitHub both builds' intakes call while they handle a merged pull
 // request: the App's installation and token, the pull request, and its first commit. It is one
 // state served by one server per build (serve), so each handling is recorded with the build that
-// did it. The first commit is the handler's last call to GitHub before it writes the pull
-// request's rows and acknowledges the message, and the fake takes delay to answer it, which spreads
-// the messages' handling over a stop. A handling counts as done when that answer is sent, so a
-// handling counted done can still be unacknowledged; one whose process went away while it waited
-// (the request's context ended) is counted as abandoned instead, since a message a process stopped
-// handling unfinished is one NATS must deliver again. Anything else is answered with an empty list.
+// did it.
+//
+// A handling is counted at the pull request's own fetch, GET /repos/{owner}/{repo}/pulls/{number}
+// (delivery.FetchPullRequest), as the multiprocess suite's mergedPullRequestFake counts one: the
+// merge path's first GitHub call, and the one call it makes exactly once however the handling
+// then ends. The commit listing is counted by neither suite, and a merged pull request whose
+// payload names its head is paged twice for it -- once to attribute the head row, once for the
+// completion's session trailers.
+//
+// The fake takes delay to answer that listing, which spreads the messages' handling over a stop,
+// and a listing whose process went away while it waited (the request's context ended) is counted
+// as abandoned. A handling counted is therefore not a handling finished: one a stop gave up
+// unfinished is counted at its fetch all the same, and NATS delivers that message again, which
+// is one of the repeats a hand-over's in-flight window bounds. Anything else is answered with an
+// empty list.
 type pullRequestFake struct {
 	delay time.Duration
 
@@ -141,7 +150,15 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 		_, _ = fmt.Fprintf(w, `{"token":"ghs_twobuild","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintf(w, `{"number":%s,"title":"A pull request","user":{"login":"octocat"},"labels":[],"merged_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1}`, r.PathValue("number"))
+		number, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		f.mu.Lock()
+		f.done[number] = append(f.done[number], handling{build: build, at: time.Now()})
+		f.mu.Unlock()
+		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"merged_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1}`, number)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -158,9 +175,6 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 			return
 		}
 		_, _ = io.WriteString(w, `[{"sha":"0000000000000000000000000000000000000001","commit":{"message":"A change.","author":{"date":"2026-10-26T00:00:00Z"},"committer":{"date":"2026-10-26T00:00:00Z"}}}]`)
-		f.mu.Lock()
-		f.done[number] = append(f.done[number], handling{build: build, at: time.Now()})
-		f.mu.Unlock()
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -203,11 +217,21 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // message id, and answers the sequence the stream stored it at. That sequence is what tells a
 // repeat of the message from a replay of settled work: a take-over creates the durable again at
 // the ack floor it found, so the messages it delivers again are exactly those above that floor.
+//
+// The payload names the head -- its repository, its branch and its commit -- as
+// publishMergedPullRequests does in multiprocess_test.go, so that handling it once settles the
+// pull request's head row for good. An envelope naming no head repository attributes nobody, and
+// the reconcile's merged arm re-reads every merged row credited to nobody once per rule version
+// (reconcilePullRequestHeads): that re-read fetches the pull request's commits, which is what
+// this row counts as a handling, so a message above the ack floor could be read a second time by
+// the taking build and pass as a replay. With the head named, the one repeat the row can see is a
+// NATS redelivery.
 func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true",
 		"repo": "acme/deploy", "number": strconv.Itoa(number), "author": "octocat",
+		"head_repo": "acme/deploy", "head_ref": "a-branch", "head_sha": fmt.Sprintf("%040d", number),
 	})
 	if err != nil {
 		t.Fatalf("encode the payload: %v", err)
@@ -534,8 +558,10 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	requireBusSettings(t, js, baseline, "after the previous build restarted")
 
 	// Read last, after both restarts, so a message either hand-over delivered again and had
-	// handled again is counted. A handling a stopping process abandoned is not one: NATS
-	// delivers that message again, which is what at-least-once delivery is for.
+	// handled again is counted. A handling a stopping process abandoned is one of them: it is
+	// counted at the pull request's fetch, which it made, and NATS delivers that message again,
+	// so the build that took the durable over handles it once more -- a repeat the hand-over's
+	// in-flight window bounds, with the messages whose acknowledgement landed above the floor.
 	time.Sleep(5 * time.Second)
 	done, abandoned := fake.handled()
 	handOvers := []handOver{currentHandOver, previousHandOver}
