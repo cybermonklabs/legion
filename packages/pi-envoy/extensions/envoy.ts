@@ -709,10 +709,10 @@ export default function envoyExtension(pi: PiApi): void {
   // kept for every one of them until shutdown, since a shell or kernel started before a switch
   // still acts as the session it started in. A gate that did not load refuses each literal call at
   // the hook (`loadFailureGate`), so those never reach the CLI; it mints no marker and records no
-  // mode, so every gated write that does reach the CLI — one outside the literal form, and a
-  // subagent's literal one — is refused where the session chose block (`OMP_ASKGATE=block`, which
-  // `bindDispatchSession` writes beside the record), and at the warn default posts with a warning
-  // and an `unmarked` entry.
+  // mode, and writes down no verdicts either, so every gated write that does reach the CLI — one
+  // outside the literal form, and a subagent's literal one — posts with a warning and an
+  // `unmarked` entry, whatever mode the session chose (dispatch://INFRA-2079, row 3.5): the CLI
+  // refuses only a write a review of this session refused, or one whose evidence it cannot read.
   const askgateOwner: AskgateOwner | undefined =
     askgateFile === null ? undefined : selfOwner(sessionStateRoot(process.env));
   const askgateRecords = new Set<string>();
@@ -4214,8 +4214,10 @@ export default function envoyExtension(pi: PiApi): void {
     // Read, and the offset advanced, on every result, failed or not and armed period or not, so a
     // later result never counts the calls this one ran.
     const entries = readNewDispatchResults();
-    // A gated write the CLI found no AskGate marker for (refused in block mode, posted with a
-    // warning in warn mode) becomes an `advisor-gate` entry, so AskGate's report counts it. Only
+    // A gated write the CLI found no AskGate marker for becomes an `advisor-gate` entry, so
+    // AskGate's report counts it. `askgate.mode` says what became of the write — `block` refused,
+    // `warn` posted — and `askgate.chose` the mode the session had set, which no longer decides
+    // it on its own. Only
     // the top-level instance records it: it reads each line of the session's ledger once, the
     // lines of a subagent's calls included.
     if (
@@ -4233,6 +4235,11 @@ export default function envoyExtension(pi: PiApi): void {
           decision: askgate.mode === "block" ? "revise" : "allow",
           outcome: "unmarked",
           verdictMode: askgate.mode,
+          // What the session asked for, where it differs from what the write got: a write that
+          // posted unreviewed in a session that chose block is the row an operator looks for.
+          ...(askgate.chose === undefined || askgate.chose === askgate.mode
+            ? {}
+            : { sessionMode: askgate.chose }),
           reason: askgate.why,
           latencyMs: 0,
           revisesForKey: 0,

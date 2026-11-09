@@ -8,7 +8,8 @@ import {
   fileOperands,
   gatedWrite,
   operandPath,
-  readRefusal,
+  readVerdict,
+  writeIdentity,
 } from "./askgate-marker";
 import { newAsks } from "./askgate-new-asks";
 import {
@@ -116,6 +117,21 @@ const RECORD_RECOVERY =
  */
 const STORE_RECOVERY =
   "This is AskGate's own state for this session and nothing about the call, but a store that cannot be read may hold a refusal of this write, so it is not sent. The path that could not be read is named above. A session whose Oh My Pi process is gone may have its AskGate record removed, which turns AskGate off for that session; tell whoever owns the session if it is live.";
+
+/**
+ * What the agent reads when an upload's own file cannot be read here. Its bytes are what the
+ * review judged and what the write is identified by, so without them AskGate's verdict on this
+ * write cannot be looked up at all — and no identity is never no verdict.
+ */
+const UPLOAD_UNREADABLE =
+  "An upload is identified by the bytes it sends, which are what AskGate reviews, so a file this command cannot read leaves no way to ask whether AskGate refused this write. Check the path, then send the upload again as one bash call of literal words.";
+
+/**
+ * What the agent reads in a session whose gate reached a verdict of no and could not write it
+ * down. Nothing found is no longer proof that nothing was said, for any write of that session.
+ */
+const VERDICT_LOST =
+  "AskGate could not write down a verdict it reached in this session, so for the rest of it a write it has nothing recorded against is no proof that it reviewed nothing. Send this write as one bash call of literal words to have it reviewed, and read the path named above: the session's own state directory would not take a file.";
 
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
 const LITERAL_FORM =
@@ -402,6 +418,8 @@ export async function runDispatchCli(
   // is no longer consumed by the refusal it causes, and evidence that exists and cannot be read
   // is its own answer.
   let uploadBytes: Uint8Array | undefined;
+  /** Said again after the result, where the ledger could not record an unreviewed write. */
+  let unreviewedAgain: string | undefined;
   if (gatedWrite(parsed.tool, parsed.args)) {
     const command = commandName(parsed.tool);
     const notCalled = `dispatch ${command} was not called:`;
@@ -434,22 +452,14 @@ export async function runDispatchCli(
       | undefined;
     try {
       const gate = askgateState(dir);
-      if (gate.kind === "broken") {
-        finding = {
-          verdict: "unknown",
-          // No owner file could be read, so the session's own choice is unreadable with it: the
-          // stricter of the two stands while its record is broken.
-          mode: "block",
-          why: gate.problem,
-          reason: `AskGate's record for this session, ${gate.problem}, so whether AskGate refused this write cannot be told`,
-          advice: { refused: RECORD_RECOVERY, posted: RECORD_RECOVERY },
-        };
-      } else if (gate.kind === "on") {
-        // Each file the argv names, read once: its digest for the check, and an upload's bytes,
-        // which are then the bytes the upload sends, so nothing changes between the check and
-        // the send. Only a regular file is read; any other file has no digest, which matches no
-        // reviewed marker.
+      if (gate.kind !== "off") {
+        // Each file the argv names, read once: its digest for the marker check, and an upload's
+        // bytes, which are then the bytes the upload sends and the bytes its identity is taken
+        // over, so nothing changes between the review, the check and the send. Only a regular
+        // file is read; any other file has no digest, which matches no reviewed marker. Read
+        // before the record is judged, since the identity a verdict is looked up by needs them.
         const files: FileDigest[] = [];
+        let uploadUnread = false;
         for (const file of fileOperands(argv)) {
           let bytes: Buffer | undefined;
           try {
@@ -466,51 +476,97 @@ export async function runDispatchCli(
             // Not there, or not this process's to open: no digest.
           }
           files.push({ ...file, sha256: bytes === undefined ? null : bytesDigest(bytes) });
-          if (file.flag === "--path" && file.operand === parsed.args.path) uploadBytes = bytes;
+          if (file.flag === "--path" && file.operand === parsed.args.path) {
+            uploadBytes = bytes;
+            uploadUnread = bytes === undefined;
+          }
         }
-        const spent = consumeMarker(gate.stores, argv, parsed.args, files, Date.now());
-        if (!spent.ok && spent.verdict === "stale") {
+        // An upload whose own bytes could not be read has no identity, so no verdict can be
+        // looked up for it: absence of identity is never absence of a verdict.
+        const said = uploadUnread
+          ? undefined
+          : readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes));
+        // Step one, and the reason this branch is ordered rather than conditional: this
+        // session's own verdict on this write comes before everything else, because it is the
+        // only thing here that is a verdict. A verdict is not a mode's to overrule, and it is
+        // not a damaged file's to downgrade: a recorded no outranks both a marker that does not
+        // cover the write and a store that cannot be read. Where a bound marker and a no both
+        // stand — a clear or a mint removal that failed — the no wins, since nothing here can
+        // tell which came later, and a stale no costs a resend while a stale permission posts
+        // something a reviewer rejected.
+        if (said?.kind === "refused")
           finding = {
-            verdict: "stale",
-            mode: gate.mode,
-            why: spent.why,
-            reason: `AskGate is on for this session, and ${spent.why}`,
-            advice:
-              spent.changed === undefined
-                ? {
-                    refused: `${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`,
-                    posted: `${LITERAL_FORM} Send the next one in that form.`,
-                  }
-                : {
-                    refused: `${SAME_MESSAGE} Send the call again in a later message than the one that changes the file.`,
-                    posted: `${SAME_MESSAGE} Send a write in a later message than the call that changes its file.`,
-                  },
+            verdict: "refused",
+            mode: gate.kind === "on" ? gate.mode : "block",
+            why: "AskGate reviewed this write and did not send it",
+            reason: `AskGate reviewed this write and did not send it: ${said.reason}`,
+            advice: { refused: REFUSAL_STANDS, posted: REFUSAL_STANDS },
           };
-        } else if (!spent.ok && spent.verdict === "unknown") {
+        else if (gate.kind === "broken")
+          finding = {
+            verdict: "unknown",
+            // No owner file could be read, so the session's own choice is unreadable with it:
+            // the stricter of the two stands while its record is broken.
+            mode: "block",
+            why: gate.problem,
+            reason: `AskGate's record for this session, ${gate.problem}, so whether AskGate refused this write cannot be told`,
+            advice: { refused: RECORD_RECOVERY, posted: RECORD_RECOVERY },
+          };
+        else if (said === undefined || said.kind === "unknown") {
+          const why =
+            said === undefined
+              ? "this upload's own bytes could not be read, so AskGate's verdict on it cannot be looked up"
+              : said.why;
           finding = {
             verdict: "unknown",
             mode: gate.mode,
-            why: spent.why,
-            reason: spent.why,
-            advice: { refused: MARKER_UNREADABLE, posted: MARKER_UNREADABLE },
+            why,
+            reason: why,
+            advice:
+              said === undefined
+                ? { refused: UPLOAD_UNREADABLE, posted: UPLOAD_UNREADABLE }
+                : { refused: MARKER_UNREADABLE, posted: MARKER_UNREADABLE },
           };
-        } else if (!spent.ok) {
-          // No marker, which AskGate mints for no call it refuses either. Its refusals are kept
-          // where nothing sweeps them, and are read by the tool and the arguments rather than by
-          // the words of the command, so the same write sent in another spelling meets the same
-          // no.
-          const refusal = readRefusal(gate.stores, parsed.tool, parsed.args);
-          finding =
-            refusal === "unknown"
-              ? {
-                  verdict: "unknown",
-                  mode: gate.mode,
-                  why: "AskGate's record of its refusals cannot be read",
-                  reason: "AskGate's record of its refusals for this session cannot be read",
-                  advice: { refused: MARKER_UNREADABLE, posted: MARKER_UNREADABLE },
-                }
-              : refusal === undefined
+        } else {
+          const spent = consumeMarker(gate.stores, argv, parsed.args, files, Date.now());
+          if (!spent.ok && spent.verdict === "stale")
+            finding = {
+              verdict: "stale",
+              mode: gate.mode,
+              why: spent.why,
+              reason: `AskGate is on for this session, and ${spent.why}`,
+              advice:
+                spent.changed === undefined
+                  ? {
+                      refused: `${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`,
+                      posted: `${LITERAL_FORM} Send the next one in that form.`,
+                    }
+                  : {
+                      refused: `${SAME_MESSAGE} Send the call again in a later message than the one that changes the file.`,
+                      posted: `${SAME_MESSAGE} Send a write in a later message than the call that changes its file.`,
+                    },
+            };
+          else if (!spent.ok && spent.verdict === "unknown")
+            finding = {
+              verdict: "unknown",
+              mode: gate.mode,
+              why: spent.why,
+              reason: spent.why,
+              advice: { refused: MARKER_UNREADABLE, posted: MARKER_UNREADABLE },
+            };
+          else if (!spent.ok)
+            // No marker, and this session said nothing about the write. Where it lost a verdict
+            // it could not write down, nothing found is no proof that nothing was said.
+            finding =
+              said.kind === "lost"
                 ? {
+                    verdict: "unknown",
+                    mode: gate.mode,
+                    why: "AskGate reached a verdict in this session that it could not write down",
+                    reason: `AskGate reached a verdict in this session that it could not write down (${said.path}), so a verdict on this write cannot be ruled out`,
+                    advice: { refused: VERDICT_LOST, posted: VERDICT_LOST },
+                  }
+                : {
                     verdict: "none",
                     mode: gate.mode,
                     why: spent.why,
@@ -519,13 +575,6 @@ export async function runDispatchCli(
                       refused: `${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`,
                       posted: `${LITERAL_FORM} Send the next one in that form.`,
                     },
-                  }
-                : {
-                    verdict: "refused",
-                    mode: gate.mode,
-                    why: "AskGate reviewed this write and did not send it",
-                    reason: `AskGate reviewed this write and did not send it: ${refusal.reason}`,
-                    advice: { refused: REFUSAL_STANDS, posted: REFUSAL_STANDS },
                   };
         }
       }
@@ -594,10 +643,16 @@ export async function runDispatchCli(
           ? `dispatch: warning: dispatch ${command} posted without review: ${finding.reason}. No review ran for this call, so AskGate refused nothing. ${finding.advice.posted}`
           : `dispatch: warning: AskGate is on for this session in warn mode, and ${finding.why}, so this write posts unreviewed. ${finding.advice.posted}`
       );
-      if (unrecorded !== undefined)
-        warn(
-          `dispatch: warning: dispatch ${command} could not be recorded as unreviewed in this session's ledger: ${unrecorded}. The write posts all the same, and this warning, on both this command's output and its standard error, is its only account.`
-        );
+      if (unrecorded !== undefined) {
+        // With the ledger gone, these warnings are the whole account of the write, so they have
+        // to survive every stage AskGate's own literal grammar blesses. Standard error alone is
+        // not enough: the grammar permits one `2>&1` and one trailing `head`/`tail` together,
+        // which take the merged stream and keep one line of it. So the line is said before the
+        // result, which a `head -n 1` keeps, and again after it (`unreviewedAgain`), which a
+        // `tail -n 1` keeps, on both streams each time.
+        unreviewedAgain = `dispatch: warning: dispatch ${command} posted with no review behind it, and this session's ledger could not record it: ${unrecorded}. These warnings are its only account.`;
+        warn(unreviewedAgain);
+      }
     }
   }
 
@@ -724,5 +779,8 @@ export async function runDispatchCli(
       writeFull
     )
   );
+  // Last of all, so a trailing `tail -n 1` keeps it: the account of a write that posted with no
+  // review behind it and no ledger line to record that.
+  if (unreviewedAgain !== undefined) warn(unreviewedAgain);
   return code;
 }

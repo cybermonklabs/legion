@@ -304,6 +304,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       return (opts.dryRun ?? core.spawnDryRun)(script, runOpts);
     },
     markerStore: store,
+    sessionDir: () => sessionDir,
     recordCheckMode: (mode) => setRecordMode(sessionDir, self, mode),
   })(pi as never);
   const roles = opts.roles ?? { askgate: MODEL };

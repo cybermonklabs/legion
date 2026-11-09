@@ -683,10 +683,13 @@ why. The note reaches a headless session too:
 | `unreadable` (warn mode) | a file the literal call names was missing or not a regular file when the gate ran |
 | `abandoned` (warn mode) | the call or the run ended before the review answered |
 | `shutdown` (warn mode) | the session shut down before the review answered |
-| `unmarked` (warn mode) | the CLI found no marker for a gated write sent in another form |
+| `unmarked` | the CLI found no marker for a gated write sent in another form |
 
 Where the mode that applies is `block` (the verdict's for `abandoned` and `shutdown`, the checks'
-for `unreadable` and `unmarked`), those outcomes refuse the call instead. Only
+for `unreadable`), those outcomes refuse the call instead. `unmarked` is not one of them: since
+dispatch://INFRA-2079 the CLI refuses such a write only where this session's own review refused
+it, or where the evidence it would read cannot be read, so the entry is `allow` in either mode
+for a write the gate never saw. Only
 `askgate.enabled: false`, and a session with no Dispatch, are silent. Each outcome after a failure
 runs the agent's own command as written: a gate that fails breaks no valid write.
 

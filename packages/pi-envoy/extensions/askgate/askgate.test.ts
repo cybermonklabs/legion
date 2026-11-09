@@ -324,6 +324,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       return (opts.dryRun ?? core.spawnDryRun)(script, runOpts);
     },
     markerStore: store,
+    sessionDir: () => sessionDir,
     recordCheckMode: (mode) => setRecordMode(sessionDir, self, mode),
   })(pi as never);
   const roles = opts.roles ?? { askgate: MODEL };
@@ -619,7 +620,7 @@ describe("mode and model role (plan tests c-g)", () => {
       expect(g.notices).toHaveLength(0);
     }
   });
-  test("(g) a call outside the literal grammar is no call the gate refuses, with no role either: the CLI refuses its write", async () => {
+  test("(g) a call outside the literal grammar is no call the gate refuses, with no role either: the CLI posts its write with a warning", async () => {
     const g = bind({ env: { OMP_ASKGATE: "warn" }, roles: {} });
     expect(await g.bash("u", "cd $X && dispatch comment --issue X-1 --body b")).toBeUndefined();
     expect(g.entries).toHaveLength(0);
@@ -694,7 +695,7 @@ describe("mode and model role (plan tests c-g)", () => {
       expect(unreadable.entries.map((e) => e.outcome)).toEqual(["no-model-role"]);
       // No halt from any of them: a halt would let the next writes out.
       for (const g of [rebutted, closing, failing, unreadable]) expect(g.notices).toHaveLength(0);
-      // And no marker: the CLI refuses each of them too.
+      // And no marker: the CLI has no review of any of them to consume.
       for (const g of [rebutted, closing, failing, unreadable])
         expect(markersIn(g.store)).toEqual([]);
     }
@@ -1975,7 +1976,8 @@ console.log(JSON.stringify(args, null, 2));
     }
   });
   // X3's eval-cell examples, and the cells the old eval scan refused: the gate reads no cell. A
-  // process a cell starts carries no marker, so the CLI refuses a gated write it sends.
+  // process a cell starts carries no marker, so the CLI posts a gated write it sends with a
+  // warning that no review ran, unless this session's review refused that very write.
   test("an eval cell is not the gate's to refuse, whatever it runs", async () => {
     const cells: Array<[string, string]> = [
       ["py", `import os\nos.system("git commit -m 'dispatch comment fix'")`],
@@ -2035,8 +2037,8 @@ console.log(JSON.stringify(args, null, 2));
   });
   /**
    * A call the gate does not read, in both modes: it runs as written, and the gate runs no dry
-   * run, asks no model, records no entry and mints no marker, so the CLI refuses a gated write in
-   * it when it runs.
+   * run, asks no model, records no entry and mints no marker, so the CLI posts a gated write in
+   * it with a warning when it runs, unless this session refused that very write.
    */
   const expectUnread = async (command: string) => {
     for (const mode of ["warn", "block"]) {
@@ -2950,8 +2952,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
   });
   test("a head line ending in any other comment is still unreadable", async () => {
     // M's tokenizer reads only an override comment, so any other one leaves the call outside the
-    // literal grammar: the gate refuses nothing and records nothing, and the CLI refuses the write
-    // for want of a marker, with the note that names the cause.
+    // literal grammar: the gate refuses nothing and records nothing, and the CLI posts the write
+    // with the warning that it carries no marker, and the note that names the cause.
     for (const comment of [
       "# a note",
       "# --advisor-rebuttal 'r' and more",
@@ -4607,7 +4609,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     );
   });
   // Each of these holds an expansion, or a stage or option the grammar does not take: still
-  // outside it, so no marker, and the CLI refuses the write.
+  // outside it, so no marker, and the CLI posts the write with its warning.
   const STILL_OUTSIDE = [
     'dispatch comment --issue X-1 --body "Done.\nSee $URL"',
     'dispatch comment --issue X-1 --body "Done.\nSee `cat url`"',
@@ -4870,7 +4872,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
 
 // The attack review at 0cf9f1902, A1: an eval cell that starts the CLI as a process of its own
 // posts with no `bash` call for the gate to see. The gate no longer reads cells: such a process
-// carries no marker, and the CLI refuses its gated write (the real-binary rows in
+// carries no marker, and the CLI posts its gated write with a warning (the real-binary rows in
 // askgate-omp.test.ts drive both languages).
 describe("eval cells that run the dispatch CLI (A1)", () => {
   /** Main's spec scorer fixture of an agent that ran the CLI from a Python cell (score.test.ts). */
@@ -5633,8 +5635,8 @@ describe("askgate.ts, the entry", () => {
       );
       expect(device?.block).toBe(true);
       // Not a write it reviews, a subagent's write, an upload that is no markdown document, and a
-      // call outside the literal grammar pass: the CLI refuses each gated write in them, since a
-      // gate that did not load mints no marker.
+      // call outside the literal grammar pass: a gate that did not load mints no marker and
+      // writes down no verdict, so the CLI posts each gated write in them with its warning.
       expect(await bash("dispatch comment --issue X-1 --body b | cat")).toBeUndefined();
       expect(await bash("ls -la")).toBeUndefined();
       expect(await bash("dispatch read --issue X-1")).toBeUndefined();
@@ -5939,7 +5941,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   async function post(command: string, store: string) {
     // This test process stands in for Oh My Pi, whose record makes the CLI ask for a marker.
     openStore(store);
-    // The session chose block (gateEnv), so the CLI refuses a write that spends no marker.
+    // The session chose block (gateEnv), which governs a write no verdict stands behind.
     writeAskgateRecord(
       sessionDirectory(env, env.DISPATCH_SESSION_ID),
       { pid: process.pid, start: processStart(process.pid), ns: pidNamespace(), store },

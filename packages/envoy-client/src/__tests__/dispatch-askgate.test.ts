@@ -16,9 +16,11 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import {
   keepStore,
   MARKER_MAX_AGE_MS,
+  markVerdictsLost,
   mintMarker,
   setRecordMode,
-  writeRefusal,
+  writeIdentity,
+  writeVerdict,
 } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -612,6 +614,7 @@ describe("AskGate at the dispatch CLI", () => {
   // Gated, which is what the warning shows: an ungated command prints no AskGate line at all.
   test("an issue with a spec and a markdown upload are gated", async () => {
     writeRecord();
+    writeFileSync(join(stateDir, "notes.markdown"), "# Notes\n");
     for (const [argv, command] of [
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],
@@ -786,7 +789,12 @@ describe("absence is a statement only when the store was read whole", () => {
   const POSTED = "dispatch: warning: dispatch message posted without review:";
   /** A standing refusal, as the gate writes one for a write its review did not send. */
   const refused = async (reason = "failure 7: say what changed, not that something did") =>
-    writeRefusal(store(), "dispatch_message", await dryArgs(MESSAGE), reason, Date.now());
+    writeVerdict(
+      join(stateDir, "sessions", "ses-1"),
+      writeIdentity("dispatch_message", await dryArgs(MESSAGE)),
+      reason,
+      Date.now()
+    );
 
   test("a live record, no marker and no refusal: no review ever saw this call, so it posts", async () => {
     writeRecord();
@@ -858,6 +866,87 @@ describe("absence is a statement only when the store was read whole", () => {
 
   // Scope: the key covers the tool and every argument, so a no about one write never reaches
   // another issue or other text.
+  // Both review arms found this independently: the key was a plain `JSON.stringify`, and the
+  // parser inserts arguments in the order their flags appeared, so a reordered resend hashed
+  // differently and the rejected write posted. A here-document body carries the newline the
+  // shell adds, which did the same. Neither is a difference the reviewer saw.
+  test("a standing refusal is read by what was reviewed, not by how the command spelled it", async () => {
+    writeRecord();
+    await refused();
+    for (const spelling of [
+      ["message", "--body", "Deliverable landed.", "--issue", "DSP-1"],
+      ["message", "--issue=DSP-1", "--body=Deliverable landed."],
+      ["message", "--issue", "DSP-1", "--body", "Deliverable landed.\n"],
+      ["message", "--issue", "DSP-1", "--body-file", "-"],
+    ]) {
+      const { code, stdout } = await run(spelling, omp, "Deliverable landed.\n");
+      expect({ spelling, code }).toEqual({ spelling, code: 1 });
+      expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    }
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // A verdict is not a damaged file's to downgrade. One unreadable marker used to take the call
+  // to `unknown`, which warn mode posts — so a recorded no became a guess and the write went.
+  test("a recorded refusal outranks an unreadable marker, and warn mode does not overrule it", async () => {
+    for (const mode of ["block", "warn"] as const) {
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      posts.length = 0;
+      writeRecord("ses-1", undefined, mode);
+      await refused();
+      const marker = mint(MESSAGE, await dryArgs(MESSAGE));
+      chmodSync(marker, 0o000);
+      try {
+        const { code, stdout } = await run(MESSAGE);
+        expect({ mode, code }).toEqual({ mode, code: 1 });
+        expect(stdout).toContain("AskGate reviewed this write and did not send it");
+        expect(messagePosts()).toHaveLength(0);
+      } finally {
+        chmodSync(marker, 0o600);
+      }
+    }
+  });
+
+  // An unbound marker says, in as many words, that no review stands behind it: a subagent's, a
+  // halt's, a pass taken over another provider. It cannot outrank a recorded no.
+  test("an unbound marker does not outrank a recorded refusal", async () => {
+    writeRecord();
+    const unbound = mint(MESSAGE, null);
+    await refused();
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(existsSync(unbound)).toBe(true);
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // A verdict belongs to the session that reached it. Kept in the process store it refused
+  // another session's writes after a switch, and died with a gate restart the session survived.
+  test("a refusal is this session's, and no other session meets it", async () => {
+    writeRecord();
+    await refused();
+    expect((await run(MESSAGE)).code).toBe(1);
+    writeRecord("ses-other");
+    const { code, stdout } = await run(MESSAGE, {
+      DISPATCH_HOST: "omp",
+      DISPATCH_SESSION_ID: "ses-other",
+    });
+    expect(code).toBe(0);
+    expect(stdout).toContain("posted without review");
+  });
+
+  // A verdict the gate reached and could not write down is a no the CLI will never see, so the
+  // session says so and absence stops being a statement for the rest of it.
+  test("a session that lost a verdict reads absence as unknown, not as none", async () => {
+    writeRecord();
+    markVerdictsLost(join(stateDir, "sessions", "ses-1"), Date.now());
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("could not write down");
+    expect(messagePosts()).toHaveLength(0);
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();
@@ -951,9 +1040,13 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(messagePosts()).toHaveLength(1);
     for (const stream of [stdout, stderr]) {
       expect(stream).toContain(POSTED);
-      expect(stream).toContain("could not be recorded");
+      expect(stream).toContain("ledger could not record it");
     }
-    // A reader that keeps the last line of standard output alone still has the account.
+    // The grammar blesses one `2>&1` and one trailing `head`/`tail` together, which keep one
+    // line of the merged stream. The account has to be in the first line and in the last.
+    const merged = `${stdout}${stderr}`.split("\n").filter((line) => line !== "");
+    expect(merged[0]).toContain("posted without review");
+    expect(merged.at(-1)).toContain("ledger could not record it");
     expect(cliRefusals(stderr)).toEqual([]);
   });
 
@@ -993,7 +1086,7 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(code).toBe(0);
     expect(cliRefusals(stdout)).toEqual([]);
     expect(stdout).toContain(POSTED);
-    expect(stdout).toContain("could not be recorded");
+    expect(stdout).toContain("ledger could not record it");
     expect(messagePosts()).toHaveLength(1);
   });
 

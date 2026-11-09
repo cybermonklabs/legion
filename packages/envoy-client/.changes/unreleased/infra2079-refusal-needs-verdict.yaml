@@ -2,24 +2,32 @@ kind: Fixed
 body: |-
   A refusal of a Dispatch write by the `dispatch` CLI is now only ever the verdict of an AskGate
   review that ran, and a write posts unreviewed only where the CLI can positively establish that
-  no verdict exists. A call the gate never read — from a subagent, a script, an eval cell,
-  `xargs`, `python3 -c` or any form outside the literal grammar — posts with a warning naming the
-  call and why no review ran, in every mode, where it used to be refused in `block`. AskGate's
-  own refusals are read first, so a write its review did not send stays refused however it is
-  sent again (`readRefusal`, keyed by the Dispatch tool and the arguments the review judged, so
-  another spelling of the same write meets the same no), and evidence that exists and cannot be
-  read — a marker of this call that is corrupt, unreadable, a link or keyed to another argv; a
-  store that cannot be listed; a session record that cannot be read — refuses rather than
-  counting as absence. `consumeMarker` answers which of the four states a call is in as
-  `Consumed.verdict`, and the CLI decides in that one place.
-  A refusal now consumes nothing: an expired marker is left where it is for the sweep at the
-  gate's next mint, so the same call sent again meets the same answer instead of an emptier
-  store. Both AskGate warnings go to standard error as well as standard output, since a trailing
-  `| tail`, which AskGate's own grammar blesses, would otherwise take the only account of a
-  write whose ledger line could not be written; that ledger failure no longer holds the write
-  back. The ledger line carries `askgate.chose`, the mode the session set, beside `askgate.mode`,
-  which says what became of the write.
+  no verdict exists. Absence counts as a statement only when the evidence store was readable and
+  complete.
+  A call the gate never read — from a subagent, a script, an eval cell, `xargs`, `python3 -c` or
+  any form outside the literal grammar — posts with a warning naming the call and why no review
+  ran, in every mode, where it used to be refused in `block`. A write AskGate's own review
+  refused is held in either mode, since a verdict is not a mode's to overrule, and it outranks
+  both a marker that does not cover the write and a store that cannot be read.
+  A verdict is identified by what the reviewer judged and nothing of how the command spelled it
+  (`writeIdentity`): the tool and every argument, canonically encoded with keys sorted at every
+  depth, arrays left in order and trailing whitespace dropped, with an upload's bytes standing in
+  for the path that named them. So flag order, `--issue=X` against `--issue X`, a here-document
+  body against the same text inline, and an upload's bytes resent through `--content` all meet
+  the same verdict, while a corrected file has a new identity and is free. Verdicts live in the
+  session's own state directory, not the process's marker store, so one session's no never
+  refuses another's write and a restart of the gate does not drop it; they are never swept by
+  age, and go when a later review of the same write allows it or with the session.
+  A refusal consumes nothing: an expired marker is left for the sweep at the gate's next mint, so
+  the same call sent again meets the same answer. A marker of this call that is corrupt,
+  unreadable, a link or keyed to another argv, a store that cannot be listed, and a session
+  record that cannot be read are each `unknown` rather than absence. A session whose gate lost a
+  verdict it could not write down reads absence as `unknown` for the rest of its life.
+  Both AskGate warnings go to standard error as well as standard output, and where the session's
+  ledger could not record an unreviewed write the account is said again after the result, so that
+  neither a trailing `| head -n 1` nor `2>&1 | tail -n 1` — the stages AskGate's own grammar
+  blesses — can take the only record of it. The ledger line carries `askgate.chose`, the mode the
+  session set, beside `askgate.mode`, which says what became of the write.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
-  leave the loser refused, and now both post, one of them with the warning. A resent literal call
-  is read by the gate and reviewed afresh, so a duplicate the gate can see still gets its own
-  verdict. dispatch://INFRA-2079, row 3.5.
+  leave the loser refused, and now both post, one with the warning. A resent literal call is read
+  by the gate and reviewed afresh. dispatch://INFRA-2079, row 3.5.

@@ -253,15 +253,17 @@ import * as path from "node:path";
 import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import {
   bytesDigest,
-  clearRefusal,
+  clearVerdict,
   type FileDigest,
   type FileOperand,
   fileOperands,
   gatedWrite,
+  markVerdictsLost,
   mintMarker,
   operandPath,
   uploadIsDocument,
-  writeRefusal,
+  writeIdentity,
+  writeVerdict,
 } from "@legion/envoy-client/askgate-marker";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
@@ -472,6 +474,13 @@ export interface GateEntry {
    * breaker last reset it (an allow, a rebuttal or a trip there), this call included when it is one.
    */
   revisesForKey: number;
+  /**
+   * The check mode the session had set, on an `unmarked` entry whose write did not get it: a
+   * write that posted with no review behind it in a session that chose `block`. Absent where
+   * the session's choice and the write's outcome agree, and on every entry the gate itself
+   * makes, whose `verdictMode` already is the session's.
+   */
+  sessionMode?: Mode;
   argsDigest: string;
   /** The call's breaker target in readable form: the tool, then each of the issue, ask, artifact, project and reply it names. */
   target?: string;
@@ -645,6 +654,15 @@ interface Deps {
    * and where the CLI consumes the marker.
    */
   markerStore: string;
+  /**
+   * The state directory of the session this process is bound to now, where that session's
+   * AskGate verdicts live (`@legion/envoy-client/askgate-marker`), or undefined for a process
+   * bound to none. Keyed to the session and not to this process, as `recordCheckMode` is: a
+   * verdict is a fact about content within one session's run, and the gate's halt, breaker and
+   * rebuttals all reset on a switch. Kept in the marker store it would leak to every session
+   * this process later served and die with a restart the session survived.
+   */
+  sessionDir: () => string | undefined;
   /**
    * Records the check mode of the session the process is bound to now, into that session's own
    * record, for the CLI. Keyed to the session, not the process, so a switch to a session in the
@@ -3525,7 +3543,9 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       let revised: Input | undefined;
       // What the call's dry run printed and the digests of the files the gate read, which a
       // marker for the command it ran binds.
-      let dryRun: { args: Input; files: readonly FileDigest[] } | undefined;
+      // `review` is what the model judged: for an upload, the bytes rather than the path, which
+      // is what the write's identity is taken over on both sides of the hop.
+      let dryRun: { args: Input; review: Input; files: readonly FileDigest[] } | undefined;
       // OMP_ASKGATE when it is a mode; else this session's latest experiments entry, read per call
       // because one binding serves every session the process switches to.
       let mode: Mode = envMode ?? "block";
@@ -3546,7 +3566,8 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           mode = sessionMode(entries);
           checks = checkMode(envMode, entries);
         }
-        // The CLI reads the check mode from the store: every shell or cell could run it.
+        // The CLI reads the check mode from the record: every shell or cell could run it. It
+        // governs what the CLI does without a verdict, never what it does with one.
         if (event.toolName === "bash" || event.toolName === "eval") {
           try {
             recordMode(checks);
@@ -3616,7 +3637,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
                   run.slow ? renderSlowDryRun(run.failure) : undefined
                 );
               else {
-                dryRun = { args: run.args, files: run.files };
+                dryRun = { args: run.args, review: run.review, files: run.files };
                 const { key, label } = breakerKey(scoped.tool, run.review);
                 base = {
                   ...base,
@@ -3756,39 +3777,64 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           outcome,
           checks
         );
-        // The review that allows this write replaces any this session already refused it by, so
-        // the no goes with the verdict that stood behind it. Only a review of these very
-        // arguments clears them: a pass no verdict stands behind (`bound` null) leaves a
-        // standing refusal where it is.
-        if (bound !== null && minted === undefined && base !== undefined) {
-          try {
-            clearRefusal(deps.markerStore, base.tool, bound.args);
-          } catch (error) {
-            deps.runtimeLogger.warn(
-              `askgate: the refusal this call's review replaces could not be removed: ${messageOf(error)}`
-            );
-          }
-        }
       }
-      // A review that rejects mints nothing, so the CLI would find no marker and could not tell
-      // this write from one no review ever saw: it is sent again in any form the gate does not
-      // read and posts. So the verdict is written where the CLI looks for it, keyed by the tool
-      // and the arguments the review judged rather than by the words of the command
-      // (dispatch://INFRA-2079, row 3.5). A failure here leaves that one bypass open and is said
-      // in the log: the call itself is refused either way, so nothing of it runs now.
-      if (decision.result?.block === true && dryRun !== undefined && base !== undefined) {
+      // The verdict this call reached, written where the CLI looks for it — this session's own
+      // state directory, under the identity of the write the model judged rather than the words
+      // of the command (dispatch://INFRA-2079, row 3.5).
+      //
+      // Every source that decides records and clears, and the two go together. A review that
+      // rejects mints nothing, so without a record the CLI cannot tell a rejected write from one
+      // no review ever saw and the agent posts it by sending the same bytes in any form the gate
+      // does not read. A review that allows removes the no it replaces, or a write its reviewer
+      // has since passed stays refused. A rebuttal and a breaker trip clear too, although they
+      // bind no marker: they bind none because no review stands behind the bytes, but each is
+      // the agent's own sanctioned override, and a no that survives its own override is a trap.
+      // Nothing bounds how often an agent may rebut — that is the design, and every rebuttal is
+      // recorded and published — so a standing verdict is one deliberate, attributable override
+      // from gone.
+      //
+      // A device call records and clears on the same terms as a bash call: it posts through no
+      // CLI itself, but the identity it was judged under is the one a later command carries.
+      const session = deps.sessionDir();
+      const judged = dryRun?.review ?? (event.toolName === "bash" ? undefined : event.input);
+      const decided =
+        session !== undefined && judged !== undefined && base !== undefined
+          ? writeIdentity(
+              base.tool,
+              judged,
+              typeof judged.content === "string" && typeof judged.path === "string"
+                ? Buffer.from(judged.content, "utf8")
+                : undefined
+            )
+          : undefined;
+      if (decided !== undefined && session !== undefined) {
         try {
-          writeRefusal(
-            deps.markerStore,
-            base.tool,
-            dryRun.args,
-            decision.fields.deliveredReason ?? decision.fields.reason ?? "no reason was recorded",
-            deps.now()
-          );
+          if (decision.result?.block === true)
+            writeVerdict(
+              session,
+              decided,
+              decision.fields.deliveredReason ?? decision.fields.reason ?? "no reason was recorded",
+              deps.now()
+            );
+          else clearVerdict(session, decided);
         } catch (error) {
+          // A verdict the gate reached and could not write down is a no the CLI will never see,
+          // so the session is marked: for the rest of it, nothing recorded against a write is no
+          // proof that nothing was said. The call itself is refused either way, so nothing of it
+          // runs now. Where the mark cannot be written either, the gate's own refusal is all
+          // that holds this one call.
           deps.runtimeLogger.warn(
-            `askgate: this refusal could not be recorded for the dispatch CLI, so the same write sent outside the gate would post: ${messageOf(error)}`
+            `askgate: this call's verdict could not be recorded for the dispatch CLI: ${messageOf(error)}`
           );
+          if (decision.result?.block === true) {
+            try {
+              markVerdictsLost(session, deps.now());
+            } catch (markError) {
+              deps.runtimeLogger.warn(
+                `askgate: the session could not be marked as having lost a verdict, so a write this session refused could post if it is sent outside the gate: ${messageOf(markError)}`
+              );
+            }
+          }
         }
       }
       // The entry above reaches only this machine's disk, so a rules decision also goes to

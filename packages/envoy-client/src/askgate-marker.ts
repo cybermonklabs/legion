@@ -827,109 +827,190 @@ export function consumeMarker(
 }
 
 /**
- * Where a store keeps AskGate's refusals. A marker is permission and lives in `markers/`, swept
- * at each mint and spent by the one call it was minted for. A refusal is not permission and is
- * not spent by being read, so it lives here, is never swept, and goes only when the review that
- * refused it is replaced by one that allows (`clearRefusal`) or when the store goes with its
- * session (`closeStore`). A refusal that expired into absence would be Sol's replay with a
- * two-hour fuse: an expired permission must refuse, and an expired refusal must never become
- * permission.
+ * Where a session keeps AskGate's verdicts, under its own state directory beside its record.
+ *
+ * Not the process's marker store. A marker is permission for one call of one process and lives
+ * in `markers/`, swept at each mint and spent by the call it was minted for. A verdict is a fact
+ * about content, and what bounds it is the session: the gate's halt, breaker and rebuttals all
+ * reset on a session switch, and a no the model gave in one session is nothing to another. Kept
+ * in the process store, a no leaked to every session that process later served, and died with a
+ * gate restart that the session itself survived.
+ *
+ * Lifetime: born at the review, and gone when a later review of the same identity allows the
+ * write (`clearVerdict`), or when the session's directory goes (the CLI's daily prune). Never
+ * swept by age — an expired permission must refuse, and an expired no must never become
+ * permission — and it outlives a restart of the gate, since the directory is the session's. A
+ * session with no live owner has AskGate off altogether and nothing here is read.
  */
-const REFUSALS = "refusals";
+const VERDICTS = "askgate-verdicts";
+/** The file that marks a session whose gate lost a verdict it could not write (`markVerdictsLost`). */
+const VERDICTS_LOST = ".lost";
 
 /**
- * The key of a stored refusal: the digest of the Dispatch tool and the arguments the review
- * judged, as the call's dry run printed them and as the CLI parses them again.
+ * The canonical encoding a write's identity is taken over: object keys sorted at every depth,
+ * arrays left in their order, and each string's trailing whitespace dropped.
  *
- * Scope, exactly. It covers the tool name and every argument of the write — the issue, the body
- * or content, the artifact name, the path — so a refusal of one write never reaches another
- * issue, another tool or other text, and a corrected resend has another key and is untouched. It
- * does not cover how the command spelled them, so `--issue=DSP-1` and `--issue DSP-1`, a flag
- * order, and text sent inline or through `--body-file -` all meet the same refusal: that is the
- * respelling the argv key could not hold. It names no session, store, machine or time: the
- * refusal is found only in the stores of the live owners of this session's own record
- * (`askgateState`), so one session's no is unreadable to another, and it lives no longer than
- * the process that wrote it.
+ * Each of the three is a spelling the reviewer read as the same write. The CLI's parser inserts
+ * arguments in the order their flags appeared, so `--body X --issue Y` and `--issue Y --body X`
+ * encode differently unless the keys are sorted. A here-document body carries the newline the
+ * shell adds and the same text in `--body` does not. Arrays keep their order because `--ops-json`
+ * and the other repeatable fields are ordered data and not sets.
  */
-export function refusalKey(tool: string, args: Readonly<Record<string, unknown>>): string {
-  return digest({ tool, args });
+function canonical(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\s+$/, "");
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value !== "object" || value === null) return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort())
+    sorted[key] = canonical((value as Record<string, unknown>)[key]);
+  return sorted;
 }
 
-/** A refusal as it is stored. */
-interface Refusal {
-  readonly reason: string;
+/**
+ * The identity of a proposed write: what the reviewer judged, and nothing of how the command
+ * spelled it. The Dispatch tool and every argument, canonically encoded (`canonical`), with an
+ * upload's bytes standing in for the path that named them.
+ *
+ * Scope, exactly. It covers the tool and every argument of the write — the issue, the body or
+ * content, the artifact name — so a no about one write never reaches another issue, another tool
+ * or other text, and a corrected resend has another identity and is untouched. It covers no
+ * spelling: flag order, `--issue=X` against `--issue X`, and text inline against text from a
+ * `--<field>-file`, which the parser has already resolved to the same string, all meet the same
+ * verdict. For an upload it covers the bytes and not the path, so the rejected bytes sent again
+ * through `--content`, or from a file under another name, meet the same no, while a file whose
+ * text was corrected has a new identity and is free. It names no session, machine or time: the
+ * session that owns the verdict store bounds it.
+ *
+ * `uploadBytes` are the bytes an upload sends, where this write is one: the reviewer read them,
+ * and the CLI reads them again for the marker check. Undefined for every other write, and for an
+ * upload whose bytes could not be read — which leaves no identity at all, and absence of
+ * identity is never absence of a verdict.
+ */
+export function writeIdentity(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  uploadBytes?: Uint8Array
+): string {
+  const { path: _named, content: _inline, ...rest } = args;
+  const judged = uploadBytes === undefined ? args : { ...rest, content: bytesDigest(uploadBytes) };
+  return digest(canonical({ tool, args: judged }));
+}
+
+/** `<session>/askgate-verdicts`, where that session's verdicts of no are kept. */
+function verdictDir(session: string): string {
+  return join(session, VERDICTS);
 }
 
 /**
  * Records that AskGate reviewed this write and did not send it. Written whole under a temporary
- * name and renamed, as a marker is, and rewritten freely: one refusal per tool and arguments.
- * Throws when the store cannot take it, which the gate reports rather than swallows.
+ * name and renamed, owner-only, as a marker is, and rewritten freely: one verdict per identity.
+ * Throws when the session's directory cannot take it, which the gate reports and marks
+ * (`markVerdictsLost`) rather than swallows.
  */
-export function writeRefusal(
-  store: string,
-  tool: string,
-  args: Readonly<Record<string, unknown>>,
+export function writeVerdict(
+  session: string,
+  identity: string,
   reason: string,
   now: number
 ): string {
-  const dir = join(store, REFUSALS);
+  const dir = verdictDir(session);
   mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
   const temporary = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
-  writeFileSync(temporary, JSON.stringify({ v: 1, reason, createdAt: now }), {
+  writeFileSync(temporary, JSON.stringify({ v: 1, reason, at: now }), {
     flag: "wx",
     mode: PRIVATE_FILE,
   });
-  const file = join(dir, refusalKey(tool, args));
+  const file = join(dir, identity);
   renameSync(temporary, file);
   return file;
 }
 
 /**
- * Removes the refusal of this tool and these arguments, where there is one: a later review that
- * allows the same write replaces the verdict that refused it, so the no must not outlive it.
+ * Removes this session's verdict of no for `identity`, where there is one: a later review that
+ * allows the same write replaces the verdict that refused it, and a no that outlived the verdict
+ * replacing it would refuse a write its reviewer has since passed.
  */
-export function clearRefusal(
-  store: string,
-  tool: string,
-  args: Readonly<Record<string, unknown>>
-): void {
-  rmSync(join(store, REFUSALS, refusalKey(tool, args)), { force: true });
+export function clearVerdict(session: string, identity: string): void {
+  rmSync(join(verdictDir(session), identity), { force: true });
 }
 
 /**
- * AskGate's standing refusal of this write in `stores`, if any: its reason, `"unknown"` where a
- * refusal is there and cannot be read, and undefined where the stores were read whole and hold
- * none. A store with no refusals directory at all has none: an older gate wrote none.
+ * Marks this session as one whose gate reached a verdict of no and could not write it down. From
+ * then on, a store that holds nothing for a write is no proof that nothing was said, so the CLI
+ * reads absence as `unknown` rather than as none for the rest of the session.
+ *
+ * It never clears: the verdict that was lost stays lost, and a later write that succeeds says
+ * nothing about the one that did not. The cost is a session that is strict from its first failed
+ * record onward — the behaviour every session had before dispatch://INFRA-2079 — and the cost of
+ * clearing it would be a rejected write posting. Best effort: where the directory takes nothing
+ * at all the mark cannot be written either, and the gate's own refusal of that call is then the
+ * only thing holding it.
  */
-export function readRefusal(
-  stores: readonly string[],
-  tool: string,
-  args: Readonly<Record<string, unknown>>
-): Refusal | "unknown" | undefined {
-  const name = refusalKey(tool, args);
-  for (const store of stores) {
-    const file = join(store, REFUSALS, name);
-    let text: string;
+export function markVerdictsLost(session: string, now: number): void {
+  const dir = verdictDir(session);
+  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
+  writeFileSync(join(dir, VERDICTS_LOST), JSON.stringify({ v: 1, at: now }), {
+    mode: PRIVATE_FILE,
+  });
+}
+
+/** What a session's verdict store says about one write. */
+export type VerdictRead =
+  /** AskGate reviewed this write and did not send it. */
+  | { readonly kind: "refused"; readonly reason: string; readonly at: number }
+  /** A verdict for it, or the mark of one that was lost, is there and cannot be read. */
+  | { readonly kind: "unknown"; readonly why: string; readonly path: string }
+  /** The store was read whole and holds no verdict for this write, and none was lost. */
+  | { readonly kind: "none" }
+  /** No verdict for this write, but this session lost one it could not write down. */
+  | { readonly kind: "lost"; readonly path: string };
+
+/** Reads one file of the verdict store, without following a link. */
+function readVerdictFile(file: string): Record<string, unknown> | "gone" | "unreadable" {
+  let text: string;
+  try {
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        text = readFileSync(fd, "utf-8");
-      } finally {
-        closeSync(fd);
-      }
-    } catch (error) {
-      if (hasErrnoCode(error, "ENOENT")) continue;
-      return "unknown";
+      text = readFileSync(fd, "utf-8");
+    } finally {
+      closeSync(fd);
     }
-    try {
-      const data: unknown = JSON.parse(text);
-      if (typeof data !== "object" || data === null) return "unknown";
-      const { reason } = data as Record<string, unknown>;
-      if (typeof reason !== "string") return "unknown";
-      return { reason };
-    } catch {
-      return "unknown";
-    }
+  } catch (error) {
+    return hasErrnoCode(error, "ENOENT") ? "gone" : "unreadable";
   }
-  return undefined;
+  try {
+    const data: unknown = JSON.parse(text);
+    return typeof data === "object" && data !== null
+      ? (data as Record<string, unknown>)
+      : "unreadable";
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
+ * What this session has to say about the write `identity` names. A session whose directory holds
+ * no verdict store at all has said nothing: an older gate wrote none, and a session that has
+ * refused nothing writes none.
+ */
+export function readVerdict(session: string, identity: string): VerdictRead {
+  const file = join(verdictDir(session), identity);
+  const unreadable = (path: string, what: string): VerdictRead => ({
+    kind: "unknown",
+    why: `AskGate's ${what} cannot be read (${path})`,
+    path,
+  });
+  const found = readVerdictFile(file);
+  if (found === "unreadable") return unreadable(file, "verdict on this write");
+  if (found !== "gone") {
+    const { reason, at } = found;
+    if (typeof reason !== "string" || typeof at !== "number")
+      return unreadable(file, "verdict on this write");
+    return { kind: "refused", reason, at };
+  }
+  const lost = join(verdictDir(session), VERDICTS_LOST);
+  const mark = readVerdictFile(lost);
+  if (mark === "gone") return { kind: "none" };
+  if (mark === "unreadable") return unreadable(lost, "record of a lost verdict");
+  return { kind: "lost", path: lost };
 }
