@@ -52,6 +52,7 @@ function live(sessionId: string): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    state: "live",
     title: sessionId,
   };
 }

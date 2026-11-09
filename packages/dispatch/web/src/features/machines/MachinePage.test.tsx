@@ -37,6 +37,8 @@ function session(sessionId: string, place: TmuxPlace | undefined, extra?: Partia
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title: `Agent ${sessionId.slice(0, 4)}`,
     tmux_place: place,
     ...extra,

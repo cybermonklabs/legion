@@ -52,7 +52,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_slot_notice_at, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -211,7 +211,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	if issue.ReadyPending != nil {
 		readyPendingStep, readyPendingVersion = string(issue.ReadyPending.Step), issue.ReadyPending.Version
 	}
-	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, sinceSeq, since any
+	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, slotNoticeAt, sinceSeq, since any
 	var answeredBy Answer
 	var answeredDetail string
 	if issue.Awaiting != nil {
@@ -227,6 +227,9 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		if issue.Awaiting.AnsweredAt != nil {
 			answeredAt = *issue.Awaiting.AnsweredAt
 		}
+		if issue.Awaiting.SlotNoticeAt != nil {
+			slotNoticeAt = *issue.Awaiting.SlotNoticeAt
+		}
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
@@ -240,10 +243,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// each keeps it. memory_carried, the hand-over's own answer, is named here no more than it is
 	// on Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
-		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
+		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_slot_notice_at, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, nullif($16::text, ''), $17, $18, $19, $20, $21, $22, $23, $24, nullif($25::text, ''), nullif($26::text, ''), $27, $28,
-		coalesce($29::text[], '{}'), $30, $31)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, nullif($16::text, ''), $17, $18, $19, $20, $21, $22, $23, $24, nullif($25::text, ''), nullif($26::text, ''), $27, $28, $29,
+		coalesce($30::text[], '{}'), $31, $32)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -254,14 +257,14 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_ask = excluded.awaiting_ask, awaiting_gate_version = excluded.awaiting_gate_version,
 		awaiting_artifact = excluded.awaiting_artifact,
 		awaiting_answered_at = excluded.awaiting_answered_at, awaiting_answered_by = excluded.awaiting_answered_by,
-		awaiting_answered_detail = excluded.awaiting_answered_detail,
+		awaiting_answered_detail = excluded.awaiting_answered_detail, awaiting_slot_notice_at = excluded.awaiting_slot_notice_at,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
 		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, readyPendingVersion, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
-		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, readyPendingStep,
+		slotNoticeAt, sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, readyPendingStep,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -429,11 +432,11 @@ func scanIssue(row scanner) (*Issue, error) {
 	var sinceSeq *int64
 	var readyPendingStep *string
 	var readyPendingVersion *int
-	var since, declaredAt, memoryDrawnAt *time.Time
+	var slotNoticeAt, since, declaredAt, memoryDrawnAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
-		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
+		&slotNoticeAt, &sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
 		return nil, err
 	}
@@ -459,8 +462,12 @@ func scanIssue(row scanner) (*Issue, error) {
 			utc := answeredAt.UTC()
 			answeredAt = &utc
 		}
+		if slotNoticeAt != nil {
+			utc := slotNoticeAt.UTC()
+			slotNoticeAt = &utc
+		}
 		issue.Awaiting = &Awaiting{Artifact: awaitingArtifact, AnsweredAt: answeredAt, AnsweredBy: Answer(answeredBy),
-			AnsweredDetail: answeredDetail, Since: scannedMark(sinceSeq, since)}
+			AnsweredDetail: answeredDetail, SlotNoticeAt: slotNoticeAt, Since: scannedMark(sinceSeq, since)}
 		if awaitingAsk != nil {
 			issue.Awaiting.Ask = *awaitingAsk
 		}
@@ -538,8 +545,8 @@ func scanPhase(row scanner) (PhaseRow, error) {
 }
 
 const pullRequestColumns = `issue, repo, number, branch, head_sha, head_updated_at,
-	failing, cancelled, fix_attempts, blocked_attempts, check_runs,
-	generation, snapshot, pushes, head_moves, head_counted, head_run, planned_red, review_seen, review_seen_at, state,
+	failing, cancelled, check_runs,
+	generation, snapshot, pushes, head_moves, head_run, planned_red, review_seen, review_seen_at, state,
 	checked_head, required, required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
@@ -674,25 +681,29 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 			return fmt.Errorf("put pull request for %s: encode the head run: %w", pr.Issue, err)
 		}
 	}
+	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
+	// attempt or caps one since dispatch://INFRA-956 R4, and they are kept rather than dropped so
+	// a rollback to the daemon before it still runs. Each is `not null` with no default (migration
+	// 0004), so a new row is given its zero here and no write ever touches it again.
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
-		failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, pushes, head_moves,
-		head_counted, head_run, planned_red, review_seen, review_seen_at, state, checked_head, required,
-		required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+		failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
+		head_run, planned_red, review_seen, review_seen_at, state, checked_head, required,
+		required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha,
+		fix_attempts, blocked_attempts, head_counted)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
-		failing = excluded.failing, cancelled = excluded.cancelled, fix_attempts = excluded.fix_attempts,
-		blocked_attempts = excluded.blocked_attempts, check_runs = excluded.check_runs,
+		failing = excluded.failing, cancelled = excluded.cancelled, check_runs = excluded.check_runs,
 		generation = excluded.generation, snapshot = excluded.snapshot,
-		pushes = excluded.pushes, head_moves = excluded.head_moves, head_counted = excluded.head_counted, head_run = excluded.head_run,
+		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
 		planned_red = excluded.planned_red, review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		required = excluded.required, required_workflows = excluded.required_workflows,
 		required_workflows_head = excluded.required_workflows_head, mergeability = excluded.mergeability,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.HeadSHA, pr.HeadUpdatedAt,
-		failing, cancelled, pr.FixAttempts, pr.BlockedAttempts, checkRuns,
-		pr.Generation, pr.Snapshot, pushes, moves, pr.HeadCounted, run, pr.PlannedRed,
+		failing, cancelled, checkRuns,
+		pr.Generation, pr.Snapshot, pushes, moves, run, pr.PlannedRed,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead, required,
 		workflows, pr.WorkflowsHead, pr.Mergeability, pr.ConflictingHead, pr.MergeSHA,
 	)
@@ -1088,7 +1099,7 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
-		// not: its counters and its checks settlement are of a head nobody has judged since, and the
+		// not: its checks settlement is of a head nobody has judged since, and the
 		// review round's decision goes with the phases below, and so does its head run, whose
 		// replay would put the old generation's judgement back. Its pushes stay, each a fact about
 		// two commits, and so does its newest review, which orders every review it will have, and
@@ -1098,7 +1109,7 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		// generation of the issue's work does not make false. A head that still does not merge
 		// still does not merge, and the count it excuses starts again with the rounds below, so
 		// nothing of the old generation's counting survives it.
-		"update pull_requests set fix_attempts = 0, blocked_attempts = 0, head_counted = '', " +
+		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb where " + where,
 		"delete from design_gates where " + where,
@@ -1122,8 +1133,8 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
 	var failing, cancelled, checkRuns, pushes, moves, required, workflows, run []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.HeadSHA, &pr.HeadUpdatedAt,
-		&failing, &cancelled, &pr.FixAttempts, &pr.BlockedAttempts, &checkRuns, &pr.Generation, &pr.Snapshot,
-		&pushes, &moves, &pr.HeadCounted, &run, &pr.PlannedRed, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
+		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
+		&pushes, &moves, &run, &pr.PlannedRed, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
 		&pr.CheckedHead, &required, &workflows, &pr.WorkflowsHead, &pr.Mergeability, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
 		return nil, err
 	}
@@ -1663,11 +1674,16 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 	return registered, nil
 }
 
-func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error) {
+// ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
+// issue when the caller named one and to one role of that issue when it named a role as well:
+// the same read every way, with the issue and the role as two more terms that an empty string
+// leaves out, so a project-wide wake's answer is what it always was.
+func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox
-		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3)`,
-		string(OutboxKindControllerNotice), project, string(kind)).Scan(&pending); err != nil {
+		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
+		and ($4 = '' or issue = $4) and ($5 = '' or payload->>'role' = $5))`,
+		string(OutboxKindControllerNotice), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a %s controller notice pending: %w", project, kind, err)
 	}
 	return pending, nil

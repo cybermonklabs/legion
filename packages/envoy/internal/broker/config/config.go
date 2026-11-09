@@ -333,11 +333,14 @@ type Config struct {
 	// account (system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard) logs in
 	// as the one service its entry names and is given once; one service may have several accounts,
 	// one per machine. A namespace's default account is refused, since every pod there that names
-	// no account runs as it, and so is an account BROKER_SERVICES binds for a service's pods, since
-	// every such pod holds a token for it. Keyed by account, each answering its service. A token
-	// whose subject is not listed is refused, and a credential an account's login issued stops
-	// authenticating once its entry is gone. Needs BROKER_K8S_OIDC_ISSUER, whose tokens it trusts.
-	// Unset, no service logs in with a token.
+	// no account runs as it. An account BROKER_SERVICES binds for a service's pods may be listed
+	// here as well, which is a pod of that account enrolling itself: every such pod holds a token
+	// for the account, so each of them logs the service in, and what keeps one of them from
+	// enrolling another is enroll.Service.podUnderTokenLogin, which gives such a login the one pod
+	// whose token made it and answers ErrPodSelfEnrollOnly for any other pod UID. Keyed by account,
+	// each answering its service. A token whose subject is not listed is refused, and a credential
+	// an account's login issued stops authenticating once its entry is gone. Needs
+	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	ServiceLogins map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
@@ -577,8 +580,8 @@ var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9](
 const defaultServiceAccount = "default"
 
 // serviceAccountEntry is one <service>=system:serviceaccount:<namespace>:<name> entry of
-// BROKER_SERVICES or BROKER_SERVICE_LOGINS, with its text as the setting gave it.
-type serviceAccountEntry struct{ service, subject, text string }
+// BROKER_SERVICES or BROKER_SERVICE_LOGINS.
+type serviceAccountEntry struct{ service, subject string }
 
 // parseServiceAccounts reads setting's whitespace-separated <service>=<ServiceAccount subject>
 // entries, the form BROKER_SERVICES and BROKER_SERVICE_LOGINS share, in order. It refuses, naming
@@ -602,9 +605,23 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 		if err := bindOnce(seen, setting, subject, service); err != nil {
 			return nil, err
 		}
-		entries = append(entries, serviceAccountEntry{service: service, subject: subject, text: text})
+		entries = append(entries, serviceAccountEntry{service: service, subject: subject})
 	}
 	return entries, nil
+}
+
+// servicesByAccount keys parseServiceAccounts' entries by account, each answering its service,
+// the shape Config.ServicesByAccount and Config.ServiceLogins both hold. No entry, no map: a
+// setting left unset reads nil rather than an empty map.
+func servicesByAccount(entries []serviceAccountEntry) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	byAccount := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		byAccount[entry.subject] = entry.service
+	}
+	return byAccount
 }
 
 // isDefaultServiceAccount reports whether subject is a namespace's default account, the one
@@ -1274,25 +1291,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range services {
-		if cfg.ServicesByAccount == nil {
-			cfg.ServicesByAccount = map[string]string{}
-		}
-		cfg.ServicesByAccount[entry.subject] = entry.service
-	}
+	cfg.ServicesByAccount = servicesByAccount(services)
 	logins, err := parseServiceAccounts("BROKER_SERVICE_LOGINS", getenv("BROKER_SERVICE_LOGINS"))
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range logins {
-		if name, bound := cfg.ServicesByAccount[entry.subject]; bound {
-			return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS names %s, the account BROKER_SERVICES binds for %q's pods, got %q: every such pod holds a token for it and would log in as %s; log the service in with an account of its own that no pod it enrolls runs as", entry.subject, name, entry.text, entry.service)
-		}
-		if cfg.ServiceLogins == nil {
-			cfg.ServiceLogins = map[string]string{}
-		}
-		cfg.ServiceLogins[entry.subject] = entry.service
-	}
+	// An account BROKER_SERVICES already binds may be listed here too, which is a pod of that
+	// service's own account logging the service in with its own projected token and enrolling
+	// itself (agent-secrets enroll --pod). What narrows such a login to one pod is
+	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
+	// doc says.
+	cfg.ServiceLogins = servicesByAccount(logins)
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}
