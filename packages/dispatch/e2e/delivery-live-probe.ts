@@ -310,8 +310,8 @@ function parseOptions(argv: readonly string[]): Options {
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new UsageError(`--minutes is a number of minutes above 0, not ${rawMinutes}`);
   }
-  const rawSpread = values["reconnect-spread-ms"] ?? String(RECONNECT_SPREAD_MS);
-  const reconnectSpreadMs = Number(rawSpread);
+  const rawSpread = values["reconnect-spread-ms"];
+  const reconnectSpreadMs = rawSpread === undefined ? RECONNECT_SPREAD_MS : Number(rawSpread);
   if (rawSpread === "" || !Number.isFinite(reconnectSpreadMs) || reconnectSpreadMs < 0) {
     throw new UsageError(
       `--reconnect-spread-ms is a number of milliseconds from 0 up, not ${rawSpread}`
@@ -428,11 +428,12 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
-  // `reconnectDelayMs` draws the first attempt's wait as `random() × RECONNECT_SPREAD_MS`;
-  // scaling the draw makes that spread `--reconnect-spread-ms` without this file restating the
-  // backoff's arithmetic. A later attempt's jitter share is scaled in the same ratio.
-  const spreadScale = options.reconnectSpreadMs / RECONNECT_SPREAD_MS;
-  const draw = () => Math.random() * spreadScale;
+  // `reconnectDelayMs` draws the first attempt's wait as `random() × RECONNECT_SPREAD_MS`, so
+  // scaling that draw makes the first attempt's spread `--reconnect-spread-ms` without this file
+  // restating the backoff's arithmetic. It is the first attempt's spread alone, as the option
+  // says: a later attempt takes the function's own source, so its backoff and jitter stay the
+  // page's whatever the option is set to.
+  const firstDraw = () => Math.random() * (options.reconnectSpreadMs / RECONNECT_SPREAD_MS);
 
   const subscribeFrame = (): LiveSubscribe =>
     held === null
@@ -529,7 +530,8 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     // As the page does: Dispatch's restart close starts the backoff over, so the next attempt
     // waits within the first attempt's spread, which `--reconnect-spread-ms` sets.
     if (code === SERVICE_RESTART) attempt = 0;
-    const handle = setTimeout(open, reconnectDelayMs(attempt, draw));
+    const delayMs = reconnectDelayMs(attempt, attempt === 0 ? firstDraw : undefined);
+    const handle = setTimeout(open, delayMs);
     attempt += 1;
     cancelReconnect = () => clearTimeout(handle);
   };

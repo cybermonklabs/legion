@@ -400,11 +400,13 @@ test(
   PROCESS_TEST_MS
 );
 
+// A spread far above this row's own limit (`PROCESS_TEST_MS`), so a probe that reconnected on a
+// timer could reach its second subscribe inside the row on about one draw in 2,880 and nothing
+// here reads a clock. The row's own limit is the discriminator.
+const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
+
 // Dispatch's rotation (4001) is the one close the probe answers by opening again at once; its
-// restart (1012) and any other close wait a draw of the first attempt's spread. The probe runs
-// here with an hour's spread, far above this row's own limit: a probe that took the timer path
-// could not subscribe again before the runner ended the row, so the row's limit is the
-// discriminator and nothing here reads a clock.
+// restart (1012) and any other close wait at least a draw of the first attempt's spread.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
@@ -417,7 +419,11 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
           socket.close(code, reason);
         },
       });
-      const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "3600000"]);
+      const run = runProbe([
+        ...args(dispatch),
+        "--reconnect-spread-ms",
+        String(NO_TIMER_SPREAD_MS),
+      ]);
       await run.until(() => dispatch.received.length === 2);
       run.kill("SIGINT");
       expect(await run.exited()).toBe(0);
@@ -451,8 +457,9 @@ test(
     });
     // A 50 ms spread, pinned by the option, so the wait is the probe's own and this row stays
     // quick and deterministic. The product's backoff shape is proven by its own unit row
-    // (web/src/api/live-socket.test.ts:627); what this row proves is the resume's content and
-    // order.
+    // ("the first reconnect is spread over [0, 2 s); later ones back off within [d/2, d), capped
+    // at 30 s", web/src/api/live-socket.test.ts:612); what this row proves is the resume's
+    // content and order.
     const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "50"]);
     await run.until(() => dispatch.received.length === 2);
     run.kill("SIGINT");

@@ -58,6 +58,10 @@ function processAlive(pid: number): boolean {
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** A force-kill delay far above the per-test limit of any row below, so a `stop` that waits for
+ *  its timer is caught by the runner's own limit rather than by a clock a row reads. */
+const BEYOND_THE_ROW_MS = 600_000;
+
 const supervisors: Supervisor[] = [];
 function supervisor(): Supervisor {
   const made = new Supervisor();
@@ -96,7 +100,7 @@ describe("Supervisor.stop", () => {
     // catches a `stop` that waits for the timer, and nothing here reads a clock. What the return
     // means is asserted below: the leader is gone by the time `stop` resolves, so a `stop` that
     // returned early having killed nothing fails here rather than passing on its own silence.
-    await made.stop(600_000);
+    await made.stop(BEYOND_THE_ROW_MS);
     expect(groupAlive(quiet.child.pid)).toBe(false);
   });
 
@@ -105,9 +109,8 @@ describe("Supervisor.stop", () => {
     const step = made.run(["sleep", "60"], "/");
     made.interrupt();
     await expect(step).rejects.toBeInstanceOf(Interrupted);
-    // The force-kill delay is again far above this row's per-test limit: the runner's limit
-    // catches a `stop` that waits for the timer, and nothing here reads a clock.
-    await made.stop(600_000);
+    // The force-kill delay is far above this row's limit, as in the row above.
+    await made.stop(BEYOND_THE_ROW_MS);
   });
 });
 

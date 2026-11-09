@@ -2313,9 +2313,12 @@ routes for the last window it applied and writes whether the pull request ids, r
 measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
-and holds the body it applies to `after.json`. It also checks that the probe reopens at once
-after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
-attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
+and holds the body it applies to `after.json`.
+It also checks that the probe reopens after a 4001 and after a 1012 and resumes each time with the
+change and revisions it holds.
+Neither row reads a clock: each pins `--reconnect-spread-ms` far above (4001) or well below (1012)
+its own per-test limit, so the runner's limit is what catches a reopen that waited, and the
+backoff's own shape is held by the unit row in `web/src/api/live-socket.test.ts`.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,
