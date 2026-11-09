@@ -304,7 +304,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 }
 
 // StartOrOwe writes the start of a phase worker as two outbox rows in the caller's own
-// transaction, which is how the admission cap bounds the issues at work without stopping
+// transaction, which is how the admission cap bounds the issues the daemon has started without stopping
 // anything that is already running. It is exported because admission starts phase workers too
 // (admit's startMidPhaseMembers), and every start of a worker the daemon makes comes through
 // here, so there is one implementation of the rule and one place to test it.

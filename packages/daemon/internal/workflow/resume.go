@@ -44,9 +44,10 @@ import (
 // again, and a queued root's members are started by the promotion that opens the tree, which
 // gives each mid-phase member its own start (admit's startMidPhaseMembers): a start queued here
 // instead would re-point the claim at a tree with no lifecycle, and would put the member in the
-// line's first part ahead of its own root. It is the lifecycle rather than the root's slot
-// because a slot now counts one issue at work, and a running tree holds none of its own while
-// its issues wait in the line.
+// line's first part ahead of its own root. It is the lifecycle rather than the root's row
+// because a row says the daemon has started that one issue and nothing about the tree: a root
+// that arrived from another tree carries one while the tree of its own has still to be opened
+// (record.KeepsSlot).
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
 // mid-phase child, through the outbox's start like every other start (StartOrOwe): its claim is
