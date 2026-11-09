@@ -88,13 +88,15 @@ jobs:
   # One job per proof. Its limit is the script's own row of .github/e2e-scripts.json: that
   # script's measured duration with headroom — no-required-checks waits for three reads of what
   # each base requires, so a run takes about seven minutes, and every proof builds its driver
-  # first — plus the retry arithmetic of the slowest retried step the row selects. That is
-  # install-jj's 1482 + 450 = 1932 s for a row whose `jj` is true, setup-bun's 2 x 741 = 1482 s
-  # for a `bun` row that installs no jj, and the apt steps' 625 + 775 = 1400 s for a row that
-  # takes neither, each the figure written beside that step below, so a step re-priced here
-  # moves every row selecting it. .github/scripts/check-download-retry.sh's rule 8 reads no
-  # number out of the expression below, so it says nothing about these rows at all: that list's
-  # own comment holds the arithmetic, and holds it by hand.
+  # first — plus the retry arithmetic of the slowest retried step the row selects, which is
+  # install-jj's for a row whose `jj` is true, setup-bun's for a `bun` row that installs no jj,
+  # and the apt steps' for a row that takes neither. Those three figures are written in that
+  # file's own comment beside the rows they size, and in the steps below beside the steps they
+  # come from, and this comment writes none of them: a step re-priced below moves every row
+  # selecting it, and the row list is where that move is counted.
+  # .github/scripts/check-download-retry.sh's rule 8 reads no number out of the expression
+  # below, so it says nothing about these rows at all: that list's own comment holds the
+  # arithmetic, and holds it by hand.
   proof:
     needs: select
     name: ${{ matrix.proof }}

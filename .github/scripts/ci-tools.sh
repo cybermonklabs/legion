@@ -362,8 +362,12 @@ ci_tools__tempfile() {
 # 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
 # .github/workflows/ci.yaml carry `timeout-minutes: 10`.
 #
-# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound and cited by
-# name elsewhere. The worst case is not the host that stalls throughout and not the host that
+# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound. Sixty-three
+# budget comments across six workflows write the resulting figure beside the step it sizes,
+# because a reader checking one step's ceiling needs the term in front of them; each names
+# this block as where it comes from, and none of them derives it again. What is written once
+# is the derivation, not the number — the count moves whenever a retried step is added or
+# removed, and no check holds it. The worst case is not the host that stalls throughout and not the host that
 # fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
 # attempt, so the timer passes two minutes inside the second attempt and curl starts none
 # after it — measured at a 60 s bound against a host that accepts and never answers: attempts
@@ -377,8 +381,8 @@ ci_tools__tempfile() {
 #   second's rounding in each of those three terms can add.
 #
 # At the `max_time: 60` every row of .github/ci-tools.yaml carries that is 244 s, written as
-# 247 s; at the 30 s bound ci.yaml's blob read passes for a HEAD it is 214 s, written as 217 s,
-# which that step's own comment uses and this one does not restate. Both halves of the 30 s
+# 247 s; at the 30 s bound ci.yaml's blob read passes for a HEAD it is 214 s, written as
+# 217 s. Both halves of the 30 s
 # shape were driven on this issue's pod against curl 8.14.1 and a loopback server: answering
 # seven delayed 503s and then accepting a connection it never answers gives eight requests,
 # the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
