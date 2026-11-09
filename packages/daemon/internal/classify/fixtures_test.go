@@ -47,6 +47,9 @@ func TestFixturesReplayByteExactly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("replay %s: %v", fixture.Function, err)
 			}
+			if got == nil {
+				t.Skipf("%s answers nothing this classifier keeps", fixture.Function)
+			}
 			want, err := keptFixtureOutput(fixture.Function, fixture.Output)
 			if err != nil {
 				t.Fatalf("project expected output: %v", err)
@@ -220,7 +223,12 @@ func replayFixture(function string, input json.RawMessage) ([]byte, error) {
 	case "reduceDispatchEvent":
 		return replayDispatchDecision(input)
 	case "reduceGithubEvent":
-		return replayGitHubDecision(input)
+		// The shipped GitHub reducer's recorded answer is its fix-attempt count, and no daemon
+		// counts one since a CI result stopped moving an issue (dispatch://INFRA-714/spec R1), so
+		// there is nothing of it left to replay. The records stay for the TypeScript reducer they
+		// were taken from, held to the directory contract
+		// (TestFixtureRecordsFollowTheDirectoryContract).
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown fixture function %q", function)
 	}
@@ -244,24 +252,15 @@ func replayDispatchDecision(input json.RawMessage) ([]byte, error) {
 	return canonicalJSON(map[string]any{"gate": fixtureGateValue(after)})
 }
 
-// replayGitHubDecision answers for no part of a GitHub event's recorded decision. The shipped
-// reducer's output for one was its fix-attempt counts, and no daemon counts a fix attempt since a
-// CI result stopped moving an issue (dispatch://INFRA-714/spec R1), so the Go classifier makes no
-// decision these records could be replayed against. The records stay for the TypeScript reducer
-// they were taken from, held to the directory contract (TestFixtureRecordsFollowTheDirectoryContract).
-func replayGitHubDecision(json.RawMessage) ([]byte, error) {
-	return canonicalJSON(map[string]any{})
-}
-
 // keptFixtureOutput is the part of a record's output the Go classifier answers for: the shipped
-// reducer's gate, and of an effective outcome its failing checks, since the Go classifier keeps no
-// settlement verdict of its own. Of a GitHub event it answers for no part at all
-// (replayGitHubDecision), so none of that record's output is compared.
+// Dispatch reducer's gate, and of an effective outcome its failing checks, since the Go classifier
+// keeps no settlement verdict of its own. A GitHub event's recorded decision was its fix-attempt
+// count alone, which nothing counts any more, so those records are replayed no longer
+// (replayFixture) and none of them reaches here.
 func keptFixtureOutput(function string, raw json.RawMessage) ([]byte, error) {
 	keys := map[string][]string{
 		"reduceDispatchEvent": {"gate"},
 		"effectiveOutcome":    {"failing"},
-		"reduceGithubEvent":   {},
 	}[function]
 	if keys == nil {
 		return canonicalRecordJSON(raw)
@@ -331,15 +330,11 @@ type fixturePullRequest struct {
 	Verdict       string          `json:"verdict"`
 	Failing       []string        `json:"failing"`
 	// ReviewDecision is the shipped state's; the Go record keeps it on the review round instead.
-	ReviewDecision  string                 `json:"reviewDecision"`
-	FixAttempts     int                    `json:"fixAttempts"`
-	BlockedAttempts *int                   `json:"blockedAttempts"`
-	CheckRuns       *[]record.AttemptRun   `json:"ciCheckRuns"`
-	Generation      *int64                 `json:"ciSettlementGeneration"`
-	Snapshot        *string                `json:"ciSnapshot"`
-	PendingPush     *record.ClassifiedPush `json:"pendingPush"`
-	HeadCounted     *bool                  `json:"headCounted"`
-	PlannedRed      bool                   `json:"plannedRed"`
+	ReviewDecision string                 `json:"reviewDecision"`
+	CheckRuns      *[]record.AttemptRun   `json:"ciCheckRuns"`
+	Generation     *int64                 `json:"ciSettlementGeneration"`
+	Snapshot       *string                `json:"ciSnapshot"`
+	PendingPush    *record.ClassifiedPush `json:"pendingPush"`
 }
 
 func (fixture fixturePullRequest) record() record.PullRequest {

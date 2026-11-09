@@ -333,43 +333,7 @@ func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePh
 	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, phaseTask) {
 		t.Fatalf("the new session was prompted %+v, want it to end with its phase's task", prompts)
 	}
-	wantsAbandonment(t, prompts[1].Message, "the retry asked for a new session")
-}
-
-// `--fresh-session` is the one retry, not two steps: the claim forgets its session inside the
-// retry the workflow's start makes, so a restart the workflow refuses leaves the session where
-// the operator still has it. Here the tree lingers, which holds every member where it stood, so
-// the restart refuses and the stopped worker keeps the session it recorded — where forgetting it
-// before applying the fact would have discarded it for a retry that never happened.
-func TestAFreshSessionRetryTheWorkflowRefusesLeavesTheSession(t *testing.T) {
-	rig := newFreshSessionRig(t)
-	route := "/legion/v1/operator/claims/" + string(rig.implementer)
-
-	if recorder := rig.operator(http.MethodPost, route+"/stop", nil); recorder.Code != http.StatusOK {
-		t.Fatalf("the operator's stop = %d, want 200; body %s", recorder.Code, recorder.Body)
-	}
-	lingering := rig.issue
-	until := time.Now().Add(time.Hour)
-	lingering.LingerUntil = &until
-	putOutboxIssue(t, rig.pool, rig.records, lingering)
-	spawns := len(rig.rt.CallsOf("Spawn"))
-
-	recorder := rig.operator(http.MethodPost, route+"/retry", api.RetryRequest{FreshSession: true})
-
-	refused := "the tree LEGION-208 is lingering after it left the workflow, so the operator's restart of the implementer of LEGION-208 changed nothing"
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), refused) {
-		t.Fatalf("retry --fresh-session while the tree lingers = %d, want 409 %q; body %s", recorder.Code, refused, recorder.Body)
-	}
-	got := rig.machine.Claim()
-	if got.Session != oldSession || got.SessionFile != oldSessionFile {
-		t.Fatalf("after the refused retry the claim records session %q (%s), want the session the retry never started kept", got.Session, got.SessionFile)
-	}
-	if got.Abandoned.Session != "" {
-		t.Fatalf("the claim records %+v as abandoned, want nothing abandoned by a retry the workflow refused", got.Abandoned)
-	}
-	if after := rig.rt.CallsOf("Spawn"); len(after) != spawns {
-		t.Fatalf("the refused retry launched %+v, want nothing", after[spawns:])
-	}
+	wantsAbandonment(t, prompts[1].Message, "`legion claims forget-session`")
 }
 
 // wantsAbandonment is the check both retries make of the fresh session's first prompt: it names

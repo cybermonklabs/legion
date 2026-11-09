@@ -18,6 +18,9 @@
 //     `agent_end`. Claude Code's background tasks are on under either runtime
 //     (`claudelaunch.Environment`), so a role may leave work running past a turn's end and read
 //     its result in the turn it starts.
+//   - a turn the provider failed ends with an error in that `prompt_result`, and a turn that
+//     ended any other way with none (bridge.go's result), which is what tells the daemon the
+//     turn it must send the task again for from the turn it may retire the task on.
 //
 // The bridge is transport: the phase-stall machine — a worker whose turn ends with its phase still
 // open is reminded — runs in the pane's `legion` MCP server
@@ -65,10 +68,11 @@ type Config struct {
 }
 
 // Configure reads a bridge's configuration from the claude argv and the environment the runtime
-// gave it: the session from argv, the seed title from LEGION_ROLE and LEGION_ISSUE, and the three
-// values a turn outcome is reported with. Every refusal names what is missing. A pane that names
-// no daemon, boot token file or generation is not refused: the bridge runs and reports no turn,
-// which is what a bridge run by hand does.
+// gave it: the session from argv, the seed title from LEGION_ROLE and LEGION_ISSUE, which every
+// pane is told by its runtime (internal/runtime/tmux's runtimeOwned, internal/runtime/sandbox's
+// mainEnvironment), and the three values a turn outcome is reported with. Every refusal names
+// what is missing. A pane that names no daemon, boot token file or generation is not refused:
+// the bridge runs and reports no turn, which is what a bridge run by hand does.
 func Configure(argv, env []string) (Config, error) {
 	if len(argv) == 0 {
 		return Config{}, errors.New("no claude command to run after --")

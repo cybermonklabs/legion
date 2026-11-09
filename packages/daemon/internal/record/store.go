@@ -699,9 +699,10 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 			return fmt.Errorf("put pull request for %s: encode the head run: %w", pr.Issue, err)
 		}
 	}
-	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing reads them since
-	// a CI result stopped moving an issue (dispatch://INFRA-714/spec R1), and they are kept rather
-	// than dropped so a rollback to the daemon before it still runs. Each is `not null` with no
+	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
+	// attempt since dispatch://INFRA-956 R4, and nothing reads them at all since a CI result
+	// stopped moving an issue (dispatch://INFRA-714/spec R1), so they are kept rather than
+	// dropped so a rollback to the daemon before either still runs. Each is `not null` with no
 	// default (migration 0004), so a new row is given its zero here and no write ever touches it
 	// again; planned_red, required, required_workflows and required_workflows_head are stopped too
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
@@ -1681,11 +1682,16 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 	return registered, nil
 }
 
-func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error) {
+// ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
+// issue when the caller named one and to one role of that issue when it named a role as well:
+// the same read every way, with the issue and the role as two more terms that an empty string
+// leaves out, so a project-wide wake's answer is what it always was.
+func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox
-		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3)`,
-		string(OutboxKindControllerNotice), project, string(kind)).Scan(&pending); err != nil {
+		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
+		and ($4 = '' or issue = $4) and ($5 = '' or payload->>'role' = $5))`,
+		string(OutboxKindControllerNotice), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a %s controller notice pending: %w", project, kind, err)
 	}
 	return pending, nil

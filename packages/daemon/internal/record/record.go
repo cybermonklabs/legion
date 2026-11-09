@@ -1408,9 +1408,9 @@ type Store interface {
 	// (PullRequestReview.LegionSession).
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the fix-attempt counts and planned mark of a still-open one (the next generation runs on the same
-	// branch and pull request), its design gate, and each role's handoff, review rounds, verdict and
-	// summary. Each role keeps its claim and its last handoff, so a
+	// request, the last generation's reading of a still-open one (the next generation runs on the
+	// same branch and pull request), its design gate, and each role's handoff, review rounds,
+	// verdict and summary. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error
@@ -1508,8 +1508,11 @@ type Store interface {
 	ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error)
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
-	// identical one.
-	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error)
+	// identical one. Issue "" reads every issue of the project, which is what a wake about the
+	// project alone asks; an issue, and with it a role, narrow the read to that one claim's own
+	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
+	// nothing further, so an issue alone reads every role of that issue.
+	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row

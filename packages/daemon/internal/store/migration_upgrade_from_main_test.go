@@ -24,9 +24,9 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000,
 }
 
-// mainsNewestMigration is the newest version main carries, the awaiting-slot notice of its own
-// admission line. Every embedded version above it is this branch's own.
-const mainsNewestMigration = 20261108055000
+// mainsNewestMigration is the newest version main carries, the charge its provider-error ladder
+// records against a death. Every embedded version above it is this branch's own.
+const mainsNewestMigration = 20261108165219
 
 // mainsOutboxKinds is every kind main's daemon writes, which is the list main's own
 // 20261108000545 admits. A database main migrated can carry a row of each at the upgrade.

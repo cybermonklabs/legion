@@ -10,6 +10,8 @@ import {
   LegionActivityRequest,
   LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimRequest,
+  LegionCompactResponse,
   LegionControllerCredentialResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
@@ -17,6 +19,7 @@ import {
   LegionEmptyResponse,
   LegionErrorResponse,
   LegionEscalateRequest,
+  LegionFreshSessionResponse,
   LegionGateRegisterRequest,
   LegionGrantRequest,
   LegionGrantResponse,
@@ -77,6 +80,8 @@ const schemas: Record<string, z.ZodType> = {
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
   "issue-status.json": LegionEmptyResponse,
+  "fresh-session.json": LegionFreshSessionResponse,
+  "compact.json": LegionCompactResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -908,6 +913,11 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
     ],
     [
+      "claim recovery",
+      LegionClaimRequest,
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+    ],
+    [
       "gate register",
       LegionGateRegisterRequest,
       {
@@ -1712,15 +1722,18 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // `review_round_cap` and `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
 // Stage 3 state carries the defaults, the two typed keys are positive integers, the rest rides
 // loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
+// `max_fix_attempts` rode here until contract 59 removed the key.
 test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.settings.review_round_cap).toBe(4);
+  expect(state.settings.max_fix_attempts).toBeUndefined();
   expect(state.settings.worker_boot_timeout_seconds).toBe(180);
   const apps = state.settings.github_apps as { implement: Record<string, unknown> };
   expect(Object.keys(apps.implement).sort()).toEqual(["app_id", "installations"]);
 
   const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
   expect(stage3.settings.review_round_cap).toBe(3);
+  expect(stage3.settings.max_fix_attempts).toBeUndefined();
   expect(stage3.settings.worker_boot_timeout_seconds).toBe(120);
 
   const dropped = fixture("state.json") as Record<string, unknown>;

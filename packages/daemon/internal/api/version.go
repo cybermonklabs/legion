@@ -711,7 +711,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 59: dispatch://INFRA-714 -- the daemon is an event-driven state machine, and its strictly parsed
+// 60: dispatch://INFRA-714 -- the daemon is an event-driven state machine, and its strictly parsed
 // shapes change with it. The phase enum loses `awaiting_merge` (both places it is spelled: the
 // issue's phase and a backward move's target), since the merger merges in `merging` and the daemon
 // closes the issue when it reads that merge. `api.PullRequestView` loses `checksVerdict` and
@@ -739,17 +739,18 @@ package api
 // merge rather than assumed, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main's #2958 then landed INFRA-1274's claim step record at 57 as well, which took this
-// branch to 58, and main's #2989 has since landed INFRA-1100's waiting line at 58 itself, which
-// takes this branch to 59: the number has to be above every number main declares, and the two
-// entries below are those releases' halves of the shape changes that ride this one. This branch
-// lands second, so it takes the free number above main's at the merge that lands it, written in
-// each of the five sites that hold the number — this file, `stallRecordContract` and
-// `waitingLineContract` in api/server.go, the contracts fixture and the two plugin manifests —
-// since `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches this file
-// and declares a number its base already carries. Read main's own number again at that merge
-// rather than from this line.)
+// branch to 58; main's #2989 landed INFRA-1100's waiting line at 58, which took it to 59; and
+// main's #2780 has since landed INFRA-956's end of fix-attempt counting at 59, which takes it to
+// 60. The number has to be above every number main declares, and the entries below carry those
+// releases' shapes with this one. This branch lands second every time, so it takes the free
+// number above main's at the merge that lands it, written in each of the six sites that hold the
+// number — this file, `stallRecordContract` and `waitingLineContract` in api/server.go, the
+// contracts fixture and the `pi-legion` and `claude-envoy` manifests — since
+// `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches this file and
+// declares a number its base already carries. Read main's own number again at that merge rather
+// than from this line.)
 //
-// Also at 59: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw
+// Also at 60: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw
 // that claim's agent do: `at`, when the daemon received that step, `turnStartedAt`, when the turn
 // it belongs to began, the `tool` and `callId` of the call the agent is in, that call's
 // `argsBytes` and `argsHash` — its arguments' length and an eight-byte fingerprint of them, never
@@ -778,7 +779,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. It landed on main as #2958's 57, the number the entry above shares with it.)
 //
-// Also at 59: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where
+// Also at 60: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where
 // the issue stands in `admission.waiting`: its `place`, 1 being first in the line, and the
 // `length` of that list at this read (`api.WaitingLineView`). It is present only for an issue the
 // list names, so a slot holder and an issue the line does not carry have no such key, and the
@@ -805,7 +806,88 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. It landed on main as #2989's 58, the number this branch had taken for the entries above.)
 //
-// Also at 50: dispatch://INFRA-714 -- every turn a session ends is reported to the daemon by the producer
+// 59: INFRA-956 (sjawhar/legion#2780) -- fix-attempt counting gone. `legion.yaml` no
+// longer takes `max_fix_attempts`, and a file carrying it loads with a warning naming the
+// removal, which boot logs and `legion start --check-config` prints, rather than a refusal, so
+// the settings block of `GET /legion/v1/state` no longer carries `max_fix_attempts` and
+// `api.Settings` no longer models it. Each issue's pull request in that state loses
+// `fixAttempts` (`api.PullRequestView`), which counted the heads pushed onto a red verdict. No
+// pull request is marked blocked and no `pr-blocked` notice is published for a count, and on
+// this branch no CI verdict moves an issue at all: the daemon names every check it read to the
+// tree's roles and judges none (dispatch://INFRA-714/spec R1), and the architect decides when to
+// stop. `packages/contracts/src/legion-api.ts` mirrors both
+// removals, and its reader of the settings block is loose, so a plugin before 59 reads a state
+// without `max_fix_attempts` — but its strict pull-request reader refuses one without
+// `fixAttempts`, and every worker's `read_record` parses the state through it, which is what
+// this number is for: the boot gate and `legion probe-image` hold plugin and daemon equal, so
+// neither order of the two ever runs.
+// The issue's other half, the provider-error retry, adds two controller routes, one operator
+// route and two tool operations. `POST /legion/v1/claims/fresh-session` (`api.ClaimRequest`:
+// `grantId`, `issue`, `role`) takes a controller grant and runs, for the claim on that role of
+// that issue, the effect `legion claims retry --fresh-session` runs for an operator: the claim
+// leaves the session it recorded behind and starts again in a new one, which also puts its run
+// of provider-error turns back to zero. One effect stands behind both doors (api's
+// freshSession), and it reaches a claim whose agent is registered, ready or idle and one that
+// is suspended, failed or retired, where the plain retry reaches only a claim that failed and
+// one an operator stopped, which `legion claims stop` retires. Its answer
+// (`api.FreshSessionResponse`), and the `api.OperatorClaim` the
+// operator's retry answers, carry an optional `phaseNotRestarted`: the claim came back owing no
+// task and the workflow refused the restart of its phase, which is the one thing the claim's
+// state does not record, so the fresh session reports the refusal rather than giving it, and the
+// claim is started either way.
+// The controller's `legion` tool gains `fresh_session (issue, role)`, which posts it, and
+// `packages/contracts/src/legion-api.ts` mirrors the request and that member.
+// `POST /legion/v1/claims/compact`
+// (the same `api.ClaimRequest`) is the recovery the controller reaches for
+// first: it compacts the claim's Oh My Pi session and sends the claim whatever task it owed again,
+// where a fresh session keeps nothing the old one held. It answers `api.CompactResponse`
+// (`compacted`, and `reason` when it is false), and a compaction Oh My Pi refused or skipped is
+// that answer rather than a failure, since the claim is back and whatever task it owed has gone
+// again all the same. It reaches a claim whose agent is ready or idle, a root architect included,
+// and refuses a suspended, failed or retired claim naming what starts it again
+// (`CLAIM_NOT_RUNNING`): fresh_session for a workflow role, and the daemon's controller keeper
+// for the project's own controller. It refuses a
+// claim in a turn (`CLAIM_IN_A_TURN`), a claim between states — queued, with a launch in flight,
+// one whose agent has registered and is not ready yet, or stored working under a launch the wake
+// pacing parks (`CLAIM_UNSETTLED`), of which fresh_session refuses all but the registered one,
+// which it reaches — a Claude Code claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`),
+// and the role `controller` (`INVALID_ROLE`). The controller's `legion` tool gains
+// `compact (issue, role)` beside `fresh_session`, and
+// `POST /legion/v1/operator/claims/{token}/compact`, which `legion claims compact --claim <token>`
+// posts, is the operator's door onto the same effect. The compaction reaches Oh My Pi as the
+// shim's own `compact` frame
+// (`shimwire.Compact`, carried by `internal/stream`'s Conn.Compact and forwarded by the image's
+// `legion shim` as a prompt is), so the pod's shim is one of this number's surfaces beside the
+// three routes. None of the three routes needs a number of its
+// own: the gate holds plugin and
+// daemon equal, so a plugin whose tool posts these routes never meets a daemon that does not
+// serve them. The rest of that half adds no route and changes no shape a plugin parses: a turn
+// that ends in a provider error keeps its task, and the daemon reads that prompt's own result
+// to decide whether the task goes to the same session again or the claim fails
+// (`internal/supervise/providererror.go`). It ships two store migrations.
+// `20261105004846_provider_error_retry.up.sql` adds the two columns a task a provider error
+// took back is kept by (`pending_task_deliveries.provider_error_retries` and
+// `provider_error_note`) and the claim's run of such turns (`claims.provider_error_run`), and
+// `20261108165219_claim_death_charged.up.sql` adds what was charged for the death of the
+// process a claim records (`claims.death_charged`, supervise.Claim.DeathCharged). The
+// removal ships none; `fix_attempts`, `blocked_attempts` and `head_counted` stay as stopped
+// columns that nothing reads, each given its zero on an insert (`record`'s PutPullRequest).
+// (It took 47, then 48, then 50, then 52, then 54, then 55, then 56, then 57, then 58,
+// as main's own changes took each number before it: main merged the idle-pod release at 48 while
+// that branch was open, landed the memory group at 49, the admission cap over the issues at work
+// at 51, the pane issue key at 52, INFRA-976's wake pacing at 53 and INFRA-809's production-check
+// decision at 54 (sjawhar/legion#2855), each release declaring its number without these shapes,
+// INFRA-1272's design-gate steps landed as 55 (cybermonklabs/legion#2848), INFRA-1480's retired
+// stranded state landed as 56 (cybermonklabs/legion#2919), INFRA-1274's claim step record landed
+// as 57 (cybermonklabs/legion#2922), and INFRA-1100's waiting line landed as 58
+// (cybermonklabs/legion#2989), so it took the number above them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. It landed on main as sjawhar/legion#2780's 59, which this branch's own 59 now collides
+// with: read main's number again at the next merge and renumber this branch above it, in this
+// file, `stallRecordContract` and `waitingLineContract` in api/server.go, the contracts fixture
+// and the two plugin manifests at once.)
+//
+// Also at 60: dispatch://INFRA-714 -- every turn a session ends is reported to the daemon by the producer
 // that ended it, over `POST /legion/v1/claims/turn-outcome`: `{claimToken, sessionId, secret,
 // generation, sequence, outcome, message}`, authenticated by the registration's secret as the
 // ready and the exit are, answering `{refusedRun, failed}`. `sequence` is the producer's own count
@@ -814,12 +896,12 @@ package api
 // keyed by (generation, sequence), derives the trailing run of refused turns from them on every
 // report, and fails the claim once that run reaches `launch_failure_limit` — the fault that left an
 // implementer's every turn refused by its provider with its claim never failing. A plugin built
-// before 50 reports no turn, so its session's refusals are counted by nobody, and a plugin from
-// this contract posting to a daemon before 50 is answered "no route" for every turn it ends; the
+// before 59 reports no turn, so its session's refusals are counted by nobody, and a plugin from
+// this contract posting to a daemon before 59 is answered "no route" for every turn it ends; the
 // boot gate and `legion probe-image` refuse the mixed pair. `legion claims retry` gains the
 // optional body `{freshSession}` (`--fresh-session`), which starts the claim in a new session
 // rather than resuming the recorded one; a claim the provider refused out of its budget takes one
 // whoever retries it. That retry also reaches a phase worker an operator stopped, which is
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
-const DaemonAPIVersion = 59
+const DaemonAPIVersion = 60

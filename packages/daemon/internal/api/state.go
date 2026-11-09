@@ -420,7 +420,7 @@ type Issue struct {
 	// asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
-	// WaitingLine is where this issue stands in `admission.waiting` (contract 59). It is present
+	// WaitingLine is where this issue stands in `admission.waiting` (contract 60). It is present
 	// only for an issue that list names, and absent for a slot holder and for every other issue
 	// the list does not name.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`

@@ -175,7 +175,7 @@ func TestALateLifecycleEventAfterTheRecordedOneChangesNothing(t *testing.T) {
 // from its webhook or from the daemon's read of the pull request; the merge carries no clock to
 // fence them by (classify.LateLifecycle), and each changes nothing. A synchronize newer than the
 // last lifecycle event the record applied, which the clock does not fence, would otherwise move
-// the merged pull request's head, count a fix attempt on its red and queue a disarm of its merge.
+// the merged pull request's head and queue a disarm of its merge.
 func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
 	merged := lateApplied
 	setups := []struct {

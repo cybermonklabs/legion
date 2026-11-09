@@ -106,7 +106,7 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 		t.Fatalf("the clean turn was reported %+v, want %+v", clean, want)
 	}
 
-	r.prompt("p2", "fail the provider refused")
+	r.prompt("p2", "api-error-529 the provider refused")
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
 
@@ -119,7 +119,8 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	}
 }
 
-// What the daemon counts is the provider refusing a turn, keyed on the result's subtype: a step
+// What the daemon counts is the provider refusing a turn, keyed on the result's own terminal
+// reason as the pinned Claude Code writes it (providerFailed): a step
 // Claude Code ended with its own cap on the steps of one turn (error_max_turns) is the worker
 // having worked, not the provider refusing, and a turn whose newest step ran is the provider
 // having answered after all. Counting either would walk a working claim to the launch failure
