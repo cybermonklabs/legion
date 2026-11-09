@@ -335,9 +335,6 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		status, ok := s.retryStart(w, r, m, token, true)
 		return status, "", ok
 	}
-	if session := m.Claim().Session; session != "" && !s.forgetRecordedSession(w, r, m, token, session) {
-		return 0, "", false
-	}
 	if _, ok := s.claimEvent(w, r, m, token, "resume", supervise.RequestResume{Claim: token}); !ok {
 		return 0, "", false
 	}

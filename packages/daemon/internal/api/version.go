@@ -715,8 +715,10 @@ package api
 // shapes change with it. The phase enum loses `awaiting_merge` (both places it is spelled: the
 // issue's phase and a backward move's target), since the merger merges in `merging` and the daemon
 // closes the issue when it reads that merge. `api.PullRequestView` loses `checksVerdict` and
-// `fixAttempts` — a CI settlement moves no issue, so the daemon counts no fix attempt and keeps no
-// verdict of its own — and gains `mergeState`, GitHub's own merge state for the head in GitHub's
+// `fixAttempts` — no CI verdict moves an issue at all on this contract: the daemon names every
+// check it read to the tree's roles and judges none (dispatch://INFRA-714/spec R1), where the
+// contract below it sent the work back to the implementer on every red that stood, so this
+// daemon counts no fix attempt and keeps no verdict of its own — and gains `mergeState`, GitHub's own merge state for the head in GitHub's
 // lowercase spelling (`clean`, `unstable`, `has_hooks`, `blocked`, `dirty`, `behind`, `draft`,
 // `unknown`), absent until the daemon's read of the pull request has run. `api.PhaseView` gains
 // `pass`, the passes the phase has made through its stretch of the workflow, beside the `rounds`
@@ -760,7 +762,7 @@ package api
 // agent has neither begun a turn nor made a call the daemon saw, and a call carrying `startedAt`
 // and no `endedAt` is the shape a turn that stopped moving leaves behind. A strict reader before
 // 57 knows no such key and refuses the whole state body for it, so the route serves a caller whose
-// pod's claims record a contract below 59 the state with no `step` at all (api's stateFor,
+// pod's claims record a contract below 60 the state with no `step` at all (api's stateFor,
 // withoutStallRecord), as it serves a caller below 56 one whose claims nothing will wake name no
 // retired claim, a caller below 55 one with no gated steps, a caller below 53 one with no
 // `wakesWaiting` and a caller below 49 one with no memory group. The key is left off that body
@@ -787,8 +789,8 @@ package api
 // what holds it: `admission.blocked` names what holds it, and a member a Dispatch link blocks
 // stands in the line and has its place like every other member.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 59 is served the issues without the field (api's stateFor, withoutWaitingLine),
-// as a caller below 59 is served the claim views with no `step`, one below 56 the stranded
+// contract below 60 is served the issues without the field (api's stateFor, withoutWaitingLine),
+// as a caller below 60 is served the claim views with no `step`, one below 56 the stranded
 // report without its retired entries, one below 55 the issues without the gated steps, one below
 // 53 a body with no wakes waiting, one below 51 the issues without the admission's trees and
 // each issue's tree, one below 49 without the memory draw and one below 46 without the claim
@@ -811,11 +813,10 @@ package api
 // removal, which boot logs and `legion start --check-config` prints, rather than a refusal, so
 // the settings block of `GET /legion/v1/state` no longer carries `max_fix_attempts` and
 // `api.Settings` no longer models it. Each issue's pull request in that state loses
-// `fixAttempts` (`api.PullRequestView`), which counted the heads pushed onto a red verdict. No
-// pull request is marked blocked and no `pr-blocked` notice is published for a count, and on
-// this branch no CI verdict moves an issue at all: the daemon names every check it read to the
-// tree's roles and judges none (dispatch://INFRA-714/spec R1), and the architect decides when to
-// stop. `packages/contracts/src/legion-api.ts` mirrors both
+// `fixAttempts` (`api.PullRequestView`), which counted the heads pushed onto a red verdict. A
+// red CI verdict now sends the work back to the implementer every time it stands, however many
+// came before, and the architect decides when to stop; no pull request is marked blocked and no
+// `pr-blocked` notice is published for a count. `packages/contracts/src/legion-api.ts` mirrors both
 // removals, and its reader of the settings block is loose, so a plugin before 59 reads a state
 // without `max_fix_attempts` — but its strict pull-request reader refuses one without
 // `fixAttempts`, and every worker's `read_record` parses the state through it, which is what
@@ -882,10 +883,7 @@ package api
 // as 57 (cybermonklabs/legion#2922), and INFRA-1100's waiting line landed as 58
 // (cybermonklabs/legion#2989), so it took the number above them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. It landed on main as sjawhar/legion#2780's 59, which this branch's own 59 now collides
-// with: read main's number again at the next merge and renumber this branch above it, in this
-// file, `stallRecordContract` and `waitingLineContract` in api/server.go, the contracts fixture
-// and the two plugin manifests at once.)
+// says. It landed on main as sjawhar/legion#2780's 59, which took this branch to 60.)
 //
 // Also at 60: dispatch://INFRA-714 -- every turn a session ends is reported to the daemon by the producer
 // that ended it, over `POST /legion/v1/claims/turn-outcome`: `{claimToken, sessionId, secret,
@@ -896,8 +894,8 @@ package api
 // keyed by (generation, sequence), derives the trailing run of refused turns from them on every
 // report, and fails the claim once that run reaches `launch_failure_limit` — the fault that left an
 // implementer's every turn refused by its provider with its claim never failing. A plugin built
-// before 59 reports no turn, so its session's refusals are counted by nobody, and a plugin from
-// this contract posting to a daemon before 59 is answered "no route" for every turn it ends; the
+// before 60 reports no turn, so its session's refusals are counted by nobody, and a plugin from
+// this contract posting to a daemon before 60 is answered "no route" for every turn it ends; the
 // boot gate and `legion probe-image` refuse the mixed pair. `legion claims retry` gains the
 // optional body `{freshSession}` (`--fresh-session`), which starts the claim in a new session
 // rather than resuming the recorded one; a claim the provider refused out of its budget takes one

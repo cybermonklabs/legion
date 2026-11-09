@@ -620,3 +620,30 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		}
 	}
 }
+
+// A review the review App submits decides a round only when the head its Legion footer names is
+// the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
+// so a reviewer whose prompt teaches the footer without the head submits a review every round
+// sets aside. The composed reviewer prompt therefore carries the footer's own shape with the
+// head in it, the read that gives that head (`--json headRefOid`, run as the review is
+// submitted, since a head remembered from the start of the round may have moved), the reason
+// GitHub's own `commit_id` cannot stand in for it, and what a wrong head costs. This shows the
+// text is loaded, never that a reviewer follows it.
+func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RoleReviewer, false))
+	for _, phrase := range []string{
+		`"phase":"review","head":"<the head you reviewed>"`,
+		`\"phase\":\"review\",\"head\":\"<head-sha>\"`,
+		"gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid",
+		"GitHub rewrites `commit_id` to the pull request's current head",
+		"A review whose footer names another head, or no head, decides no round",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed reviewer prompt omits %q", phrase)
+		}
+	}
+}

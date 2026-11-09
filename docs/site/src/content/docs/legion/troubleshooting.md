@@ -874,8 +874,22 @@ These arrive as messages on the Dispatch issue, and the architect is told:
   round, so an approval or request for changes from anyone else leaves it undecided too. A review
   from the review App decides a round only when it comes from the reviewer's own session: the
   daemon reads the review's Legion footer
-  (`<!-- legion: {"session":"…","phase":"review"} -->`) and requires the session it names to match
-  the session recorded on the reviewer's claim. A review-App review with no footer, or whose
+  (`<!-- legion: {"session":"…","phase":"review","head":"…"} -->`) and requires the session it
+  names to match the session recorded on the reviewer's claim. That footer also names the head the
+  review read, and a review the review App submitted decides the round only when that head is the
+  pull request's current head, compared exactly, whether the daemon heard of the review from its
+  webhook or read it from GitHub's list. GitHub rewrites a review's `commit_id` to the current
+  head, so its record of a review can name a head the review never saw, and no clock tells a force
+  push that puts an earlier head back from the arrival of that head the first time; the footer is
+  the review's own word for the code it read. A review-App review whose footer names another head,
+  or none, is set aside and decides nothing, logged at warn as `workflow: a review decides nothing:
+  footer names <sha>, not the head <sha>` or `… footer names no head`, with `footer_head` and
+  `head`; the reason is kept on the reviewer's row and named in the stuck notice the architect
+  gets, and the remedy is the reviewer submitting again at the head it read, which it takes from
+  `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
+  that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
+  as `workflow: a review decides nothing: a person's review read from the list`. A review-App
+  review with no footer at all, or whose
   footer names another session (the controller's, an architect's), is set aside and decides
   nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
   a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and

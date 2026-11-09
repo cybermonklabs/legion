@@ -79,8 +79,18 @@ as the fingerprint decides (*The reviewer*, below, and
   reviewed — always named by SHA — carrying every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
-  Legion footer), and a `comments[]` array of `{path, line, side, body}`, one entry per
+  Legion footer, which names the head the review read:
+  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
+  and a `comments[]` array of `{path, line, side, body}`, one entry per
   finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
+  That `head` is the full 40-character SHA and is read from GitHub as you submit
+  (`gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid`), never remembered:
+  the daemon takes it as the review's own word for the code it read, and cannot take GitHub's
+  `commit_id` for the review instead, which GitHub rewrites onto the pull request's current head,
+  so its record of a review can name a head the review never saw.
+  A review whose footer names another head, or no head, decides no round:
+  it is set aside, the round stays open and the
+  architect is told the reason, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the
