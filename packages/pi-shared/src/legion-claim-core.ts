@@ -1,6 +1,5 @@
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import {
   callReadyWithRetry,
   LegionDaemonApiError,
@@ -34,13 +33,14 @@ export interface LegionClaimHost {
    * this very call, when a turn has already started by the time the boot registers: a signal the
    * host swallowed would leave the name to the bound. Calling it more than once claims once.
    *
-   * A host that has no such signal leaves this out, and every claim of it is made at the bound
-   * ({@link LegionClaimHost.firstTurnBoundMs}). */
-  readonly onFirstTurn?: (claim: () => void) => void;
-  /** How long the deferred claim waits for `onFirstTurn` before it claims the name itself; the
-   * session's own `claimFirstTurnBoundMs` (`src/claim-first-turn-bound.ts`), and
-   * `DEFAULT_CLAIM_FIRST_TURN_BOUND_MS` for a host that names none. */
-  readonly firstTurnBoundMs?: number;
+   * Both hosts have such a signal — Oh My Pi's `agent_start` and the Claude Code hook's
+   * `UserPromptSubmit` — so it is required: a boot with no way of hearing its first turn is not
+   * a state this interface can be in. */
+  readonly onFirstTurn: (claim: () => void) => void;
+  /** How long the deferred claim waits for `onFirstTurn` before it claims the name itself: the
+   * session's own `claimFirstTurnBoundMs` (`src/claim-first-turn-bound.ts`), which every host
+   * reads from its own environment and which holds the default. */
+  readonly firstTurnBoundMs: number;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
@@ -174,8 +174,8 @@ function claimRoleAtFirstTurn(host: LegionClaimHost, role: string): Promise<void
       done.resolve();
     })();
   };
-  const bound = setTimeout(claim, host.firstTurnBoundMs ?? DEFAULT_CLAIM_FIRST_TURN_BOUND_MS);
+  const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
-  host.onFirstTurn?.(claim);
+  host.onFirstTurn(claim);
   return done.promise;
 }

@@ -227,7 +227,7 @@ test("the name is taken at the host's first-turn callback and not before it", as
   expect(steps.at(-1)).toBe(`claimRole ${claimToken}`);
 });
 
-test("a boot that gets no first turn claims at the bound, and so does a host that supplies no signal at all", async () => {
+test("a boot that gets no first turn claims at the bound", async () => {
   const waiting = claimHost({ overrides: { firstTurnBoundMs: 5 } });
   const booted = await bootLegionClaim(waiting.host);
   expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
@@ -244,11 +244,6 @@ test("a boot that gets no first turn claims at the bound, and so does a host tha
     "onFirstTurn",
     `claimRole ${claimToken}`,
   ]);
-
-  const silent = claimHost({ overrides: { onFirstTurn: undefined, firstTurnBoundMs: 5 } });
-  await (await bootLegionClaim(silent.host)).claimed;
-  expect(silent.steps).not.toContain("onFirstTurn");
-  expect(silent.steps.at(-1)).toBe(`claimRole ${claimToken}`);
 });
 
 test("a first turn that started before the boot registered its callback is not lost", async () => {

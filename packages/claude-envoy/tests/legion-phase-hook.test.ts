@@ -73,6 +73,8 @@ interface Harness {
   readonly reports: readonly ActivityInput[]
   /** Settles the claim's boot, as `startLegionClaim`'s `booted` does. */
   readonly boot: () => void
+  /** How often the endpoint has said a turn of this session started (`firstTurnStarted`). */
+  readonly turnsStarted: () => number
   readonly lines: readonly string[]
   readonly close: () => Promise<void>
 }
@@ -119,11 +121,15 @@ async function harness(
   const inbox: string[] = []
   const published: PublishInput[] = []
   const reports: ActivityInput[] = []
+  let turnsStarted = 0
   const booted = Promise.withResolvers<void>()
   const endpoint = createPhaseHookEndpoint({
     stateFile: file,
     claim: () => options.claim,
     booted: booted.promise,
+    firstTurnStarted: () => {
+      turnsStarted += 1
+    },
     readState: (signal) => daemon.state({ signal }),
     reportActivity: async (input) => {
       reports.push(input)
@@ -152,6 +158,7 @@ async function harness(
     published,
     reports,
     boot: booted.resolve,
+    turnsStarted: () => turnsStarted,
     lines,
     close: async () => {
       // As the server's own `stop` does: no armed timer outlives the case that armed it.
@@ -415,6 +422,40 @@ test("the prompt that carries this endpoint's own reminder does not reset its co
   } finally {
     await close()
   }
+})
+
+test("every prompt submitted says a turn of this session has started, before the phase gate", async () => {
+  // The claim's first-turn signal, which the channel server answers by taking this session's
+  // Envoy name (`onFirstTurn`, `src/legion-claim.ts`). It is fired before the gate below, so the
+  // bridge's seeding `/rename` turn — which runs before any claim exists, since it writes the
+  // transcript the boot waits for — says a turn started, and so does an architect's turn.
+  const seeding = await harness()
+  expect(await seeding.endpoint.handle({ event: "UserPromptSubmit", prompt: "/rename" })).toEqual(
+    {},
+  )
+  expect(seeding.turnsStarted()).toBe(1)
+  await seeding.close()
+
+  const architect = await harness({ claim: { ...implementer, role: "architect" } })
+  await architect.endpoint.handle({ event: "UserPromptSubmit", prompt: "plan it" })
+  expect(architect.turnsStarted()).toBe(1)
+  await architect.close()
+
+  const worker = await harness({ record: recorded("open", 0), claim: implementer })
+  await worker.endpoint.handle({ event: "PostToolUse", toolName: "Bash" })
+  await worker.endpoint.handle({ event: "Stop" })
+  expect(worker.turnsStarted()).toBe(0)
+  await worker.endpoint.handle({ event: "UserPromptSubmit", prompt: "implement it" })
+  await worker.endpoint.handle({ event: "UserPromptSubmit", prompt: "and again" })
+  // Once per prompt: the step behind the signal claims once however often it is run
+  // (`claimRoleAtFirstTurn`, `@legion/pi-shared/legion-claim-core`).
+  expect(worker.turnsStarted()).toBe(2)
+  // A call the model made itself is refused before anything moves, this signal included.
+  expect(await worker.endpoint.handle({ event: "WhateverIsThis" })).toEqual({
+    error: PHASE_HOOK_REFUSAL,
+  })
+  expect(worker.turnsStarted()).toBe(2)
+  await worker.close()
 })
 
 test("a prompt carrying a line this server wrote for a delivery is that delivery's turn", async () => {

@@ -7,6 +7,7 @@ import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
+import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -114,6 +115,9 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       LEGION_BOOT_TOKEN_FILE: tokenFile,
       LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
       LEGION_CLAUDE_INBOX: inboxPath,
+      // Ten minutes, so the role below can only have been claimed by the turn this case
+      // submits and never by the claim's own bound (INFRA-1573).
+      LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
     },
     stderr: "pipe",
   })
@@ -159,6 +163,16 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         },
       },
     ])
+    // No turn has started, so the pane has registered and said it is ready without taking its
+    // Envoy name: a message the listener kept for the role is handed over inside a running turn
+    // rather than ahead of the daemon's task (INFRA-1573).
+    expect(roles).toEqual([])
+    const turn = await client.callTool({
+      name: PHASE_HOOK_TOOL_NAME,
+      arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
+    })
+    expect(turn.content).toEqual([{ type: "text", text: "{}" }])
+    await waitFor(async () => roles.length > 0, "the pane to claim its role at its first turn")
     // The claim names the process that made it — the one id this server minted and registers
     // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
     const instance = instances[0]

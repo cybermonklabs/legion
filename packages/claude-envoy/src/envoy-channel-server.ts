@@ -2171,6 +2171,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The claim's boot, for the endpoint's resume reminder and its recreated-workspace notice: both
   // need the claim, and the claim starts further down, once the channel session exists.
   const claimBooted = Promise.withResolvers<void>()
+  // The other way round: the hook endpoint is built here, before the claim, and the claim's
+  // deferred role claim waits on this one. It settles at the first `UserPromptSubmit` the
+  // endpoint answers, which is this process's only sight of a turn starting, so the Envoy name
+  // is taken inside a running turn rather than ahead of the daemon's task (INFRA-1573). Either
+  // order is safe: a prompt submitted before the boot registered its step resolves this promise,
+  // and the step registered after it runs on the next microtask; a second prompt resolves a
+  // settled promise, and the step itself claims once however often it is run.
+  const claimFirstTurn = Promise.withResolvers<void>()
   const phaseHook =
     pane === undefined || daemon === undefined
       ? undefined
@@ -2178,6 +2186,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           stateFile: phaseStallFile(pane.configDir, identity.id),
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
+          firstTurnStarted: claimFirstTurn.resolve,
           readState: (signal) => daemon.state({ signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
@@ -2454,6 +2463,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         signal: booting.signal,
         log: logLegion,
         stop: endPane,
+        onFirstTurn: (takeTheName) => {
+          void claimFirstTurn.promise.then(takeTheName)
+        },
       })
       // What `claimSession.bootstrap` returning is to the Oh My Pi host: the point the phase
       // endpoint may read the claim, arm its resume reminder and tell the worker its workspace
