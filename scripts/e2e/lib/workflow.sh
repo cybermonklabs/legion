@@ -389,7 +389,8 @@ workflow_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 # read_app_logins proves the run's two role Apps against GitHub (check_github_apps,
 # lib/github-apps.sh) and sets implement_app_login and review_app_login to the bot login GitHub
 # gives each, `<slug>[bot]` as REST names it, read by lib/app-logins.ts from GraphQL's viewer under
-# an installation token the App's token command releases, and checked against GET /apps/<slug>, as
+# an installation token the App's own credential command releases or mints, and checked against
+# GET /apps/<slug>, as
 # the daemon reads its own at boot. A proof names no App: an App renamed on GitHub changes what
 # this reads and no script, and a name another App takes over later is never mistaken for Legion's.
 # A stage proof calls it once in its prerequisites, after require_app_inputs and write_github_apps

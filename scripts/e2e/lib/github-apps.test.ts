@@ -54,19 +54,24 @@ const warningAwk = join(dir, "warning-awk");
 // Resolved here, before that directory is first on PATH, so the stand-in runs the real awk
 // rather than itself.
 const hostAwk = Bun.which("awk") ?? "/usr/bin/awk";
-// The review App's own private key, the one the stand-in GitHub verifies an App JWT against, read
+// Each App's own private key, the one the stand-in GitHub verifies an App JWT against, read
 // in the hook below rather than here: appPrivateKey generates that key at its first read, and a
-// run that selects no row of this file must generate none. The rig drives the key as a deployment
+// run that selects no row of this file must generate none. The rig drives a key as a deployment
 // does — through a command that prints it, never through a variable or an argument holding it —
-// and keyIDs is the App whose key holdsNoKey is told to look for wherever it must not be.
+// and keyIDs is the App whose key holdsNoKey is told to look for wherever it must not be, with
+// bothKeyIDs for the rows that give the implement App a key too.
 const keyIDs = [202];
+const bothKeyIDs = [101, 202];
 let reviewKey = "";
 const reviewKeyFile = join(dir, "review-key.pem");
-// The key command the rig gives the review role, which has no broker secret to name: a `cat` of
-// the file above, as an operator's own command is one. The lib never puts this text in a block:
-// it runs the command once, here on the driver, and the block carries a `cat` of the 0600 file it
-// wrote (write_github_apps --key-dir, or mint_app_tokens under --token-dir).
+const implementKeyFile = join(dir, "implement-key.pem");
+// The key command the rig gives a role: a `cat` of the file above, as an operator's own command
+// is one. The lib never puts this text in a block: it runs the command once, here on the driver,
+// and the block carries a `cat` of the 0600 file it wrote (write_github_apps --key-dir, or
+// mint_app_tokens under --token-dir). The review App has no broker secret to name; the implement
+// App takes a key command in place of the one it has.
 const reviewKeyCommand = `cat -- ${reviewKeyFile}`;
+const implementKeyCommand = `cat -- ${implementKeyFile}`;
 // Every directory and stand-in this file's children read, staged before the first row: `dir` is
 // reserved at module scope and made by the hook that reservation registered, so a run that
 // selects no row of this file stages nothing and leaves nothing behind.
@@ -80,6 +85,9 @@ beforeAll(() => {
   // read, written where every child of this file can read it.
   reviewKey = appPrivateKey(202);
   writeFileSync(reviewKeyFile, reviewKey, { mode: 0o600 });
+  // The implement App's key, for the rows that give that role a key command of its own in place
+  // of its broker secret.
+  writeFileSync(implementKeyFile, appPrivateKey(101), { mode: 0o600 });
   writeFileSync(
     join(fakeBin, "agent-secrets"),
     `#!/bin/sh
@@ -172,9 +180,10 @@ const line = (stdout: string, prefix: string) =>
   (stdout.split("\n").find((l) => l.startsWith(prefix)) ?? "").slice(prefix.length);
 const tokenCommand = (name: string) =>
   `agent-secrets ${name} --ttl 12h --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} \${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} \${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$${name}"'`;
-// The review role's private_key_command in every block the lib writes: a `cat` of the key file it
+// A role's private_key_command in every block the lib writes: a `cat` of the key file it
 // resolved the operator's command into, under the credential directory the caller named.
-const keyFileCommand = (dir: string) => `cat -- '${join(dir, "review", "key.pem")}'`;
+const roleKeyFileCommand = (dir: string, role: string) => `cat -- '${join(dir, role, "key.pem")}'`;
+const keyFileCommand = (dir: string) => roleKeyFileCommand(dir, "review");
 // The teardown of the App credential directory the sandbox proof runs, taken from that script by
 // name rather than written again here: claude-backend-sandbox.sh's remove_app_tokens, which stops
 // the refresher this lib starts and removes the directory the proof set app_tokens_dir to. A row
@@ -424,6 +433,137 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     expect(sources.review?.kind).toBe("private_key_command");
     holdsNoToken(stdout);
     holdsNoKey(stdout, keyIDs);
+  });
+
+  // The implement App on a key command of its own, which is how the answer loop's proof takes
+  // both roles: each key is resolved here, into the run's own 0600 file of a 0700 directory, each
+  // block field is a `cat` of that file, and the broker is asked nothing at all.
+  const implementKeyInputs = {
+    LEGION_E2E_IMPLEMENT_APP_ID: "101",
+    LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND: implementKeyCommand,
+    LEGION_E2E_REVIEW_APP_ID: "202",
+    LEGION_E2E_REVIEW_APP_KEY_COMMAND: reviewKeyCommand,
+  };
+
+  test("both Apps on key commands prove from their own keys, and no release is asked for", async () => {
+    const argvLog = join(dir, "argv-both-keys");
+    rmSync(argvLog, { force: true });
+    const { code, stdout, stderr, work } = await githubApps(
+      { ...implementKeyInputs, ARGV_LOG: argvLog },
+      proveBoth
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(line(stdout, "logins "))).toEqual({
+      implement: "example-implement[bot]",
+      review: "example-review[bot]",
+    });
+    // One credential field a role, and both of them a `cat` of the key file this call wrote.
+    expect(readFileSync(join(work, "github-apps.yaml"), "utf8")).toBe(
+      `github_apps:\n  implement:\n    app_id: "101"\n    private_key_command: ${JSON.stringify(roleKeyFileCommand(join(work, "app-key"), "implement"))}\n  review:\n    app_id: "202"\n    private_key_command: ${JSON.stringify(roleKeyFileCommand(join(work, "app-key"), "review"))}\n`
+    );
+    // Each key reached a file of its own, owner-only, in an owner-only directory, and holds what
+    // its command printed.
+    for (const role of ["implement", "review"]) {
+      const file = join(work, "app-key", role, "key.pem");
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(statSync(join(work, "app-key", role)).mode & 0o777).toBe(0o700);
+      expect(readFileSync(file, "utf8")).toBe(
+        readFileSync(role === "implement" ? implementKeyFile : reviewKeyFile, "utf8")
+      );
+    }
+    // The broker was never run: no key command of this run names it, and no release is minted.
+    expect(existsSync(argvLog)).toBe(false);
+    holdsNoToken(stdout);
+    holdsNoKey(stdout, bothKeyIDs);
+  });
+
+  test("the implement App's broker secret set beside its key command is refused, naming both", async () => {
+    const { code, stderr } = await githubApps(
+      { ...implementKeyInputs, LEGION_E2E_IMPLEMENT_APP_SECRET: "IMPLEMENT_APP" },
+      `require_app_inputs implement review
+echo taken`
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      "LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND name the implement App's credential two ways"
+    );
+  });
+
+  test("the implement key command is held to the same refusals as the review one, and prints no part of the value", async () => {
+    for (const [value, refused] of [
+      ["", "must be set to shell text that prints the implement App's PEM private key on stdout"],
+      [" \t ", "must be set to shell text that prints the implement App's PEM private key"],
+      [
+        readFileSync(implementKeyFile, "utf8"),
+        "must name a command that prints the implement App's private key, not the key itself",
+      ],
+    ] as const) {
+      const { code, stderr } = await githubApps(
+        { ...implementKeyInputs, LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND: value },
+        "require_app_inputs implement\necho taken"
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND");
+      expect(stderr).toContain(refused);
+      holdsNoKey(stderr, bothKeyIDs);
+    }
+  });
+
+  test("an implement App on a key with no directory flag is refused, naming both flags and writing nothing", async () => {
+    const { code, stdout, stderr, work } = await githubApps(
+      {
+        LEGION_E2E_IMPLEMENT_APP_ID: "101",
+        LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND: implementKeyCommand,
+      },
+      `require_app_inputs implement
+write_github_apps implement
+echo "wrote the block"`
+    );
+    expect(code).toBe(1);
+    expect(stdout).not.toContain("wrote the block");
+    expect(stderr).toContain(
+      "the implement App's key must be resolved into a directory the caller's cleanup removes unconditionally, on every exit"
+    );
+    expect(stderr).toContain("--key-dir");
+    expect(stderr).toContain("--token-dir");
+    expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+  });
+
+  test("mint_app_tokens writes each role's key and asks the broker for nothing when neither role has a secret", async () => {
+    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const argvLog = join(dir, "argv-key-mints");
+    rmSync(argvLog, { force: true });
+    const { code, stdout, stderr, work } = await githubApps(
+      { ...implementKeyInputs, TOKEN_DIR: tokenDir, ARGV_LOG: argvLog },
+      `require_app_inputs implement review
+mint_app_tokens "$TOKEN_DIR" sjawhar
+write_github_apps --token-dir "$TOKEN_DIR" implement review
+check_github_apps implement review
+echo "logins $github_app_logins"`
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    // One key a role and nothing else: no release file, and no call of the broker's client.
+    expect(readdirSync(tokenDir).sort()).toEqual(["implement", "review"]);
+    for (const role of ["implement", "review"]) {
+      expect(readdirSync(join(tokenDir, role))).toEqual(["key.pem"]);
+      expect(statSync(join(tokenDir, role, "key.pem")).mode & 0o777).toBe(0o600);
+    }
+    expect(existsSync(argvLog)).toBe(false);
+    // The block the daemon loads reads those two files, and the check proves both Apps from them.
+    const sources = appCredentialSources(readFileSync(join(work, "github-apps.yaml"), "utf8"));
+    expect(sources.implement).toEqual({
+      appId: "101",
+      kind: "private_key_command",
+      command: roleKeyFileCommand(tokenDir, "implement"),
+    });
+    expect(JSON.parse(line(stdout, "logins "))).toEqual({
+      implement: "example-implement[bot]",
+      review: "example-review[bot]",
+    });
+    holdsNoKey(stdout, bothKeyIDs);
+    holdsNoToken(stdout);
   });
 
   test("a secret that releases another App's tokens fails the check, naming both ids and no token", async () => {
@@ -901,10 +1041,10 @@ app_key_left --check-line "$work/app-key" && echo "gone under --check-line: retu
     // stage4b-sandbox-tree.sh writes on stdout, and a return of 1 for the caller to act on.
     expect(stdout).toContain("left: returned 1");
     expect(stderr).toBe(
-      `FAIL cleanup: the review App's private key remains in ${join(work, "app-key")}`
+      `FAIL cleanup: a role App's private key remains in ${join(work, "app-key")}`
     );
     expect(stdout).toContain(
-      `CHECK app-key: FAIL: the review App's private key remains in ${join(work, "app-key")}`
+      `CHECK app-key: FAIL: a role App's private key remains in ${join(work, "app-key")}`
     );
     // Once it is gone: nothing printed either way, and a return of 0.
     expect(stdout).toContain("gone: returned 0");
@@ -1032,7 +1172,7 @@ echo "wrote the block"`
     );
     expect(code).toBe(1);
     expect(stdout).not.toContain("wrote the block");
-    expect(stderr).toContain("name the review App's key file two ways; pass one");
+    expect(stderr).toContain("name the Apps' key files two ways; pass one");
     expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
     expect(existsSync(join(work, "app-key"))).toBe(false);
   });
@@ -1306,7 +1446,7 @@ echo taken`
         { ...appInputs, PASTED: pasted },
         `review_app_id=202
 review_app_key_command=$PASTED
-app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+app_token_mint_key review "$work/app-key" || echo "refused: $app_token_mint_failed"
 echo done`
       );
       expect(code, shape).toBe(0);
@@ -1335,7 +1475,7 @@ echo done`
       },
       `review_app_id=202
 review_app_key_command=$MIXED
-app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+app_token_mint_key review "$work/app-key" || echo "refused: $app_token_mint_failed"
 echo done`
     );
     expect(code).toBe(0);
@@ -1448,7 +1588,7 @@ set +e
 app_token_mint_command "$work/direct-key.pem" "$NUL_STDERR" key
 printf 'status %s\n' "$?"
 set -e
-app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+app_token_mint_key review "$work/app-key" || echo "refused: $app_token_mint_failed"
 echo done`
     );
     expect(code).toBe(0);
@@ -1497,7 +1637,7 @@ echo minted`
       { ...appInputs, PASTED: `printf '%s\\n' '${body}' >&2; exit 7` },
       `review_app_id=202
 review_app_key_command=$PASTED
-app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+app_token_mint_key review "$work/app-key" || echo "refused: $app_token_mint_failed"
 echo done`
     );
     expect(relayed.code).toBe(0);

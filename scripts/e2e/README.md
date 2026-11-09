@@ -1271,8 +1271,9 @@ A token that expires mid-run takes the runtime's access with it, so its duration
 
 ```sh
 LEGION_E2E_ANTHROPIC_KEY_FILE=<file holding the key> LEGION_E2E_MODEL_BASE_URL=<the endpoint it is for> \
-  LEGION_E2E_IMPLEMENT_APP_ID=<implement App id> LEGION_E2E_REVIEW_APP_ID=<review App id> \
-  LEGION_E2E_REVIEW_APP_GRANTED=1 LEGION_E2E_REPO_SECOND_OWNER=<owner/name> \
+  LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND='<command that prints the implement App PEM private key>' \
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
+  LEGION_E2E_REPO_SECOND_OWNER=<owner/name> \
   bash scripts/e2e/answer-loop.sh     # → a summary of every criterion; exit 0 when none FAILs
 ```
 
@@ -1509,14 +1510,17 @@ The script carries this shell's `PATH`, `HOME`, XDG base directories and `DBUS_S
 Every model call runs it again and nothing is kept, so a token that expires mid-run is never served, and `prerequisites` runs it once before anything is created, refusing a command that fails or prints something no `Authorization` header can carry.
 The token is echoed nowhere and written to no evidence, and the recording proxy sends it on as `Authorization: Bearer <token>` ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), the header shape none of the three clients can be told to send itself.
 
-The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and the rig holds no App key:
-every token of the run, the daemon's and the rig's own, comes from an App's `token_command`, which runs `agent-secrets` against the broker's github-app secret.
-The daemon's token commands run under `env -i`, so the run writes an `agent-secrets` of its own first on the daemon's `PATH`:
-it calls the real client by its absolute path with this session's `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR` (paths, never a secret), and tries a broker call that fails with exit 1 twice more.
-The run proves the implement App against GitHub (`check_github_apps`) and installed on the smoke repository with [`lib/app-installation.ts`](lib/app-installation.ts), whose `GET /installation/repositories` under that owner's own installation token names exactly the repositories the installation is on, stopping there when the smoke repository is not one.
-The review App's secret is human tier, a person's to grant, and `agent-secrets` cannot say whether a grant exists without asking for it (which files a request in the person's inbox), so the run asks only with `LEGION_E2E_REVIEW_APP_GRANTED=1`;
-told so and refused, it cancels its request by id and stops.
-Without it the daemon runs with no `dispatch_url` and no `github_apps`.
+The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and both role Apps come from their own key commands:
+`LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND` and `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, each shell text that prints that App's PEM private key on stdout, are required and have no default.
+`prerequisites` runs each once, here on the driver, in the operator's own environment — so a command may read their `HOME`, their own gcloud or kubectl configuration and any variable of their shell — into `$work/app-key/<role>/key.pem`, 0600 in a directory of mode 0700, and every token of the run is minted from those two files:
+the daemon's, through each App's `private_key_command`, a `cat` of its own file that the daemon runs again at every load, and the rig's own, which [`lib/app-logins.ts`](lib/app-logins.ts), [`lib/app-installation.ts`](lib/app-installation.ts) and [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) sign an App JWT with and mint an installation token from.
+The run asks the secrets broker for nothing, so it needs no `agent-secrets` on `PATH` and files no request in anyone's inbox.
+The cleanup removes that directory on every exit, after the GitHub undo that mints from it, and `app_key_left` fails the run when anything of it is left.
+The run proves the implement App against GitHub (`check_github_apps`) and installed on the smoke repository with `lib/app-installation.ts`, whose `GET /installation/repositories` under that owner's own installation token names exactly the repositories the installation is on, stopping there when the smoke repository is not one.
+The daemon's workflow boots only with two distinct Apps, and the answer loop runs in that workflow, so a run given both key commands is in workflow mode and a run missing either runs claims-only:
+the daemon then gets no `dispatch_url` and no `github_apps`, the mode note names the input that was not given, and every answering criterion records `WAITING (needs <that input>)`.
+With the implement key command alone the run still proves that App and its installation;
+with neither it proves no App and reads nothing of GitHub, which a claims-only run writes nothing to anyway.
 `LEGION_E2E_REPO_SECOND_OWNER` (owner/name) is an operator input, never written in the tree.
 `LEGION_E2E_ANSWER_LOOP_EVIDENCE_DIR` and `LEGION_E2E_ANSWER_LOOP_CACHE` move the evidence (default a new directory under `$TMPDIR`) and the cache.
 While a check is being fixed, `LEGION_E2E_ANSWER_LOOP_ONLY` (criteria, e.g. `boot A6 A13`) and `LEGION_E2E_ANSWER_LOOP_STORES` (e.g. `files`) narrow a run;
@@ -1528,12 +1532,12 @@ the Collaborators view, the conversation it led to, the question sent and the an
 
 **GitHub.**
 The run reads the smoke repository, and reads it as the implement App:
-it mints a read-only installation token of its own for each read (`smoke_gh`, the token command `mint_provision_token` runs) and hands it to the compiled `gh`, since the rig's own `gh` reads nothing there
+it mints a read-only installation token of its own for each read (`smoke_gh`, which `mint_provision_token` mints from the App's key) and hands it to the compiled `gh`, since the rig's own `gh` reads nothing there
 — in a Legion pane the first `gh` on `PATH` is the `legion gh` wrapper, and the pane's token is narrowed to its own owner, so either answers `{"message":"Not Found",…}`, whose body is no array of comments and reads as none.
 Its writes there are A17's, A18's and A19's:
 the pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App, the comments the stopped implementer posts, and A19's approvals;
 each pull request and comment is recorded by id and closed (with its branch) or deleted as the implement App on exit.
-Each of those calls acts under the repository owner's installation token, which the App's own `token_command` releases and which stays inside that one process.
+Each of those calls acts under the repository owner's installation token, which the App's own key mints and which stays inside that one process.
 A17's one write on the second owner's repository is the reviewer's, which GitHub refuses.
 Claims-only, none of these checks runs and the run writes nothing to GitHub.
 
@@ -5741,7 +5745,7 @@ changed` line for a move (`sign_off`, `pull_request_merged`).
 
 Legion's two role Apps as a live proof takes them, sourced by `lib/workflow.sh` (so by every stage proof that sources it) and by Stage 4a directly.
 Each App is an id and one credential, which operator inputs give:
-the implement App's credential is the name of a secrets broker github-app secret, and the review App's is a command that prints that App's private key.
+a command that prints that App's private key, for either role, and for the implement App the name of a secrets broker github-app secret instead, where the run was given no key command for it.
 
 Each item below names an input, then what it names.
 
@@ -5749,37 +5753,41 @@ Each item below names an input, then what it names.
 
   the App's numeric id
 
-- `LEGION_E2E_IMPLEMENT_APP_SECRET`
+- `LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND`, `LEGION_E2E_REVIEW_APP_KEY_COMMAND`
 
-  the github-app secret `agent-secrets` releases the implement App's installation tokens from, as `{"installations":{"<login>":{"installation_id":…,"token":"ghs_…","expires_at":…}}}`
-
-- `LEGION_E2E_REVIEW_APP_KEY_COMMAND`
-
-  shell text that prints the review App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment, and the daemon never runs.
+  shell text that prints that role App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment, and the daemon never runs.
   It may therefore read the operator's `HOME`, their own gcloud or kubectl configuration and any variable of their shell:
   it is their command, run where they ran the script.
-  What it prints goes to the run's own `review/key.pem`, mode 0600 in a directory of mode 0700, and the review App's `private_key_command` is `cat -- '<that file>'`, the shape a Legion reviewer pod is configured with (`deploy/kubernetes/daemon/legion.yaml.example`, `private_key_command: cat ./review-app.pem`).
+  What it prints goes to the run's own `<role>/key.pem`, mode 0600 in a directory of mode 0700, and that App's `private_key_command` is `cat -- '<that file>'`, the shape a Legion reviewer pod is configured with (`deploy/kubernetes/daemon/legion.yaml.example`, `private_key_command: cat ./review-app.pem`).
 
-  It is required, with no default and nothing behind it, of every run of the six proofs that drive the review App, this deployment's own included:
+  The review App's is required, with no default and nothing behind it, of every run of the six proofs that drive that App, this deployment's own included:
   this repository is public (`AGENTS.md`), so a value a live script needs is a required operator input the script refuses to start without, never a name in the script, and no name of the store a deployment keeps that key in belongs here either.
+  The implement App's is optional, and the one input that chooses that App's credential:
+  given, it is that App's one credential, every token of the run is minted from the key it prints, the broker is asked for nothing, and `LEGION_E2E_IMPLEMENT_APP_SECRET` set beside it is refused by name, since the two name one App's credential two ways;
+  left unset, that App keeps the broker secret below.
+  [`answer-loop.sh`](#answer-loopsh) is the proof that gives both.
 
-  `require_app_inputs review` refuses a value that is unset, empty or whitespace alone.
-  A key command is arbitrary shell text — a `cat` of a file, an `awk` between two markers, a deployment's own secret-store client — so no shape every legitimate command has exists and no positive test can stand.
-  The guard is therefore the refusal of the common pastes of the key where its command goes, and it takes every other value:
-  it refuses a value that is a PEM, one that is base64 of a PEM, and one with three or more lines that are 40 or more base64 characters alone.
-  Each test reads its text with the whitespace, the surrounding quotes and a leading byte-order mark taken out, and the line test one leading `>` as well, so an indented paste, a quoted one, one a mail client quoted line by line, one behind a mark an editor left and a key wrapped at the 76 columns `base64` prints by default are the same value here.
-  The `>` earns its own strip: a key quoted with `> ` before each line holds no line that is base64 alone, so it passed, and `sh` then read each of its lines as a redirection and created an empty file named after that line in the working directory — key text on disk under names no relay can mask, which jj snapshots when a proof runs from the repository root.
-  One `>` is taken off, not every one, so a paste quoted twice (`>> ` before each line) is still taken and still writes its lines to disk that way.
-  Each refusal is its own message, which names the input and prints no part of the value.
-  A command that names a PEM marker is still a command, `awk '/-----BEGIN/,/-----END/' <file>` among them, and so is one carrying a long base64 word.
-  The PEM test is a prefix test — it refuses a value whose text, read that way, begins `-----BEGIN`, and that one begins `awk` — and the two base64 tests ask for base64 characters and nothing else: 200 or more of them as the whole value, or three lines of 40 or more apiece, which is a key's shape and no realistic command's, since a PEM body line is 64 such characters and a `base64` line 76.
-  A paste none of the three catches is run: `sh` echoes back the lines of it that it cannot run, and the key relay below masks a PEM's armour and the body lines of a key at its usual width, but not every shape a key can arrive in.
+- `LEGION_E2E_IMPLEMENT_APP_SECRET`
 
-The three other inputs default to this deployment's own Apps, `legion-implementer` (App ID 5341240, secret `LEGION_IMPLEMENT_APP`, agent tier: no person's grant) and `legion-reviewer` (App ID 5341243), which the lib holds in one place (`default_implement_app_id`, `default_implement_app_secret`, `default_review_app_id`), so a run here sets the key command alone.
+  the github-app secret `agent-secrets` releases the implement App's installation tokens from, as `{"installations":{"<login>":{"installation_id":…,"token":"ghs_…","expires_at":…}}}`, for a run that gave that App no key command
+
+`require_app_inputs` refuses a key command that is unset (the review role's) or set to a value that is empty or whitespace alone (either role's: an input set to an empty value is a command that printed nothing, not a choice of the broker).
+A key command is arbitrary shell text — a `cat` of a file, an `awk` between two markers, a deployment's own secret-store client — so no shape every legitimate command has exists and no positive test can stand.
+The guard is therefore the refusal of the common pastes of the key where its command goes, and it takes every other value:
+it refuses a value that is a PEM, one that is base64 of a PEM, and one with three or more lines that are 40 or more base64 characters alone.
+Each test reads its text with the whitespace, the surrounding quotes and a leading byte-order mark taken out, and the line test one leading `>` as well, so an indented paste, a quoted one, one a mail client quoted line by line, one behind a mark an editor left and a key wrapped at the 76 columns `base64` prints by default are the same value here.
+The `>` earns its own strip: a key quoted with `> ` before each line holds no line that is base64 alone, so it passed, and `sh` then read each of its lines as a redirection and created an empty file named after that line in the working directory — key text on disk under names no relay can mask, which jj snapshots when a proof runs from the repository root.
+One `>` is taken off, not every one, so a paste quoted twice (`>> ` before each line) is still taken and still writes its lines to disk that way.
+Each refusal is its own message, which names the input and prints no part of the value.
+A command that names a PEM marker is still a command, `awk '/-----BEGIN/,/-----END/' <file>` among them, and so is one carrying a long base64 word.
+The PEM test is a prefix test — it refuses a value whose text, read that way, begins `-----BEGIN`, and that one begins `awk` — and the two base64 tests ask for base64 characters and nothing else: 200 or more of them as the whole value, or three lines of 40 or more apiece, which is a key's shape and no realistic command's, since a PEM body line is 64 such characters and a `base64` line 76.
+A paste none of the three catches is run: `sh` echoes back the lines of it that it cannot run, and the key relay below masks a PEM's armour and the body lines of a key at its usual width, but not every shape a key can arrive in.
+
+The three other inputs default to this deployment's own Apps, `legion-implementer` (App ID 5341240, secret `LEGION_IMPLEMENT_APP`, agent tier: no person's grant) and `legion-reviewer` (App ID 5341243), which the lib holds in one place (`default_implement_app_id`, `default_implement_app_secret`, `default_review_app_id`), so a run here sets the key commands alone.
 The review App has no default credential, since the only credential it takes is a key.
 The input that named a broker secret for that App is retired, and a run that still exports it is refused by name when the review role is read, with the key command to set in its place.
-A deployment with its own Apps gives the two ids, stores the implement App's credential as a broker github-app secret and names it, and writes a key command for the review App.
-A deployment whose broker holds no github-app secret for the implement App must set `LEGION_E2E_IMPLEMENT_APP_SECRET`:
+A deployment with its own Apps gives the two ids, writes a key command for each App, or stores the implement App's credential as a broker github-app secret and names it.
+A deployment whose broker holds no github-app secret for the implement App must set `LEGION_E2E_IMPLEMENT_APP_SECRET`, or give that App a key command of its own:
 the broker otherwise serves nothing under the name the default gave, and the check fails naming that role and the input to set.
 
 Two key commands an operator might give, as examples and not as values any script here holds:
@@ -5800,35 +5808,37 @@ the command still runs on the devbox, as it does in every other mode, and only t
 `require_app_inputs ROLE...` reads each role's inputs, taking the default for an id or the implement secret that is unset, and fails naming the input that is set but malformed:
 an id that is not a number of at most 12 digits, or a secret name that is not letters, digits and underscores of at most 64 (so it is safe in a shell command and as a variable name, and a pasted token is refused by its length).
 A refusal never prints the value.
-For the review role it applies the key command's own refusals above, and refuses a run that still exports the retired `LEGION_E2E_REVIEW_APP_SECRET`, naming the key command to set in its place.
+To each role's key command it applies that input's own refusals above;
+for the review role it also refuses a run that still exports the retired `LEGION_E2E_REVIEW_APP_SECRET`, naming the key command to set in its place, and for the implement role a run that sets both `LEGION_E2E_IMPLEMENT_APP_SECRET` and that role's key command.
 With both roles read it also refuses one id for both Apps.
 `app_token_command NAME` prints the token command for the github-app secret `NAME`, `agent-secrets NAME --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$NAME"'`, whose three `${…}` expansions the daemon's `sh` expands:
 the daemon sets `LEGION_GITHUB_OWNER` to the owner it needs a token for (empty for every installation), `LEGION_GITHUB_REPOS` to the repositories of that owner the token may touch, separated by single spaces (one `--github-repo` each, empty where it asks for no narrowing), and `LEGION_GITHUB_READ_ONLY` to `1` for a read-only token (contents, metadata, pull requests and Actions read, the last left out for an installation that does not hold it).
 The `--ttl 12h` is the deployment example's (`docs/deployment.md`): a deployment may hold a role's github-app secret at human tier, a request of one naming no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one, so without the flag every renewal of such a run would wait for a person again, where with it the approver reads the twelve hours on the card and decides them once.
 It depends on nothing but `NAME`.
 `write_github_apps (--token-dir DIR | --key-dir DIR) ROLE...` writes `$work/github-apps.yaml`, the `github_apps` block a run's `legion.yaml` includes as it is:
-each App's `app_id` and exactly one credential field, which is what the daemon admits (`packages/daemon/internal/config/stage3.go`, `readGitHubApp`) — the implement App a `token_command`, `app_token_command`'s, and the review App a `private_key_command` that reads the run's own key file, `cat -- 'DIR/review/key.pem'`, in any POSIX `sh` (busybox's included).
-The operator's key command is never that field and the daemon never runs it, so a call that writes the review role names the directory that key file goes in, one of the two ways below, or is refused having written nothing;
+each App's `app_id` and exactly one credential field, which is what the daemon admits (`packages/daemon/internal/config/stage3.go`, `readGitHubApp`) — a role read with a key command a `private_key_command` that reads the run's own key file, `cat -- 'DIR/<role>/key.pem'`, in any POSIX `sh` (busybox's included), and an implement App read with a broker secret a `token_command`, `app_token_command`'s.
+The operator's key command is never that field and the daemon never runs it, so a call that writes a role whose credential is a key names the directory that key file goes in, one of the two ways below, or is refused having written nothing;
 a call naming both is refused the same way, since the two name one key file by two routes.
-`--key-dir DIR` resolves the key here:
-this call runs `LEGION_E2E_REVIEW_APP_KEY_COMMAND` once, on the driver, in the caller's own environment, into `DIR/review/key.pem` (0600, in a directory of mode 0700, through `app_token_mint_key`), before a line of the block is written, so a key command that fails leaves no block behind either, and the implement App's `token_command` still runs `agent-secrets`.
-`--token-dir DIR` is the directory `mint_app_tokens` already wrote, which holds that key file and the releases:
-each command reads a file of it with `cat --` instead, the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and the review App's `private_key_command` that same `DIR/review/key.pem`.
+`--key-dir DIR` resolves each key here:
+this call runs that role's `LEGION_E2E_<ROLE>_APP_KEY_COMMAND` once, on the driver, in the caller's own environment, into `DIR/<role>/key.pem` (0600, in a directory of mode 0700, through `app_token_mint_key`), before a line of the block is written, so a key command that fails leaves no block behind either, and an implement App on a broker secret keeps the `token_command` that runs `agent-secrets`.
+`--token-dir DIR` is the directory `mint_app_tokens` already wrote, which holds each key file and the releases:
+each command reads a file of it with `cat --` instead, the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and a role on a key its own `DIR/<role>/key.pem`.
 That second form serves what the refresher minted, which is keyed by owner and the read-only flag alone, so it ignores `LEGION_GITHUB_REPOS` and answers a token over every repository of the owner's installation.
-Either `DIR` must be a path the caller's cleanup removes unconditionally, on every exit, since the App's private key is in it:
+Either `DIR` must be a path the caller's cleanup removes unconditionally, on every exit, since an App's private key is in it:
 not the evidence directory, and not a workspace a failing run keeps for debugging — the rule [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)'s own `--key-dir` states for the model key, and the reason is the same.
 It refuses, writing nothing, a role the last `require_app_inputs` did not read, and the block it writes names commands, never a token and never a key.
 
 In the four tmux proofs — [`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh), [`stage3-4b13b-acceptance.sh`](#stage3-4b13b-acceptancesh), [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`parked-decision-devbox.sh`](#parked-decision-devboxsh) — that key is `$work/app-key/review/key.pem`, mode 0600 in a directory of mode 0700, and `$work` is a `mktemp -d` under `/tmp`, or under `$TMPDIR` where the proof takes one.
+[`answer-loop.sh`](#answer-loopsh) writes `$work/app-key/implement/key.pem` beside it, since it gives both roles a key command.
 [`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh) writes that same file under its own `$work` (`/tmp/legion-e2e4b.<pid>.<random>`), and so does [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) under `aws-private-ip`, its one pod-reachability mode other than `bridge`:
-six proofs in all leave the review App's private key on the driver for as long as their run lasts.
+seven proofs in all leave a role App's private key on the driver for as long as their run lasts.
 Owner-only there is the operator's own uid, so every process of that uid can read the key, the four tmux proofs' agent panes included:
 a pane runs as the operator, and an agent's own bash can `cat` that file.
 The other two run their agents in pods, so no agent of theirs reads the driver's filesystem at all.
-Each proof's `EXIT` trap removes the key directory first and unconditionally, before anything slower in the teardown can hang, and `app_key_left`, which every one of those traps calls at its end, is what holds it to that:
-the lib's own check that the directory the removal was to take is gone, failing the run when it is still there — `FAIL cleanup: the review App's private key remains in <dir>` on stderr, or, under Stage 4b, the `CHECK app-key: FAIL: …` line its verdict and its exit status carry.
+Each proof's `EXIT` trap removes the key directory unconditionally — first, before anything slower in the teardown can hang, except in `answer-loop.sh`, whose GitHub undo acts as the implement App and mints from that very file, so there the removal follows that one step and everything after it is local — and `app_key_left`, which every one of those traps calls at its end, is what holds it to that:
+the lib's own check that the directory the removal was to take is gone, failing the run when it is still there — `FAIL cleanup: a role App's private key remains in <dir>` on stderr, or, under Stage 4b, the `CHECK app-key: FAIL: …` line its verdict and its exit status carry.
 A private key never expires, so a run that leaves one behind leaves a usable credential on the driver whatever else its teardown did, and fails itself for it.
-A run killed outright — `SIGKILL`, a crashed host — runs no trap at all, so in any of those six the key stays where it was written until a person removes it:
+A run killed outright — `SIGKILL`, a crashed host — runs no trap at all, so in any of those seven the key stays where it was written until a person removes it:
 nothing later in that run removes it, that check never runs, and no run after it removes it either, since [`lib/leftovers.sh`](#libleftoverssh) refuses an earlier driver's leftovers by naming what is still running and removes no directory.
 An operator whose run died that way removes that run's `$work` themselves, the path the run prints when it keeps one (`the run's scratch workspace …`, which the 4b.13b acceptance prints after every outcome, since it keeps its workspace always), and for Stage 4b, which prints no such line, the `/tmp/legion-e2e4b.<pid>.<random>` its own `mktemp -d` made.
 Under `bridge` the key is not under `$work`:
@@ -5839,11 +5849,11 @@ it bakes in `--key-file`'s resolved path, so anyone who can run it reads that ke
 This is the same exposure an operator already takes for the model key, written here for the App key too.
 
 The refresher is for a daemon that can run neither `agent-secrets` nor anything else of the devbox's (the Claude Code sandbox proof's container under `bridge`).
-`mint_app_tokens DIR OWNER...` records the owners the run serves and mints, once and synchronously, the implement App's releases into `DIR/implement/` — `_all.json`, and `<owner>.json` and `<owner>.read.json` for each `OWNER`, lowercased — when the last `require_app_inputs` read that role, since that App is the one whose credential the broker holds, and, when it read the review role, writes that App's private key once to `DIR/review/key.pem`, each directory 0700 and each file 0600.
+`mint_app_tokens DIR OWNER...` records the owners the run serves and mints, once and synchronously, the implement App's releases into `DIR/implement/` — `_all.json`, and `<owner>.json` and `<owner>.read.json` for each `OWNER`, lowercased — when the last `require_app_inputs` read that role with a broker secret, since those are the only credentials the broker holds, and writes the private key of each role it read with a key command once to `DIR/<role>/key.pem`, each directory 0700 and each file 0600.
 Each release, and the key with it, passes from its command's `sh` child to a temporary file of the same directory, and `mv` renames it over the file, so a reader sees the whole old file or the whole new one;
 a mint that fails or prints nothing leaves no temporary file, keeps the last good file, and fails the run naming the App by its role and id — a release also by its secret and `agent-secrets`' exit status, the key by the file it was to be written to and what went wrong — never a token and never a byte of the key.
 `start_app_token_refresher DIR` mints the same release files again every `app_token_refresh_seconds` (900) in the background, keeping the last good files when a round fails, and `stop_app_token_refresher` stops it.
-It never touches `DIR/review/key.pem`: a private key does not expire, and that App has no broker secret to ask for.
+It never touches a `DIR/<role>/key.pem`: a private key does not expire, and a role on a key command has no broker secret to ask for.
 A `DIR` holding anything but letters, digits and `_ . / -` is refused, by `mint_app_tokens` and by `write_github_apps --token-dir` and `--key-dir` alike, since the credential commands carry it in their shell text.
 
 Two relays carry a credential command's stderr to the run's, whole lines only and at most `app_token_release_limit` bytes, and `app_token_mint_command` picks between them by channel: `app_token_redact` for a release mint, and `app_token_redact_key`, which its `key` mode selects, for the operator's key command alone.
@@ -5881,7 +5891,7 @@ A credential command's stderr is not promised to be text, so those bytes are rep
 
 `check_github_apps ROLE...` runs [`lib/app-logins.ts`](#libworkflowsh) `--roles` over `$work/github-apps.yaml` and fails the check unless each App's one credential gives a token whose GraphQL viewer is an App's bot, `<slug>[bot]`, and GitHub's `GET /apps/<slug>`, under that token, answers the configured id and the write permission the role's work needs (the implement role's `contents`, the review role's `checks`):
 a token GitHub does not take is refused by GitHub's 401, an answer naming another id is refused naming both ids, and the two Apps configured the other way round are refused by the permission, since the implement App holds `checks: read` alone.
-The implement App's `token_command` releases that token, and the review App's `private_key_command` prints the PEM that signs an RS256 App JWT, under which `GET /app/installations` names an installation of the App and `POST /app/installations/<id>/access_tokens` mints that installation's token, so a key-configured App is held to every observation a token-configured one is.
+A `token_command` releases that token, and a `private_key_command` prints the PEM that signs an RS256 App JWT, under which `GET /app/installations` names an installation of the App and `POST /app/installations/<id>/access_tokens` mints that installation's token, so a key-configured App is held to every observation a token-configured one is.
 A broker that serves no github-app secret under the name the implement role gave refuses that role's token command outright (`UNKNOWN_SECRET`, `no agent secret has this name`), the one failure of this check whose fix is an input and not GitHub.
 `lib/app-logins.ts` reads that refusal out of the run it already makes, asking the broker nothing of its own, since a probe of a human-tier secret would raise a person's approval card, and names the role and the input to set in place of its reason for that one failure:
 `LEGION_E2E_IMPLEMENT_APP_SECRET` for the implement role, and for a review role, which a hand-written `github_apps.yaml` can still give a `token_command`, the key command `LEGION_E2E_REVIEW_APP_KEY_COMMAND` and the `private_key_command` that reads it, since that App asks the broker for nothing.
@@ -5889,19 +5899,21 @@ It reads the whole of the command's stderr, so a refusal the client prints under
 The key that command prints, and the App JWT it signs, stay in `lib/app-logins.ts`'s own memory: neither is printed, written to a file, or handed to another process.
 No token and no key enters the script's shell or an argv:
 each passes from its command's stdout to an owner-only file of a directory its caller names and removes at teardown, and the commands the block carries read those files.
-The review App's key reaches such a file in every mode, under `$work/app-key` or, under the sandbox proof's `bridge`, beside the releases on the devbox user's tmpfs (`XDG_RUNTIME_DIR`);
+Each key reaches such a file in every mode, under `$work/app-key` or, under the sandbox proof's `bridge`, beside the releases on the devbox user's tmpfs (`XDG_RUNTIME_DIR`);
 a token reaches one only where the daemon can run neither `agent-secrets` nor a key command, which is that `bridge` container, and the run's teardown removes them ([Pod reachability](#pod-reachability)).
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
 `TestRealGitHubCredentialSurface` and `TestRealGitHubReadyHoldsTheHeadToRetrosCommits` source this lib and run its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proofs act with), so they hold no copy of the App, its checks or its token command, and they prove the implement App as the stage proofs do before they act: they take the implement inputs and no others, so no review input, the key command included, is read for them.
+`proveLiveProofApps` checks the very block the proofs act with), so they hold no copy of the App, its checks or its token command, and they prove the implement App as the stage proofs do before they act: they take the implement inputs and no others, so no review input, that role's key command included, is read for them.
+Those two take the implement App's broker secret alone, since their harness runs a token command and resolves no key;
+a run that exports `LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND` leaves `implement_app_secret` empty, and `liveProofImplementApp` refuses it by name (`printed field 2 of the implement App empty…`) rather than acting on half a credential.
 Stage 4a hands its Go harness the implement App's id, its secret and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, so no such process inherits an App credential, the proof human's included.
-It strips the implement App's broker secret name when that role is read — the review App has no broker secret — and the implement default's name;
+It strips the implement App's broker secret name when that role is read with one — a role on a key command has none — and the implement default's name;
 `LEGION_REVIEW_APP`, the broker secret that released the review App's tokens before its key replaced them;
 `GH_REVIEW_APP_PRIVATE_KEY_B64`, the variable an older recipe's `private_key_command` read that key out of;
-`LEGION_E2E_REVIEW_APP_KEY_COMMAND`, which this lib alone reads and whose value may be a key itself, since the refusals above turn back the common pastes but a value that holds a key and still runs — a one-line `printf` of a PEM — is taken, and no process a run starts needs it;
+both `LEGION_E2E_<ROLE>_APP_KEY_COMMAND`s, which this lib alone reads and whose values may be keys themselves, since the refusals above turn back the common pastes but a value that holds a key and still runs — a one-line `printf` of a PEM — is taken, and no process a run starts needs them;
 and every exported variable whose name holds `PRIVATE_KEY`.
 `lib/github-apps.test.ts` drives the functions under a stage script's shell options against a stand-in GitHub that serves GraphQL's viewer, `GET /apps/<slug>` and the two App-JWT routes a key proof takes, those two to a request signed with that App's own key, with a stand-in `agent-secrets`:
 the defaults, an unset input taking its default, an empty one refused rather than read as a choice of the default, a malformed one refused by name with its value unprinted, the review App's key command required and an unset, empty or blank one refused by name, a run that still exports the retired review secret input refused by name, a key command that is the key itself refused with no part of the key printed and the same PEM behind a leading newline or space refused the same way, one that is the key as a single base64 word and one that is the key as `base64` wraps it at 76 columns each refused with no line of it printed, a command that reads the key between its PEM markers and one carrying a long base64 word each taken as the command it is, `app_token_command`'s text and the `--github-owner`, `--github-repo` and `--github-read-only` words it passes only when the daemon sets each variable, `write_github_apps` refusing an unread role and writing the daemon's block (the implement App's `token_command`, the review App's `private_key_command`), `app_key_unsets` leaving no App secret in a child's environment, an answer naming another App id refused naming both ids, a secret the broker does not serve failing the check by its role and its input, the same refusal below the first line of the command's stderr failing it the same way, no token and no key in any message, and a match accepted (`lib/app-logins.test.ts` holds the rows over the helper beneath them: a role's missing write permission refused, a failed token command named by its field, exit code and stderr, that command run without the NATS seeds and with owner, repositories and read-only empty, and an App proved from its key, its two JWT routes asked before the viewer, refused there too for another id or a missing permission, and its key command named by its field, exit code and stderr when it fails or prints nothing);
@@ -5909,6 +5921,8 @@ the six shapes a pasted key arrives in — quoted, behind a byte-order mark, its
 the same six put straight into the variable the key mint reads, as a guard that missed a shape would leave them, with no 20-character head of any line of the key, or of the key's `base64`, reaching the run's output or the file it wrote — 20 is the bound below which the key relay passes a run — the key relay masking a line's PEM armour and base64 while the command's own words pass on, and a release mint reaching the operator with the approval link of a waiting request whole while the key command's relay masks a key's body line;
 the key command's first line reaching the run's stderr while that command is still running, read as it arrives rather than after the exit, with the key the command printed after it still reaching its file whole; the relay writing nothing of its own, the run's stderr holding the command's one masked line and nothing besides, proved behind a stand-in `awk` that warns when it is given `-W` and is the host's own awk otherwise, first on `PATH` for that row alone, since the awk here takes `-W interactive` without a word and a probe that wrongly accepted a warning would pass the row against it; and a key command whose stderr holds NUL bytes bounded at a megabyte all the same, refused with 123, leaving no key file, with the lines that fitted relayed and masked, no NUL byte in the run's stderr and the token the command wrote after them not relayed at all;
 and `mint_app_tokens` writing each release 0600 and atomically and the review App's key once beside them, the broker asked for the implement App's releases alone, a failed or empty mint or key command leaving no file and the last good release, the refresher minting the releases again and never the key and stopping, `write_github_apps --key-dir` running the key command once, here, and writing a block that reads the file it wrote, a call that writes the review role with neither directory flag refused naming both and writing nothing, the two flags together refused as one key file named twice, `write_github_apps --token-dir`'s commands reading the right release file and the key file under busybox `sh`, its block proved with `agent-secrets` broken after the mint, the key reaching its own file and nothing else with the run's teardown leaving neither it nor its directory, and a credential directory unsafe in shell text refused.
+The implement App on a key command of its own has rows beside those: both Apps proved from their own keys with each key file 0600 in a 0700 directory and the stand-in `agent-secrets` never run at all, that role's broker secret set beside its key command refused naming both, its key command held to the same refusals as the review one with no part of the key printed, a call that writes it with neither directory flag refused naming both flags and writing nothing, and `mint_app_tokens` writing one key a role, no release file at all, and a block whose two `private_key_command`s the check then proves.
+
 `app_key_left` names a key directory a teardown left behind, on stderr and as a `CHECK` line, and says nothing once it is gone.
 
 ## lib/namespace-rig.sh

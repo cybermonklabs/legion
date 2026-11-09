@@ -96,7 +96,7 @@
   "elsewhere": [
     {
       "script": "answer-loop.sh",
-      "needs": "a Legion issue pod or a devbox: the role Apps' tokens from the secrets broker (LEGION_IMPLEMENT_APP, and LEGION_REVIEW_APP granted, LEGION_E2E_REVIEW_APP_GRANTED=1, for the answering criteria), an Anthropic key file or gateway (LEGION_E2E_MODEL_ROUTE), real Oh My Pi and Claude Code, and the smoke repository"
+      "needs": "a Legion issue pod or a devbox: both role Apps' PEM private keys through LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND and LEGION_E2E_REVIEW_APP_KEY_COMMAND (the review App's is what the answering criteria need), an Anthropic key file or gateway (LEGION_E2E_MODEL_ROUTE), real Oh My Pi and Claude Code, and the smoke repository"
     },
     {
       "script": "burstable-kind.sh",

@@ -433,8 +433,8 @@ async function githubRead(
  * it, and `exp` is nine minutes past `iat`, inside the ten GitHub allows; `now` is the caller's
  * clock, so a proof drives both. A key `createSign` refuses names the App and the field alone:
  * the error it raises may quote what it tried to read, and no part of a key belongs in a
- * message. */
-function appJwt(key: string, appId: string, now: Date, app: string, field: string): string {
+ * message. lib/app-installation.ts signs the same JWT to mint one owner's installation token. */
+export function appJwt(key: string, appId: string, now: Date, app: string, field: string): string {
   const part = (value: object) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
   const issued = Math.floor(now.getTime() / 1000) - 60;
   const signed = `${part({ alg: "RS256", typ: "JWT" })}.${part({

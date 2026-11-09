@@ -26,6 +26,8 @@
 #   questions_file scripts/e2e/answer-loop/questions.json, the questions and their answer keys
 #   controller_session  the stand-in session the daemons' controller notices are heard on
 #   mode           `workflow` when the daemon runs its workflow, else `claims-only`
+#   app_keys_missing  the App key command inputs the run was not given, an array of their names,
+#                  empty in workflow mode
 # and defines, beside the reads below, nothing of its own. The reads call, and the caller defines:
 #   pg_sql DATABASE SQL      the statement's rows as one JSON array
 #   legion_cmd ARG...        the daemon's own binary against its configuration
@@ -99,13 +101,25 @@ registry_404_routes() {
   jq -s -c '[.[] | select(((.msg // "") | startswith("the Envoy listener answers 404 on"))) | .route]
     | group_by(.) | map({route: .[0], lines: length})' <<<"${1:-}"
 }
+# app_keys_missing_names prints the App key command inputs this run was not given, as the mode
+# note and the WAITING line below name them: one name, or both joined by ` and `. A run given
+# both is in workflow mode and neither line is written, so the empty list names both rather than
+# nothing.
+app_keys_missing_names() {
+  case "${#app_keys_missing[@]}" in
+    1) printf '%s' "${app_keys_missing[0]}" ;;
+    2) printf '%s and %s' "${app_keys_missing[0]}" "${app_keys_missing[1]}" ;;
+    *) printf 'LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND and LEGION_E2E_REVIEW_APP_KEY_COMMAND' ;;
+  esac
+}
 # answering_blockers prints, one per line, what the answering criteria wait on in this run: the
-# daemon's workflow (the answer loop runs in it, and it boots only with both role Apps), and the
-# listener's hand-off (plan task 6), read from this boot's log: the daemon writes the project's
-# answering heartbeat at boot, and a listener without the hand-off answers its route 404.
+# daemon's workflow (the answer loop runs in it, and it boots only with both role Apps, each from
+# its own key command, so the line names the input the run was not given), and the listener's
+# hand-off (plan task 6), read from this boot's log: the daemon writes the project's answering
+# heartbeat at boot, and a listener without the hand-off answers its route 404.
 answering_blockers() {
   [ "$mode" = workflow ] ||
-    printf 'WAITING (needs the review App key grant): the daemon runs without its workflow, which carries the answer loop and boots only with both role Apps\n'
+    printf 'WAITING (needs %s): the daemon runs without its workflow, which carries the answer loop and boots only with both role Apps, each minting its tokens from the key its command prints\n' "$(app_keys_missing_names)"
   if boot_log | jq -e -s 'any(.[]; (.msg // "") | startswith("the Envoy listener answers 404 on PUT /v1/legion/projects/{project}"))' >/dev/null; then
     printf 'WAITING (needs the listener hand-off, task 6): the listener answers the heartbeat route PUT /v1/legion/projects/{project} 404, so it hands nothing off\n'
   fi

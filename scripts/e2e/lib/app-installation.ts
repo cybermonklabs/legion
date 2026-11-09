@@ -8,19 +8,28 @@
 //     the repository lacks, {"<role>":{"installed":false,"reason":"<why>"}}, and exits 0; it names
 //     what it could not read on stderr and exits 1, and exits 2 with its usage.
 //
-// Every credential comes from the role's `github_apps.<role>.token_command`, the one source
-// lib/app-logins.ts reads too, run as the daemon runs it (internal/appauth, runTokenCommand):
-// `sh -c`, stdin closed, the environment less the NATS seed variables, with LEGION_GITHUB_OWNER
-// the owner the token is for and LEGION_GITHUB_READ_ONLY set for a read-only one. The release's
-// token stays in this process: it is never printed, written or handed on, and a command's stderr
-// reaches this process's stderr with every GitHub token form replaced (lib/app-logins.ts,
-// redactTokens). There is no key and no JWT: an installation's own token answers
-// `GET /installation/repositories`, which names exactly the repositories the installation is on.
+// Every credential comes from the role's `github_apps.<role>` credential field, the one source
+// lib/app-logins.ts reads too, and each is run as the daemon runs it (internal/appauth,
+// runTokenCommand; internal/config, executePrivateKeyCommand): `sh -c`, stdin closed, the
+// environment less the NATS seed variables, with LEGION_GITHUB_OWNER the owner the token is for
+// and LEGION_GITHUB_READ_ONLY set for a read-only one where the field is a `token_command`, and
+// none of them touched where it is a `private_key_command`, which reads a key no installation
+// narrows. A release's token stays in this process, and so does a key and the App JWT it signs:
+// none is printed, written or handed on, and a command's stderr reaches this process's stderr
+// with every GitHub token form replaced (lib/app-logins.ts, redactTokens).
+// From a release, `GET /installation/repositories` under the owner's own installation token names
+// exactly the repositories the installation is on. From a key, the JWT's
+// `GET /app/installations` names the owner's installation and
+// `POST /app/installations/<id>/access_tokens` mints its token, read-only ones asking for what
+// that installation is granted of the daemon's four read permissions (internal/appauth,
+// readPermissions and exchangeGranted), so the same reads run under the same narrowing either
+// way.
 import { readFileSync } from "node:fs";
 import {
+  type AppCredentialSource,
   type AppRole,
-  type AppTokenSource,
-  appTokenSources,
+  appCredentialSources,
+  appJwt,
   firstInstallationToken,
   redactTokens,
 } from "./app-logins";
@@ -43,19 +52,25 @@ function member(value: unknown, key: string): unknown {
   return Object.getOwnPropertyDescriptor(value, key)?.value;
 }
 
-/** Runs one App's token_command for `owner` and returns its stdout, the secrets broker's release.
- * A failure names the field and the command's exit code, then its stderr when it wrote any; the
- * stdout, which holds tokens, is never quoted. */
-async function runTokenCommand(
+/** Runs one App's credential command for `owner` and returns its stdout, the secrets broker's
+ * release or, for a `private_key_command`, the App's PEM. A failure names the field and the
+ * command's exit code, then its stderr when it wrote any; the stdout, which is the credential, is
+ * never quoted. */
+async function runCredentialCommand(
   field: string,
   command: string,
+  kind: AppCredentialSource["kind"],
   owner: string,
   readOnly: boolean
 ): Promise<string> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of natsSeedVariables) delete env[name];
-  env.LEGION_GITHUB_OWNER = owner;
-  env.LEGION_GITHUB_READ_ONLY = readOnly ? "1" : "";
+  // The daemon narrows a token command with these two and sets none of them for a key command,
+  // which reads a key the installation does not narrow.
+  if (kind === "token_command") {
+    env.LEGION_GITHUB_OWNER = owner;
+    env.LEGION_GITHUB_READ_ONLY = readOnly ? "1" : "";
+  }
   // detached: the command leads a process group of its own, which a kill ends whole.
   const child = Bun.spawn(["sh", "-c", command], {
     env,
@@ -114,20 +129,133 @@ export interface AppInstallation {
   readonly account: string;
 }
 
-/** The installation `owner` holds of the App `source` names, from the release its token command
- * gives for that owner, read-only when `readOnly`. The whole release is held to the shape the
+/** The default GitHub API, the one the daemon calls. */
+const defaultApi = "https://api.github.com";
+
+/** What a read-only installation token may do, the four the daemon narrows a read lease to
+ * (internal/appauth, readPermissions). A mint asks for what the installation is granted of them
+ * and leaves the rest out (exchangeGranted), so an installation whose account has not granted
+ * the App Actions gets the other three rather than a 422. */
+const readPermissions: Record<string, string> = {
+  contents: "read",
+  pull_requests: "read",
+  actions: "read",
+  metadata: "read",
+};
+
+/** One read of GitHub under `credential`, in the scheme the route takes — `token` for an
+ * installation token, `Bearer` for an App JWT: the parsed body, or a throw naming `read` and
+ * GitHub's status, never the credential. */
+async function githubRead(
+  read: string,
+  url: string,
+  credential: string,
+  init: RequestInit = {},
+  scheme: "token" | "Bearer" = "token"
+): Promise<unknown> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      authorization: `${scheme} ${credential}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`${read} answered ${response.status}`);
+  return await response.json();
+}
+
+/** The installation `owner` holds of the key-configured App `source` names, and a token of it,
+ * minted as the daemon mints one from the key its private_key_command prints: the command's
+ * trimmed stdout signs an App JWT, `GET /app/installations` under that JWT names the owner's
+ * installation, matched as GitHub matches a login, and
+ * `POST /app/installations/<id>/access_tokens` mints its token — read-only ones asking for the
+ * read permissions that installation holds. An App the owner has not installed is undefined.
+ * The key, the JWT and the token stay in this process. */
+async function keyInstallationFor(
+  role: AppRole,
+  source: AppCredentialSource,
+  owner: string,
+  readOnly: boolean,
+  api: string
+): Promise<AppInstallation | undefined> {
+  const app = `the ${role} App (app_id ${source.appId})`;
+  const field = `github_apps.${role}.${source.kind}`;
+  const base = api.replace(/\/+$/, "");
+  const key = (
+    await runCredentialCommand(field, source.command, source.kind, owner, readOnly)
+  ).trim();
+  if (key === "") throw new Error(`${field} produced empty output`);
+  const jwt = appJwt(key, source.appId, new Date(), app, field);
+  const read = `GET /app/installations as ${app}`;
+  const listed = await githubRead(
+    read,
+    `${base}/app/installations?per_page=100`,
+    jwt,
+    {},
+    "Bearer"
+  );
+  if (!Array.isArray(listed)) throw new Error(`${read} answered no list of installations`);
+  const entry = listed.find(
+    (installation) =>
+      String(member(member(installation, "account"), "login")).toLowerCase() === owner.toLowerCase()
+  );
+  if (entry === undefined) return undefined;
+  const id = member(entry, "id");
+  if (typeof id !== "number" && typeof id !== "string") {
+    throw new Error(`${read} answered an installation with no id`);
+  }
+  const granted = member(entry, "permissions");
+  // The read set, narrowed to what this installation was granted of it, as the daemon narrows
+  // one (exchangeGranted): an installation whose account has not granted the App Actions is
+  // asked for the other three rather than refused. An installation record naming no permissions
+  // at all narrows nothing, and the whole set is asked for.
+  const permissions =
+    granted === null || typeof granted !== "object"
+      ? readPermissions
+      : Object.fromEntries(
+          Object.entries(readPermissions).filter(([name]) => member(granted, name) !== undefined)
+        );
+  const mint = `POST /app/installations/${id}/access_tokens as ${app}`;
+  const minted = await githubRead(
+    mint,
+    `${base}/app/installations/${encodeURIComponent(String(id))}/access_tokens`,
+    jwt,
+    { method: "POST", body: readOnly ? JSON.stringify({ permissions }) : undefined },
+    "Bearer"
+  );
+  const token = member(minted, "token");
+  if (typeof token !== "string" || token === "") {
+    throw new Error(`${mint} answered no installation token`);
+  }
+  return {
+    token,
+    installation: Number(id),
+    account: String(member(member(entry, "account"), "login")),
+  };
+}
+
+/** The installation `owner` holds of the App `source` names, and a token of it, read-only when
+ * `readOnly`: from the release its token command gives for that owner, or, for an App on a key,
+ * minted from that key (keyInstallationFor). The whole release is held to the shape the
  * daemon requires first (firstInstallationToken), so an expired or malformed one is refused here
  * and not at the first call it would fail; the entry taken is the owner's own, matched as GitHub
- * matches a login, not the release's first. A release that names no installation for the owner is
- * undefined, which is an App the owner has not installed. */
+ * matches a login, not the release's first. A credential that names no installation for the
+ * owner is undefined, which is an App the owner has not installed. */
 export async function installationFor(
   role: AppRole,
-  source: AppTokenSource,
+  source: AppCredentialSource,
   owner: string,
-  readOnly: boolean
+  readOnly: boolean,
+  api: string = defaultApi
 ): Promise<AppInstallation | undefined> {
+  if (source.kind === "private_key_command") {
+    return await keyInstallationFor(role, source, owner, readOnly, api);
+  }
   const field = `github_apps.${role}.token_command`;
-  const output = await runTokenCommand(field, source.tokenCommand, owner, readOnly);
+  const output = await runCredentialCommand(field, source.command, source.kind, owner, readOnly);
   firstInstallationToken(output, field, new Date());
   const installations = member(JSON.parse(output.trim()), "installations");
   const account = Object.keys(installations as object).find(
@@ -153,16 +281,16 @@ export type Installation =
  * read and GitHub's status, never a token. */
 export async function installationOn(
   role: AppRole,
-  source: AppTokenSource,
+  source: AppCredentialSource,
   repo: string,
   api: string
 ): Promise<Installation> {
   const owner = repo.split("/")[0] as string;
-  const installation = await installationFor(role, source, owner, true);
+  const installation = await installationFor(role, source, owner, true, api);
   if (installation === undefined) {
     return {
       installed: false,
-      reason: `the ${role} App's token command released no installation for ${owner}`,
+      reason: `the ${role} App's ${source.kind} named no installation for ${owner}`,
     };
   }
   let page = 1;
@@ -209,7 +337,7 @@ export async function installationOn(
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const roles = args[0] === "--roles" ? args[1]?.split(",") : undefined;
-  const [config, repo, api = "https://api.github.com"] = args.slice(2);
+  const [config, repo, api = defaultApi] = args.slice(2);
   if (
     roles === undefined ||
     roles.some((role) => role !== "implement" && role !== "review") ||
@@ -221,7 +349,7 @@ if (import.meta.main) {
     process.exit(2);
   }
   try {
-    const sources = appTokenSources(readFileSync(config, "utf8"), roles as AppRole[]);
+    const sources = appCredentialSources(readFileSync(config, "utf8"), roles as AppRole[]);
     const answer: Record<string, Installation> = {};
     for (const role of roles as AppRole[]) {
       const source = sources[role];

@@ -106,6 +106,7 @@ daemon_db=legion_files_4242
 repo=sjawhar/legion-smoke
 controller_session=controller-session
 mode=workflow
+app_keys_missing=()
 questions_file=${shq(join(data, "questions.json"))}
 declare -A agent=(
   [files:architect.file]=${shq(conversations.architect)}
@@ -227,8 +228,18 @@ describe("the daemon's log, boot by boot", () => {
   });
 
   test("answering_blockers names what the answering criteria wait on", () => {
-    expect(read("mode=claims-only; answering_blockers").text).toContain(
-      "needs the review App key grant"
+    // Claims-only names the key command the run was not given, one input or both.
+    expect(
+      read(
+        "mode=claims-only; app_keys_missing=(LEGION_E2E_REVIEW_APP_KEY_COMMAND); answering_blockers"
+      ).text
+    ).toContain("WAITING (needs LEGION_E2E_REVIEW_APP_KEY_COMMAND):");
+    expect(
+      read(
+        "mode=claims-only; app_keys_missing=(LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND LEGION_E2E_REVIEW_APP_KEY_COMMAND); answering_blockers"
+      ).text
+    ).toContain(
+      "WAITING (needs LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND and LEGION_E2E_REVIEW_APP_KEY_COMMAND):"
     );
     expect(read("boot_offset=0; answering_blockers").text).toContain("needs the listener hand-off");
     expect(read("answering_blockers")).toEqual({ code: 0, text: "" });

@@ -43,23 +43,23 @@
 #                                `Authorization: Bearer <token>` (--api-key-as-bearer), the header
 #                                shape none of the three clients can be told to send itself. Set,
 #                                `hawk-token` is not required.
-#   LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET
-#   LEGION_E2E_REVIEW_APP_ID, LEGION_E2E_REVIEW_APP_SECRET
-#                                Legion's two role Apps: each App's numeric id and the secrets
-#                                broker github-app secret `agent-secrets` releases its installation
-#                                tokens from (lib/github-apps.sh; the defaults are this
-#                                repository's own deployment's). The rig holds no App key: every
-#                                token of the run, the daemon's and the rig's own, comes from a
-#                                token command. The implement App is proved installed on the smoke
-#                                repository before anything else.
-#   LEGION_E2E_REVIEW_APP_GRANTED=1
-#                                says a person has granted the review App's secret to this session.
-#                                The run asks the broker for a release of it only then (asking files
-#                                a request in a person's inbox, and agent-secrets cannot tell a
-#                                grant without asking), and the daemon otherwise runs without its
-#                                workflow: the answer loop is part of the workflow, which boots only
-#                                with two distinct Apps, so every answering criterion waits on the
-#                                grant. Told so and refused, the run cancels its request and stops.
+#   LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND, LEGION_E2E_REVIEW_APP_KEY_COMMAND
+#                                shell text that prints each role App's PEM private key on stdout
+#                                (lib/github-apps.sh). The run runs each once, here on the driver,
+#                                in the operator's own environment, into $work/app-key/<role>/
+#                                key.pem (0600, in a directory of mode 0700 that cleanup removes
+#                                on every exit), and every token of the run — the daemon's, which
+#                                reads the key through that App's private_key_command, and the
+#                                rig's own — is minted from that key. The run asks the secrets
+#                                broker for nothing and needs no agent-secrets on PATH. Both
+#                                required for the workflow, with no default and no fallback;
+#                                with either unset the run says which and runs claims-only, where
+#                                the daemon has no dispatch_url and no github_apps, so the answer
+#                                loop is off and every answering criterion WAITS on that input.
+#   LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_REVIEW_APP_ID
+#                                each App's numeric id (lib/github-apps.sh; the defaults are this
+#                                repository's own deployment's). The implement App is proved
+#                                installed on the smoke repository before anything else.
 #   LEGION_E2E_REPO_SECOND_OWNER  optional: owner/name of a repository of another owner both Apps are
 #                                installed on (A17's refusal); never written in this tree.
 #   LEGION_E2E_BASE_REV           the base commit A13 compares against (default main@origin).
@@ -128,6 +128,10 @@ ok=
 check=setup
 timeout_hook=
 mode=claims-only
+# The App key command inputs this run was not given, set in prerequisites and empty in workflow
+# mode: what the mode note and every answering criterion's WAITING line name
+# (lib/answer-loop-reads.sh, app_keys_missing_names and answering_blockers).
+app_keys_missing=()
 base_rev=${LEGION_E2E_BASE_REV:-main@origin}
 second_repo=${LEGION_E2E_REPO_SECOND_OWNER:-}
 # The model route, settled in prerequisites: which route was taken, the endpoint the recording
@@ -283,9 +287,16 @@ cleanup() {
   stop_pid "$pg_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   [ "${#github_writes[@]}" = 0 ] || github_cleanup
-  # The key file's path is in the agents' key command and Claude Code's apiKeyHelper, both under the
-  # work directory: the directory goes on every exit, and the evidence stays.
+  # The App keys go next, and unconditionally. They cannot go first, as the other proofs' traps
+  # take them: the undo above acts as the implement App and mints its token from that very file.
+  # Everything after it is local, so nothing between the two can hang on the network.
+  rm -rf -- "$work/app-key"
+  # The model key file's path is in the agents' key command and Claude Code's apiKeyHelper, both
+  # under the work directory: the directory goes on every exit, and the evidence stays.
   rm -rf "$work"
+  # A private key never expires, so a run that left one on this host fails itself for it
+  # (lib/github-apps.sh, app_key_left), whatever else this teardown did.
+  app_key_left "$work/app-key" || status=1
   printf "the run's evidence is %s\n" "$evidence" >&2
   [ -n "${ok:-}" ] || [ "$status" != 0 ] || status=1
   exit "$status"
@@ -466,7 +477,7 @@ build_branch() {
 }
 
 # browser_leg: whether this run drives a browser, which only A3's conversation-page leg does. It
-# needs the daemon's workflow (without the review App's grant every answering criterion, A3 among
+# needs the daemon's workflow (without both App key commands every answering criterion, A3 among
 # them, records WAITING and runs nothing) and A3 among the criteria a narrowed run names, so a
 # claims-only run and a run narrowed to other criteria neither build the SPA nor install Chromium.
 browser_leg() { [ "$mode" = workflow ] && wanted A3; }
@@ -700,7 +711,7 @@ stop_service() {
 
 # ---- the daemon ------------------------------------------------------------------------------------
 # write_legion_config FILE ANSWERS [BOUNDS] writes the daemon's legion.yaml for the current store:
-# claims-only (no dispatch_url, no github_apps) unless the review App is granted, the agents'
+# claims-only (no dispatch_url, no github_apps) unless both role Apps were given, the agents'
 # reviewer on Claude Code, the store's runtime, and with ANSWERS=yes the answers block: the model
 # route's endpoint through the recording proxy, keyed by the route's own key file or key command,
 # the list prices, and BOUNDS (a YAML flow mapping) over the defaults. ANSWERS=base is the base
@@ -942,21 +953,21 @@ provision_workspace() {
 }
 
 # mint_provision_token FILE writes the read-only installation token of github_apps.implement in
-# $work/github-apps.yaml on the smoke repository's owner to the new 0600 FILE: the App's own
-# token_command releases it, narrowed as the daemon narrows one for a read (lib/app-installation.ts,
-# installationFor), and the token is printed nowhere.
+# $work/github-apps.yaml on the smoke repository's owner to the new 0600 FILE: minted from that
+# App's own credential and narrowed as the daemon narrows one for a read
+# (lib/app-installation.ts, installationFor), and the token is printed nowhere.
 mint_provision_token() {
   cat >"$work/mint-provision-token.ts" <<'TS'
 import { readFileSync, writeFileSync } from "node:fs";
 const [lib, config, repo, out] = process.argv.slice(2) as [string, string, string, string];
-const { appTokenSources } = await import(`${lib}/app-logins.ts`);
+const { appCredentialSources } = await import(`${lib}/app-logins.ts`);
 const { installationFor } = await import(`${lib}/app-installation.ts`);
-const source = appTokenSources(readFileSync(config, "utf8"), ["implement"]).implement;
+const source = appCredentialSources(readFileSync(config, "utf8"), ["implement"]).implement;
 if (source === undefined) throw new Error("github_apps.implement is not configured");
 const owner = repo.split("/")[0] as string;
 const installation = await installationFor("implement", source, owner, true);
 if (installation === undefined) {
-  throw new Error(`the implement App's token command released no installation for ${owner}`);
+  throw new Error(`the implement App's ${source.kind} named no installation for ${owner}`);
 }
 writeFileSync(out, installation.token, { mode: 0o600, flag: "wx" });
 TS
@@ -1092,7 +1103,7 @@ save_conversations() {
 
 # ---- prerequisites ---------------------------------------------------------------------------------
 begin prerequisites
-for tool in go bun jq curl python3 dpkg-deb tar flock pgrep git jj gh sha256sum agent-secrets; do
+for tool in go bun jq curl python3 dpkg-deb tar flock pgrep git jj gh sha256sum; do
   command -v "$tool" >/dev/null || fail "$tool is required"
 done
 # The Bun on PATH must be the release .bun-version pins, the file
@@ -1187,72 +1198,55 @@ note "OpenAI: not used (A10's GPT-6.1 leg is not run: the OpenAI API is paused, 
 jq -e '.agents.architect.task and .agents.planner.task and .agents.tester.task and .agents.tester.replacement_task and .agents.pre_change.task and (.questions | length > 0)' \
   "$questions_file" >/dev/null || fail "$questions_file is not the questions file this run reads"
 note "questions: $questions_file, sha256 $(sha256sum "$questions_file" | cut -d' ' -f1), $(jq '.questions | length' "$questions_file") questions"
-# The role Apps: the rig holds no App key. Each App's installation tokens come from the secrets
-# broker's github-app secret, released by the token command lib/github-apps.sh writes into
-# legion.yaml's github_apps block and lib/app-logins.ts, lib/app-installation.ts and
-# lib/smoke-pull-request.ts run themselves. The implement App's secret is agent tier, so the run
-# reads it freely and proves the App against GitHub and on the smoke repository. The review App's
-# is human tier: agent-secrets cannot say whether a grant exists without asking, and asking files a
-# request in a person's inbox, so a run asks only with LEGION_E2E_REVIEW_APP_GRANTED=1; told so and
-# refused, it cancels the request it made, by its id, and stops.
+# The role Apps. Each App's credential is a key command of the operator's,
+# LEGION_E2E_<ROLE>_APP_KEY_COMMAND (lib/github-apps.sh): the run runs each once, here, on this
+# host, in the operator's own environment, into $work/app-key/<role>/key.pem (0600, in a directory
+# of mode 0700 that cleanup removes), and every token of the run is minted from that file — the
+# daemon's, through the private_key_command that `cat`s it, and the rig's own, which
+# lib/app-logins.ts, lib/app-installation.ts and lib/smoke-pull-request.ts mint from the same key.
+# Nothing here asks the secrets broker for anything, so the run needs no agent-secrets on PATH and
+# files no request in anyone's inbox.
 #
-# The daemon runs under `env -i`, so the `agent-secrets` its token commands name must carry this
-# session's broker address and key directory (paths, never a secret) itself: a wrapper of that name
-# first on the daemon's PATH does, and tries a call that fails with exit 1 (the broker's gateway
-# answered 502 in a run) twice more.
-mkdir -p "$work/bin"
-{
-  printf '#!/bin/sh\n'
-  for var in AGENT_SECRETS_URL AGENT_SECRETS_KEY_DIR AGENT_SECRETS_HELPER_SOCK XDG_RUNTIME_DIR; do
-    [ -z "${!var:-}" ] || printf 'export %s=%q\n' "$var" "${!var}"
-  done
-  # shellcheck disable=SC2016 # the expansions are the wrapper's own, run by its sh
-  printf 'for attempt in 1 2 3; do\n  %q "$@" && exit 0\n  status=$?\n  [ "$status" = 1 ] || exit "$status"\n  sleep 3\ndone\nexit 1\n' \
-    "$(command -v agent-secrets)"
-} >"$work/bin/agent-secrets"
-chmod 0755 "$work/bin/agent-secrets"
-export PATH="$work/bin:$PATH"
-review_granted=
-if [ "${LEGION_E2E_REVIEW_APP_GRANTED:-}" = 1 ]; then
-  require_app_inputs review
-  code=0
-  status=$(agent-secrets "$review_app_secret" --reason=legion-answer-loop-proof-review-app --wait 5s -- true 2>&1) || code=$?
-  if [ "$code" != 0 ]; then
-    request=$(grep -oE 'request [0-9a-f-]{36}' <<<"$status" | head -1 | cut -d' ' -f2 || true)
-    [ -z "$request" ] || agent-secrets cancel "$request" >/dev/null 2>&1 || true
-    fail "LEGION_E2E_REVIEW_APP_GRANTED=1, but the broker does not release the review App's secret to this session ($review_app_secret, exit $code${request:+; request $request cancelled}); its message is not printed"
-  fi
-  review_granted=1
-fi
-note "the review App's secret is $([ "$review_granted" = 1 ] && printf 'granted to this session' || printf 'never asked for (LEGION_E2E_REVIEW_APP_GRANTED is not 1)')"
-if [ "$review_granted" = 1 ]; then
+# The workflow boots only with two distinct Apps, and the answer loop is part of the workflow, so
+# a run given both key commands is in workflow mode and a run missing either runs claims-only,
+# where the daemon has no dispatch_url and no github_apps and every answering criterion records
+# WAITING naming the input it waits on (lib/answer-loop-reads.sh, answering_blockers). With the
+# implement key command alone the run still proves that App against GitHub and on the smoke
+# repository, as the GitHub-writing criteria need; with neither, it proves no App and reads
+# nothing of GitHub, which claims-only writes nothing to anyway.
+[ -n "${LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND:-}" ] || app_keys_missing+=(LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND)
+[ -n "${LEGION_E2E_REVIEW_APP_KEY_COMMAND:-}" ] || app_keys_missing+=(LEGION_E2E_REVIEW_APP_KEY_COMMAND)
+roles=
+if [ "${#app_keys_missing[@]}" = 0 ]; then
   require_app_inputs implement review
-  write_github_apps implement review
+  write_github_apps --key-dir "$work/app-key" implement review
   read_app_logins
   roles=implement,review
   mode=workflow
-else
+elif [ -n "${LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND:-}" ]; then
   require_app_inputs implement
-  write_github_apps implement
+  write_github_apps --key-dir "$work/app-key" implement
   check_github_apps implement
   implement_app_login=$(jq -er .implement <<<"$github_app_logins") ||
     fail "lib/app-logins.ts printed no implement App login: $github_app_logins"
   roles=implement
 fi
-installed=$(bun "$root/scripts/e2e/lib/app-installation.ts" --roles "$roles" "$work/github-apps.yaml" "$repo") ||
-  fail "lib/app-installation.ts could not read the Apps' installations on $repo"
-note "installations on $repo (GET /installation/repositories under each App's own installation token): $installed"
-jq -e '.implement.installed == true' <<<"$installed" >/dev/null ||
-  fail "the implement App ($implement_app_id) is not installed on $repo: the GitHub checks cannot run there"
-[ "$mode" != workflow ] || jq -e '.review.installed == true' <<<"$installed" >/dev/null ||
-  fail "the review App ($review_app_id) is not installed on $repo"
-if [ -n "$second_repo" ]; then
-  [[ "$second_repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be owner/name"
-  second_installed=$(bun "$root/scripts/e2e/lib/app-installation.ts" --roles implement "$work/github-apps.yaml" "$second_repo") ||
-    fail "lib/app-installation.ts could not read the implement App's installation on the second owner's repository"
-  note "the second owner's repository: $second_installed"
+if [ -n "$roles" ]; then
+  installed=$(bun "$root/scripts/e2e/lib/app-installation.ts" --roles "$roles" "$work/github-apps.yaml" "$repo") ||
+    fail "lib/app-installation.ts could not read the Apps' installations on $repo"
+  note "installations on $repo (GET /installation/repositories under each App's own installation token): $installed"
+  jq -e '.implement.installed == true' <<<"$installed" >/dev/null ||
+    fail "the implement App ($implement_app_id) is not installed on $repo: the GitHub checks cannot run there"
+  [ "$mode" != workflow ] || jq -e '.review.installed == true' <<<"$installed" >/dev/null ||
+    fail "the review App ($review_app_id) is not installed on $repo"
+  if [ -n "$second_repo" ]; then
+    [[ "$second_repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be owner/name"
+    second_installed=$(bun "$root/scripts/e2e/lib/app-installation.ts" --roles implement "$work/github-apps.yaml" "$second_repo") ||
+      fail "lib/app-installation.ts could not read the implement App's installation on the second owner's repository"
+    note "the second owner's repository: $second_installed"
+  fi
 fi
-note "mode: $mode$([ "$mode" = workflow ] || printf ' (the review App is not granted: the daemon runs without dispatch_url and github_apps, so its workflow, and the answer loop with it, is off)')"
+note "mode: $mode$([ "$mode" = workflow ] || printf ' (%s is unset: the daemon runs without dispatch_url and github_apps, so its workflow, and the answer loop with it, is off)' "$(app_keys_missing_names)")"
 pass
 
 begin provision
@@ -1390,7 +1384,7 @@ check_boot() {
   local log routes rows scanned name entry entries=() ok=1
   printf '== boot (%s): the daemon boots with answers configured\n' "$store"
   if [ "$mode" != workflow ]; then
-    record_result boot WAITING "(needs the review App key grant): the daemon runs without its workflow, which carries the answer loop and its registry mirror"
+    record_result boot WAITING "(needs $(app_keys_missing_names)): the daemon runs without its workflow, which carries the answer loop and its registry mirror"
     return 0
   fi
   log=$(boot_log)

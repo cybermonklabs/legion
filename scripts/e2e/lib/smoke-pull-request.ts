@@ -3,8 +3,8 @@
 // opened (a branch with one file, and the pull request from it), then its close, its branch's
 // deletion and the deletion of a comment by id, as the implement App; and an approval of a pull
 // request's head as the review App, with a body of the caller's. Each call acts under the
-// repository owner's installation token, which the App's own token command releases; the token
-// stays in this process.
+// repository owner's installation token, which the App's own credential command releases or
+// mints; the token stays in this process.
 //
 //   bun scripts/e2e/lib/smoke-pull-request.ts open <legion.yaml> <owner/repo> <branch> <title>
 //     prints {"number":N,"branch":"<branch>","url":"<html url>","head":"<sha>"}
@@ -16,11 +16,12 @@
 //     prints {"id":N,"state":"APPROVED","user":"<login>","commit_id":"<sha>"}
 //
 // The App is `github_apps.implement` of <legion.yaml> (`github_apps.review` for approve), its
-// tokens from its token_command (lib/app-installation.ts, installationFor), the one credential
+// tokens from its one credential field — a release of its `token_command`, or a mint from the key
+// its `private_key_command` prints (lib/app-installation.ts, installationFor) — the one credential
 // source every live proof's file names. Failures name the call and GitHub's status, never a token.
 import { readFileSync } from "node:fs";
 import { installationFor } from "./app-installation";
-import { type AppRole, appTokenSources } from "./app-logins";
+import { type AppRole, appCredentialSources } from "./app-logins";
 
 const api = "https://api.github.com";
 const usage = `usage:
@@ -46,12 +47,12 @@ function field(value: unknown, what: string, ...keys: string[]): string {
 }
 
 async function installationCall(config: string, repo: string, role: AppRole): Promise<Call> {
-  const source = appTokenSources(readFileSync(config, "utf8"), [role])[role];
+  const source = appCredentialSources(readFileSync(config, "utf8"), [role])[role];
   if (source === undefined) throw new Error(`github_apps.${role} is not configured`);
   const owner = repo.split("/")[0] as string;
   const installation = await installationFor(role, source, owner, false);
   if (installation === undefined) {
-    throw new Error(`the ${role} App's token command released no installation for ${owner}`);
+    throw new Error(`the ${role} App's ${source.kind} named no installation for ${owner}`);
   }
   return (method, path, body) =>
     fetch(`${api}${path}`, {
