@@ -138,27 +138,33 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
       key={child.key}
     >
       {/* The child's own title can hold a run no space breaks - a path, a key, an address -
-          and the run has to break inside a word here, as the GitHub link's title does
-          (`GitHubLink.tsx`), not merely wrap: the touch-target floor draws every link
-          `inline-flex` (`web/src/styles.css`), so the link's text is an anonymous flex item
-          whose automatic minimum size is its min-content width, and `overflow-wrap` leaves
-          that width alone. Measured at 320 px with a 118 character path: untouched and with
-          `break-words`, 807 px of text in a 288 px box and a page 823 px wide; with
-          `overflow-wrap: anywhere`, with `word-break: break-word` and with `break-all`, 288 px
-          in 288 and a page that fits. Those four readings are what make the reason above
-          checkable rather than plausible: of the values tried, the only one that left the page
-          broken is `overflow-wrap: break-word`, which is the only one whose "soft wrap
+          and the run has to break inside a word here, not merely wrap: the touch-target floor
+          draws every link `inline-flex` (`web/src/styles.css`), so the link's text is an
+          anonymous flex item whose automatic minimum size is its min-content width, and
+          `overflow-wrap: break-word` leaves that width alone. Measured at 320 px with a 118
+          character path: untouched and with `break-words`, 807 px of text in a 288 px box and
+          a page 823 px wide; with `overflow-wrap: anywhere`, with `word-break: break-word` and
+          with `break-all`, 288 px in 288 and a page that fits. Those four readings are what
+          make the reason above checkable rather than plausible: of the values tried, the only
+          one that left the page broken is `overflow-wrap: break-word`, whose "soft wrap
           opportunities introduced by the word break are NOT considered when calculating
-          min-content intrinsic sizes" (CSS Text Level 4, read on the MDN reference), while
-          `anywhere`'s are. A minimum size that reads min-content therefore moves under every
-          value that fixed it and not under the one that did not (R17). It breaks the key as readily
-          as the title, which is accepted: the key starts the line, so a boundary falls inside
-          it only where the key itself is wider than the box - about 36 characters at 320 px,
-          so a project key of some thirty characters - and a key broken over two lines is a
-          better failure than a page that scrolls sideways. Giving the key its own `shrink-0`
-          span would avoid it and restructures the row to protect a case nobody has seen. */}
+          min-content intrinsic sizes" (CSS Text Level 4, read on the MDN `overflow-wrap`
+          reference), while `anywhere`'s are counted and `break-all` makes a break opportunity
+          of every character. A minimum size that reads min-content therefore moves under each
+          value that fixed it and not under the one that did not (R17).
+
+          Three of the four meet R17, so the value is not chosen by R17: the page takes
+          `anywhere` because it breaks at the space first. A child's title is author prose, and
+          `break-all` breaks an ordinary word mid-word on a phone, where `anywhere` breaks
+          inside a word only when no space will do. That is this page's idiom for prose
+          (`Pill.tsx`, `ApprovalSteps.tsx`, `ChangeView.tsx`, `CredentialSessionLines.tsx`,
+          `RelatedItems.tsx`); `GitHubLink.tsx` keeps `break-all` because its text is an
+          address with no space in it to break at, so there is no prose for it to spoil. For
+          the same reason `anywhere` leaves the key whole: `{key} · {title}` breaks at the two
+          spaces before it breaks inside anything, and a boundary falls inside the key itself
+          only where the key alone is wider than the box - about 36 characters at 320 px. */}
       <Link
-        className={`min-w-0 break-all font-medium ${linkText} ${linkHoverText}`}
+        className={`min-w-0 [overflow-wrap:anywhere] font-medium ${linkText} ${linkHoverText}`}
         to={buildIssuePath({ key: child.key, kind: "issue" })}
         {...referenceTriggerProps({ key: child.key, kind: "issue" })}
         {...authorText}
