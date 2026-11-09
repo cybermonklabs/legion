@@ -3486,21 +3486,25 @@ jobs:
     # restore (26), the workspace install and contracts' build (14), the lint and the typecheck
     # (16), the test step (646), the pack, the upload and the ci-ok report (4), the post steps
     # with the containers stopped (5), and the seconds the job's own clock holds over the sum of
-    # its steps (5). That is 742 s, 12 m 22 s, and a job its own limit cuts off reports
-    # `cancelled`, which ci-ok fails, so the limit is the next minute up.
+    # its steps (5). That is 742 s, 12 m 22 s, the floor a ceiling here has to clear.
     # The test step is added up from its rows at their slowest over the four most recent runs of
     # the whole suite rather than from one total: legion-stall-watchdog 232 s, controller-start
     # 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-session-activity 28 s,
     # daemon-pane 21 s and legion-role-tools 11 s are 620 of the 646, and the 25 rows left the
     # other 26.
-    # The first and third of those rows are new, and they are why 10 minutes, set when this step
-    # ran under five minutes, now sits inside the job's own spread: the step went from 297 s at
-    # 17:49Z on 2026-11-08 to 638 s by 22:16Z, and 10 cancelled the merge group of 23:22Z and
-    # the one of 2026-11-09T00:53Z, both with every step of the job concluded `success`.
+    # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
+    # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
+    # concluded `success`. A ceiling a little above today's sum is back inside the test step's
+    # own spread at the next file that lands: five stall-watchdog files and two model-fallback
+    # files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
+    # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry
+    # on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
+    # that names 18 minutes, and that branch carries 28, so both hold one value on this line.
     # Every figure here is a cold-Bun one: off main the setup-bun wrapper passes no-cache, so a
     # pull request's run and a merge group's both download the 34 MB release asset rather than
     # restore it, and that download is the 2 s above.
-    timeout-minutes: 13
+    # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
+    timeout-minutes: 28
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
