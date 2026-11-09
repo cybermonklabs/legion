@@ -19,8 +19,8 @@
  *  - a recording the fresh run wrote that the tree does not hold, which is a row whose
  *    recording was never committed.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import { type Har, statusDrift } from "../stub/recording";
 import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
@@ -35,12 +35,30 @@ if (fresh === undefined) {
   process.exit(2);
 }
 
+/** One directory, however it is spelled. The guard below is defeated by any spelling that is
+ *  not the committed set's own absolute path - a relative one, a trailing slash, a `..`, a
+ *  symlink - and the relative one is what a person types, because every command of this
+ *  package is written from the package root and the tool's own failure message names
+ *  `packages/dispatch/e2e/__recordings__`. `realpathSync` answers for a directory that exists,
+ *  which both sides of a real self-comparison are; a `fresh` that does not exist resolves
+ *  against the working directory instead, and the refusal below it reports that it holds no
+ *  recording. */
+function directoryIdentity(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return absolute;
+    throw error;
+  }
+}
+
 // The committed set is this checkout's, read through the one definition of that layout. The
 // fresh set is the caller's directory, and it must not be the same one: a recording compared
 // with itself can never differ, which is how the vanished-recording finding below went
 // unreachable until a review read it.
 const committedRoot = recordingsDirectory({}).replace(/\/$/, "");
-if (join(fresh) === committedRoot) {
+if (directoryIdentity(fresh) === directoryIdentity(committedRoot)) {
   console.error(
     `${fresh} is the committed set itself, so every comparison would be a recording against ` +
       "itself. Point the re-recording at a directory of its own with " +
