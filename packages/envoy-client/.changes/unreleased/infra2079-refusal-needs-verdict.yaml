@@ -44,6 +44,11 @@ body: |-
   prior-digest acceptance are removed rather than extended. Entries beginning with a dot do not
   count as a verdict, so a probe file or an interrupted write's temporary left by a failed
   removal cannot make a session that recorded nothing read as holding a foreign one.
+  A verdict an earlier scheme wrote is not preserved: it becomes unknown, which block mode
+  refuses and warn mode posts with the foreign-scheme warning, where the machinery this replaces
+  refused in both. Only ENOENT establishes absence anywhere on this path: a session directory
+  with search permission but no read, an EIO or a path component that is no directory each read
+  as unknown rather than as holding nothing, which is what let a stored rejection post.
   No released version writes verdicts, so no session on the upgrade path holds a foreign store;
   where one does, nothing may write to it, so an allow cannot lift it and the session refuses
   every gated write in block mode until it ends. A marker of an earlier encoding needs none of

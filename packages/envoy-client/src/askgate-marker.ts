@@ -961,24 +961,31 @@ const VERDICT_STORE = /^askgate-verdicts(-v[0-9]+)?$/;
  * session that recorded no verdict at all read as holding a foreign one — at the next scheme
  * change, long after anyone remembered why.
  */
-function foreignVerdicts(session: string): string | undefined {
-  const mine = basename(verdictDir(session));
+function foreignVerdicts(
+  session: string
+): { kind: "none" } | { kind: "foreign"; path: string } | { kind: "unreadable"; path: string } {
   let names: string[];
   try {
     names = readdirSync(session);
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Only ENOENT establishes absence. A session whose directory cannot be listed — search
+    // permission without read, an EIO, a path component that is no directory — says nothing
+    // about what it holds, and reading that silence as "no verdict" posted writes a review had
+    // refused. This rule holds at every read on this path, not only here.
+    return hasErrnoCode(error, "ENOENT") ? { kind: "none" } : { kind: "unreadable", path: session };
   }
+  const mine = basename(verdictDir(session));
   for (const name of names) {
     if (name === mine || !VERDICT_STORE.test(name)) continue;
     const dir = join(session, name);
     try {
-      if (readdirSync(dir).some((entry) => !entry.startsWith("."))) return dir;
-    } catch {
-      return dir;
+      if (readdirSync(dir).some((entry) => !entry.startsWith(".")))
+        return { kind: "foreign", path: dir };
+    } catch (error) {
+      if (!hasErrnoCode(error, "ENOENT")) return { kind: "unreadable", path: dir };
     }
   }
-  return undefined;
+  return { kind: "none" };
 }
 
 /**
@@ -1126,11 +1133,17 @@ export function readVerdict(session: string, identity: string): VerdictRead {
   // A store of another scheme, holding anything: this version cannot say what it holds, and one
   // thing it can hold is a refusal of this very write.
   const foreign = foreignVerdicts(session);
-  if (foreign !== undefined)
+  if (foreign.kind === "foreign")
     return {
       kind: "unknown",
-      why: `this session holds AskGate verdicts of a scheme this version does not read (${foreign})`,
-      path: foreign,
+      why: `this session holds AskGate verdicts of a scheme this version does not read (${foreign.path})`,
+      path: foreign.path,
+    };
+  if (foreign.kind === "unreadable")
+    return {
+      kind: "unknown",
+      why: `whether this session holds an AskGate verdict for this write cannot be told: ${foreign.path} cannot be read`,
+      path: foreign.path,
     };
   const lost = join(session, VERDICTS_LOST);
   const mark = readVerdictFile(lost);

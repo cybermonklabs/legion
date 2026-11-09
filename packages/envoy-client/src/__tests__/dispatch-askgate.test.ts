@@ -1122,6 +1122,29 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(stdout).not.toContain("a scheme this version does not read");
   });
 
+  // Only ENOENT establishes absence. A session directory with search permission but no read
+  // keeps the record and the verdict files readable, so nothing else degrades — and reading
+  // that one silence as "no verdict" dropped the gate from refusing a stored rejection to
+  // posting it. The rule holds at every read on this path.
+  test("a session directory that cannot be listed is unknown, never absence", async () => {
+    writeRecord();
+    // No verdict under the current name, so the lookup reaches the directory scan — which is
+    // where a session that cannot be listed used to answer "nothing here".
+    const session = join(stateDir, "sessions", "ses-1");
+    for (const mode of [0o100, 0o300]) {
+      chmodSync(session, mode);
+      try {
+        const { code, stdout } = await run(MESSAGE);
+        expect({ mode, code }).toEqual({ mode, code: 1 });
+        expect(stdout).toContain("cannot be told");
+        expect(stdout).toContain(session);
+      } finally {
+        chmodSync(session, 0o700);
+      }
+    }
+    expect(messagePosts()).toHaveLength(0);
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();
