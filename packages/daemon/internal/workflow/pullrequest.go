@@ -30,7 +30,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		return intake.Result{}, err
 	}
 	pr := record.PullRequest{Issue: issue.Key, Repo: fact.Repo, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
-		HeadUpdatedAt: fact.UpdatedAt, HeadArrivedAt: fact.ArrivedAt, Failing: []string{}, State: record.PullRequestOpen}
+		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: record.PullRequestOpen}
 	recorded, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
@@ -77,13 +77,6 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			pr.Base = recorded.Base
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
-		// A reopen at the head the record already holds moved no head, so the arrival stands: the
-		// reopen's own clock is when the pull request opened again, not when this head arrived,
-		// and writing it would hold every listed review of that head to a later time than the
-		// push that made it (internal/daemon's headArrivedAt).
-		if recorded.HeadSHA == fact.HeadSHA {
-			pr.HeadArrivedAt = recorded.HeadArrivedAt
-		}
 	}
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
@@ -121,7 +114,6 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // record never held waits for it. Late, it records that alone, and moves and sets nothing else. In
 // implementing a head that arrives once the implementer has completed is the pull request its
 // completion waited for.
-
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -147,7 +139,6 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	moved := classify.MovesBy(*pr, fact.HeadSHA)
 	if moved {
 		*pr = classify.AdvancePullRequestHead(*pr, arrival, fact.HeadSHA)
-		pr.HeadArrivedAt = fact.ArrivedAt
 	} else {
 		*pr = classify.NameMove(*pr, named)
 	}

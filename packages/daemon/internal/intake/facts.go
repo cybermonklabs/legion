@@ -478,17 +478,6 @@ type PullRequestOpened struct {
 	// Reopened is GitHub's reopened action; false is opened, which GitHub sends once per pull
 	// request.
 	Reopened bool
-	// ArrivedAt is GitHub's own time of this head arriving on the pull request, zero when the
-	// fact's source does not know it. A webhook knows it: UpdatedAt is the time of the event
-	// itself. A read of GitHub does not — the pull request's updated_at is the moment of the read,
-	// which every later activity moves again — and answers it from the push timestamp GitHub's
-	// activity of the branch carries for the entry that left the branch at this head, or zero when
-	// no entry names it. The workflow records it as the head's arrival
-	// (record.PullRequest.HeadArrivedAt), which is what a listed review of that head is held to:
-	// the head commit's own committer date is no answer, since a commit pushed later than it was
-	// made would let an approval of the previous head stand for this one
-	// (dispatch://INFRA-714/spec R12).
-	ArrivedAt time.Time
 }
 
 func (PullRequestOpened) isFact() {}
@@ -534,8 +523,6 @@ type PullRequestSynchronized struct {
 	Base      string
 	Body      string
 	UpdatedAt time.Time
-	// ArrivedAt is GitHub's own time of this head arriving, as PullRequestOpened.ArrivedAt is.
-	ArrivedAt time.Time
 }
 
 func (PullRequestSynchronized) isFact() {}

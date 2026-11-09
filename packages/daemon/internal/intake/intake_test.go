@@ -339,14 +339,14 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			subject: "notifications.github.sjawhar.legion.pr.42",
 			file:    "github/pr-opened.json",
 			want: PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: "head-captured", Body: "Dispatch: LEGION-208",
-				URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: updatedAt, ArrivedAt: updatedAt},
+				URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: updatedAt},
 		},
 		{
 			name:    "pull request synchronized",
 			subject: "notifications.github.sjawhar.legion.pr.42",
 			file:    "github/pr-synchronized.json",
 			want: PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Before: "head-before", Sender: "legion-implementer[bot]",
-				HeadSHA: "head-captured", Base: "main", Body: "Dispatch: LEGION-208", UpdatedAt: updatedAt, ArrivedAt: updatedAt},
+				HeadSHA: "head-captured", Base: "main", Body: "Dispatch: LEGION-208", UpdatedAt: updatedAt},
 		},
 		{
 			name:    "pull request closed",
@@ -459,10 +459,8 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 		t.Fatal("captured synchronize fixture carries no before or no sender to take out")
 	}
 	updated := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
-	// The webhook's own clock is this head's arrival: the event is GitHub's record of the push
-	// that made it (intake.PullRequestSynchronized.ArrivedAt).
 	want := PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-captured", Base: "main", Body: "Dispatch: LEGION-208",
-		UpdatedAt: updated, ArrivedAt: updated}
+		UpdatedAt: updated}
 	for _, tc := range []struct {
 		name, data string
 		before     string

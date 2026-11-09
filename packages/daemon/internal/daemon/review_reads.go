@@ -156,29 +156,6 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		if w.reviewRefused(review.ID) {
 			continue
 		}
-		// GitHub's REST record of a review can name a head the review never saw: its commit_id
-		// moves to the pull request's current head, where the webhook carries the head as
-		// submitted (dispatch://INFRA-1557, where an approval of 2026-11-06 listed a merge pushed
-		// two days later). So a listed review approves the head it names only if it was submitted
-		// after that head arrived, which the record holds as GitHub's own time of the push that
-		// put it there (record.PullRequest.HeadArrivedAt). A record that holds none is a head no
-		// review of this list can be placed against, and this read then applies none of them:
-		// letting one decide would approve a head nobody is known to have reviewed, which is the
-		// fault this guard exists for. Only the current head is asked about, since a review naming
-		// an older commit decides no round of this head anyway.
-		if review.CommitID != "" && review.CommitID == pr.HeadSHA {
-			if pr.HeadArrivedAt.IsZero() {
-				return intake.PullRequestReview{}, false, fmt.Errorf(
-					"%s#%d records no arrival for its head %s, which every listed review of it is judged against",
-					pr.Repo, pr.Number, pr.HeadSHA)
-			}
-			if review.SubmittedAt.Before(pr.HeadArrivedAt) {
-				w.log.Warn("workflow: a listed review names a head it cannot have seen, so it decides nothing",
-					"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "review", review.ID, "author", review.Author,
-					"state", review.State, "head", pr.HeadSHA, "submitted_at", review.SubmittedAt, "head_arrived", pr.HeadArrivedAt)
-				continue
-			}
-		}
 		if !sessionRead {
 			if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 				var err error

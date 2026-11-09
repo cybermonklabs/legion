@@ -1,16 +1,11 @@
 -- 20261108190000_pull_request_head_arrived.up.sql — when a pull request's current head arrived,
--- written by a head move alone (dispatch://INFRA-714/spec R12).
+-- written by a head move alone. The column is dropped again by the migration that follows it
+-- (20261109130413_review_footer_head), and this file stays because databases have recorded it
+-- already: a version a database applied cannot be taken back by deleting its file.
 --
--- head_updated_at is the latest updated_at of every lifecycle observation applied, so the daemon's
--- own read of a pull request whose synchronize webhook was lost writes it from the pull request's
--- updated_at at the moment of that read, which any later activity on the pull request moves again.
--- A listed review is held to the head's arrival (internal/daemon's headArrivedAt), and holding it
--- to that value refuses a real review for good: the read's stamp is later than the review, and
--- every read after it later still. So the arrival is its own column, written by the events that
--- put a head on a pull request and by nothing else.
---
--- Existing rows are given the zero time rather than their head_updated_at, because which of the two
--- that value is cannot be told from the row: the read asks GitHub for the head commit's committer
--- date instead, which is the earliest moment any review of that head could have been submitted, and
--- the next head move writes the column.
+-- The column held a listed review to the head it names by comparing times: a review decided the
+-- current head only if it was submitted after that head arrived. That rule is retired
+-- (dispatch://INFRA-714/spec R12). A review names the head it read in the Legion footer of its
+-- own body, which the daemon reads from the review itself (internal/intake's PullRequestReview),
+-- so no arrival time is compared and nothing writes or reads this column.
 alter table pull_requests add column head_arrived_at timestamptz not null default '0001-01-01 00:00:00+00';

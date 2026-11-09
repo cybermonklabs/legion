@@ -54,27 +54,6 @@ func reviewsStandIn(t *testing.T, reviews func() string, reads *atomic.Int64) *h
 // when asked, each read of it counted in outsiderReads.
 func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string, outsiderReads *atomic.Int64) *httptest.Server {
 	t.Helper()
-	return reviewsStandInWithCommit(t, reviews, reads, outsider, outsiderReads, func() string { return captureHeadCommitted.Format(time.RFC3339) })
-}
-
-// captureHeadCommitted is the committer date GitHub gives the head commit of CAPTURE-1's pull
-// request, which the read falls back to when the record holds no arrival of its own
-// (review_reads.go's headArrivedAt). It is a minute after the record's own captureHeadArrived, so
-// a test can tell which of the two a review was judged against.
-var captureHeadCommitted = time.Date(2026, 10, 8, 22, 16, 0, 0, time.UTC)
-
-// reviewsStandInWithCommit is reviewsStandInWith whose read of the head commit answers the date
-// committed gives, and 404 when it gives "": the shape a GitHub that will not answer the commit
-// leaves the read in.
-func reviewsStandInWithCommit(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string,
-	outsiderReads *atomic.Int64, committed func() string) *httptest.Server {
-	return reviewsStandInCounting(t, reviews, reads, outsider, outsiderReads, committed, &atomic.Int64{})
-}
-
-// reviewsStandInCounting is reviewsStandInWithCommit counting the reads of the head commit.
-func reviewsStandInCounting(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string,
-	outsiderReads *atomic.Int64, committed func() string, commitReads *atomic.Int64) *httptest.Server {
-	t.Helper()
 	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
@@ -82,14 +61,6 @@ func reviewsStandInCounting(t *testing.T, reviews func() string, reads *atomic.I
 		case "/repos/acme/widgets/pulls/86/reviews":
 			reads.Add(1)
 			w.Write([]byte(reviews()))
-		case "/repos/acme/widgets/commits/code", "/repos/acme/widgets/commits/pushed":
-			commitReads.Add(1)
-			date := committed()
-			if date == "" {
-				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
-				return
-			}
-			fmt.Fprintf(w, `{"sha":%q,"commit":{"committer":{"date":%q}}}`, strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/commits/"), date)
 		case "/repos/acme/widgets/rules/branches/main":
 			w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-checks-result"}]}}]`))
 		case "/repos/acme/widgets/branches/main":
@@ -534,98 +505,5 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 	readCapture(t, reviewReadRuntime(pool, server.URL))
 	if len(paths) != 2 || paths[1] != "/repos/acme/widgets/pulls/"+strings.TrimPrefix(paths[0], "/repos/acme/widgets/pulls/")+"/reviews" {
 		t.Fatalf("the read read %q, want one pull request and then its reviews, and nothing after the rate limit", paths)
-	}
-}
-
-// GitHub's REST record of a review can name a head the review never saw: the approval of
-// agent-infra#2311 submitted 2026-11-06 lists, as its commit_id, a merge of main pushed two days
-// later (dispatch://INFRA-1557). The webhook carries the head as submitted, so only this read
-// meets the moved record, and taking commit_id at face value there would approve a head nobody
-// reviewed — the one thing this tree's "only reviewed commits merge" exists to stop. So a listed
-// review of the current head decides only if it was submitted after that head arrived, which is
-// the record's own observation of the event that put it there
-// (record.PullRequest.HeadArrivedAt).
-func TestAListedReviewOlderThanTheHeadItNamesDecidesNothing(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		submitted string
-		want      phase.Phase
-		decision  string
-	}{
-		{name: "submitted before this head arrived", submitted: "2026-10-08T22:14:59Z", want: phase.Reviewing},
-		{name: "submitted after this head arrived", submitted: "2026-10-08T22:15:01Z", want: phase.Accepting, decision: "approved"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-			var reads atomic.Int64
-			api := reviewsStandIn(t, func() string {
-				return "[" + listedReview(5463503611, reviewReadApp, "APPROVED", "code", tc.submitted) + "]"
-			}, &reads).URL
-			readCapture(t, reviewReadRuntime(pool, api))
-
-			if got, _ := capturePhase(t, pool); got != tc.want {
-				t.Fatalf("after the read the issue is in %s, want %s: the head arrived at %s and the review was submitted at %s",
-					got, tc.want, captureHeadArrived.Format(time.RFC3339), tc.submitted)
-			}
-			if got, _ := reviewerDecision(t, pool); got != tc.decision {
-				t.Fatalf("the round's recorded decision = %q, want %q", got, tc.decision)
-			}
-		})
-	}
-}
-
-// The lost synchronize is the case this listed read exists for, and what it must be judged against
-// is GitHub's own record of the push, never the head commit's committer date: a commit is pushed
-// whenever its author pushes it, so an approval of the previous head submitted between the commit
-// and the push is newer than that date and older than the head, and GitHub's REST list rewrites
-// such a review's commit_id to the current head (dispatch://INFRA-1557). Taking the committer date
-// would let it approve a head nobody reviewed. So a read that finds a head takes its arrival from
-// the push timestamp of the entry of the branch's activity that left the branch there
-// (arrivalInActivity), and a head no entry names records no arrival at all, which holds every
-// listed review of it to nothing until a later read finds the entry (the architect's ruling on
-// review-rounds v92).
-func TestAListedReviewIsHeldToTheHeadsOwnPushTime(t *testing.T) {
-	committed := time.Date(2026, 10, 26, 17, 0, 0, 0, time.UTC)
-	pushed := time.Date(2026, 10, 26, 19, 0, 0, 0, time.UTC)
-	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		name      string
-		activity  []string
-		submitted time.Time
-		want      phase.Phase
-		decision  string
-	}{
-		// The reviewer's own probe: the commit is dated 17:00, the approval of the head before it
-		// is submitted at 18:00 while its webhook sits in the backlog, and the head is pushed at
-		// 19:00 with its synchronize lost.
-		{name: "submitted after the commit was made and before its push", submitted: committed.Add(time.Hour), want: phase.Reviewing},
-		{name: "submitted after the push", submitted: pushed.Add(30 * time.Minute), want: phase.Accepting, decision: "approved"},
-		{name: "no entry of the activity names the head", activity: []string{}, submitted: pushed.Add(30 * time.Minute), want: phase.Reviewing},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-			github := &activityGitHub{}
-			entries := []string{activityEntry("legion/CAPTURE-1", "push", "code", "pushed", implementerLogin, pushed)}
-			if tc.activity != nil {
-				entries = tc.activity
-			}
-			github.moved("pushed", read, entries...)
-			github.lists("[" + listedReview(5463503611, reviewReadApp, "APPROVED", "pushed", tc.submitted.Format(time.RFC3339)) + "]")
-			readCapture(t, reviewReadRuntime(pool, github.serve(t).URL))
-
-			got, pr := capturePhase(t, pool)
-			if pr.HeadSHA != "pushed" {
-				t.Fatalf("after the read the record is at %q, want the head GitHub showed", pr.HeadSHA)
-			}
-			if got != tc.want {
-				t.Fatalf("after the read the issue is in %s, want %s: the head was pushed at %v and the review submitted at %v, with the record's arrival %v",
-					got, tc.want, pushed, tc.submitted, pr.HeadArrivedAt)
-			}
-			if decision, _ := reviewerDecision(t, pool); decision != tc.decision {
-				t.Fatalf("the round's recorded decision = %q, want %q", decision, tc.decision)
-			}
-		})
 	}
 }

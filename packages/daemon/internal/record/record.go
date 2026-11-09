@@ -573,14 +573,6 @@ type PullRequest struct {
 	// reopened, synchronize or closed; one with no clock never lowers it): an older one is a late
 	// redelivery and changes nothing (classify.LateLifecycle).
 	HeadUpdatedAt time.Time
-	// HeadArrivedAt is GitHub's time of the event that put HeadSHA on the pull request, zero when
-	// no such event is recorded: a head the daemon's own read found, whose synchronize webhook was
-	// lost, and a row written before this column existed. HeadUpdatedAt cannot answer this
-	// question, since that read writes it from the pull request's updated_at at the moment of the
-	// read and any later activity on the pull request moves it again, while a listed review is
-	// held to the head's arrival (internal/daemon's headArrivedAt). A zero one is answered by the
-	// head commit's own committer date, read from GitHub.
-	HeadArrivedAt time.Time
 	// CheckedHead is the head whose CI settlement Failing, Cancelled, CheckRuns, Generation and
 	// Snapshot record, empty while none is recorded: the current head, or an earlier head whose
 	// settlement no longer counts, since a settlement stands only for the head it names. A

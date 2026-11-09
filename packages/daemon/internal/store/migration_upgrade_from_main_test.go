@@ -12,7 +12,8 @@ import (
 // mainsNewestMigration. Store.apply asks each migration whether its own version is recorded, so an
 // upgrade of a database main migrated applies exactly these, in version order, over main's rows —
 // the two that rewrite outbox_kind_check (20261105081500 and 20261107095842) after main's own
-// 20261108000545, which added the claim-release kind, and the head-arrival column after both.
+// 20261108000545, which added the claim-release kind, and after both the head-arrival column and
+// the drop that takes it away again (20261109130413), which leaves the table as main has it.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -21,7 +22,7 @@ var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
-	20261107095842, 20261108152000, 20261108190000,
+	20261107095842, 20261108152000, 20261108190000, 20261109130413,
 }
 
 // mainsNewestMigration is the newest version main carries, the charge its provider-error ladder
