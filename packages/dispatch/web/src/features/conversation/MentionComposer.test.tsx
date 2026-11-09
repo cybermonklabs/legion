@@ -12,6 +12,7 @@ import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
+import { stoppedRoleOptions } from "../refs/party-options";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -19,7 +20,7 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
-import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
+import { MentionComposer, reconcileMentions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
@@ -611,10 +612,6 @@ test("a programmatic reference append reuses its current body as the next edit b
 test("a reference append retains every visible accepted mention through the next edit", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({ project: "CORE" } as never);
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    { key: "CORE-1", title: "Core issue" },
-  ] as never);
   const { view } = renderComposer({ agents: [planner, worker] });
 
   try {
@@ -630,10 +627,9 @@ test("a reference append retains every visible accepted mention through the next
     await screen.findByRole("option", { name: "Worker" });
     await user.click(screen.getByRole("option", { name: "Worker" }));
     await waitFor(() => expect(field.value).toBe("/btw @Planner x @Worker"));
+    // An address written into the draft is an edit like any other.
     field.focus();
-    await user.keyboard("{Control>}k{/Control}");
-    await screen.findByRole("dialog", { name: "Reference picker" });
-    await user.click(screen.getByRole("button", { name: "CORE-1: Core issue" }));
+    await user.paste(" dispatch://CORE-1");
     await waitFor(() => expect(field.value).toBe("/btw @Planner x @Worker dispatch://CORE-1"));
     // The ` x` goes, and both accepted mentions stay where the edit leaves them.
     await user.click(field);
@@ -656,8 +652,6 @@ test("a reference append retains every visible accepted mention through the next
   } finally {
     view.unmount();
     createComment.mockRestore();
-    getIssue.mockRestore();
-    listIssues.mockRestore();
   }
 });
 
@@ -2026,79 +2020,6 @@ test("an Escape in Send's task cannot offer Discard", async () => {
     refused.reject(commentRefused);
     await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
     expect(field.value).toBe("@Planner hello");
-  } finally {
-    view.unmount();
-    createComment.mockRestore();
-  }
-});
-
-// A Ctrl+K that reaches the field before React disables it must not open a picker later: the send
-// has already taken that draft. Once a refusal returns it, a new Ctrl+K opens the picker normally.
-test("a reference picker request in Send's task is refused until the send answers", async () => {
-  const refused = Promise.withResolvers<Comment>();
-  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({ project: "CORE" } as never);
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    { key: "CORE-1", title: "Core issue" },
-  ] as never);
-  const user = userEvent.setup();
-  const { view } = renderComposer({ seedMentions: [plannerMention] });
-
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@Planner see");
-    // One act, so React renders nothing between Send and the key.
-    act(() => {
-      // One React batch: user-event renders between its own interactions.
-      fireEvent.click(screen.getByRole("button", { name: "Send" }));
-      expect(holdControls().disabled).toBe(false);
-      // The same batch: the key reaches the field in Send's own task.
-      fireEvent.keyDown(field, { ctrlKey: true, key: "k" });
-    });
-    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    expect(holdControls().disabled).toBe(true);
-    expect(screen.queryByRole("dialog", { name: "Reference picker" })).not.toBeInTheDocument();
-
-    refused.reject(commentRefused);
-    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
-    expect(field.value).toBe("@Planner see");
-    expect(screen.queryByRole("dialog", { name: "Reference picker" })).not.toBeInTheDocument();
-    field.focus();
-    await user.keyboard("{Control>}k{/Control}");
-    await user.click(await screen.findByRole("button", { name: "CORE-1: Core issue" }));
-    await waitFor(() => expect(field.value).toBe("@Planner see dispatch://CORE-1"));
-  } finally {
-    view.unmount();
-    createComment.mockRestore();
-    getIssue.mockRestore();
-    listIssues.mockRestore();
-  }
-});
-
-test("a Ctrl+K in Send's task cannot open a picker over a successful send", async () => {
-  const sent = Promise.withResolvers<Comment>();
-  const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
-  const user = userEvent.setup();
-  const { view } = renderComposer({ seedMentions: [plannerMention] });
-
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@Planner see");
-    act(() => {
-      // One React batch: user-event renders between its own interactions.
-      fireEvent.click(screen.getByRole("button", { name: "Send" }));
-      // The same batch: the key reaches the field in Send's own task.
-      fireEvent.keyDown(field, { ctrlKey: true, key: "k" });
-    });
-
-    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    sent.resolve(createdComment);
-    await waitFor(() => expect(field.value).toBe("@Planner"));
-    expect(screen.queryByRole("dialog", { name: "Reference picker" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     createComment.mockRestore();

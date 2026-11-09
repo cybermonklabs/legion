@@ -168,9 +168,7 @@ test("E2b: a project-document comment preserves the canonical mention and strips
   }
 });
 
-test("a conversation send holds Reply and refuses Ctrl+K from the same task", async ({
-  browser,
-}) => {
+test("a conversation send holds Reply from the same task", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Held conversation" });
   await createComment(issue.key, { body: "Earlier comment" });
@@ -186,19 +184,13 @@ test("a conversation send holds Reply and refuses Ctrl+K from the same task", as
     await field.fill("Status please");
     await form.evaluate((node) => {
       const sendButton = node.querySelector<HTMLButtonElement>('button[type="submit"]');
-      const field = node.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment"]');
-      if (sendButton === null || field === null) throw new Error("expected conversation controls");
+      if (sendButton === null) throw new Error("expected conversation controls");
       sendButton.click();
-      field.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ctrlKey: true, key: "k" })
-      );
     });
 
     await expect(reply).toBeDisabled();
-    await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     send.release();
     await expect(field).toHaveValue("");
-    await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

@@ -80,6 +80,7 @@ import {
   searchWords,
   sessionIssueKeys,
   useAgentMachine,
+  useAgentRole,
   useAgentSearch,
 } from "./agent-search";
 import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
@@ -878,9 +879,10 @@ function AgentFilterBar({
   onFilters: (filters: AgentFilters) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 }): ReactNode {
-  // The options carry the machine the filter names even when no live session reports it, so the
-  // control shows the filter in force and `All machines` can clear it (`filterOptions`).
-  const { machines, roles } = filterOptions(agents, filters.machine);
+  // The options carry the machine and the role the filter names even when no live session
+  // reports them, so the control shows the filter in force and `All machines` or `All roles`
+  // can clear it (`filterOptions`).
+  const { machines, roles } = filterOptions(agents, filters.machine, filters.role);
   const field = `min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`;
   return (
     <fieldset className="mb-3 flex flex-wrap items-center gap-2">
@@ -1194,14 +1196,15 @@ export function AgentsPage(): ReactNode {
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
-  // The free-text query and the machine are the page's own `?q=` and `?machine=`, both owned by
-  // `agent-search.ts`; `role` stays plain component state.
+  // The free-text query, the machine and the role are the page's own `?q=`, `?machine=` and
+  // `?role=`, all owned by `agent-search.ts`: `/agents?role=<token>` is the page a
+  // `dispatch://role/<token>` reference opens.
   const [search, setSearch] = useAgentSearch();
   const [machine, setMachine] = useAgentMachine();
-  const [role, setRole] = useState("");
+  const [role, setRole] = useAgentRole();
   const filters: AgentFilters = { machine, role, search };
   const setFilters = (next: AgentFilters) => {
-    setRole(next.role);
+    if (next.role !== role) setRole(next.role);
     if (next.machine !== machine) setMachine(next.machine);
     if (next.search !== search) setSearch(next.search);
   };
@@ -1418,7 +1421,15 @@ export function AgentsPage(): ReactNode {
           {matching.length === 0 && current ? (
             <EmptyState
               label="Agents filtered empty state"
-              message="No agent matches these filters."
+              // A role nothing live holds is not a role Dispatch can show as stopped: the
+              // registry lists sessions, and a role is here only while a session carries it.
+              // The words say so, rather than letting the reader read the list as every role
+              // there is.
+              message={
+                role !== "" && !agents.some((agent) => agent.roles.includes(role))
+                  ? `No live session holds ${role}. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role.`
+                  : "No agent matches these filters."
+              }
             />
           ) : null}
           <div className="flex flex-col gap-3">{rows}</div>

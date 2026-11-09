@@ -14,7 +14,7 @@ import { useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
-import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import type { Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
@@ -36,6 +36,7 @@ import {
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
+import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { searchSnippetMarkdown } from "../refs/markdown-fragment";
 import { referenceTriggerProps } from "../refs/RefPreview";
@@ -76,62 +77,8 @@ interface ResultRow {
 /** One selectable line, whatever it came from: arrows, Enter and `aria-activedescendant` see only these. */
 type PaletteRow = ActionRow | ProjectRow | ResultRow;
 
-function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
-  const common = {
-    "aria-hidden": true,
-    className: "size-4 shrink-0",
-    fill: "none",
-    stroke: "currentColor",
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    strokeWidth: 1.75,
-    viewBox: "0 0 24 24",
-  };
-
-  if (kind === "issue") {
-    return (
-      <svg {...common}>
-        <title>Issue result</title>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v4l2.5 2" />
-      </svg>
-    );
-  }
-  if (kind === "document") {
-    return (
-      <svg {...common}>
-        <title>Document result</title>
-        <path d="M7 3h7l3 3v15H7z" />
-        <path d="M14 3v4h4M10 12h4M10 16h4" />
-      </svg>
-    );
-  }
-  if (kind === "comment") {
-    return (
-      <svg {...common}>
-        <title>Comment result</title>
-        <path d="M5 6.5h14v10H9l-4 3z" />
-        <path d="M9 10h6M9 13h4" />
-      </svg>
-    );
-  }
-  if (kind === "ask") {
-    return (
-      <svg {...common}>
-        <title>Ask result</title>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M9.8 9.5a2.3 2.3 0 1 1 3.3 2.1c-.9.5-1.1.9-1.1 1.9M12 16h.01" />
-      </svg>
-    );
-  }
-  return (
-    <svg {...common}>
-      <title>Message result</title>
-      <path d="M5 6.5h14v10H9l-4 3z" />
-      <path d="M9 10h6M9 13h6" />
-    </svg>
-  );
-}
+/* The hit icons are the dashboard's own, drawn by `RefKindIcon`: a search kind is one of the
+   kinds a reference names, so the palette and the reference picker wear one set. */
 
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
  *  or Space selecting it. `layout` arranges the row's own content. */
@@ -215,7 +162,7 @@ function ResultOption({
           muted ? textMutedOnSelectedCard : textSecondaryOnSurface
         }`}
       >
-        <SearchResultIcon kind={result.kind} />
+        <RefKindIcon kind={result.kind} />
         <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
           {kindLabel(result.kind)}
         </span>

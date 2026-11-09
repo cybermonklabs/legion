@@ -730,13 +730,13 @@ test("matchesFilters narrows by machine and role exactly, free text besides", ()
   ).toBe(false);
 });
 
-test("filterOptions offers the machines the live sessions occupy, and the one the filter names besides", () => {
+test("filterOptions offers what the live sessions occupy, and what the filters name besides", () => {
   const live = [
     session({ host: "build-host", roles: ["planner"], session_id: "one", title: "One" }),
     session({ host: "archive-host", roles: [], session_id: "two", title: "Two" }),
   ];
 
-  expect(filterOptions(live, "")).toEqual({
+  expect(filterOptions(live, "", "")).toEqual({
     machines: ["archive-host", "build-host"],
     roles: ["planner"],
   });
@@ -744,13 +744,17 @@ test("filterOptions offers the machines the live sessions occupy, and the one th
   // A `?machine=` naming a host no live session reports - an old link, or a machine whose
   // sessions have ended - is an option of its own, in machine order with the rest, so the
   // control shows the filter that is hiding every row and `All machines` can clear it.
-  expect(filterOptions(live, "ended-host").machines).toEqual([
+  expect(filterOptions(live, "ended-host", "").machines).toEqual([
     "archive-host",
     "build-host",
     "ended-host",
   ]);
   // A machine the live sessions do report is offered once, not twice.
-  expect(filterOptions(live, "build-host").machines).toEqual(["archive-host", "build-host"]);
+  expect(filterOptions(live, "build-host", "").machines).toEqual(["archive-host", "build-host"]);
+  // A `?role=` whose holder has stopped is an option of its own by the same rule, and a role a
+  // live session carries is still offered once.
+  expect(filterOptions(live, "", "merger").roles).toEqual(["merger", "planner"]);
+  expect(filterOptions(live, "", "planner").roles).toEqual(["planner"]);
 });
 
 test("Agents orders who needs you before Dispatch recency before liveness, folds silent sessions, and keeps a re-poll stable", async () => {
@@ -3779,6 +3783,48 @@ test("the search box reads its query from the page's address and writes back to 
     await user.clear(search);
     await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
     await screen.findByRole("heading", { level: 2, name: "Planner" });
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the role filter reads the page's address, so a role reference opens the sessions holding it", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=planner" });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const roles = within(region).getByRole("combobox", { name: "Role" }) as HTMLSelectElement;
+    // `dispatch://role/planner` opens this address, so the list is already narrowed to it.
+    expect(roles.value).toBe("planner");
+    await within(region).findByRole("heading", { level: 2, name: "Planner" });
+    expect(
+      within(region).queryByRole("heading", { level: 2, name: "Reviewer" })
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(roles, "");
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+    await within(region).findByRole("heading", { level: 2, name: "Reviewer" });
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("a role no live session holds says so, and says what this list outside an issue holds", async () => {
+  const page = renderAgents({ initialEntry: "/agents?role=merger" });
+
+  try {
+    const empty = await screen.findByRole("region", { name: "Agents filtered empty state" });
+    expect(empty.textContent).toBe(
+      "No live session holds merger. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role."
+    );
+    // The option stays in the control, so the reader can clear the filter that hides every row.
+    const region = screen.getByRole("region", { name: "Agents" });
+    expect(
+      (within(region).getByRole("combobox", { name: "Role" }) as HTMLSelectElement).value
+    ).toBe("merger");
   } finally {
     page.view.unmount();
     page.restore();

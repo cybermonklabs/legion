@@ -159,16 +159,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await commentBody.focus();
     }
 
-    // D12: Ctrl+K opens a real dialog; Escape dismisses only the picker, restores focus to
-    // the composer, and leaves the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press("Control+k");
-    const picker = page.getByRole("dialog", { name: "Reference picker" });
-    await expect(picker).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(picker).toHaveCount(0);
-    await expect(commentComposer).toBeVisible();
-    await expect(commentBody).toBeFocused();
-
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
     // blocking confirm()); Escape again closes it. Only the composer closes — the phone
     // sheet (if any) stays open, because the composer's own Escape handler claims it first.

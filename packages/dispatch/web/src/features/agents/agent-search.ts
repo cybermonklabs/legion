@@ -1,6 +1,6 @@
 import type { Agent, InboxRow } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
-import { AGENTS_MACHINE_PARAM } from "../refs/routes";
+import { AGENTS_MACHINE_PARAM, AGENTS_ROLE_PARAM } from "../refs/routes";
 
 /**
  * What narrows the agent list, mirroring the `envoy broadcast` script's own selectors: one
@@ -12,10 +12,10 @@ export interface AgentFilters {
   readonly search: string;
 }
 
-/** The page's two URL-backed filter fields, each through the same capped, history-`replace`d
- *  hook `useIssueFilters` uses: the free-text query (`?q=`) and the machine (`?machine=`).
- *  `role` stays plain component state, as it was before this box. Both parameters live here
- *  rather than in the page, so the control around them can be rebuilt without moving them. */
+/** The page's three URL-backed filter fields, each through the same capped, history-`replace`d
+ *  hook `useIssueFilters` uses: the free-text query (`?q=`), the machine (`?machine=`) and the
+ *  role (`?role=`). All three live here rather than in the page, so the control around them can
+ *  be rebuilt without moving them. */
 export function useAgentSearch(): readonly [string, (next: string) => void] {
   return useCappedSearchParam("q");
 }
@@ -26,6 +26,13 @@ export function useAgentSearch(): readonly [string, (next: string) => void] {
  *  `/agents?machine=<host>` must name exactly the sessions on that machine. */
 export function useAgentMachine(): readonly [string, (next: string) => void] {
   return useCappedSearchParam(AGENTS_MACHINE_PARAM);
+}
+
+/** The role filter, the address's own `?role=`: it is the page a `dispatch://role/<token>`
+ *  reference opens (`buildReferencePath`), so the link must survive a reload and a share, which
+ *  component state would not. */
+export function useAgentRole(): readonly [string, (next: string) => void] {
+  return useCappedSearchParam(AGENTS_ROLE_PARAM);
 }
 
 /** Every word `search` names, lowercased; an empty query has none. The page splits this once per
@@ -65,7 +72,7 @@ export function matchesFilters(
 
 /**
  * The machines and roles the filter control offers: the ones the live sessions occupy, and the
- * machine the filter already names wherever no live session reports it.
+ * machine or role the filter already names wherever no live session reports it.
  *
  * That last one is the whole of this rule. `?machine=` can name a host nothing live reports —
  * an old link, a machine whose sessions have ended, or `/machines/<machine>`'s own "Agents on
@@ -74,11 +81,13 @@ export function matchesFilters(
  * the control would show no value, read `All machines` while every row was hidden, and fire no
  * change when the reader picked `All machines` — the one control that seems to show the filter
  * could not clear it. Offering the named machine keeps the control showing the filter in force,
- * so a stale option can never hide every agent with no way back.
+ * so a stale option can never hide every agent with no way back. `?role=` is the same: a
+ * `dispatch://role/<token>` reference opens this page on a role whose holder may have stopped.
  */
 export function filterOptions(
   agents: readonly Agent[],
-  machine: string
+  machine: string,
+  role: string
 ): {
   machines: string[];
   roles: string[];
@@ -86,6 +95,7 @@ export function filterOptions(
   const machines = new Set<string>();
   const roles = new Set<string>();
   if (machine !== "") machines.add(machine);
+  if (role !== "") roles.add(role);
   for (const agent of agents) {
     if (agent.host !== "") machines.add(agent.host);
     for (const role of agent.roles) roles.add(role);
