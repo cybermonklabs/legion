@@ -2986,8 +2986,9 @@ jobs:
       # python3 reported — and not as a member the archive does not hold, which is the other
       # way a member can fail to come out and a different thing to tell a reader.
       # The bun npm case meets the same byte differently: there the change breaks the gzip
-      # framing, and `tar -xzO` answers a damaged stream and an absent member alike, so that
-      # refusal names the member and leaves tar's own words to say which it was.
+      # framing, and `tar -xzO` answers a damaged stream and an absent member with one exit,
+      # so that refusal claims neither cause — it names the member and the archive and leaves
+      # tar's own words on stderr to say which of the two it was.
       # Either way nothing unverified is installed, which is what the case is for.
       - name: Corrupt uv for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt uv

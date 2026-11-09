@@ -302,8 +302,9 @@ NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
 # the seam a case sets points the helper here, and the word the row writes on that side says
 # which of its two addresses it then asks for.
 # This program is started with the manifest and nothing else, so these two sets are its own
-# and not the shell's `route_of`; that function says where the other readings of these words
-# are, and a new source word moves all of them together.
+# and not the shell's `route_of`. The places of this tree that decide a source word are listed
+# at ci_tools__source_fetch in .github/scripts/ci-tools.sh, these two sets among them, and a
+# new word moves all of them together.
 GITHUB_WORDS = {"github-release"}
 URL_WORDS = {"pypi", "pulumi-releases"}
 
@@ -498,7 +499,7 @@ payload_names() {
   second=$(ci_tools_source_name "$row" second) ||
     die "$row: the helper reads no second source for this row, so the origin cannot serve one"
   # Which fields the names come from is a property of the route and not of the word, and
-  # route_of is this rig's one list of the five: /github/ and /url/ alike mean the address the
+  # route_of below answers that for this shell: /github/ and /url/ alike mean the address the
   # row writes out in `second_url`.
   route=$(route_of "$second" "payload_names")
   {
@@ -583,17 +584,21 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as held:
 # would have come from: ci_tools_extract reads the shape off that name, and the names this rig
 # packs under are the names the origin serves, so a `.tgz` goes to `tar -xzO` and a `.whl` to
 # python3's zipfile exactly as an install's would.
+# What comes out is held to the row's digest with ci_tools_verify, as stage_member below holds
+# the member it takes out: ci_tools__hold behind that call is this repository's one digest
+# comparison, so this rig writes no second reading of what a match is.
 packed_back() {
-  local row=$1 archive=$2 member=$3 what=$4 back report pinned read_back status=0
+  local row=$1 archive=$2 member=$3 what=$4 back report status=0
   back="$work/round-trip-$row"
   rm -f -- "$back"
   report=$(ci_tools_extract "$archive" "$member" "$back" "$archive") || status=$?
   [ "$status" -eq 0 ] || die "$row: the $what this rig packed did not give $member back: $report"
-  pinned=$(ci_tools_digest "$row")
-  read_back=$(sha256sum -- "$back")
+  # The word is the row's own for the source whose archive this pack stands in for, read where
+  # every other call site of this repository reads one.
+  ci_tools_verify "$row" "$back" "$(ci_tools_source_name "$row" second)" || status=$?
   rm -f -- "$back"
-  [ "${read_back%% *}" = "$pinned" ] ||
-    die "$row: the $what this rig packed holds ${read_back%% *}, not the pinned $pinned"
+  [ "$status" -eq 0 ] ||
+    die "$row: the $what this rig packed does not give the bytes this row pins back"
 }
 
 # stage_member <row> <archive> <member> <file>: the row's own pinned bytes out of the archive
@@ -1193,13 +1198,10 @@ origin_served() {
 # It is this shell's one reading of those five words: `payload_names` above decides which
 # fields a row's second-source names come from by the route this answers, so nothing in this
 # shell holds a second list of them.
-# THE ORIGIN HOLDS ITS OWN, and that is said here rather than left for a reader to find: the
-# origin is a program of its own, started with the manifest and no word of this shell, and its
-# GITHUB_WORDS and URL_WORDS decide which of a row's two addresses each route serves a name
-# from. A new source word is an edit here, an edit in those two sets, and an edit in the
-# tables of .github/scripts/check-ci-tools.sh and the one case of
-# .github/scripts/ci-tools.sh's ci_tools__source_fetch, which decide what a row may write at
-# all.
+# The places of this tree that decide a source word are listed at ci_tools__source_fetch in
+# .github/scripts/ci-tools.sh — this function and the origin's own GITHUB_WORDS and URL_WORDS
+# among them, the origin being a program of its own, started with the manifest and no word of
+# this shell. That comment is where a new word is read off; this one keeps no count.
 route_of() {
   case $1 in
     github-release) printf '/github/\n' ;;

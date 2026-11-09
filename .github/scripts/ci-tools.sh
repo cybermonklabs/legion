@@ -27,10 +27,9 @@
 # installed.
 # ci_tools__source_fetch below is this file's one list of those words, and it is read for both
 # sides, so no word is printed for a row and then refused when the bytes are fetched. It is not
-# the tree's only list: .github/scripts/check-ci-tools.sh's own tables decide which words a row
-# may write and which fields each then carries, and .github/scripts/ci-tools-proof.sh reads the
-# words twice more, in its `route_of` and in the two sets its origin serves a route from. What
-# each word reads here is the row's own fields for the side the word is written on:
+# the tree's only list, and the others are named there, at the case itself, so this file keeps
+# no count of its own. What each word reads here is the row's own fields for the side the word
+# is written on:
 #
 #   github-release          `primary` or `second_url`, through the CI_TOOLS_GITHUB_BASE seam.
 #                           It is most rows' primary, and it is a second source as well: Pulumi
@@ -205,12 +204,14 @@ ci_tools__error() {
   printf '::error::ci-tools: %s\n' "$*" >&2
 }
 
-# The exit code ci_tools_extract's zip reader answers an absent member with. It is 3 and not 1
-# so that python3's own exit 1 — every failure it raises on the bytes themselves, a zip it
-# cannot read, a member whose CRC-32 does not match, a failed inflate — stays a code of its
-# own, and the two are told apart by this one number rather than by reading a message. The
-# reader is handed it as an argument, so this line is the one place it is written.
+# The two exit codes ci_tools_extract's zip reader answers with, for the two failures it tells
+# apart itself: a member the archive does not hold, and a failure the archive itself raised.
+# Neither is 1, so python3's own exit 1 — anything else it raises, which is no failure of the
+# archive: an OSError on the destination, an interpreter that died — stays a code of its own,
+# and the three are told apart by these two numbers rather than by reading a message. The
+# reader is handed both as arguments, so these lines are the one place either is written.
 ci_tools__no_such_member=3
+ci_tools__damaged_archive=4
 
 # ci_tools__manifest: the manifest this call reads.
 ci_tools__manifest() {
@@ -323,10 +324,8 @@ ci_tools_field() {
 # `second` is the row's own `second_source` and `primary` is its own `primary_source`, and a
 # word ci_tools__source_fetch below reads no source of that side with is refused rather than
 # printed: that one case decides which words each side of a row is written in, so a word this
-# file would name and then refuse to fetch cannot exist. Adding a source is one edit here and
-# one in the other place that decides a word, the SECOND_FIELDS, PRIMARY_SOURCES and
-# URL_SOURCES tables of .github/scripts/check-ci-tools.sh, which refuse a row whose word this
-# file would never be asked about.
+# file would name and then refuse to fetch cannot exist. Adding a source is an edit in each of
+# the places ci_tools__source_fetch below names, which that one comment lists.
 #
 # Neither side is a constant. Most rows' primary is a GitHub release asset and the pulumi CLI's
 # is get.pulumi.com, and a third party fetches the primary bytes of jj (mise) and of Bun
@@ -694,8 +693,9 @@ ci_tools__fetch_ghcr() {
 # The side goes unread here for the reason it goes unread above: `npm` is a second source and
 # no row's primary.
 # The member is taken out with ci_tools_extract below, which the tarball's own `.tgz` address
-# sends to `tar -xzO`: one extractor for every archive this file reads, so a package that holds
-# no such member is refused in the sentence that names the member and the address it came from.
+# sends to `tar -xzO`: one extractor for every archive this file reads, so a tarball that does
+# not give that member up is refused in the sentence that names the member and the address it
+# came from.
 # Prints what happened, and returns non-zero, where the service did not serve the bytes.
 ci_tools__fetch_npm() {
   local row=$1 max_time=$3 file=$4
@@ -731,18 +731,27 @@ ci_tools__fetch_npm() {
 # with python3's zipfile, which this file already reads every row of the manifest with, and
 # anything else with `tar -xzO`, which is how the npm fetch above reads its tarball.
 # Prints what happened, and returns non-zero, where the member did not come out, so the caller
-# refuses by the member and the archive rather than by the digest of an empty file.
-# THE TWO WAYS THAT CAN HAPPEN ARE NOT ALIKE, and the zip arm says which it met. A member the
-# archive does not hold is a row naming a path that archive has not got, which is a mistake in
-# this repository; anything else python3 answers with — a zip it cannot read at all, a member
-# whose CRC-32 the archive's own header no longer matches, an inflate that failed — is the
-# bytes at that address not being the bytes they should be, which is the supply-chain signal
-# this file's header is about, and the sentence says so and quotes what python3 reported.
-# The tar arm cannot tell the two apart and does not claim to: one changed byte breaks the
-# gzip framing, and `tar -xzO` answers a damaged stream and an absent member with the same
-# exit code, so its sentence names the member and the archive and leaves tar's own words on
-# stderr to say which it was. Nothing unverified is installed either way: this returns
-# non-zero and the caller places nothing.
+# refuses by the member and the archive rather than by the digest of an empty file. A failure
+# leaves nothing at <destination>, the bytes a reader had already written there included, so the
+# promise this file's header makes holds for a caller that hands this function the destination
+# itself and not a temporary file of its own.
+# THE WAYS THAT CAN HAPPEN ARE NOT ALIKE, and the zip arm says which of three it met. A member
+# the archive does not hold is a row naming a path that archive has not got, which is a mistake
+# in this repository. What the ARCHIVE raises — zipfile.BadZipFile, zlib.error, EOFError: a zip
+# that cannot be read at all, a member whose CRC-32 the archive's own header no longer matches,
+# an inflate that failed, a stream that ended early — is the bytes at that address not being the
+# bytes they should be, which is the supply-chain signal this file's header is about, and the
+# sentence says so. Anything else python3 raises is neither of those: an OSError on the
+# destination is a directory that is not there or a runner out of space, and the bytes that
+# address served are not what failed, so that sentence says so instead. Both of those two quote
+# python3's last line.
+# The tar arm tells one failure of its own from the two it cannot tell apart. A destination it
+# cannot even open is refused before tar runs, and is its own sentence for the reason the zip
+# arm's third one is. After that, `tar -xzO` answers an absent member and a damaged stream with
+# the same exit 2 — one changed byte breaks the gzip framing — so its sentence claims neither
+# cause, names the member and the archive, and leaves tar's own words on stderr to say which of
+# the two it was. Nothing unverified is installed in any of them: this returns non-zero and the
+# caller places nothing.
 # It is public because .github/scripts/ci-tools-proof.sh takes a row's pinned member out of the
 # archive ci_tools_fetch_primary staged for it, rather than fetching that archive a second time
 # through ci_tools_fetch, and a second extractor there would be a second rule for how an
@@ -755,42 +764,72 @@ ci_tools_extract() {
   case "$name" in
     *.whl | *.zip)
       # python3's stderr is read rather than discarded: for anything but an absent member it
-      # is the only thing that says what was wrong with those bytes, and the sentence below
-      # quotes its last line, which is the exception and its message.
+      # is the only thing that says what was wrong, and the two sentences below quote its last
+      # line, which is the exception and its message.
       reported=$(
         PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import shutil
 import sys
+import traceback
 import zipfile
+import zlib
 
-archive, member, destination, absent = sys.argv[1:5]
+archive, member, destination, absent, damaged = sys.argv[1:6]
 try:
     with zipfile.ZipFile(archive) as held, held.open(member) as source, open(destination, "wb") as sink:
         shutil.copyfileobj(source, sink)
 except KeyError:
-    # The archive read, and it holds no member of that name. Every other failure is left to
-    # python3 itself, so its traceback reaches stderr and the caller quotes it.
+    # The archive read, and it holds no member of that name.
     sys.exit(int(absent))
-' "$archive" "$member" "$destination" "$ci_tools__no_such_member" 2>&1
+except (zipfile.BadZipFile, zlib.error, EOFError):
+    # What the archive itself raises, which is the one group of failures that is a signal
+    # about these bytes. The traceback is printed here rather than left to python3, because
+    # this exit is a code the shell above chose and not one of python3 itself, and that shell
+    # quotes the last line of this report all the same.
+    traceback.print_exc()
+    sys.exit(int(damaged))
+# Every other exception is left to python3 itself, so its traceback reaches stderr and its own
+# exit 1 reaches the caller: an OSError on the destination is not the archive answering, and
+# the sentence it gets says nothing about these bytes.
+' "$archive" "$member" "$destination" "$ci_tools__no_such_member" "$ci_tools__damaged_archive" 2>&1
       ) || status=$?
+      # Whatever went wrong, what the reader had already written is taken away, so no caller
+      # finds a part of a member at the destination it named.
+      [ "$status" -eq 0 ] || rm -f -- "$destination"
       if [ "$status" -eq "$ci_tools__no_such_member" ]; then
         printf 'the archive at %s holds no %s (python3 exit %s)\n' "$url" "$member" "$status"
         return 1
       fi
-      if [ "$status" -ne 0 ]; then
-        # The whole of what python3 said goes to the log, frames and all, and the sentence
-        # below carries its last line, which is the exception itself: a refusal is one
-        # annotation line, and a reader who wants the rest reads the lines above it.
+      # The whole of what python3 said goes to the log, frames and all, and the sentence
+      # carries its last line, which is the exception itself: a refusal is one annotation
+      # line, and a reader who wants the rest reads the lines above it.
+      if [ "$status" -eq "$ci_tools__damaged_archive" ]; then
         [ -z "$reported" ] || printf '%s\n' "$reported" >&2
         printf 'the archive at %s did not give up %s, and not because it holds no such member: %s. What that address served is no readable archive of the bytes this row pins, which is a signal about those bytes (python3 exit %s)\n' \
           "$url" "$member" "${reported##*$'\n'}" "$status"
         return 1
       fi
+      if [ "$status" -ne 0 ]; then
+        [ -z "$reported" ] || printf '%s\n' "$reported" >&2
+        printf 'the archive at %s did not give up %s, and the archive is not what failed: %s. That is this run itself, the destination it writes the member to or python3, so it is no signal about the bytes that address served (python3 exit %s)\n' \
+          "$url" "$member" "${reported##*$'\n'}" "$status"
+        return 1
+      fi
       ;;
     *)
+      # The destination is opened before tar reads anything, so a destination this run cannot
+      # write is told from what tar answers for: bash says on stderr why it could not be
+      # opened, and this sentence claims nothing about the archive.
+      if ! : > "$destination"; then
+        printf 'this run cannot write %s, so %s was never read for %s, and nothing here is a statement about the bytes that address served\n' \
+          "$destination" "$url" "$member"
+        return 1
+      fi
       tar -xzOf "$archive" "$member" > "$destination" || status=$?
       if [ "$status" -ne 0 ]; then
-        printf 'the archive at %s holds no %s (tar exit %s)\n' "$url" "$member" "$status"
+        rm -f -- "$destination"
+        printf 'the archive at %s did not give up %s, and this arm claims neither cause: tar answers an archive that holds no such member and a damaged stream with the same exit, so what tar printed on stderr is what says which of the two it was (tar exit %s)\n' \
+          "$url" "$member" "$status"
         return 1
       fi
       ;;
@@ -865,10 +904,25 @@ ci_tools__fetch_url() {
 # It is the one list of the words a source is written in, and it is read for both sides:
 # ci_tools_fetch and ci_tools__second_source fetch a row's bytes with the function it answers,
 # and ci_tools_source_name above prints a row's word only where it answers one, so a word the
-# manifest carries and no source of this file reads is refused by both, in one sentence, and a
-# new source is one case here rather than several lists that can disagree.
+# manifest carries and no source of this file reads is refused by both, in one sentence.
 # `ghcr-mirror` and `npm` answer on the second side alone, which is what makes a row whose
 # `primary_source` is one of them a refusal that names the side it was written on.
+#
+# THE PLACES OF THIS TREE THAT DECIDE A SOURCE WORD are written here and counted nowhere else,
+# so adding a source is these four edits and no hunt for a fifth. Each of the other three says
+# that this comment holds the list and keeps no list of its own.
+#
+#   1. This case, which says which function reads a word on which side, and so which words a
+#      row can be fetched by and named by at all.
+#   2. The SECOND_FIELDS, PRIMARY_SOURCES and URL_SOURCES tables of
+#      .github/scripts/check-ci-tools.sh, which decide which words a row may write on each
+#      side and which fields each word then makes that row carry, so a row whose word this
+#      file would never be asked about is refused by the gate.
+#   3. `route_of` in .github/scripts/ci-tools-proof.sh, which says which route of that rig's
+#      origin a word is served on.
+#   4. The GITHUB_WORDS and URL_WORDS sets of that rig's origin program, which is a program of
+#      its own started with the manifest and no word of that shell, and which decide which of
+#      a row's two addresses each of those two routes serves a name from.
 ci_tools__source_fetch() {
   local row=$1 side=$2 word=$3 __variable=$4
   case "$side/$word" in

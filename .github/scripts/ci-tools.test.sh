@@ -4,9 +4,12 @@
 # pins stops the fetch there and the second source is never read, a second source that serves
 # other bytes is refused the same way, a refusal of both names both sources, and no refusal of any
 # kind leaves a file at the destination. A row whose second source writes an address of its own is
-# served whole or by the member it names, an archive that holds no such member and one that holds
-# it and cannot give it back are refused in different words, a row whose primary carries a
-# `primary_digest` is held to it before its `primary_member` is taken out, and
+# served whole or by the member it names, a zip that holds no such member and one that holds it
+# and cannot give it back are refused in different words while the tar arm, which can tell
+# those two apart no better than tar can, refuses both in one sentence that claims neither
+# cause, a destination this run cannot write is refused as this run's own failure by either arm
+# and no failure of either leaves anything at the destination it was given, a row whose primary
+# carries a `primary_digest` is held to it before its `primary_member` is taken out, and
 # ci_tools_fetch_primary leaves the archive the primary served rather than that member. It also
 # runs the repository's own .github/ci-tools.yaml through the helper, so a row this file cannot
 # parse fails here rather than in a job.
@@ -100,13 +103,16 @@ TARRED_CHANGED=$(digest_of "$work/payloads/tarred.changed")
 JJLIKE_CHANGED=$(digest_of "$work/payloads/jjlike.changed")
 PACKAGED_CHANGED=$(digest_of "$work/payloads/packaged.changed")
 
-# The npm package's tarball, which holds the binary at the member the row names, and one whose
-# member is the changed copy.
-mkdir -p "$work/npm-build/package/bin"
+# The npm package's tarball, which holds the binary at the member the row names, one whose
+# member is the changed copy, and one healthy tarball that holds no such member at all, which
+# is the tar arm's other outcome.
+mkdir -p "$work/npm-build/package/bin" "$work/npm-build/package/doc"
 cp "$work/payloads/packaged" "$work/npm-build/package/bin/packaged"
 tar -czf "$work/payloads/packaged.tgz" -C "$work/npm-build" package/bin/packaged
 cp "$work/payloads/packaged.changed" "$work/npm-build/package/bin/packaged"
 tar -czf "$work/payloads/packaged.changed.tgz" -C "$work/npm-build" package/bin/packaged
+printf 'the package readme, which is no binary\n' > "$work/npm-build/package/doc/README"
+tar -czf "$work/payloads/packaged.no-member.tgz" -C "$work/npm-build" package/doc/README
 
 # The uv-shaped payload: one binary, in a release tarball under one member and in a wheel under
 # another. The row's own `digest` is of that binary, so the archive the primary serves has a
@@ -174,6 +180,24 @@ tar -czf "$work/payloads/plugin.tar.gz" -C "$work/plugin-build" pulumi-resource-
 PLUGIN=$(digest_of "$work/payloads/plugin.tar.gz")
 cp "$work/payloads/jjlike" "$work/tarmember-build/jjlike"
 tar -czf "$work/payloads/tarmembered.tar.gz" -C "$work/tarmember-build" ./jjlike
+# That same tarball with its last byte changed, which is one byte of the gzip framing `tar -xz`
+# reads: a damaged stream, the tar arm's other way of not giving a member back. The origin of
+# .github/scripts/ci-tools-proof.sh changes the same byte of a tarball for the same reason.
+cp "$work/payloads/tarmembered.tar.gz" "$work/payloads/tarmembered.damaged.tar.gz"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$work/payloads/tarmembered.damaged.tar.gz" <<'PY'
+import sys
+from pathlib import Path
+
+archive = Path(sys.argv[1])
+body = archive.read_bytes()
+archive.write_bytes(body[:-1] + bytes([body[-1] ^ 0x01]))
+PY
+
+# The clause both tar outcomes are refused in, written once because that is what the two cases
+# below claim: `tar -xzO` answers an archive that holds no such member and a damaged stream
+# with the same exit, so the refusal names the member and the archive, claims neither cause and
+# leaves tar's own words on stderr to say which it was.
+TAR_NEITHER='and this arm claims neither cause: tar answers an archive that holds no such member and a damaged stream with the same exit, so what tar printed on stderr is what says which of the two it was (tar exit 2)'
 
 # The CLI tarball: one archive two services serve, which is the row whose primary is a service
 # of its own and whose second source is the release asset.
@@ -235,8 +259,8 @@ tools:
     max_time: 7
     npm_package: "@fixture/packaged"
     npm_member: package/bin/packaged
-  # A row whose `primary:` the manifest leaves null, which is how a reader finds Python's own
-  # `None` where an empty string belongs. Its bytes are the tarred row's, so the copy the origin
+  # A row whose primary: the manifest leaves null, which is how a reader finds Python's own
+  # None where an empty string belongs. Its bytes are the tarred row's, so the copy the origin
   # already holds serves it.
   - name: nullprimary
     version: 4.0.0
@@ -279,7 +303,7 @@ tools:
     second_url: https://github.com/example/clitool/releases/download/v10.0.0/clitool-v10.0.0-linux-x64.tar.gz
     second_member: ""
     max_time: 7
-  # A row whose `primary_source` is a word this file reads as a second source and as no row's
+  # A row whose primary_source is a word this file reads as a second source and as no row's
   # primary, which is refused by the side it is written on.
   - name: oddprimary
     version: 11.0.0
@@ -292,7 +316,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 7
-  # uv's shape: the row's `digest` is of the binary, the primary serves a tarball holding it
+  # uv's shape: the row's digest is of the binary, the primary serves a tarball holding it
   # under one member, and PyPI serves a wheel holding it under another.
   - name: wheeled
     version: 7.0.0
@@ -786,8 +810,8 @@ check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: pypi — the archive holds no such member"
 # An archive without the member is a refusal naming the member and the archive, and not an empty
-# file the digest check would refuse for the wrong reason. The code python3 exits with is the
-# helper's own for this one failure, which is what tells it from the case below.
+# file the digest check would refuse for the wrong reason. The code python3 exits with is one of
+# the helper's own two, and it is what tells this failure from the case below.
 origin url-member-missing
 rm -- "$root/$WHEELED_ASSET_PATH"
 cp "$work/payloads/wheeled.no-member.whl" "$root/$WHEEL_PATH"
@@ -802,9 +826,12 @@ check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 echo "case: pypi — the archive holds the member and its bytes are damaged"
 # One byte of the member's own data changed, which python3's zipfile meets as a CRC-32 the
 # archive's own header no longer matches. Nothing unverified is installed either way, and the
-# two are not the same thing to say: this one is a signal about the bytes that address served,
-# and the refusal says so and quotes what python3 reported rather than calling the member
-# absent, as the case above is.
+# two are not the same thing to say: this is what the ARCHIVE raised, which is a signal about
+# the bytes that address served, and the refusal says so and quotes python3's own last line
+# rather than calling the member absent, as the case above is.
+# The exception's name is all this case reads of that quote. The message beside it is CPython's
+# wording of a CRC failure, and a release that rewords it would redden a case that pinned it
+# while saying nothing about this helper.
 origin url-member-damaged
 rm -- "$root/$WHEELED_ASSET_PATH"
 cp "$work/payloads/wheeled.damaged.whl" "$root/$WHEEL_PATH"
@@ -812,11 +839,77 @@ dest="$work/dest/url-member-damaged"
 run ci_tools_fetch wheeled "$dest"
 check "fails" "$(is "$status" 1)"
 check "refuses it as an integrity failure, quoting what python3 said" \
-  "$(contains "$out" "^::error::ci-tools: wheeled: no source served the bytes; github-release: curl exit 22; pypi: the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl did not give up wheeled-7.0.0.data/scripts/wheeled, and not because it holds no such member: zipfile.BadZipFile: Bad CRC-32 for file 'wheeled-7.0.0.data/scripts/wheeled'. What that address served is no readable archive of the bytes this row pins, which is a signal about those bytes (python3 exit 1)$")"
+  "$(contains "$out" "^::error::ci-tools: wheeled: no source served the bytes; github-release: curl exit 22; pypi: the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl did not give up wheeled-7.0.0.data/scripts/wheeled, and not because it holds no such member: zipfile.BadZipFile: .* What that address served is no readable archive of the bytes this row pins, which is a signal about those bytes (python3 exit 4)$")"
 check "and does not call the member absent" \
   "$(is "$(contains "$out" "holds no wheeled-7.0.0.data/scripts/wheeled")" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+# That same archive through ci_tools_extract itself, which is where the destination is written.
+# Every fetch above hands it a temporary file of its own, so what a caller that names its own
+# destination is left with is read here, on the function this file's header calls public.
+base="http://127.0.0.1:1"
+dest="$work/dest/extract-damaged"
+run ci_tools_extract "$work/payloads/wheeled.damaged.whl" wheeled-7.0.0.data/scripts/wheeled \
+  "$dest" https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
+check "ci_tools_extract called directly fails too" "$(is "$status" 1)"
+check "and leaves nothing at the destination it was given" "$(nothing_at "$dest")"
+
+echo "case: npm — the package tarball holds no such member"
+# The first of the tar arm's two outcomes: a healthy tarball the member is not in. The arm
+# cannot tell it from the case after it, so the sentence names the member and the archive,
+# claims neither cause, and leaves tar's own words on stderr to say which it was.
+origin npm-member-missing
+cp "$work/payloads/packaged.no-member.tgz" "$root/npm/@fixture/packaged/-/packaged-3.0.0.tgz"
+dest="$work/dest/npm-member-missing"
+run ci_tools_fetch_fallback packaged "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source, the member and the archive, and claims neither cause" \
+  "$(contains "$out" "^::error::ci-tools: packaged: no source served the bytes; npm: the archive at $base/npm/@fixture/packaged/-/packaged-3.0.0.tgz did not give up package/bin/packaged, $TAR_NEITHER\$")"
+check "and tar's own words are in the log" "$(contains "$out" '^tar: ')"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: pulumi-releases — the .tar.gz holds the member and its bytes are damaged"
+# The other tar outcome: the tarball does hold the member and one changed byte of its gzip
+# framing means no reader reaches it. The refusal is the sentence of the case above, word for
+# word, which is this arm's statement that it cannot tell the two apart.
+origin url-tar-damaged
+cp "$work/payloads/tarmembered.damaged.tar.gz" "$root/$TARMEMBER_URL_PATH"
+dest="$work/dest/url-tar-damaged"
+run ci_tools_fetch tarmembered "$dest"
+check "fails" "$(is "$status" 1)"
+check "is refused in the sentence the absent member above is refused in" \
+  "$(contains "$out" "^::error::ci-tools: tarmembered: no source served the bytes; pulumi-releases: the archive at https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz did not give up ./jjlike, $TAR_NEITHER\$")"
+check "and tar's own words are in the log" "$(contains "$out" '^tar: ')"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: ci_tools_extract — a destination this run cannot write"
+# Neither arm may read a destination it cannot write as a statement about the bytes an address
+# served: it is this runner — a directory that is not there, a disk that is full — and each arm
+# says so in a sentence of its own. The destination here is under a directory this file never
+# makes. These two calls read the manifest and no source, so the base is a port nothing listens
+# on.
+base="http://127.0.0.1:1"
+dest="$work/dest/no-such-directory/extract-oserror"
+run ci_tools_extract "$work/payloads/wheeled.whl" wheeled-7.0.0.data/scripts/wheeled \
+  "$dest" https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
+check "the zip arm fails" "$(is "$status" 1)"
+check "saying the archive is not what failed, and quoting python3" \
+  "$(contains "$out" "^the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl did not give up wheeled-7.0.0.data/scripts/wheeled, and the archive is not what failed: FileNotFoundError: .* That is this run itself, the destination it writes the member to or python3, so it is no signal about the bytes that address served (python3 exit 1)$")"
+check "and calls it no signal about those bytes" \
+  "$(is "$(contains "$out" "which is a signal about those bytes")" false)"
+check "and does not call the member absent" \
+  "$(is "$(contains "$out" "holds no wheeled-7.0.0.data/scripts/wheeled")" false)"
+check "and nothing is at the destination" "$(nothing_at "$dest")"
+dest="$work/dest/no-such-directory/extract-oserror-tar"
+run ci_tools_extract "$work/payloads/tarmembered.tar.gz" ./jjlike \
+  "$dest" https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
+check "the tar arm fails" "$(is "$status" 1)"
+check "saying this run cannot write the destination, and claiming nothing of the archive" \
+  "$(contains "$out" "^this run cannot write $dest, so https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz was never read for ./jjlike, and nothing here is a statement about the bytes that address served$")"
+check "and gives no exit of a tar it never ran" "$(is "$(contains "$out" "tar exit")" false)"
+check "and nothing is at the destination" "$(nothing_at "$dest")"
 
 echo "case: ci_tools_fetch_primary places the archive the primary served"
 # What .github/scripts/ci-tools-proof.sh needs: a row whose `digest` is of a member is staged as
