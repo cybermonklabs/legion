@@ -31,7 +31,7 @@
 # AGENTS.md collapsed
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue
 
-# AGENTS.md collapsed
+# AGENTS.md raw
 the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds
 
 # docs/site/src/content/docs/legion/running-legion.md collapsed
