@@ -21,18 +21,20 @@
  */
 import { expect, test } from "bun:test";
 
-import { rowsOfListing } from "../configurations";
+import {
+  pullRequestLaneProjects,
+  rowsOfListing,
+  stubProjectNames,
+  tagged,
+} from "../configurations";
 import { listing, retained } from "./playwright-listing";
-
-const laneProjects = ["chromium", "iphone", "stub", "stub-phone"] as const;
-const stubProjects: readonly string[] = ["stub", "stub-phone"];
 
 /** The rows the pull-request lane schedules, and the rows the whole suite holds, read from two
  *  listings of one config. Both start here rather than inside a test, so the second collects
  *  while the first does. */
 const lane = retained(
   listing("e2e/playwright.config.ts", {}, [
-    ...laneProjects.flatMap((project) => ["--project", project]),
+    ...pullRequestLaneProjects.flatMap((project) => ["--project", project]),
     "--grep",
     "@pr",
   ])
@@ -51,7 +53,7 @@ test(
   "the pull-request lane stays inside its budget, and inside its real-stack share",
   async () => {
     const rows = rowsOfListing(await lane);
-    const realStack = rows.filter((row) => !stubProjects.includes(row.project));
+    const realStack = rows.filter((row) => !stubProjectNames.includes(row.project));
     expect(
       rows.length,
       `The pull-request lane schedules ${rows.length} rows, and its budget is ${laneBudget}. ` +
@@ -77,9 +79,9 @@ test(
     // The stubbed layer exists to answer a pull request, so a stubbed row that the lane does not
     // schedule is a row whose cost was paid and whose feedback was given away.
     const stubbed = rowsOfListing(await everything).filter((row) =>
-      stubProjects.includes(row.project)
+      stubProjectNames.includes(row.project)
     );
-    const untagged = stubbed.filter((row) => !/(^|\s)@pr(\s|$)/.test(row.title));
+    const untagged = stubbed.filter((row) => !tagged("pr").test(row.title));
     expect(
       untagged.map((row) => `${row.file} › ${row.title}`),
       "A stubbed row with no `@pr` tag runs on the full lane alone, which is the one lane it was " +

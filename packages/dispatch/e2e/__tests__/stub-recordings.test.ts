@@ -59,6 +59,14 @@ function committedRecordings(): string[] {
   return found.sort();
 }
 
+/** The document's routes with their segments, split once. `routeOf` runs for every entry of
+ *  every recording - 2,675 entries over 154 routes today - and splitting the table inside it
+ *  cost 424 ms of this test's run against 67 ms with the split hoisted. */
+const routeTable = Object.keys(document.paths).map((route) => ({
+  route,
+  segments: route.split("/"),
+}));
+
 /** The templated route of the document that `path` is an instance of, or undefined where none
  *  is. A route's `{name}` segment takes one path segment, which is what the Go route table
  *  writes and what the generator copies. The route with the most literal segments wins, so a
@@ -67,8 +75,7 @@ function routeOf(path: string): string | undefined {
   const wanted = path.split("/");
   let best: string | undefined;
   let bestLiterals = -1;
-  for (const route of Object.keys(document.paths)) {
-    const segments = route.split("/");
+  for (const { route, segments } of routeTable) {
     if (segments.length !== wanted.length) continue;
     let literals = 0;
     let matches = true;

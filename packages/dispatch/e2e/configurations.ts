@@ -194,3 +194,26 @@ export function duplicateRows<Row extends ListedRow>(
   }
   return [...seen.values()].filter((duplicate) => duplicate.projects.length > 1);
 }
+
+/** The projects of the stubbed layer, which run a real browser against a recording of the API
+ *  (`e2e/stub/`). They are named here rather than in the config so that the config, a bun test
+ *  and a tool all read one list: a project added to the layer and missed in the budget test
+ *  would leave that test measuring a lane the shard job does not run. */
+export const stubProjectNames: readonly string[] = ["stub", "stub-phone"];
+
+/** The projects the pull-request lane runs, which is what
+ *  `.github/workflows/dispatch-browser.yaml`'s shard job names for `lane: pull-request`. The
+ *  lane is these four and the `@pr` tag; every other project, and every row without the tag,
+ *  runs on the full lane at the merge queue and on the nightly. */
+export const pullRequestLaneProjects: readonly string[] = [
+  "chromium",
+  "iphone",
+  ...stubProjectNames,
+];
+
+/** A title tag as this suite selects one: `@phone`, `@webkit`, `@firefox`, `@pr`. The pattern is
+ *  anchored so a tag matches only as a whole whitespace-separated token, never inside a longer
+ *  one such as `@phones`, `x@phone` or `@pr-only`. */
+export function tagged(tag: string): RegExp {
+  return new RegExp(`(^|\\s)@${tag}(\\s|$)`);
+}

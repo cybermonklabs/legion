@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { test as base, type Page, type TestInfo } from "@playwright/test";
 
 import { answerTo, type LiveClientFrame } from "./live-frames";
-import { canonical, type Har, normalise, retargeted, written } from "./recording";
+import { type Har, normalise, retargeted, written } from "./recording";
 
 /** Set to `1` by `bun run e2e:stub:record`: the rows run against the real harness and write what
  *  they fetched. Unset, which is every other run, they replay. */
@@ -137,12 +137,16 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
           retargeted(readFileSync(har, "utf8"), new URL(baseURL ?? "").origin)
         );
         await answerTheLiveSocket(page);
-        await answerTheBuildPoll(page);
         await page.routeFromHAR(retargetedHar, {
           notFound: "abort",
           update: false,
           url: replayedRoutes,
         });
+        // After the HAR router, deliberately: Playwright runs the last registered handler
+        // first (`page.route` unshifts, playwright-core 1.64.1 coreBundle.js:63255), and the
+        // HAR router with `notFound: "abort"` never falls through. Registered before it, this
+        // handler would never run and the build poll would be aborted rather than answered.
+        await answerTheBuildPoll(page);
         await use(JSON.parse(readFileSync(recordingPath(test, ".scene.json"), "utf8")) as Scene);
         return;
       }
@@ -177,10 +181,4 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       );
     },
   });
-}
-
-/** A recording's comparison form, read from its committed file: what the re-record job holds a
- *  fresh recording against (.github/workflows/dispatch-browser-nightly.yaml). */
-export function committedCanonical(path: string): string {
-  return canonical(JSON.parse(readFileSync(path, "utf8")) as Har);
 }

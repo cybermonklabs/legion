@@ -25,7 +25,7 @@ import { stubPort } from "./origin";
 const dist = resolve(fileURLToPath(new URL("../../web/dist", import.meta.url)));
 
 /** The content types the built SPA holds. A file whose extension is none of these is answered as
- *  bytes, which is what the browser asks of a font or a source map. */
+ *  bytes. */
 const contentTypes: Readonly<Record<string, string>> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -54,7 +54,10 @@ function fileFor(path: string): string | undefined {
   if (within.includes("..")) return undefined;
   const file = join(dist, within);
   if (!file.startsWith(`${dist}/`)) return undefined;
-  if (!existsSync(file) || !statSync(file).isFile()) return undefined;
+  // One stat, not an `existsSync` and a `statSync`: this runs for every asset of every page
+  // load, and one process serves every lane.
+  const seen = statSync(file, { throwIfNoEntry: false });
+  if (seen === undefined || !seen.isFile()) return undefined;
   return file;
 }
 
@@ -73,6 +76,14 @@ function takesTheDocument(path: string): boolean {
   return !basename(path).includes(".");
 }
 
+/** The `ETag` of each file by its path, size and modification time. A page load pulls about
+ *  2 MB of document, chunks, stylesheet and fonts, and every row opens a fresh context with an
+ *  empty cache, so hashing those bytes again for each of several hundred rows was 25 ms a row of
+ *  pure repetition - on the one process all four lanes share, which serialises them. The key
+ *  carries the stat, so a rebuilt `dist` is hashed again, which `reuseExistingServer: true`
+ *  allows. */
+const etags = new Map<string, string>();
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: stubPort(),
@@ -86,15 +97,22 @@ const server = Bun.serve({
       });
     }
     const file = found ?? join(dist, "index.html");
-    const bytes = readFileSync(file);
-    return new Response(bytes, {
+    const seen = statSync(file);
+    const key = `${file} ${seen.mtimeMs} ${seen.size}`;
+    let etag = etags.get(key);
+    if (etag === undefined) {
+      etag = `"${createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 32)}"`;
+      etags.set(key, etag);
+    }
+    // `Bun.file` hands the bytes to the kernel rather than copying them through this process.
+    return new Response(Bun.file(file), {
       headers: {
         // The Go router's two: a page is revalidated before it runs, since it names the hashed
         // assets of the build that wrote it, and a hashed asset is kept for a year.
         "cache-control":
           extname(file) === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
         "content-type": contentTypes[extname(file)] ?? "application/octet-stream",
-        etag: `"${createHash("sha256").update(bytes).digest("hex").slice(0, 32)}"`,
+        etag,
       },
     });
   },

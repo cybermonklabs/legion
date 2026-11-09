@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project } from "@playwright/test";
 import { baseUrl } from "./api";
+import { stubProjectNames, tagged } from "./configurations";
 import { targetedListeners } from "./harness-listeners";
 import {
   harnessPorts,
@@ -39,9 +40,6 @@ const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // test drops out with no failure. The pattern is anchored so a tag matches only as a whole
 // whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
 // `@webkit-iphone` or `@firefox-alone`.
-function tagged(tag: string): RegExp {
-  return new RegExp(`(^|\\s)@${tag}(\\s|$)`);
-}
 const phoneTagged = tagged("phone");
 const webkitTagged = tagged("webkit");
 const firefoxTagged = tagged("firefox");
@@ -109,7 +107,6 @@ function isListMode(argv: readonly string[]): boolean {
 // the harness still gets the line that fixes it. The reading lives here rather than in
 // e2e/run.ts because a stub-only run never goes through that wrapper, and because
 // dispatch://INFRA-1410 deletes it.
-const stubProjectNames = ["stub", "stub-phone"];
 function onlyStubProject(argv: readonly string[]): boolean {
   const separator = argv.indexOf("--");
   const scanned = separator === -1 ? argv : argv.slice(0, separator);

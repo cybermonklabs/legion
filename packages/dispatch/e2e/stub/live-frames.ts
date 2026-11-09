@@ -20,8 +20,19 @@ import { fileURLToPath } from "node:url";
 
 const fixtures = fileURLToPath(new URL("../../../contracts/fixtures/live/", import.meta.url));
 
+// One read per fixture per process: these files do not change while a run is going, and
+// `answerTo` runs inside the socket's message handler, which a 9 KB read and parse per frame
+// would block. The cached object is never handed out directly - `answerTo` spreads it - so no
+// caller can mutate what the next frame is built from.
+const loaded = new Map<string, Record<string, unknown>>();
+
 function frame(name: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(`${fixtures}${name}.json`, "utf8")) as Record<string, unknown>;
+  let held = loaded.get(name);
+  if (held === undefined) {
+    held = JSON.parse(readFileSync(`${fixtures}${name}.json`, "utf8")) as Record<string, unknown>;
+    loaded.set(name, held);
+  }
+  return held;
 }
 
 /** The first frame the server sends for a subscription of each view kind, by that kind. A kind
@@ -40,7 +51,8 @@ export interface LiveClientFrame {
 }
 
 /** What to send in answer to one frame the page sent, or undefined where the server would send
- *  nothing. Pure, so `e2e/__tests__/stub-live-frames.test.ts` reads it without a browser. */
+ *  nothing. It needs no browser and no server: it reads the committed fixtures and answers
+ *  from them, so a frame shape is decided here and not by whatever is listening. */
 export function answerTo(sent: LiveClientFrame): Record<string, unknown> | undefined {
   if (sent.type === "heartbeat") return frame("heartbeat");
   if (sent.type !== "subscribe") return undefined;
