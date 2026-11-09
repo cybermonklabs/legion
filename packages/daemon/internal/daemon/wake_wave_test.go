@@ -431,6 +431,30 @@ func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiti
 	}
 }
 
+// assertTurnsUnmoved is assertQueueLeft for a queue something may have ADDED to: every turn of
+// before is still held by its own claim at its own moment, and the rest of the queue is not read
+// at all. A wave whose released wake the next sweep arms again gains a turn while it waits
+// (awaitArmedWave), so a count of the whole queue would refuse what the daemon is right to do,
+// where this still refuses a turn that moved or a claim whose turn was taken.
+func assertTurnsUnmoved(t *testing.T, d *daemon, why string, before []api.WakeWaiting) {
+	t.Helper()
+	held := map[claim.Token]time.Time{}
+	for _, wake := range waitingWakes(t, d) {
+		held[wake.Claim] = wake.DueAt
+	}
+	for _, wake := range before {
+		at, waits := held[wake.Claim]
+		if !waits {
+			t.Fatalf("the wake of %s does not wait after %s, want the turn it held at %s: %s took nobody's turn",
+				wake.Claim, why, wake.DueAt, why)
+		}
+		if !at.Equal(wake.DueAt) {
+			t.Fatalf("the wake of %s is due at %s after %s, want the turn it already held, %s: %s moved nobody's turn",
+				wake.Claim, at, why, wake.DueAt, why)
+		}
+	}
+}
+
 // awaitWave waits until the whole wave has reserved its turn: one wake out at once, which the
 // burst lets through, and the rest waiting in the state. It returns the queue, earliest first.
 //
@@ -486,6 +510,105 @@ func awaitWave(t *testing.T, d *daemon, count int, kind supervise.WakeKind, logg
 			return len(waiting) == count-1 && slices.Equal(waiting, settled)
 		})
 	return waiting
+}
+
+// awaitArmedWave waits until every claim of tokens has a turn of kind — one the pacing holds now,
+// or one that has already run — and returns the turns the pacing still holds, earliest first,
+// with how many of the wave's wakes ran without waiting at all.
+//
+// It exists because a count of the held wakes at an instant cannot say what this test needs, and
+// three fixes went into correcting that count before the shape was read. Two things the rig's
+// forty claims do are not visible in that count. The limiter's burst belongs to the DAEMON rather
+// than to the wave — one theoretical arrival time across every lane (internal/wakepace) — so
+// which reserve of the boot goes out at once is a race between forty-one machines adopted
+// together, the forty of the wave and answeredPluginRound's relaunch. AND A RELEASED WAVE WAKE IS
+// ARMED AGAIN BY THE NEXT SWEEP: refreshPlugin returns over a claim that already holds a wake, so
+// the one claim it can re-arm is exactly the one the burst released, and it does so as soon as the
+// sweep gets a turn. On a quiet machine the wait settles before any sweep does and the held count
+// is the wave's size less one; under load the sweep lands inside the wait and the count is the
+// whole size again, a claim counted twice over two generations of its own wake.
+//
+// What cannot be unsaid by either is that a claim has had a turn. Both halves only ever grow, so
+// this wait is of a set rather than of a number, and the released claim is taken out of the turns
+// it returns: its round is open from the moment its wake ran, and the re-arm opens nothing when
+// its own turn comes (openPluginUpdate returns at once on a claim whose round is already open).
+//
+// The wave's own burst is the count this returns beside them: at most one of the wave's wakes
+// ever runs without waiting, which is true whichever of the forty-one reserves won. That the
+// first reserve of a fresh limiter is released at the caller's own now is the limiter's own
+// property and is proven there (internal/wakepace's TestFirstReserveReturnsNow and
+// TestBurstLetsItsFirstWakesGoAtOnce), not here.
+func awaitArmedWave(t *testing.T, d *daemon, tokens []claim.Token, kind supervise.WakeKind, logged *syncBuffer) ([]api.WakeWaiting, int) {
+	t.Helper()
+	var held []api.WakeWaiting
+	var ran map[claim.Token]bool
+	armed := func() int {
+		held, ran = nil, ranWakes(logged, kind)
+		for _, wake := range wakesOfKind(waitingWakes(t, d), kind) {
+			if slices.Contains(tokens, wake.Claim) && !ran[wake.Claim] {
+				held = append(held, wake)
+			}
+		}
+		armed := len(held)
+		for _, token := range tokens {
+			if ran[token] {
+				armed++
+			}
+		}
+		return armed
+	}
+	defer func() {
+		if t.Failed() {
+			t.Logf("the wave had armed %d of its %d claims: %d turns held and %d already run",
+				armed(), len(tokens), len(held), len(ran))
+			for _, wake := range waitingWakes(t, d) {
+				t.Logf("\tthe daemon holds %s %s %s due %s", wake.Kind, wake.Role, wake.Claim, wake.DueAt.Format(time.RFC3339Nano))
+			}
+			for _, line := range strings.Split(logged.String(), "\n") {
+				if strings.Contains(line, supervise.WakeRanMessage) {
+					t.Logf("\tand a wake already ran: %s", line)
+				}
+			}
+		}
+	}()
+	testwait.WithinPolling(t, 10*time.Minute, 100*time.Millisecond,
+		fmt.Sprintf("every one of the wave's %d claims to have a %s turn, held or already run", len(tokens), kind),
+		func() bool { return armed() == len(tokens) })
+	atOnce := 0
+	for _, token := range tokens {
+		if ran[token] {
+			atOnce++
+		}
+	}
+	if atOnce > 1 {
+		t.Fatalf("%d of the wave's wakes ran without waiting, want at most the one the burst lets out", atOnce)
+	}
+	return held, atOnce
+}
+
+// ranWakes is every claim of kind whose wake has already run without waiting, read from the
+// daemon's own lines (supervise.WakeRanMessage, whose fields WakeRanFields names: the claim, the
+// kind, and whether the wake waited).
+func ranWakes(logged *syncBuffer, kind supervise.WakeKind) map[claim.Token]bool {
+	ran := map[claim.Token]bool{}
+	for _, line := range strings.Split(logged.String(), "\n") {
+		if !strings.Contains(line, supervise.WakeRanMessage) {
+			continue
+		}
+		var entry struct {
+			Message string             `json:"msg"`
+			Claim   claim.Token        `json:"claim"`
+			Kind    supervise.WakeKind `json:"kind"`
+			Waited  bool               `json:"waited"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil || entry.Message != supervise.WakeRanMessage {
+			continue
+		}
+		if entry.Kind == kind && !entry.Waited {
+			ran[entry.Claim] = true
+		}
+	}
+	return ran
 }
 
 // wakesOfKind is the wakes of kind, in the order they were read.
@@ -845,7 +968,16 @@ func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
 
-	waiting := awaitWave(t, d, waveSize, supervise.WakePluginTask, logged)
+	waiting, atOnce := awaitArmedWave(t, d, tokens, supervise.WakePluginTask, logged)
+	// The wave takes the burst, here, because the boot arms all forty before any other lane of
+	// this daemon can reserve: answeredPluginRound's claim is relaunched only once the sweep has
+	// carried its answered round to an end, which is a turn of the sweep later. Asserting it
+	// rather than tolerating it is deliberate — the moments below are read as the burst's own
+	// release followed by the turns the pacing held, so a day when another lane reserves first
+	// fails here, with its count, instead of quietly moving what those moments mean.
+	if atOnce != 1 {
+		t.Fatalf("%d of the wave's wakes ran without waiting, want the one the burst lets out", atOnce)
+	}
 	for _, wake := range waiting {
 		if wake.Kind != "plugin-task" || !slices.Contains(tokens, wake.Claim) {
 			t.Fatalf("the state names a waiting wake %+v, want a plugin task of one of the wave's claims", wake)
@@ -855,13 +987,15 @@ func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
 		t.Fatalf("%d launches while the plugin wave waits, want none: the round's task wakes the session that runs", len(launched))
 	}
 	round := supervise.PluginRound(api.DaemonAPIVersion)
+	// Of the claims whose turn the pacing still holds; the one the burst released has had its
+	// turn, so its round is open from that moment and awaitArmedWave leaves it out of these.
 	for _, wake := range waiting {
 		if open := d.claim(wake.Claim).UpdateRound; open != "" {
 			t.Fatalf("%s is already in round %q while its update task waits its turn, want none until that turn", wake.Claim, open)
 		}
 	}
-	if open := openRounds(t, d, tokens, round); open != 1 {
-		t.Fatalf("%d of the wave's rounds are open while it waits, want the one the burst let out", open)
+	if open := openRounds(t, d, tokens, round); open != atOnce {
+		t.Fatalf("%d of the wave's rounds are open while it waits, want the %d the burst let out", open, atOnce)
 	}
 
 	// The sweep runs while the wave waits: it reaps again, and the round already answered is
@@ -871,13 +1005,14 @@ func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
 	testwait.Eventually(t, "the sweep's next turn to carry the answered round to its end", func() bool {
 		return d.claim(answered).UpdateRound == ""
 	})
-	if got := waitingWakes(t, d); len(got) != len(waiting) {
-		t.Fatalf("%d wakes wait after the sweep's turn, want the %d it found waiting", len(got), len(waiting))
-	}
+	// Every turn it found is still that claim's turn: the sweep moves nobody else's. The count of
+	// the whole queue is no test of that here, because the sweep may have armed the released claim
+	// again — a turn of its own at the back, and no part of these (awaitArmedWave).
+	assertTurnsUnmoved(t, d, "the sweep's turn", waiting)
 
 	moments := wakeMoments(origin, waiting)
 	assertSpread(t, "the stale-plugin wave's update tasks", moments, origin)
-	opened := 1
+	opened := atOnce
 	for _, wake := range waiting {
 		clock.advanceTo(wake.DueAt)
 		opened++
