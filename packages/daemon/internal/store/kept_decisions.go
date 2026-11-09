@@ -27,13 +27,13 @@ import (
 // that tree's next start or catch-up names it. The old architect having been prompted with it as
 // well is the lesser fault: a person's decision is never lost.
 
-// confirmationTaken is whether the delivery this claim's row holds now is a confirmed one, read
-// under that row's own lock so that no write of another transaction lands between this read and
-// the write that follows it. An unconfirmed write over such a row is the machine taking its own
-// confirmation back, which is the one write that puts back what that confirmation told
-// (holdKeptDecisions). A claim whose row holds no delivery at all — retired, or never written —
-// has no confirmation to take back.
-func confirmationTaken(ctx context.Context, db execQuerier, token claim.Token) (bool, error) {
+// deliveryConfirmed is whether the delivery this claim's row holds now is a confirmed one, read
+// under that row's own lock, so that once a row is there no write of another transaction lands
+// between this read and the write that follows it. An unconfirmed write over such a row is the
+// machine taking its own confirmation back, which is the one write that puts back what that
+// confirmation told (holdKeptDecisions). A claim whose row holds no delivery at all — retired, or
+// never written — has no confirmation to take back.
+func deliveryConfirmed(ctx context.Context, db queryRower, token claim.Token) (bool, error) {
 	var confirmed bool
 	switch err := db.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
 		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {

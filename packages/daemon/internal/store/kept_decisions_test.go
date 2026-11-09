@@ -359,8 +359,8 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 // holds: this delivery's own confirmation told the row and the machine took that confirmation
 // back.
 //
-// This package runs in CI's plain test step rather than its race step (.github/workflows/ci.yaml),
-// which is what a row with no schedule of its own asks for.
+// This test drives no goroutine, so it needs no race detector: internal/store runs in CI's plain
+// test step, not its race step (.github/workflows/ci.yaml).
 func TestADeliveryWrittenAfreshDoesNotPutBackADecisionAnotherRowTold(t *testing.T) {
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-340", "dispatch://LEGION-340/ask/ask-1"

@@ -439,7 +439,8 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // An unconfirmed write over a confirmed row is the machine taking its own confirmation back, and
 // that is the one write whose rows are put back (kept_decisions.go). It is read here, from the
 // row this write replaces and before it replaces it, since afterwards nothing says what the
-// write undid.
+// write undid. A write whose task names nothing puts nothing back either way, so it skips the
+// read.
 func putDelivery(ctx context.Context, db execQuerier, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
@@ -449,7 +450,7 @@ func putDelivery(ctx context.Context, db execQuerier, token claim.Token, d super
 	var retaken bool
 	if unconfirmed && len(kept) > 0 {
 		var err error
-		if retaken, err = confirmationTaken(ctx, db, token); err != nil {
+		if retaken, err = deliveryConfirmed(ctx, db, token); err != nil {
 			return err
 		}
 	}

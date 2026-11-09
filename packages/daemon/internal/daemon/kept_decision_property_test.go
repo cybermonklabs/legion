@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,10 @@ import (
 const (
 	keptPropertyRuns  = 30
 	keptPropertySteps = 100
+	// keptPropertyTest is the one test whose seeds LEGION_KEPT_PROPERTY_SEED and
+	// LEGION_KEPT_PROPERTY_RUNS set (keptPropertySeeds); every other driver hard-codes its own,
+	// which is what a failure's replay command has to say (keptRun.replay).
+	keptPropertyTest = "TestKeptDecisionsReachTheCurrentArchitectOnce"
 	// keptQuiesceBound caps the quiescence loop: a root whose rows and deliveries do not drain
 	// with every failure switched off is itself a failure of the invariant, reported with its
 	// trace rather than left to the package deadline.
@@ -3675,27 +3680,35 @@ func (r *keptRun) tracef(format string, args ...any) {
 	r.trace = append(r.trace, fmt.Sprintf("%3d %s", r.step, fmt.Sprintf(format, args...)))
 }
 
-// fatalf ends the run with what broke, how to replay it, the step it broke at and every operation
-// that led there. What replays a run depends on the test: a seed driver hard-codes its seeds
-// (kept_decision_handover_seeds_test.go, kept_decision_regression_seeds_test.go) and reads
-// LEGION_KEPT_PROPERTY_SEED not at all, so -run names its subtest, while
-// TestKeptDecisionsReachTheCurrentArchitectOnce takes the seed from that variable
-// (keptPropertySeeds). Either replay can take more than one run, since the two steps that run
-// rows beside each other are ordered by PostgreSQL and the Go scheduler as well as by the seed.
+// fatalf ends the run with what broke, the command that replays it, the step it broke at and
+// every operation that led there.
 func (r *keptRun) fatalf(format string, args ...any) {
 	r.t.Helper()
-	r.t.Fatalf("%s\n\nseed %d, step %d (replay with go test -run '%s' ./internal/daemon/; the seed drivers hard-code "+
-		"their seeds, and LEGION_KEPT_PROPERTY_SEED=%d names this one to TestKeptDecisionsReachTheCurrentArchitectOnce "+
-		"alone)\ntrace:\n%s",
-		fmt.Sprintf(format, args...), r.seed, r.step, keptRunPattern(r.t.Name()), r.seed, strings.Join(r.trace, "\n"))
+	r.t.Fatalf("%s\n\nseed %d, step %d (replay with %s; a replay can take more than one run, since the two steps that "+
+		"run rows beside each other are ordered by PostgreSQL and the Go scheduler as well as by the seed)\ntrace:\n%s",
+		fmt.Sprintf(format, args...), r.seed, r.step, r.replay(), strings.Join(r.trace, "\n"))
+}
+
+// replay is the command that runs this one failing subtest again. A seed driver hard-codes its
+// seeds (kept_decision_handover_seeds_test.go, kept_decision_regression_seeds_test.go) and reads
+// LEGION_KEPT_PROPERTY_SEED not at all, so -run alone names its subtest; under
+// TestKeptDecisionsReachTheCurrentArchitectOnce the subtests are the seeds that variable or
+// LEGION_KEPT_PROPERTY_RUNS makes (keptPropertySeeds), so the seed is named with it or -run
+// matches nothing and the command passes having run no test at all.
+func (r *keptRun) replay() string {
+	command := fmt.Sprintf("go test -run '%s' ./internal/daemon/", keptRunPattern(r.t.Name()))
+	if strings.HasPrefix(r.t.Name(), keptPropertyTest+"/") {
+		return fmt.Sprintf("LEGION_KEPT_PROPERTY_SEED=%d %s", r.seed, command)
+	}
+	return command
 }
 
 // keptRunPattern is go test's -run pattern for one test by its full name, each element of the
-// path anchored so that no sibling subtest runs beside it.
+// path anchored and quoted so that no sibling subtest runs beside it.
 func keptRunPattern(name string) string {
 	parts := strings.Split(name, "/")
 	for i, part := range parts {
-		parts[i] = "^" + part + "$"
+		parts[i] = "^" + regexp.QuoteMeta(part) + "$"
 	}
 	return strings.Join(parts, "/")
 }
