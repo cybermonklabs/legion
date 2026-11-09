@@ -115,9 +115,8 @@ model_id=${LEGION_E2E_MODEL_ID:-}
 claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
 omp_bin=${LEGION_E2E_OMP_PATH:-}
 claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
-# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name a service entry that sets
-# `hostaddr`, while the loopback check below reads the DSN alone: an inherited one of the three
-# would create and drop the run's database on another server.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
+# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
@@ -753,13 +752,13 @@ note "the listener on 127.0.0.1:$listener_port judges records with a ${live_wind
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
   fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
-# The run's own database is the DSN's last parameter, which libpq and pgx both read as the
-# database: a DSN whose user name holds a `?` is cut in the wrong place by a pattern, and the
-# caller's own database would be the one this run writes.
-case $pg_dsn in
-  *\?*) database_url="$pg_dsn&dbname=$database" ;;
-  *) database_url="$pg_dsn?dbname=$database" ;;
-esac
+# The run's own database as the `dbname=` of a connection string libpq rebuilds from the
+# caller's DSN and reads back (run_database_url, lib/rig.sh).
+run_database_url database_url CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
+  "the run creates and drops a database there"
+# That string holds spaces and single quotes, so the daemon's configuration file takes it as a
+# single-quoted YAML scalar, in which a single quote is written twice.
+daemon_dsn=${database_url//\'/\'\'}
 note "the daemon's store is the run's own database $database"
 echo "ok services"
 
@@ -773,7 +772,7 @@ keep_port daemon_keeper daemon_port
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $daemon_port
-postgres_dsn: $database_url
+postgres_dsn: '$daemon_dsn'
 state_dir: $state_dir
 operator_token_file: $work/operator-token
 envoy_url: http://127.0.0.1:$listener_port

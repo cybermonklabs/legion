@@ -312,6 +312,11 @@ function writeJsonWhole(file: string, value: unknown): void {
  *  is unavailable. */
 const editAttempts = 5;
 
+/** The one answer an edit of plan.md is made again for: the status and the code together, as
+ *  `packages/dispatch/e2e/api.ts` writes a refusal (`<method> <path> failed: <status> <body>`).
+ *  A 400 or a 409 whose body quotes `DOC_SERVICE_UNAVAILABLE` is another answer, and it stands. */
+const unavailable = / failed: 503 .*DOC_SERVICE_UNAVAILABLE/;
+
 /** One edit of plan.md, refused when it did not apply every op or did not mint `version`, whose
  *  summary is that version's own. The e2e client types the answer as `{ applied }` alone, so the
  *  contract's own type is what reads the minted version. `whose` names the edit in the refusal,
@@ -320,7 +325,9 @@ const editAttempts = 5;
  *  Dispatch answers an edit `503 DOC_SERVICE_UNAVAILABLE` while its document service is between
  *  states, which one seed of twelve runs met: the edit is made again, up to `editAttempts`
  *  times and a second apart, because a seed that stops there costs a whole combination of runs
- *  and says nothing about the rule under test. Every other refusal stands at the first answer.
+ *  and says nothing about the rule under test. The retry reads the status and the code together
+ *  (`unavailable`), since another status whose body quotes that code is a different answer and
+ *  stands at the first. Every other refusal stands at the first answer too.
  */
 async function editPlan(
   artifact: string,
@@ -338,7 +345,7 @@ async function editPlan(
       )) as EditArtifactResponse;
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
-      if (attempt >= editAttempts || !why.includes("DOC_SERVICE_UNAVAILABLE")) {
+      if (attempt >= editAttempts || !unavailable.test(why)) {
         fail(`${whose} was refused: ${why}`);
       }
       process.stderr.write(

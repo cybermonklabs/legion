@@ -108,9 +108,8 @@ set -Eeuo pipefail
 pg_dsn=${ENVOY_SESSION_STATES_PG_DSN:-}
 wanted=${ENVOY_SESSION_STATES_CHECKS:-}
 evidence=${ENVOY_SESSION_STATES_EVIDENCE_DIR:-}
-# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name a service entry that sets
-# `hostaddr`, while the loopback check below reads the DSN alone: an inherited one of the three
-# would create and drop the run's database on another server.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
+# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
@@ -754,13 +753,10 @@ if [ -n "$needs_dispatch" ]; then
   database=envoy_session_states_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
   psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
     fail "could not create database $database in ENVOY_SESSION_STATES_PG_DSN"
-  # The run's own database is the DSN's last parameter, which libpq and pgx both read as the
-  # database: a DSN whose user name holds a `?` is cut in the wrong place by a pattern, and the
-  # caller's own database would be the one this run writes.
-  case $pg_dsn in
-    *\?*) database_url="$pg_dsn&dbname=$database" ;;
-    *) database_url="$pg_dsn?dbname=$database" ;;
-  esac
+  # The run's own database as the `dbname=` of a connection string libpq rebuilds from the
+  # caller's DSN and reads back (run_database_url, lib/rig.sh).
+  run_database_url database_url ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
+    "the run creates and drops a database there"
   psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||
     fail "the database $database has no pgvector; ENVOY_SESSION_STATES_PG_DSN must name a PostgreSQL carrying it"
   mkdir -p "$work/web-dist"

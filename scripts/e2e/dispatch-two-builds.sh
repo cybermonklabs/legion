@@ -75,10 +75,8 @@ envoy_port=${TWO_BUILDS_ENVOY_PORT:-19073}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name a service entry that sets
-# `hostaddr`, while the loopback check below reads the DSN alone: one of the three would send the
-# reset below to another server while a server, which reads none of them, connects to the host
-# the check admitted.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: the three variables a caller of the
+# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in

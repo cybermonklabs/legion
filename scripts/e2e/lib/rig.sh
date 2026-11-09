@@ -85,6 +85,30 @@ until_true() {
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }
 
+# run_database_url VAR NAME DSN DATABASE WHAT assigns VAR the connection string that names the
+# run's own database DATABASE on the server DSN names, so nothing the run starts writes the
+# database the caller's DSN itself names. NAME is the environment variable the caller read DSN
+# from, and it starts the refusal. WHAT is what the run does on that server, in a few words. The
+# locals' names are ones no caller passes.
+#
+# lib/loopback-dsn.py does the work: it takes the keywords libpq reads from DSN, gives dbname
+# DATABASE, and writes them back as `dbname='…' host='…'`, which libpq and pgx both read
+# wherever they read a URL. libpq reads that string before the helper prints it, and a string
+# libpq reads as another database or another host is refused, naming both. A `?dbname=` appended
+# to the DSN's own text cannot do this: libpq ends the user name at the first `@`, so a `?` in
+# the user name starts no query and the separator a text rule picks there is the wrong one.
+#
+# The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE first, as every caller of the guard
+# must: scripts/e2e/README.md's lib/loopback-dsn.py section says why. A DSN the helper refuses
+# fails the run with the helper's own line, which names the host, the hostaddr or the service
+# libpq read and no other part of the DSN.
+run_database_url() {
+  local _url_var=$1 _name=$2 _dsn=$3 _database=$4 _what=$5 _answer
+  _answer=$(env "$_name=$_dsn" python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+    "$_name" "$_what" --dbname "$_database" 2>&1) || fail "$_answer"
+  printf -v "$_url_var" '%s' "$_answer"
+}
+
 # A service the run starts serves on a port the kernel chose, held from that choice until the
 # service serves on it, so no other process can take it in between (lib/held-port.py). A port
 # picked free and passed by number could be taken before the service binds it. Each helper below

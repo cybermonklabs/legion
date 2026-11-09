@@ -166,9 +166,8 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name an entry that sets `hostaddr`,
-# while the loopback check below reads the DSN alone: an inherited one of the three would make and
-# force-drop databases on another server. The `compgen -e` sweep further down makes the session's
+# The three variables a caller of the loopback guard clears, and why: scripts/e2e/README.md's
+# lib/loopback-dsn.py section. The `compgen -e` sweep further down makes the session's
 # environment, not this shell's.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 
@@ -269,17 +268,6 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# database_url NAME prints the caller's DSN with NAME as its database: NAME is appended as the
-# DSN's last parameter, which libpq and pgx both read as the database, so the DSN itself is kept
-# whole. A pattern that cut the DSN at its first `?` would cut inside a user name holding one,
-# and the run would write the caller's own database. One server, a database per run.
-database_url() {
-  case $pg_dsn in
-    *\?*) printf '%s&dbname=%s\n' "$pg_dsn" "$1" ;;
-    *) printf '%s?dbname=%s\n' "$pg_dsn" "$1" ;;
-  esac
-}
-
 # json_field FIELD FILE prints one string, number or boolean member of the JSON object FILE
 # holds. bun is already required: it runs this script's own driver.
 json_field() {
@@ -321,9 +309,7 @@ for tool in bun go git jj psql curl dispatch python3 openssl; do
 done
 # Which host the DSN names, read by libpq itself: this run creates and force-drops databases
 # there, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py, whose own
-# section of scripts/e2e/README.md says what it reads and what it refuses. The sibling proofs
-# dispatch-two-builds.sh, verification-results.sh, dispatch-claimant-delivery.sh,
-# clean-session-stop-tmux.sh and envoy-session-states.sh call the same helper.
+# section of scripts/e2e/README.md says what it reads and what it refuses.
 case "$pg_dsn" in
   postgres://* | postgresql://*) ;;
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
@@ -415,7 +401,7 @@ run_attempt() {
   local arm=$1 number=$2 module=$3 attempt=$4
   local run="$arm-$number try $attempt" run_dir=$work/$arm-$number-try$attempt
   # The database is this attempt's own, named for this shell, and dropped when the attempt ends.
-  local database=ppd_${$}_${arm}_${number}_${attempt} dispatch_port dispatch_url issue title
+  local database=ppd_${$}_${arm}_${number}_${attempt} database_url dispatch_port dispatch_url issue title
   local versions approved status=0
   local session_id=plan-pointer-drive-$arm-$number-try$attempt
   local -a session_env
@@ -428,11 +414,15 @@ run_attempt() {
     >>"$run_dir/logs/postgres.log" 2>&1 ||
     fail "could not create the database $database on LEGION_TEST_PG_DSN; see $run_dir/logs/postgres.log"
   databases+=("$database")
+  # The run's own database as the `dbname=` of a connection string libpq rebuilds from the
+  # caller's DSN and reads back (run_database_url, lib/rig.sh).
+  run_database_url database_url LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
+    "this run creates and force-drops databases there"
   note "database $database"
   pass
 
   begin "$run dispatch"
-  DATABASE_URL=$(database_url "$database") FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 \
+  DATABASE_URL=$database_url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 \
     DISPATCH_E2E_AGENT_SECRETS_URL='' \
     start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 600 "Dispatch to report its port" \
