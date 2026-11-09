@@ -58,8 +58,10 @@ launcher_account=system:serviceaccount:example-system:example-launcher
 # service below: that binding is the deployment saying the launcher launches those pods, and
 # without it the launcher's own token login enrols its own pod alone and every seeded pod is
 # refused 403 POD_NOT_LAUNCHED (enroll.Service.podUnderTokenLogin). It is a different account
-# from launcher_account, which it must be: the broker refuses a BROKER_SERVICE_LOGINS account
-# that BROKER_SERVICES also binds for that service's pods.
+# from launcher_account because the launcher does not run as it: a BROKER_SERVICE_LOGINS account
+# that BROKER_SERVICES also binds for that service's pods is a pod enrolling itself, which
+# reaches the one pod whose token made the login and no other, while this stack drives the
+# launcher enrolling the worker pods.
 pod_account=system:serviceaccount:example:example-worker
 dispatch_account=system:serviceaccount:example-ns:example-dispatch
 

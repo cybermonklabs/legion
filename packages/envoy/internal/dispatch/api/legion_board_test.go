@@ -715,6 +715,7 @@ func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) 
 // the issue below it in the same tree as the metrics.
 func TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	rig := newHubRig(t, nil)
+	holdAGeneration(t, rig)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -744,15 +745,7 @@ func TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	// resolves, so no issue carries phase work by the first event any more.
 	seedLegionRoleEvent(t, rig.database, "INFRA-861", "s-860", "implementer", "INFRA-861", hourAgo)
 	seedLegionRoleEvent(t, rig.database, "INFRA-862", "s-860", "implementer", "INFRA-862", now.Add(-30*time.Minute))
-	var newest int64
-	if err := rig.database.Pool.QueryRow(t.Context(), `select max(id) from events`).Scan(&newest); err != nil {
-		t.Fatalf("read the newest event: %v", err)
-	}
-	start := rig.mark()
-	notifyChannel(t, rig.database, EventsChannel, "")
-	rig.waitFor(t, start, eventFeedWait, "the catch-up over the two events", func(note deliveryHubNote) bool {
-		return note.what == "events caught up" && note.through >= newest
-	})
+	rig.applyEvents(t, "the two events the rename wrote")
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
@@ -803,8 +796,20 @@ func legionBoardOnTheHub(t *testing.T, rig *hubRig, project string) legionBoardR
 	return legionBoardCompute(population, time.Now().UTC())
 }
 
-// applyEvents wakes the hub and waits until its event cursor has reached the log's head, so
-// every event the test wrote has been applied.
+// holdAGeneration keeps one generation of the hub running for the rest of the test: nothing of
+// the hub runs while no conn holds a sub (deliveryHub.Subscribe), and these tests read what the
+// event feed does to the phase-work set rather than what any view answers. The sub is a
+// timeline view, which reads no Legion board, so every board read here is the test's own, and
+// the generation stands from before the events the test writes, so the feed carries them.
+func holdAGeneration(t *testing.T, rig *hubRig) {
+	t.Helper()
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("hold", presetView(deliveryLiveTimeline, 7, "")))
+	t.Cleanup(func() { rig.hub.Close(conn) })
+}
+
+// applyEvents wakes the relay the hub reads its events from and waits until the hub holds every
+// event the test wrote. The generation holdAGeneration started is what applies them.
 func (r *hubRig) applyEvents(t *testing.T, what string) {
 	t.Helper()
 	head := eventHead(t, r.database)
@@ -825,6 +830,7 @@ func (r *hubRig) applyEvents(t *testing.T, what string) {
 // would not.
 func TestAnOrdinarySessionsEventLeavesThePhaseWorkSetCurrent(t *testing.T) {
 	rig := newHubRig(t, nil)
+	holdAGeneration(t, rig)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -853,6 +859,7 @@ func TestAnOrdinarySessionsEventLeavesThePhaseWorkSetCurrent(t *testing.T) {
 // board read after each answers the set as it stands.
 func TestALegionTitleAndARenameMarkThePhaseWorkSetStale(t *testing.T) {
 	rig := newHubRig(t, nil)
+	holdAGeneration(t, rig)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
