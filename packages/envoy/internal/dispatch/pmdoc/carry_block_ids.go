@@ -224,8 +224,9 @@ func unchangedAttrs(nodeType string, next, live Attrs) bool {
 		return attrsEqualButBlockID(next, live)
 	}
 	if id, _ := next[BlockIDAttr].(string); id == "" {
-		return attrsEqualOutsideServerStateBut(nodeType, next, live, func(name string) bool {
-			return name == BlockIDAttr || IsAnswerAttribute(name)
+		typ, _ := typedBlock(nodeType)
+		return attrsEqualBut(next, live, func(name string) bool {
+			return name == BlockIDAttr || typ.Attributes.Get(name).Server
 		})
 	}
 	return attrsEqualOutsideServerState(nodeType, next, live)
