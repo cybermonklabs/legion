@@ -349,6 +349,7 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 		"notifications.whatsapp.>",
 		"notifications.envoy.exceptions.notifications.agent.>",
 		"notifications.envoy.kept.>",
+		"notifications.envoy.resume.>",
 	}
 	if !reflect.DeepEqual(streamCfg.Subjects, wantSubjects) {
 		t.Fatalf("stream subjects = %v, want %v", streamCfg.Subjects, wantSubjects)

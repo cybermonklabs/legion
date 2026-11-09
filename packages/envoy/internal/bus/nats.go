@@ -1687,8 +1687,8 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 // sendStored publishes data to subject on the notification stream under options, once more if the
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge or
 // ErrStreamFull it is. It is the one send of the stored path: its callers (publishJetStreamOn,
-// PublishCursorAt) bound ctx, connected first and pass nats.Context(ctx) among the options, so the
-// acknowledgement wait ends with that bound.
+// PublishCursorAt, PublishRecord) bound ctx, connected first and pass nats.Context(ctx) among the
+// options, so the acknowledgement wait ends with that bound.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)
@@ -1740,6 +1740,32 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 	ack, err := c.sendStored(ctx, subject, data, nats.Context(ctx), nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
 		return 0, cursorMoved(err)
+	}
+	return ack.Sequence, nil
+}
+
+// PublishRecord publishes the raw bytes data to the notification stream on subject - bytes of a
+// listener's own record rather than an envelope - and returns the sequence the stream stored them
+// at. It is PublishCursorAt's send without the precondition, so the newest write stands whoever
+// made it: a record whose one writer keeps no sequence to write against, such as a session's
+// resume floor (SessionResumeSubject), is written with this, and a record two writers race over
+// is written with PublishCursorAt, which takes the precondition that decides between them.
+//
+// Its failures are the publish path's: ErrPublishDenied for a write the connection's user may not
+// make, ErrTooLarge for a subject or body past the server's bounds, ErrStreamFull while the
+// stream holds its byte limit, and ctx's error when ctx ends first.
+func (c *Client) PublishRecord(ctx context.Context, subject string, data []byte) (uint64, error) {
+	if err := checkSubject(subject); err != nil {
+		return 0, err
+	}
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	defer cancel()
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return 0, err
+	}
+	ack, err := c.sendStored(ctx, subject, data, nats.Context(ctx))
+	if err != nil {
+		return 0, err
 	}
 	return ack.Sequence, nil
 }
