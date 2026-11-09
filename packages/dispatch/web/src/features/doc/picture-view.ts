@@ -7,9 +7,9 @@ import { pictureClassName } from "../refs/DispatchPicture";
 import { isPlainClick, openPictureLightbox } from "../refs/picture-lightbox";
 import {
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
   pictureReference,
+  safeReferencePath,
   shortForm,
 } from "../refs/routes";
 
@@ -25,7 +25,13 @@ function fallbackLink(
   placeCaretAfter: () => void
 ): HTMLAnchorElement {
   const link = document.createElement("a");
-  link.setAttribute("href", buildReferencePath(route));
+  // The reference behind this route came out of the document's own text, so the path goes into
+  // the href only as a path of this app (`safeReferencePath`); one that is not leaves the words
+  // and `data-dispatch-href` without a link to follow.
+  const path = safeReferencePath(route);
+  if (path !== undefined) {
+    link.setAttribute("href", path);
+  }
   link.dataset.dispatchHref = buildDispatchReference(route);
   link.textContent = shortForm(route);
   // Not a drag source: the wrapper (ProseMirror's draggable leaf root) is, so a drag that starts

@@ -834,6 +834,35 @@ describe("DispatchClient", () => {
     }
   }, 5_000);
 
+  // `baseUrl` is this library's own input: a caller hands it whatever its configuration names
+  // (`DISPATCH_URL`, `envoy.url`, a checkout's `.envoy/envoy.json`). Dropping the slashes it
+  // ends in costs one reading of it, where `/\/+$/` costs its length squared: the pattern is
+  // unanchored on the left, so the engine starts a search at every slash of a run and walks the
+  // run from each one, which a run of 50,000 slashes that is not at the end of the URL - the
+  // shape the second client here is built on - pays about six seconds for in this runtime. The
+  // row's own second is the bound on that work, and nothing here reads a clock.
+  test("drops the slashes a base URL ends in, for the cost of reading it once", async () => {
+    const slashes = "/".repeat(50_000);
+    const { fetchImpl, requests } = fakeFetch([
+      jsonResponse({ ok: true }),
+      jsonResponse({ ok: true }),
+    ]);
+    const trimmed = new DispatchClient(`http://x${slashes}`, bearerCredential("secret"), fetchImpl);
+    const inTheMiddle = new DispatchClient(
+      `http://x/${slashes}y`,
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await trimmed.getIssue("DSP-1");
+    await inTheMiddle.getIssue("DSP-1");
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://x/api/v1/issues/DSP-1",
+      `http://x/${slashes}y/api/v1/issues/DSP-1`,
+    ]);
+  }, 1_000);
+
   // The excerpt reads at most the first 64 KiB of the body, so what it costs has a bound however
   // large the body is. Redacting the bearer shortens the text, so it runs on that slice: redacting
   // the whole body first pulls text from past the limit into the excerpt, and a slice cut through

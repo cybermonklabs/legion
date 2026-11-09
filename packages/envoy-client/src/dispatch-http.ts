@@ -81,6 +81,7 @@ import {
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
+import { withoutTrailingSlashes } from "./dispatch-config";
 
 export type {
   CredentialPendingResponse,
@@ -788,7 +789,7 @@ export class DispatchClient {
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
   }

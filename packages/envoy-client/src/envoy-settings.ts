@@ -5,6 +5,7 @@ import {
   brokerCredential,
   brokerRouteConfigured,
 } from "./broker-credential";
+import { withoutTrailingSlashes } from "./dispatch-config";
 import {
   type EnvoyConfig,
   type EnvoyConfigEnvironment,
@@ -221,7 +222,7 @@ function natsServerKey(url: string): string {
   );
   if (match === null) return url;
   const [, scheme = "", userinfo = "", host = "", port = "4222", rest = ""] = match;
-  return `${scheme.toLowerCase()}://${userinfo}${host.toLowerCase()}:${port}${rest.replace(/\/+$/, "")}`;
+  return `${scheme.toLowerCase()}://${userinfo}${host.toLowerCase()}:${port}${withoutTrailingSlashes(rest)}`;
 }
 
 /** The NATS user's seed: `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED`, else the section's
@@ -396,5 +397,5 @@ export function envoySettings(
 }
 
 export function normalizeEnvoyUrl(value: string): string {
-  return value.replace(/\/+$/, "");
+  return withoutTrailingSlashes(value);
 }

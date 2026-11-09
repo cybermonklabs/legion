@@ -4,10 +4,11 @@ import { borderDefault } from "../../theme/classes";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
+  isSafeAppPath,
   nodeRouteFromHref,
   referenceRouteFromHref,
+  safeReferencePath,
 } from "./routes";
 import { readTextReferences, type TextReferenceFacts } from "./text-references";
 
@@ -65,7 +66,10 @@ export function RefLink({
   const { picture, title } = useReferenceTarget(route, { text: false });
   const path = useReferencePath(route);
   useLayoutEffect(() => {
-    if (anchor instanceof HTMLAnchorElement) {
+    // The route behind this path was read out of a body's own text, so the path goes into the
+    // href only as a path of this app (`isSafeAppPath`), as it does at every other href this
+    // module writes.
+    if (anchor instanceof HTMLAnchorElement && isSafeAppPath(path)) {
       anchor.setAttribute("href", path);
     }
   }, [anchor, path]);
@@ -189,7 +193,7 @@ function isTextUrl(target: string, text: string): boolean {
  * Finds every already-rendered `<a>` in root whose href is a dispatch:// reference or a
  * same-origin dashboard path — a link `linkifyDispatchRefs` just inserted, an ordinary Markdown
  * link a user wrote by hand, or a bare `http(s)://` URL remark-gfm autolinked — rewrites its href
- * to the SPA route via `buildReferencePath`, and clears its text so the caller can
+ * to the SPA route via `safeReferencePath`, and clears its text so the caller can
  * portal a `RefLink` in to render the resolved title. A URL its author left as text
  * (`isTextUrl`) is read as the server's `text.Extract` reads text (`referenceRouteFromHref`): one
  * whose block is past the bounds the index keys names its document, as the server cites it; an
@@ -234,7 +238,13 @@ export function collectReferenceAnchors(
       }
       continue;
     }
-    anchor.setAttribute("href", buildReferencePath(route));
+    const path = safeReferencePath(route);
+    if (path === undefined) {
+      // The href this anchor already carries is the author's own, and no path of this app was
+      // built from it: it stays the link it is, as an external one does.
+      continue;
+    }
+    anchor.setAttribute("href", path);
     const reference = buildDispatchReference(route);
     anchor.setAttribute("data-dispatch-ref", reference);
     anchor.replaceChildren();

@@ -140,11 +140,24 @@ function caretIn(view: EditorView, index: number, offset: number): void {
   view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)));
 }
 
+/** The characters `node` holds, read off Yjs: a text's own inserts, and what everything under
+ *  an element or a fragment holds. Stripping tags out of a `toString()` answers with text that
+ *  is not the text, since the serialization spells a block's own `<script>` the way it spells
+ *  the block, and a row would then pass on a document it never read. */
+function textOf(node: Y.XmlFragment | Y.XmlText | Y.XmlHook): string {
+  if (node instanceof Y.XmlText) {
+    const delta = node.toDelta() as { insert?: unknown }[];
+    return delta.map(({ insert }) => (typeof insert === "string" ? insert : "")).join("");
+  }
+  // A `Y.XmlElement` is a `Y.XmlFragment`, so this arm is both.
+  return node instanceof Y.XmlFragment ? node.toArray().map(textOf).join("") : "";
+}
+
 /** The text of the Yjs document's top-level block `index`, which is what a reader's edit has to
  *  reach: read off the fragment itself, so nothing of the editor's own state is in the answer. */
 function blockText(fragment: Y.XmlFragment, index: number): string {
   const block = fragment.get(index);
-  return block === undefined ? "" : block.toString().replace(/<[^>]*>/g, "");
+  return block === undefined ? "" : textOf(block);
 }
 
 /** The text of every top-level block of the Yjs document. */
@@ -582,6 +595,20 @@ describe("another person's change while the batches run", () => {
     expect(built.blocks).toBe(BLOCKS + 1);
     expect(built.markdown).toContain("Pangolin.");
     expect(built.text).toContain(paragraph(BLOCKS - 1));
+  });
+
+  test("keeps a block whose words are tag-shaped, as the characters they are", async () => {
+    let written = "";
+    const built = await build(paragraphs(BLOCKS), ({ fragment, ydoc }) => {
+      const peer = peerOf(ydoc);
+      peer.getXmlFragment("prosemirror").insert(1, [paragraphBlock("tag-shaped", "<script>")]);
+      sendToTheEditor(peer, ydoc);
+      written = blockText(fragment, 1);
+    });
+
+    expect(written).toBe("<script>");
+    expect(built.documentAfter[1]).toBe("tag-shaped:<script>");
+    expect(built.blocks).toBe(BLOCKS + 1);
   });
 
   test("takes a block they remove from the built run out of the editor", async () => {

@@ -672,10 +672,10 @@ const APP_PATH_BASE = "https://dispatch.invalid";
  * the path and comparing origins is what refuses that one, and anything else a parser reads
  * otherwise than the characters suggest.
  *
- * Every builder below returns such a path for every route it knows, and this is what says so at
- * the one place a path becomes a link a reader can press. The rule a new route kind has to keep is
- * here, in front of the sink, rather than spread over the builders where the next one would miss
- * it.
+ * Every builder below returns such a path for every route it knows, and this is what says so
+ * wherever a path becomes a link a reader can press: `safeReferencePath` is how each of those
+ * places asks. The rule a new route kind has to keep is here, in front of the sink, rather than
+ * spread over the builders where the next one would miss it.
  */
 export function isSafeAppPath(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//")) {
@@ -686,6 +686,21 @@ export function isSafeAppPath(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The path `route` opens, or undefined when what the builders made is not a path of this app.
+ *
+ * A route is read out of text a reader wrote or out of an anchor the page already holds, and the
+ * path built from it is written into an `href`. Every such place builds its path here, so the
+ * guard cannot be the one a new sink forgets.
+ */
+export function safeReferencePath(
+  route: DispatchReferenceRoute,
+  specSlug?: string
+): string | undefined {
+  const path = buildReferencePath(route, specSlug);
+  return isSafeAppPath(path) ? path : undefined;
 }
 
 /**
@@ -705,8 +720,8 @@ export function composerReferences(
       continue;
     }
     // The pill is a link, and the text behind this route is the reader's own.
-    const href = buildReferencePath(route);
-    if (!isSafeAppPath(href)) {
+    const href = safeReferencePath(route);
+    if (href === undefined) {
       continue;
     }
     const reference = buildDispatchReference(route);
@@ -977,8 +992,12 @@ export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: str
     : `${buildIssuePath({ key: route.key, kind: "artifact", slug })}?v=${target.pin}`;
 }
 
+/** The key is encoded like every other part a route carries, though the shape a key is read
+ *  against (`[A-Z][A-Z0-9]{1,9}`, and an issue's number after it) leaves it as it stands: a path
+ *  these builders make then has no substring in it that went through no encoder, so nothing a
+ *  route holds can read as part of the path around it. */
 export function buildIssuePath(route: IssueRoute): string {
-  const issue = `/issues/${route.key}`;
+  const issue = `/issues/${encodeURIComponent(route.key)}`;
   if (route.kind === "issue") {
     return issue;
   }
@@ -1003,8 +1022,9 @@ export function buildIssuePath(route: IssueRoute): string {
   return `${issue}/${segment}/${encodeURIComponent(route.id)}`;
 }
 
+/** The project key passes the same encoder, for the reason `buildIssuePath` gives. */
 export function buildProjectPath(route: ProjectRoute): string {
-  const project = `/projects/${route.project}`;
+  const project = `/projects/${encodeURIComponent(route.project)}`;
   if (route.kind === "project") {
     return project;
   }

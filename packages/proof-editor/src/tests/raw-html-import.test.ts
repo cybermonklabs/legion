@@ -92,6 +92,21 @@ await test("with rawHtml 'text', a body that is one raw-HTML line draws that lin
   );
 });
 
+await test("with rawHtml 'text', an opener the body leaves open or re-forms at a seam draws as nothing", async () => {
+  const { parseMarkdown } = await createHeadlessProof();
+  // The two shapes one pass over the value leaves an opener behind in, drawn as text where
+  // GitHub draws nothing: a comment the body never closes (the whole line is one HTML block,
+  // CommonMark block type 2 ending at the line that holds a `-->`), and one the removal of the
+  // comment inside it spells at the seam, `<!` meeting `--`, which no further pass matches.
+  for (const body of ['<!-- a --><!-- b', '<details>\n<!<!---->--\n</details>']) {
+    const drawn = blocksOf(parseMarkdown(body, 'space', 'text')).join('|');
+    assert(
+      !drawn.includes('<!--'),
+      `Expected no comment opener drawn for ${JSON.stringify(body)}, got ${JSON.stringify(drawn)}`,
+    );
+  }
+});
+
 await test('a parse with no policy draws raw HTML as its own text and writes it back unchanged', async () => {
   const { parseMarkdown, serializeMarkdown } = await createHeadlessProof();
   // A document passes no policy. Its block of raw HTML is drawn as a paragraph holding the same

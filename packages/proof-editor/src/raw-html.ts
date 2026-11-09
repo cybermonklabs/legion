@@ -23,9 +23,92 @@
 
 import type { MdastNode } from "./typed-block-drawing.js";
 
-/** One HTML comment, the one raw HTML that draws as nothing. Non-greedy, so two comments on a
- *  line are two matches rather than one spanning the text between them. */
-const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+/** The two ends of an HTML comment, the one raw HTML that draws as nothing. */
+const OPENER = "<!--";
+const CLOSER = "-->";
+
+/** Drops the last `count` characters of the text `kept` spells. */
+function dropFromEnd(kept: string[], count: number): void {
+  let left = count;
+  while (left > 0 && kept.length > 0) {
+    const piece = kept[kept.length - 1];
+    if (piece.length > left) {
+      kept[kept.length - 1] = piece.slice(0, piece.length - left);
+      return;
+    }
+    kept.pop();
+    left -= piece.length;
+  }
+}
+
+/**
+ * `value` with the comments in it gone.
+ *
+ * What the scan reads to decide is what it has kept, not what it has read, because dropping a
+ * comment joins the text on either side of it and the join can spell an opener that stood in
+ * neither half: drop the `<!---->` of `<!<!---->--` and `<!` meets `--`. A pass over the value -
+ * one `replace`, or any number of them, since what is left holds no `-->` for a second pass to
+ * match - writes that opener out as text, where remark and a browser read a comment starting.
+ * For the same reason an opener the value never closes takes the rest of the value rather than
+ * drawing as the characters its author typed, which is how both read it too.
+ *
+ * What is kept is held as pieces of `value`. A string built up a character at a time is copied
+ * whole every time its end is examined, which costs a value of n characters n², and a body may
+ * hold a long one; the seam a dropped comment leaves is three characters wide, so those three
+ * are read back out of the pieces instead.
+ */
+function withoutComments(value: string): string {
+  if (!value.includes(OPENER)) return value;
+  const kept: string[] = [];
+  /** The piece of `value` not yet kept: it begins at `from`, and the reading stands at `at`. */
+  let from = 0;
+  let at = 0;
+  /** The character `back` places before the end of what is kept, the piece being read included,
+   *  or "" before the start of it. */
+  const before = (back: number): string => {
+    let left = back;
+    if (left < at - from) return value[at - 1 - left];
+    left -= at - from;
+    for (let piece = kept.length - 1; piece >= 0; piece -= 1) {
+      const text = kept[piece];
+      if (left < text.length) return text[text.length - 1 - left];
+      left -= text.length;
+    }
+    return "";
+  };
+  /** How many of an opener's characters are kept already where the reading stands: 1, 2 or 3 at
+   *  a seam, else 0. A whole one is impossible, each being dropped as it appears. */
+  const straddling = (): number => {
+    for (let taken = OPENER.length - 1; taken > 0; taken -= 1) {
+      let spelled = true;
+      for (let index = 0; index < OPENER.length && spelled; index += 1) {
+        spelled =
+          index < taken
+            ? before(taken - 1 - index) === OPENER[index]
+            : value[at + index - taken] === OPENER[index];
+      }
+      if (spelled) return taken;
+    }
+    return 0;
+  };
+  for (;;) {
+    const taken = straddling();
+    if (taken === 0) {
+      const opener = value.indexOf(OPENER, at);
+      if (opener < 0) break;
+      at = opener;
+    }
+    kept.push(value.slice(from, at));
+    dropFromEnd(kept, taken);
+    at += OPENER.length - taken;
+    const closer = value.indexOf(CLOSER, at);
+    if (closer < 0) return kept.join("");
+    at = closer + CLOSER.length;
+    from = at;
+  }
+  kept.push(value.slice(from));
+  return kept.join("");
+}
 
 /**
  * The mdast parents whose children are blocks, where an `html` node stands for a line of raw
@@ -70,7 +153,7 @@ function rewrite(node: MdastNode): void {
     kept ??= children.slice(0, index);
     // What the raw HTML shows: itself without the comments in it, which draw as nothing. Raw
     // HTML that was nothing but comments shows nothing, so its node goes.
-    const shown = (child.value ?? "").replace(HTML_COMMENT, "").trim();
+    const shown = withoutComments(child.value ?? "").trim();
     if (shown === "") continue;
     child.value = shown;
     kept.push(amongBlocks ? { type: "paragraph", children: [child] } : child);
