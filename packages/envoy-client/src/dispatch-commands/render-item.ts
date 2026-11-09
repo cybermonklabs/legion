@@ -1,5 +1,6 @@
 import type {
   AskRead,
+  AskWithTrees,
   BlockPath,
   Comment,
   CommentRead,
@@ -8,7 +9,6 @@ import type {
   MessageRead,
   OpenAsk,
   OpenAsksResponse,
-  ShapedAsk,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -96,7 +96,7 @@ export function askSummary(
  *  no block: the line above it is that part. A graph the server could not serve is passed on as
  *  it is, and so is one read of an ask whose parts carry no id. */
 function askPartEdges(
-  ask: ShapedAsk,
+  ask: AskWithTrees,
   incoming: GraphReferences | string
 ): { at: Map<string, GraphEdge[]>; rest: GraphReferences | string } {
   const ids = new Set(

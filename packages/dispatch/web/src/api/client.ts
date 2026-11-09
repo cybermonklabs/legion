@@ -30,11 +30,8 @@ import { reachable, routeOf, unreachable } from "./reachability";
 import type {
   ArtifactVersionContent,
   ArtifactVersionText,
-  ArtifactWithTrees,
-  AskWithTrees,
   AuthenticatedUser,
   BlockSchema,
-  CommentWithTrees,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
@@ -846,10 +843,12 @@ export class DispatchApiClient {
 
   /** One read of a route the document holds, named by its own path pattern: `params` fills the
    *  pattern's `{name}`s and `query` its query parameters, and what it answers is the document's
-   *  `200` body for that route. A read states a response shape of its own only where the
-   *  document cannot hold it: the display trees Dispatch adds to every stored text it answers
-   *  this client with (`Dispatch-Trees`, in `answered`) are no part of the route table, so those
-   *  reads name the `WithTrees` reading of the same body and go through `json` with `routeUrl`. */
+   *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
+   *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
+   *  shaped read, so the trees are part of the body the document holds. A read states a response
+   *  shape of its own only where the document cannot hold it - `getBlockSchema`,
+   *  `getIssueEvents` and `listIssueAskThreads`, each saying beside it what that is - and those
+   *  three go through `json` with `routeUrl`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1199,10 +1198,8 @@ export class DispatchApiClient {
     );
   }
 
-  listComments(key: string, artifact?: string): Promise<CommentWithTrees[]> {
-    return this.json<CommentWithTrees[]>(
-      routeUrl("/api/v1/issues/{key}/comments", { key }, { artifact })
-    );
+  listComments(key: string, artifact?: string) {
+    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
   }
 
   createComment(
@@ -1318,14 +1315,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/handoffs/{id}", { id });
   }
 
-  listArtifacts(key: string): Promise<ArtifactWithTrees[]> {
-    return this.json<ArtifactWithTrees[]>(routeUrl("/api/v1/issues/{key}/artifacts", { key }));
+  listArtifacts(key: string) {
+    return this.read("/api/v1/issues/{key}/artifacts", { key });
   }
 
-  listProjectArtifacts(key: string, unlinked?: boolean): Promise<ArtifactWithTrees[]> {
-    return this.json<ArtifactWithTrees[]>(
-      routeUrl("/api/v1/projects/{key}/artifacts", { key }, { unlinked })
-    );
+  listProjectArtifacts(key: string, unlinked?: boolean) {
+    return this.read("/api/v1/projects/{key}/artifacts", { key }, { unlinked });
   }
 
   uploadArtifact(owner: ArtifactOwner, input: CreateArtifactInput, bounds: WriteBounds) {
@@ -1344,14 +1339,12 @@ export class DispatchApiClient {
     );
   }
 
-  getArtifact(id: string): Promise<ArtifactWithTrees> {
-    return this.json<ArtifactWithTrees>(routeUrl("/api/v1/artifacts/{id}", { id }));
+  getArtifact(id: string) {
+    return this.read("/api/v1/artifacts/{id}", { id });
   }
 
-  getProjectArtifact(key: string, slug: string): Promise<ArtifactWithTrees> {
-    return this.json<ArtifactWithTrees>(
-      routeUrl("/api/v1/projects/{key}/artifacts/{slug}", { key, slug })
-    );
+  getProjectArtifact(key: string, slug: string) {
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}", { key, slug });
   }
 
   /** What a reference to a project document shows: name, kind and latest version, without its
@@ -1361,10 +1354,11 @@ export class DispatchApiClient {
   }
 
   /** An artifact of an agent's conversation, with its versions. */
-  getAgentArtifact(sessionId: string, slug: string): Promise<ArtifactWithTrees> {
-    return this.json<ArtifactWithTrees>(
-      routeUrl("/api/v1/agents/{session_id}/artifacts/{slug}", { session_id: sessionId, slug })
-    );
+  getAgentArtifact(sessionId: string, slug: string) {
+    return this.read("/api/v1/agents/{session_id}/artifacts/{slug}", {
+      session_id: sessionId,
+      slug,
+    });
   }
 
   getArtifactText(id: string) {
@@ -1446,11 +1440,8 @@ export class DispatchApiClient {
     return this.post("/api/v1/artifacts/{id}/reviews", { id }, input, bounds);
   }
 
-  listArtifactAsks(
-    id: string,
-    state: "all" | "open" | "answered" = "all"
-  ): Promise<AskWithTrees[]> {
-    return this.json<AskWithTrees[]>(routeUrl("/api/v1/artifacts/{id}/asks", { id }, { state }));
+  listArtifactAsks(id: string, state: "all" | "open" | "answered" = "all") {
+    return this.read("/api/v1/artifacts/{id}/asks", { id }, { state });
   }
 
   createArtifactAsk(
@@ -1461,8 +1452,8 @@ export class DispatchApiClient {
     return this.post("/api/v1/artifacts/{id}/asks", { id }, input, bounds);
   }
 
-  listArtifactComments(id: string): Promise<CommentWithTrees[]> {
-    return this.json<CommentWithTrees[]>(routeUrl("/api/v1/artifacts/{id}/comments", { id }));
+  listArtifactComments(id: string) {
+    return this.read("/api/v1/artifacts/{id}/comments", { id });
   }
 
   createArtifactComment(

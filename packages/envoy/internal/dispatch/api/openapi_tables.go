@@ -57,6 +57,30 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
 	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
 
+	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
+	// is the stored row with the display tree of every text it shows beside that text. Their Go
+	// names say that this package shaped them; the names here are the ones main's TypeScript
+	// published and a consumer imports, which
+	// packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml announces.
+	// Declared under their Go names, every one of these shapes would reach a client under two
+	// exported names at once: the generated one and the published one aliasing it.
+	reflect.TypeOf(shapedAsk{}):               "AskWithTrees",
+	reflect.TypeOf(askOptionRead{}):           "AskOptionWithTrees",
+	reflect.TypeOf(model.AskAnswerWithTree{}): "AskAnswerWithTrees",
+	reflect.TypeOf(askResolutionRead{}):       "AskResolutionWithTrees",
+	reflect.TypeOf(askEditRead{}):             "AskEditWithTrees",
+	reflect.TypeOf(askEditPreviousRead{}):     "AskEditPreviousWithTrees",
+	reflect.TypeOf(shapedComment{}):           "CommentWithTrees",
+	reflect.TypeOf(shapedMessage{}):           "MessageWithTrees",
+	reflect.TypeOf(replyBlockRead{}):          "ReplyBlockWithTrees",
+	reflect.TypeOf(artifactRead{}):            "ArtifactWithTrees",
+	reflect.TypeOf(artifactApprovalRead{}):    "ArtifactApprovalWithTrees",
+	// The two whose published name is the model's own rather than a `WithTrees` of it: the
+	// shaping is the whole body either route answers, so a client that reads an architecture
+	// tree or a node's references reads one of these and never the model behind it.
+	reflect.TypeOf(architectureTreeRead{}): "ArchitectureTree",
+	reflect.TypeOf(graphReferencesRead{}):  "GraphReferences",
+
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports
 	// (packages/contracts/.changes/unreleased/pr2234-added-1.yaml announces them).
@@ -172,47 +196,6 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): " +
 			"an artifact is made the issue's spec at issue creation and never by an upload",
 	}},
-	// Every display tree a read carries. A tree is held as bytes because the handler neither
-	// parses nor reshapes what pmdoc wrote, so the field reflects to no schema and the document
-	// would say of it only that it is JSON; a client would then read it as `unknown` and no
-	// reader could draw it. The fragment says what those bytes are, once, for all twenty.
-	{reflect.TypeOf(artifactText{}), "markdown_tree"}:        rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(artifactVersionText{}), "markdown_tree"}: rawField{Fragment: openAPIDisplayTree},
-	// A row names the shape the route answers, not the struct the field is declared in: an
-	// embedded struct is flattened into its embedder, so the three broadcast reads each carry
-	// the one `body_tree` of the `broadcast` they embed and each needs its own row.
-	{reflect.TypeOf(broadcastSummary{}), "body_tree"}: rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(broadcastRead{}), "body_tree"}:    rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(broadcastCreated{}), "body_tree"}: rawField{Fragment: openAPIDisplayTree},
-	// The same rule for every read that embeds a shaped row: the ask lists and the inbox each
-	// embed `shapedAsk`, and the three comment and message write answers embed their shaped
-	// comment or message, so each flattens that row's tree into itself.
-	{reflect.TypeOf(issueAskRow{}), "question_tree"}:         rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(issueOpenAsk{}), "question_tree"}:        rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(inboxAsk{}), "question_tree"}:            rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(commentWriteResponse{}), "body_tree"}:    rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(acceptedComment{}), "body_tree"}:         rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(replyRead{}), "body_tree"}:               rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(askOptionRead{}), "label_tree"}:          rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(askOptionRead{}), "description_tree"}:    rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(askResolutionRead{}), "reason_tree"}:     rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(askEditPreviousRead{}), "question_tree"}: rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(shapedAsk{}), "question_tree"}:           rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(replyBlockRead{}), "text_tree"}:          rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(shapedComment{}), "body_tree"}:           rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(shapedMessage{}), "body_tree"}:           rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(artifactReviewRead{}), "reason_tree"}:    rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(artifactApprovalRead{}), "reason_tree"}:  rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(model.AskAnswerWithTree{}), "text_tree"}: rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(model.SearchResult{}), "snippet_tree"}:   rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(model.MyAnswerReply{}), "body_tree"}:     rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(model.MyAnswerRow{}), "question_tree"}:   rawField{Fragment: openAPIDisplayTree},
-	// The architecture tree's components and the references read's node and pin, which the
-	// route rows name since this change (routes_shapes.go): a component's prose, a node's own
-	// text and the text the pin's version held each reach a reader as a tree.
-	{reflect.TypeOf(architectureComponentRead{}), "prose_tree"}: rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(graphNodeRead{}), "text_tree"}:              rawField{Fragment: openAPIDisplayTree},
-	{reflect.TypeOf(blockPinRead{}), "text_tree"}:               rawField{Fragment: openAPIDisplayTree},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -236,15 +219,6 @@ var (
 	openAPIRepository = map[string]any{
 		"type":        "string",
 		"description": `a GitHub repository as "owner/name"`,
-	}
-	openAPIDisplayTree = map[string]any{
-		"type":                 "object",
-		"properties":           map[string]any{"type": map[string]any{"type": "string"}},
-		"required":             []any{"type"},
-		"additionalProperties": true,
-		"description": "a stored text read as the ProseMirror document a reader is shown " +
-			"(pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node " +
-			"type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
 	}
 )
 

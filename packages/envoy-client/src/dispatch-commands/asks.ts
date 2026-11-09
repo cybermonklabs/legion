@@ -1,10 +1,10 @@
 import type {
   AskRead,
   AskUrgency,
+  AskWithTrees,
   CreateAskInput,
   EditAskInput,
   OpenAsk,
-  ShapedAsk,
 } from "@legion/contracts";
 import { ASK_URGENCIES, isIdPrefix } from "@legion/contracts";
 import { textHead } from "../ask-answer";
@@ -37,7 +37,7 @@ function askUrgency(args: ToolArguments): AskUrgency | undefined {
 const askHintLimit = 8;
 
 function askIDInputProblem(
-  asks: readonly Pick<ShapedAsk, "id" | "question">[],
+  asks: readonly Pick<AskWithTrees, "id" | "question">[],
   scope: string
 ): string {
   const hints = asks
@@ -100,7 +100,7 @@ export async function readAskRef(
   id: string,
   ownerName: string,
   client: DispatchClient,
-  list: () => Promise<readonly Pick<ShapedAsk, "id" | "block_id">[]>
+  list: () => Promise<readonly Pick<AskWithTrees, "id" | "block_id">[]>
 ): Promise<AskRead> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) {

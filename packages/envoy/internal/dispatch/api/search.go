@@ -765,7 +765,7 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		// it is one query's own headline, cut and marked for this search alone
 		// (pmdoc.DisplaySnippetJSON), so there is nothing two readers would share.
 		if trees {
-			result.SnippetTree = pmdoc.DisplaySnippetJSON(*headline, markStart, markEnd)
+			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(*headline, markStart, markEnd))
 		}
 		result.Href = searchHref(result.Kind, result.Owner, result.Artifact, primary, result.ID, blockID, matchBlockID, q)
 		response.Results = append(response.Results, result)

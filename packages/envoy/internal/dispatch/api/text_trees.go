@@ -86,7 +86,7 @@ type readDisplayText struct {
 	text   string
 	sum    [32]byte
 	tree   json.RawMessage
-	fields []*json.RawMessage
+	fields []*model.DisplayTree
 	into   []func(json.RawMessage)
 }
 
@@ -133,7 +133,7 @@ func builtDisplayTrees(trees bool) *displayTreeReader {
 // field must stand where it will still stand when resolve runs - a row of a slice the shaping no
 // longer appends to, or a value on the heap - because what is filled is the field this points
 // at and not a copy of it.
-func (r *displayTreeReader) text(field *json.RawMessage, markdown string) {
+func (r *displayTreeReader) text(field *model.DisplayTree, markdown string) {
 	if r == nil || markdown == "" {
 		return
 	}
@@ -142,7 +142,7 @@ func (r *displayTreeReader) text(field *json.RawMessage, markdown string) {
 }
 
 // textOf is text for a text a row may not hold at all.
-func (r *displayTreeReader) textOf(field *json.RawMessage, markdown *string) {
+func (r *displayTreeReader) textOf(field *model.DisplayTree, markdown *string) {
 	if markdown == nil {
 		return
 	}
@@ -235,7 +235,7 @@ func (r *displayTreeReader) resolve() {
 			continue
 		}
 		for _, field := range r.texts[index].fields {
-			*field = tree
+			*field = model.DisplayTree(tree)
 		}
 		for _, assign := range r.texts[index].into {
 			assign(tree)

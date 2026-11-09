@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ReplyBlock, ShapedMessage } from "./dispatch-api.generated";
+import type { MessageWithTrees, ReplyBlock } from "./dispatch-api.generated";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
@@ -82,14 +82,10 @@ export const messageFields = {
 export const MessageSchema = z.strictObject(messageFields).readonly();
 
 /** The message row without the tree a dashboard read carries: the body the route table holds
- *  (`ShapedMessage`) with the block it answers back to the shape the bus payload carries. */
-export type Message = Omit<ShapedMessage, "body_tree" | "reply_block"> & {
+ *  (`MessageWithTrees`) with the block it answers back to the shape the bus payload carries. */
+export type Message = Omit<MessageWithTrees, "body_tree" | "reply_block"> & {
   readonly reply_block: ReplyBlock | null;
 };
-
-/** A message as the web app reads it, shaped exactly as a comment is: the tree of its body, and
- *  the block it answers carrying the tree of that block's excerpt. */
-export type MessageWithTrees = ShapedMessage;
 
 /** `thread_logins` is carried by `message.created` and `message.answered`: on an issue message
  *  the logins with a Replies row on its thread root (up `in_reply_to`), and on a direct

@@ -750,9 +750,9 @@ type artifactText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
-	MarkdownTree json.RawMessage `json:"markdown_tree,omitempty"`
-	Token        string          `json:"token"`
-	Version      *int            `json:"version"`
+	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
+	Token        string            `json:"token"`
+	Version      *int              `json:"version"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -911,7 +911,7 @@ type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
-	MarkdownTree json.RawMessage `json:"markdown_tree,omitempty"`
+	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	model.Version
 }
 

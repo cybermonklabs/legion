@@ -12,7 +12,7 @@
  *     `fixtures/live/` and the server's `delivery_live_diff_test.go`;
  *   - the closed string enums the OpenAPI document widens to `string`, with the `const` arrays
  *     they are read from and the limits and header names `scripts/gen-go.ts` renders into Go;
- *   - the readings the dashboard takes of a generated row (`AskWithTrees` and the rest), and the
+ *   - the readings a bus payload takes of a generated row (`Ask`, `AskEdit`, `Message`), and the
  *     helpers and client-side composites no route answers (`Advised`, `IssueRead`,
  *     `ArtifactVersionContent`, `CreateArtifactInput`, …).
  *

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { ShapedComment } from "./dispatch-api.generated";
 import { askFields } from "./dispatch-api-asks";
 import {
   ActorSchema,
@@ -100,10 +99,6 @@ export const commentFields = {
 };
 
 export const CommentSchema = z.strictObject(commentFields).readonly();
-
-/** A comment as the web app reads it: the comment, the tree of its body, and the block it
- *  answers carrying the tree of that block's excerpt. */
-export type CommentWithTrees = ShapedComment;
 
 /**
  * The payload of every `comment.*` event. It is the comment row as it stood when the event was

@@ -2692,7 +2692,7 @@ export interface components {
       issue_key: null | string;
       lost: null | boolean;
       mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlockRead"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       reply_to: null | string;
       resolved: boolean;
       resolved_at: null | string;
@@ -2810,9 +2810,9 @@ export interface components {
       summary?: null | string;
     };
     ApprovalRequestResponse: {
-      approval: components["schemas"]["ArtifactApprovalRead"];
+      approval: components["schemas"]["ArtifactApprovalWithTrees"];
       artifact_id: string;
-      ask: components["schemas"]["ShapedAsk"] | null;
+      ask: components["schemas"]["AskWithTrees"] | null;
       coverage: string[] | null;
       coverage_unread?: boolean;
       version: number;
@@ -2869,6 +2869,14 @@ export interface components {
       project: string;
       repo: string;
     };
+    ArchitectureTree: {
+      components: components["schemas"]["ArchitectureComponentRead"][] | null;
+      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
+      retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
+      sources: components["schemas"]["ArchitectureTreeSource"][] | null;
+      totals: components["schemas"]["ArchitectureTreeTotals"];
+      unassigned: components["schemas"]["ArchitectureTreeIssueRef"][] | null;
+    };
     ArchitectureTreeComponent: {
       depends_on: string[] | null;
       done: number;
@@ -2907,14 +2915,6 @@ export interface components {
       reason: string;
       status: string;
       title: string;
-    };
-    ArchitectureTreeRead: {
-      components: components["schemas"]["ArchitectureComponentRead"][] | null;
-      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
-      retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
-      sources: components["schemas"]["ArchitectureTreeSource"][] | null;
-      totals: components["schemas"]["ArchitectureTreeTotals"];
-      unassigned: components["schemas"]["ArchitectureTreeIssueRef"][] | null;
     };
     ArchitectureTreeRetired: {
       ids: string[] | null;
@@ -2971,7 +2971,7 @@ export interface components {
       version?: number;
       waiting_on?: string;
     };
-    ArtifactApprovalRead: {
+    ArtifactApprovalWithTrees: {
       ask_id?: string;
       at?: string;
       by?: components["schemas"]["Actor"];
@@ -3003,23 +3003,6 @@ export interface components {
       to: number;
       token: string;
       type: string;
-    };
-    ArtifactRead: {
-      approval?: components["schemas"]["ArtifactApprovalRead"];
-      /** Format: date-time */
-      created_at: string;
-      created_by: components["schemas"]["Actor"];
-      id: string;
-      issue_key: null | string;
-      kind: string;
-      name: string;
-      primary: boolean;
-      project: string;
-      ref_key: string;
-      role?: string;
-      session_id: null | string;
-      slug: string;
-      versions: components["schemas"]["Version"][] | null;
     };
     ArtifactRebuildReport: {
       /** Format: int64 */
@@ -3104,6 +3087,23 @@ export interface components {
       size?: number;
       summary: null | string;
     };
+    ArtifactWithTrees: {
+      approval?: components["schemas"]["ArtifactApprovalWithTrees"];
+      /** Format: date-time */
+      created_at: string;
+      created_by: components["schemas"]["Actor"];
+      id: string;
+      issue_key: null | string;
+      kind: string;
+      name: string;
+      primary: boolean;
+      project: string;
+      ref_key: string;
+      role?: string;
+      session_id: null | string;
+      slug: string;
+      versions: components["schemas"]["Version"][] | null;
+    };
     AskAnchorArtifact: {
       name: string;
       primary: boolean;
@@ -3119,7 +3119,7 @@ export interface components {
       text: null | string;
       user: string;
     };
-    AskAnswerWithTree: {
+    AskAnswerWithTrees: {
       act?: components["schemas"]["ActorAct"];
       /** Format: date-time */
       at: string;
@@ -3164,9 +3164,9 @@ export interface components {
       question: string;
       urgency: string;
     };
-    AskEditPreviousRead: {
+    AskEditPreviousWithTrees: {
       multiple: boolean;
-      options: components["schemas"]["AskOptionRead"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       question_tree?: {
@@ -3176,10 +3176,10 @@ export interface components {
       };
       urgency: string;
     };
-    AskEditRead: {
+    AskEditWithTrees: {
       at: string;
       edited_by: components["schemas"]["Actor"];
-      previous: components["schemas"]["AskEditPreviousRead"];
+      previous: components["schemas"]["AskEditPreviousWithTrees"];
     };
     AskFollower: {
       session_id: string;
@@ -3198,7 +3198,7 @@ export interface components {
       id?: string;
       label: string;
     };
-    AskOptionRead: {
+    AskOptionWithTrees: {
       description?: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       description_tree?: {
@@ -3216,12 +3216,12 @@ export interface components {
       };
     };
     AskRead: {
-      answers: components["schemas"]["AskAnswerWithTree"][] | null;
-      ask: components["schemas"]["ShapedAsk"];
+      answers: components["schemas"]["AskAnswerWithTrees"][] | null;
+      ask: components["schemas"]["AskWithTrees"];
       claimant: null | string;
-      edits: components["schemas"]["AskEditRead"][] | null;
+      edits: components["schemas"]["AskEditWithTrees"][] | null;
       followers: components["schemas"]["AskFollower"][] | null;
-      replies: components["schemas"]["ShapedComment"][] | null;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
@@ -3234,7 +3234,7 @@ export interface components {
       kind: string;
       reason: string;
     };
-    AskResolutionRead: {
+    AskResolutionWithTrees: {
       actor: components["schemas"]["Actor"];
       /** Format: date-time */
       at: string;
@@ -3254,15 +3254,50 @@ export interface components {
       snoozed_until: null | string;
     };
     AskThread: {
-      answers: components["schemas"]["AskAnswerWithTree"][] | null;
+      answers: components["schemas"]["AskAnswerWithTrees"][] | null;
       claimant: null | string;
-      edits: components["schemas"]["AskEditRead"][] | null;
+      edits: components["schemas"]["AskEditWithTrees"][] | null;
       followers: components["schemas"]["AskFollower"][] | null;
-      replies: components["schemas"]["ShapedComment"][] | null;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
       route_status_reason: null | string;
+    };
+    AskWithTrees: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      kind: string;
+      multiple: boolean;
+      opened_event_id?: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      state: string;
+      urgency: string;
+      waiting_on?: string;
     };
     BlockAttributeValue: {
       kind: string;
@@ -3369,8 +3404,8 @@ export interface components {
       recipients: components["schemas"]["BroadcastRecipient"][] | null;
     };
     BroadcastRecipient: {
-      message: components["schemas"]["ShapedMessage"];
-      replies: components["schemas"]["ShapedMessage"][] | null;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
       session_id: string;
     };
     BroadcastSummary: {
@@ -3522,8 +3557,8 @@ export interface components {
       target: string;
     };
     CommentRead: {
-      comment: components["schemas"]["ShapedComment"];
-      replies: components["schemas"]["ShapedComment"][] | null;
+      comment: components["schemas"]["CommentWithTrees"];
+      replies: components["schemas"]["CommentWithTrees"][] | null;
     };
     CommentReplyInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -3532,6 +3567,36 @@ export interface components {
       error?: null | string;
       reply_to_block?: null | string;
       target?: null | string;
+    };
+    CommentWithTrees: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answers: null | string;
+      artifact_id: null | string;
+      ask_id: null | string;
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      created_at: string;
+      deliveries: components["schemas"]["CommentDelivery"][] | null;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      mentions: components["schemas"]["CommentMention"][] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      reply_to: null | string;
+      resolved: boolean;
+      resolved_at: null | string;
+      resolved_by: components["schemas"]["Actor"] | null;
+      suggestion: components["schemas"]["Suggestion"] | null;
+      turn: null | string;
     };
     CommentWriteResponse: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -3556,7 +3621,7 @@ export interface components {
       id: string;
       issue_key: null | string;
       mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlockRead"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       reply_to: null | string;
       resolved: boolean;
       resolved_at: null | string;
@@ -4320,7 +4385,7 @@ export interface components {
         [key: string]: unknown;
       };
     };
-    GraphReferencesRead: {
+    GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
       node: components["schemas"]["GraphNodeRead"];
     };
@@ -4390,7 +4455,7 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswerWithTree"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
@@ -4408,7 +4473,7 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOptionRead"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       priority: null | number;
       question: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
@@ -4418,7 +4483,7 @@ export interface components {
         [key: string]: unknown;
       };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolutionRead"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       snoozed_until: null | string;
       state: string;
@@ -4462,7 +4527,7 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswerWithTree"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
@@ -4478,7 +4543,7 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOptionRead"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       question_tree?: {
@@ -4487,7 +4552,7 @@ export interface components {
         [key: string]: unknown;
       };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolutionRead"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
       thread?: components["schemas"]["AskThread"];
@@ -4574,7 +4639,7 @@ export interface components {
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
     IssueDetails: {
-      artifacts: components["schemas"]["ArtifactRead"][] | null;
+      artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
       children: components["schemas"]["IssueChild"][] | null;
@@ -4627,7 +4692,7 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswerWithTree"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
@@ -4643,7 +4708,7 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOptionRead"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       question_tree?: {
@@ -4652,7 +4717,7 @@ export interface components {
         [key: string]: unknown;
       };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolutionRead"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
       urgency: string;
@@ -4796,8 +4861,8 @@ export interface components {
       state: string;
     };
     MessageRead: {
-      message: components["schemas"]["ShapedMessage"];
-      replies: components["schemas"]["ShapedMessage"][] | null;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
       unread?: boolean;
     };
     MessageReplyInput: {
@@ -4824,7 +4889,26 @@ export interface components {
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
-      reply_block: components["schemas"]["ReplyBlockRead"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      target: null | string;
+    };
+    MessageWithTrees: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       target: null | string;
     };
     MyAnswerReply: {
@@ -4838,7 +4922,7 @@ export interface components {
       id: string;
     };
     MyAnswerRow: {
-      answer?: components["schemas"]["AskAnswerWithTree"];
+      answer?: components["schemas"]["AskAnswerWithTrees"];
       ask_id: string;
       ask_kind: string;
       ask_state: string;
@@ -5126,7 +5210,7 @@ export interface components {
       removed: boolean;
       text: string;
     };
-    ReplyBlockRead: {
+    ReplyBlockWithTrees: {
       block_id: string;
       node: string;
       ref?: string;
@@ -5190,7 +5274,7 @@ export interface components {
       slug: string;
     };
     SearchAsk: {
-      answer?: components["schemas"]["AskAnswerWithTree"];
+      answer?: components["schemas"]["AskAnswerWithTrees"];
       resolution?: components["schemas"]["AskResolution"];
       /** @enum {string} */
       state: "open" | "answered" | "resolved";
@@ -5292,90 +5376,6 @@ export interface components {
       /** Format: date-time */
       since: string;
       total: number;
-    };
-    ShapedAsk: {
-      anchor: components["schemas"]["Anchor"] | null;
-      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
-      anchor_block?: components["schemas"]["BlockPath"];
-      anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswerWithTree"] | null;
-      approval?: components["schemas"]["AskApproval"];
-      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
-      artifact_id: null | string;
-      author: components["schemas"]["Actor"];
-      block_artifact?: components["schemas"]["AskBlockArtifact"];
-      block_id: null | string;
-      /** Format: date-time */
-      created_at: string;
-      edited_at: null | string;
-      id: string;
-      issue_key: null | string;
-      kind: string;
-      multiple: boolean;
-      opened_event_id?: number;
-      options: components["schemas"]["AskOptionRead"][] | null;
-      question: string;
-      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
-      question_tree?: {
-        type: string;
-      } & {
-        [key: string]: unknown;
-      };
-      referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolutionRead"];
-      revision?: number;
-      state: string;
-      urgency: string;
-      waiting_on?: string;
-    };
-    ShapedComment: {
-      anchor: components["schemas"]["Anchor"] | null;
-      anchor_block?: components["schemas"]["BlockPath"];
-      anchor_block_error?: string;
-      answers: null | string;
-      artifact_id: null | string;
-      ask_id: null | string;
-      author: components["schemas"]["Actor"];
-      body: string;
-      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
-      body_tree?: {
-        type: string;
-      } & {
-        [key: string]: unknown;
-      };
-      /** Format: date-time */
-      created_at: string;
-      deliveries: components["schemas"]["CommentDelivery"][] | null;
-      edited_at: null | string;
-      id: string;
-      issue_key: null | string;
-      mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlockRead"] | null;
-      reply_to: null | string;
-      resolved: boolean;
-      resolved_at: null | string;
-      resolved_by: components["schemas"]["Actor"] | null;
-      suggestion: components["schemas"]["Suggestion"] | null;
-      turn: null | string;
-    };
-    ShapedMessage: {
-      author: components["schemas"]["Actor"];
-      body: string;
-      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
-      body_tree?: {
-        type: string;
-      } & {
-        [key: string]: unknown;
-      };
-      broadcast_id: null | string;
-      /** Format: date-time */
-      created_at: string;
-      deliveries: components["schemas"]["MessageDelivery"][] | null;
-      id: string;
-      in_reply_to: null | string;
-      issue_key: null | string;
-      reply_block: components["schemas"]["ReplyBlockRead"] | null;
-      target: null | string;
     };
     SlowWriteInput: {
       /** Format: int64 */
@@ -5748,7 +5748,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactRead"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -5856,7 +5856,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedMessage"];
+          "application/json": components["schemas"]["MessageWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -5996,7 +5996,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactRead"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6284,7 +6284,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedAsk"][];
+          "application/json": components["schemas"]["AskWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6322,7 +6322,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedAsk"] & {
+          "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -6466,7 +6466,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedComment"][];
+          "application/json": components["schemas"]["CommentWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7061,7 +7061,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedAsk"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7099,7 +7099,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedAsk"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7245,7 +7245,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedAsk"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7453,7 +7453,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedComment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7601,7 +7601,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedComment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7635,7 +7635,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedComment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7722,7 +7722,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedComment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8742,7 +8742,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactRead"][];
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8830,7 +8830,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactRead"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9103,7 +9103,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedAsk"] & {
+          "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -9268,7 +9268,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedComment"][];
+          "application/json": components["schemas"]["CommentWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9595,7 +9595,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ShapedMessage"] & {
+          "application/json": components["schemas"]["MessageWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -10916,7 +10916,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArchitectureTreeRead"];
+          "application/json": components["schemas"]["ArchitectureTree"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11201,7 +11201,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactRead"][];
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11289,7 +11289,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactRead"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11712,7 +11712,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["GraphReferencesRead"];
+          "application/json": components["schemas"]["GraphReferences"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12326,19 +12326,18 @@ export type ApproverGrantResp = components["schemas"]["ApproverGrantResp"];
 export type ApproverGrantsResponse = components["schemas"]["ApproverGrantsResponse"];
 export type ArchitectureComponentRead = components["schemas"]["ArchitectureComponentRead"];
 export type ArchitectureSource = components["schemas"]["ArchitectureSource"];
+export type ArchitectureTree = components["schemas"]["ArchitectureTree"];
 export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeComponent"];
 export type ArchitectureTreeIssue = components["schemas"]["ArchitectureTreeIssue"];
 export type ArchitectureTreeIssueRef = components["schemas"]["ArchitectureTreeIssueRef"];
 export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"];
-export type ArchitectureTreeRead = components["schemas"]["ArchitectureTreeRead"];
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
 export type Artifact = components["schemas"]["Artifact"];
 export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
-export type ArtifactApprovalRead = components["schemas"]["ArtifactApprovalRead"];
+export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
-export type ArtifactRead = components["schemas"]["ArtifactRead"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferences = components["schemas"]["ArtifactReferences"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
@@ -12346,27 +12345,29 @@ export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
 export type ArtifactText = components["schemas"]["ArtifactText"];
 export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];
+export type ArtifactWithTrees = components["schemas"]["ArtifactWithTrees"];
 export type AskAnchorArtifact = components["schemas"]["AskAnchorArtifact"];
 export type AskAnswer = components["schemas"]["AskAnswer"];
-export type AskAnswerWithTree = components["schemas"]["AskAnswerWithTree"];
+export type AskAnswerWithTrees = components["schemas"]["AskAnswerWithTrees"];
 export type AskApproval = components["schemas"]["AskApproval"];
 export type AskApprovalApproved = components["schemas"]["AskApprovalApproved"];
 export type AskApprovalDocument = components["schemas"]["AskApprovalDocument"];
 export type AskBlockArtifact = components["schemas"]["AskBlockArtifact"];
 export type AskEditPrevious = components["schemas"]["AskEditPrevious"];
-export type AskEditPreviousRead = components["schemas"]["AskEditPreviousRead"];
-export type AskEditRead = components["schemas"]["AskEditRead"];
+export type AskEditPreviousWithTrees = components["schemas"]["AskEditPreviousWithTrees"];
+export type AskEditWithTrees = components["schemas"]["AskEditWithTrees"];
 export type AskFollower = components["schemas"]["AskFollower"];
 export type AskFollowersRead = components["schemas"]["AskFollowersRead"];
 export type AskLastReply = components["schemas"]["AskLastReply"];
 export type AskOption = components["schemas"]["AskOption"];
-export type AskOptionRead = components["schemas"]["AskOptionRead"];
+export type AskOptionWithTrees = components["schemas"]["AskOptionWithTrees"];
 export type AskRead = components["schemas"]["AskRead"];
 export type AskResolution = components["schemas"]["AskResolution"];
-export type AskResolutionRead = components["schemas"]["AskResolutionRead"];
+export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTrees"];
 export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
+export type AskWithTrees = components["schemas"]["AskWithTrees"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
 export type BlockLinks = components["schemas"]["BlockLinks"];
@@ -12395,6 +12396,7 @@ export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
+export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
 export type CreateAgentTokenInput = components["schemas"]["CreateAgentTokenInput"];
@@ -12490,7 +12492,7 @@ export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
-export type GraphReferencesRead = components["schemas"]["GraphReferencesRead"];
+export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
@@ -12540,6 +12542,7 @@ export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
 export type MessageReplyResult = components["schemas"]["MessageReplyResult"];
+export type MessageWithTrees = components["schemas"]["MessageWithTrees"];
 export type MyAnswerReply = components["schemas"]["MyAnswerReply"];
 export type MyAnswerRow = components["schemas"]["MyAnswerRow"];
 export type MyAnswersResponse = components["schemas"]["MyAnswersResponse"];
@@ -12579,7 +12582,7 @@ export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
 export type ReplyBlock = components["schemas"]["ReplyBlock"];
-export type ReplyBlockRead = components["schemas"]["ReplyBlockRead"];
+export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
@@ -12599,9 +12602,6 @@ export type SearchResult = components["schemas"]["SearchResult"];
 export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
-export type ShapedAsk = components["schemas"]["ShapedAsk"];
-export type ShapedComment = components["schemas"]["ShapedComment"];
-export type ShapedMessage = components["schemas"]["ShapedMessage"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type Subscriber = components["schemas"]["Subscriber"];

@@ -1,15 +1,11 @@
 import { z } from "zod";
 import type {
   AskAnswer,
-  AskAnswerWithTree,
   AskEditPrevious,
-  AskEditPreviousRead,
-  AskEditRead,
+  AskEditWithTrees,
   AskOption,
-  AskOptionRead,
   AskResolution,
-  AskResolutionRead,
-  ShapedAsk,
+  AskWithTrees,
 } from "./dispatch-api.generated";
 import {
   ActorActSchema,
@@ -48,11 +44,6 @@ export const askOptionFields = {
 
 export const AskOptionSchema = z.strictObject(askOptionFields).readonly();
 
-/** One answer choice as the web app reads it: the option with the display tree of each of its
- *  texts. The option itself is a message-bus payload type and gains no field; a tree rides on
- *  this reading of it, which every route that answers the dashboard serves. */
-export type AskOptionWithTrees = AskOptionRead;
-
 export const askAnswerFields = {
   /** The part the ask's current answer is stored as, read as an option's `id` is and never
    *  written by a caller; a superseded answer, which no part of the ask holds, carries none. */
@@ -68,9 +59,6 @@ export const askAnswerFields = {
 
 export const AskAnswerSchema = z.strictObject(askAnswerFields).readonly();
 
-/** A human's answer as the web app reads it, with the tree of the text they wrote with it. */
-export type AskAnswerWithTrees = AskAnswerWithTree;
-
 export const askResolutionFields = {
   /** `withdrawn` is written by the server alone, when the ask's issue is closed; no caller can
    *  resolve an ask with it, and reopening the issue opens the ask again. */
@@ -82,9 +70,6 @@ export const askResolutionFields = {
 
 export const AskResolutionSchema = z.strictObject(askResolutionFields).readonly();
 
-/** Why an ask no longer needs an answer, as the web app reads it, with the tree of that reason. */
-export type AskResolutionWithTrees = AskResolutionRead;
-
 export const askEditPreviousFields = {
   question: z.string(),
   options: z.array(AskOptionSchema),
@@ -94,23 +79,14 @@ export const askEditPreviousFields = {
 
 export const AskEditPreviousSchema = z.strictObject(askEditPreviousFields).readonly();
 
-/** The content an ask had before an edit, as the web app reads it: the question's tree and the
- *  trees of the options that edit replaced. */
-export type AskEditPreviousWithTrees = AskEditPreviousRead;
-
 /** One recorded rewording of an ask: what the question was before this edit, who edited, when. */
 export const AskEditSchema = z
   .strictObject({ previous: AskEditPreviousSchema, edited_by: ActorSchema, at: z.string() })
   .readonly();
 
-/** One recorded rewording as the route table holds it (`AskEditRead`), with the content it
+/** One recorded rewording as the route table holds it (`AskEditWithTrees`), with the content it
  *  replaced back to the shape the bus payload carries. */
-export type AskEdit = Omit<AskEditRead, "previous"> & { readonly previous: AskEditPrevious };
-
-/** One recorded rewording as the web app reads it, the content it replaced carrying its trees. */
-export type AskEditWithTrees = Omit<AskEdit, "previous"> & {
-  readonly previous: AskEditPreviousWithTrees;
-};
+export type AskEdit = Omit<AskEditWithTrees, "previous"> & { readonly previous: AskEditPrevious };
 
 export const askAnchorArtifactFields = {
   project: z.string(),
@@ -226,19 +202,14 @@ export const askFields = {
 export const AskSchema = z.strictObject(askFields).readonly();
 
 /** The ask row without the trees a dashboard read carries: the body the route table holds
- *  (`ShapedAsk`) with each shaped field back to the shape the bus payload carries. One family,
+ *  (`AskWithTrees`) with each shaped field back to the shape the bus payload carries. One family,
  *  so an `Ask` is an `AskWithTrees` wherever one is wanted and the zod schemas above stay the
  *  reading of a frame rather than a second spelling of the row. */
-export type Ask = Omit<ShapedAsk, "question_tree" | "options" | "answer" | "resolution"> & {
+export type Ask = Omit<AskWithTrees, "question_tree" | "options" | "answer" | "resolution"> & {
   readonly options: AskOption[] | null;
   readonly answer: AskAnswer | null;
   readonly resolution?: AskResolution;
 };
-
-/** An ask as the web app reads it: the ask, the tree of its question, and the trees carried by
- *  each option, by its answer's text and by its resolution's reason. Every tree is absent unless
- *  the request sent `Dispatch-Trees: 1`, so this reading is an `Ask` wherever one is wanted. */
-export type AskWithTrees = ShapedAsk;
 
 /** Whom besides the followers a person's answer and replies on an ask reach, as every ask read
  *  carries it: the single-ask read (`AskRead`) and each list row's thread (`AskThread`).

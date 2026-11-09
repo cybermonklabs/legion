@@ -1,12 +1,12 @@
 import type {
   Actor,
   ArtifactBlock,
+  AskWithTrees,
   GraphEdge,
   GraphNode,
   GraphReferences,
   IssueCoverage,
   IssueReferences,
-  ShapedAsk,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
@@ -243,7 +243,7 @@ export async function typedBlockOf(
  * indexed yet, or the index stands on other options than the row now holds), or the reference is
  * pinned to a part the ask has since removed.
  */
-export function askPartNoun(ask: ShapedAsk, node: GraphNode, blockID: string): string {
+export function askPartNoun(ask: AskWithTrees, node: GraphNode, blockID: string): string {
   if (ask.answer?.id === blockID) return "Answer";
   if ((ask.options ?? []).some((option) => option.id === blockID)) return "Option";
   const placed =

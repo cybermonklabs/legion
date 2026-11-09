@@ -78,9 +78,9 @@ type broadcast struct {
 	Body   string      `json:"body"`
 	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
-	BodyTree  json.RawMessage `json:"body_tree,omitempty"`
-	Delivery  string          `json:"delivery"`
-	CreatedAt time.Time       `json:"created_at"`
+	BodyTree  model.DisplayTree `json:"body_tree,omitempty"`
+	Delivery  string            `json:"delivery"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 // attachTrees registers the broadcast's body with the request's reader, which fills the tree

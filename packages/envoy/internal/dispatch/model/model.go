@@ -563,7 +563,7 @@ type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
-	TextTree json.RawMessage `json:"text_tree,omitempty"`
+	TextTree DisplayTree `json:"text_tree,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -585,9 +585,9 @@ type SearchResult struct {
 	Snippet string  `json:"snippet"`
 	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
 	// (pmdoc.DisplaySnippetJSON): present only for a caller that sent `Dispatch-Trees: 1`.
-	SnippetTree json.RawMessage `json:"snippet_tree,omitempty"`
-	Rank        float64         `json:"rank"`
-	Href        string          `json:"href"`
+	SnippetTree DisplayTree `json:"snippet_tree,omitempty"`
+	Rank        float64     `json:"rank"`
+	Href        string      `json:"href"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
@@ -1625,7 +1625,7 @@ type MyAnswerReply struct {
 	Body string `json:"body"`
 	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
-	BodyTree json.RawMessage `json:"body_tree,omitempty"`
+	BodyTree DisplayTree `json:"body_tree,omitempty"`
 }
 
 // MyAnswerRow is one answer or reply written by the caller, newest first.
@@ -1637,7 +1637,7 @@ type MyAnswerRow struct {
 	Question string    `json:"question"`
 	// QuestionTree is the ProseMirror tree Question is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
-	QuestionTree json.RawMessage    `json:"question_tree,omitempty"`
+	QuestionTree DisplayTree        `json:"question_tree,omitempty"`
 	AskKind      string             `json:"ask_kind"`
 	AskState     string             `json:"ask_state"`
 	EditedAt     *string            `json:"edited_at"`

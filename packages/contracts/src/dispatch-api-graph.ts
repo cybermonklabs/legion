@@ -1,5 +1,3 @@
-import type { GraphReferencesRead } from "./dispatch-api.generated";
-
 /**
  * The reference graph: what points at what, read by `GET /api/v1/references` and
  * `GET /api/v1/block-links`, and the document lists built on it.
@@ -24,9 +22,3 @@ export type GraphEdgeKind =
   | "depends_on"
   | "affects"
   | (string & {});
-
-// GraphReferences is the body `GET /api/v1/references` answers. The route table names that body
-// `GraphReferencesRead` since it came to describe the trees the read carries, and the read is
-// the queried node's own fields with those trees beside them, so the older name still names the
-// body a caller is given and every caller that declared it keeps compiling.
-export type GraphReferences = GraphReferencesRead;

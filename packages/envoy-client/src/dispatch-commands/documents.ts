@@ -2,9 +2,9 @@ import { resolve as resolvePath } from "node:path";
 import type {
   Artifact,
   ArtifactBlock,
+  AskWithTrees,
   EditOp,
   EditPrecondition,
-  ShapedAsk,
 } from "@legion/contracts";
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
@@ -53,12 +53,12 @@ async function blockAsks(
   client: DispatchClient,
   resolved: ResolvedArtifact,
   state?: "all" | "open" | "answered"
-): Promise<Array<ShapedAsk & { readonly block_id: string }>> {
+): Promise<Array<AskWithTrees & { readonly block_id: string }>> {
   const asks = await (resolved.issue === undefined
     ? client.getArtifactAsks(resolved.artifact.id, state)
     : client.listIssueAsks(resolved.issue.key, state));
   return asks.filter(
-    (ask): ask is ShapedAsk & { readonly block_id: string } =>
+    (ask): ask is AskWithTrees & { readonly block_id: string } =>
       typeof ask.block_id === "string" && ask.block_artifact?.id === resolved.artifact.id
   );
 }

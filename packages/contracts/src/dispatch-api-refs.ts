@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { ReplyBlockRead } from "./dispatch-api.generated";
 
 /**
  * The shapes several payload families share: what a write moved in the reference graph, whose
@@ -110,10 +109,6 @@ export const replyBlockFields = {
  *  address), its id, its text cut to 480 characters (the last text it held once removed), and
  *  whether its item's current revision no longer holds it. */
 export const WrittenReplyBlockSchema = z.strictObject(replyBlockFields).readonly();
-
-/** The block a reply answers, as the web app reads it: with the display tree of the excerpt it
- *  stored. */
-export type ReplyBlockWithTrees = ReplyBlockRead;
 
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).
  *  An event recorded before the field, or by a Dispatch older than it, carries none. A bus frame

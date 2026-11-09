@@ -121,22 +121,22 @@ func shapeBuilt(trees bool, shape func(reader *displayTreeReader)) {
 // askOptionRead is one answer choice with the trees of its label and description.
 type askOptionRead struct {
 	model.AskOption
-	LabelTree       json.RawMessage `json:"label_tree,omitempty"`
-	DescriptionTree json.RawMessage `json:"description_tree,omitempty"`
+	LabelTree       model.DisplayTree `json:"label_tree,omitempty"`
+	DescriptionTree model.DisplayTree `json:"description_tree,omitempty"`
 }
 
 // askResolutionRead is why an ask no longer needs an answer, with the tree of that reason.
 type askResolutionRead struct {
 	model.AskResolution
-	ReasonTree json.RawMessage `json:"reason_tree,omitempty"`
+	ReasonTree model.DisplayTree `json:"reason_tree,omitempty"`
 }
 
 // askEditPreviousRead is the content an ask had before an edit, with its question's and its
 // options' trees.
 type askEditPreviousRead struct {
 	model.AskEditPrevious
-	QuestionTree json.RawMessage `json:"question_tree,omitempty"`
-	Options      []askOptionRead `json:"options"`
+	QuestionTree model.DisplayTree `json:"question_tree,omitempty"`
+	Options      []askOptionRead   `json:"options"`
 }
 
 // askEditRead is one recorded rewording of an ask, the content it replaced carrying its trees.
@@ -151,7 +151,7 @@ type askEditRead struct {
 // shapedMessage is not called messageRead.
 type shapedAsk struct {
 	model.Ask
-	QuestionTree json.RawMessage          `json:"question_tree,omitempty"`
+	QuestionTree model.DisplayTree        `json:"question_tree,omitempty"`
 	Options      []askOptionRead          `json:"options"`
 	Answer       *model.AskAnswerWithTree `json:"answer"`
 	Resolution   *askResolutionRead       `json:"resolution,omitempty"`
@@ -174,7 +174,7 @@ func (a *shapedAsk) shape(reader *displayTreeReader) {
 
 // treeField is the field of this read that carries the tree of text, and nil for a text this
 // read shows nowhere.
-func (a *shapedAsk) treeField(text texttrees.AskText) *json.RawMessage {
+func (a *shapedAsk) treeField(text texttrees.AskText) *model.DisplayTree {
 	switch text.Field {
 	case texttrees.AskQuestionText:
 		return &a.QuestionTree
@@ -202,7 +202,7 @@ func (a *shapedAsk) treeField(text texttrees.AskText) *json.RawMessage {
 func registerAskTexts(
 	reader *displayTreeReader,
 	content texttrees.AskContent,
-	fieldOf func(texttrees.AskText) *json.RawMessage,
+	fieldOf func(texttrees.AskText) *model.DisplayTree,
 ) {
 	texttrees.VisitAskTexts(content, func(text texttrees.AskText) {
 		if field := fieldOf(text); field != nil {
@@ -213,7 +213,7 @@ func registerAskTexts(
 
 // askOptionTreeField is the field of reads that carries text's tree, and nil for a text that is
 // no option's or whose option these reads do not hold.
-func askOptionTreeField(reads []askOptionRead, text texttrees.AskText) *json.RawMessage {
+func askOptionTreeField(reads []askOptionRead, text texttrees.AskText) *model.DisplayTree {
 	if text.Option < 0 || text.Option >= len(reads) {
 		return nil
 	}
@@ -296,7 +296,7 @@ func askEditReads(edits []model.AskEdit, reader *displayTreeReader) []askEditRea
 
 // treeField is the field of this previous content that carries the tree of text, and nil for a
 // text an edit never carried away: the answer and the resolution are the ask's own.
-func (p *askEditPreviousRead) treeField(text texttrees.AskText) *json.RawMessage {
+func (p *askEditPreviousRead) treeField(text texttrees.AskText) *model.DisplayTree {
 	if text.Field == texttrees.AskQuestionText {
 		return &p.QuestionTree
 	}
@@ -306,7 +306,7 @@ func (p *askEditPreviousRead) treeField(text texttrees.AskText) *json.RawMessage
 // replyBlockRead is the block a reply answers, with the tree of the excerpt it stored.
 type replyBlockRead struct {
 	model.ReplyBlock
-	TextTree json.RawMessage `json:"text_tree,omitempty"`
+	TextTree model.DisplayTree `json:"text_tree,omitempty"`
 }
 
 // newReplyBlockRead is the block a reply answers shaped for the dashboard, nil for a reply that
@@ -325,8 +325,8 @@ func newReplyBlockRead(block *model.ReplyBlock, reader *displayTreeReader) *repl
 // is, and for the same reason: commentRead is the body GET /api/v1/comments/{id} answers.
 type shapedComment struct {
 	model.Comment
-	BodyTree   json.RawMessage `json:"body_tree,omitempty"`
-	ReplyBlock *replyBlockRead `json:"reply_block"`
+	BodyTree   model.DisplayTree `json:"body_tree,omitempty"`
+	ReplyBlock *replyBlockRead   `json:"reply_block"`
 }
 
 // shape rebuilds the shadowing fields from the comment and registers its texts with the
@@ -363,8 +363,8 @@ func shapedComments(comments []model.Comment, reader *displayTreeReader) []shape
 // one name under the other's meaning type-checks and decodes nothing (INFRA-635).
 type shapedMessage struct {
 	model.Message
-	BodyTree   json.RawMessage `json:"body_tree,omitempty"`
-	ReplyBlock *replyBlockRead `json:"reply_block"`
+	BodyTree   model.DisplayTree `json:"body_tree,omitempty"`
+	ReplyBlock *replyBlockRead   `json:"reply_block"`
 }
 
 // shape rebuilds the shadowing fields from the message and registers its texts with the
@@ -398,7 +398,7 @@ func shapedMessages(messages []model.Message, reader *displayTreeReader) []shape
 // artifactReviewRead is one review of a document with the tree of the reason it gave.
 type artifactReviewRead struct {
 	model.ArtifactReview
-	ReasonTree json.RawMessage `json:"reason_tree,omitempty"`
+	ReasonTree model.DisplayTree `json:"reason_tree,omitempty"`
 }
 
 // artifactReviewReads is a document's reviews shaped for the dashboard.
@@ -419,7 +419,7 @@ func artifactReviewReads(reviews []model.ArtifactReview, reader *displayTreeRead
 // of the artifact an event payload carries, and no payload gains a tree field.
 type artifactApprovalRead struct {
 	model.ArtifactApproval
-	ReasonTree json.RawMessage `json:"reason_tree,omitempty"`
+	ReasonTree model.DisplayTree `json:"reason_tree,omitempty"`
 }
 
 // artifactRead is a document as the dashboard reads it: the document, with its approval carrying
@@ -468,7 +468,7 @@ func artifactReads(artifacts []model.Artifact, reader *displayTreeReader) []arti
 // held.
 type blockPinRead struct {
 	model.BlockPin
-	TextTree json.RawMessage `json:"text_tree,omitempty"`
+	TextTree model.DisplayTree `json:"text_tree,omitempty"`
 }
 
 // graphNodeRead is one end of a reference-graph edge as the dashboard reads it: the node, the
@@ -476,8 +476,8 @@ type blockPinRead struct {
 // title is read from one of those trees, as an ask's and a comment's titles are read from theirs.
 type graphNodeRead struct {
 	model.GraphNode
-	TextTree json.RawMessage `json:"text_tree,omitempty"`
-	Pin      *blockPinRead   `json:"pin,omitempty"`
+	TextTree model.DisplayTree `json:"text_tree,omitempty"`
+	Pin      *blockPinRead     `json:"pin,omitempty"`
 }
 
 // shape rebuilds the shadowing pin from the node and registers both texts with the request's
@@ -502,7 +502,7 @@ type graphReferencesRead struct {
 // source's files declare it with.
 type architectureComponentRead struct {
 	model.ArchitectureTreeComponent
-	ProseTree json.RawMessage `json:"prose_tree,omitempty"`
+	ProseTree model.DisplayTree `json:"prose_tree,omitempty"`
 }
 
 // architectureTreeRead is what GET /api/v1/projects/{key}/architecture answers: the tree, with

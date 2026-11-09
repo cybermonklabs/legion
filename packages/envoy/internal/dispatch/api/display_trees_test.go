@@ -114,10 +114,12 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 
 // Every route class the dashboard reads stored text from carries that text's display tree beside
 // it when, and only when, the request holds `Dispatch-Trees: 1`, and the tree is the one
-// pmdoc.ReadForDisplay makes of exactly that text. The routes covered here are the issue's
+// pmdoc.ReadForDisplay makes of exactly that text, and the document the route table emits
+// declares that tree where the answer carries it. The routes covered here are the issue's
 // comment list and one comment's thread, the issue's ask list and one ask, the issue's message
-// list, the issue's event log, a document's text, and the caller's own answers; the search
-// snippet, whose tree is cut and marked rather than read whole, has its own test below.
+// list, the issue's event log, a document's text, the caller's own answers, a project's
+// architecture and one node's references; the search snippet, whose tree is cut and marked
+// rather than read whole, has its own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	handler := newTestHandler(t)
 	const (
@@ -158,20 +160,43 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
 	}
 
-	for _, test := range []struct{ name, target, textPath, treePath string }{
-		{"the issue's comment list", "/api/v1/issues/" + issue.Key + "/comments", "0.body", "0.body_tree"},
-		{"one comment's thread", "/api/v1/comments/" + commentID, "comment.body", "comment.body_tree"},
-		{"the issue's message list", "/api/v1/issues/" + issue.Key + "/messages", "0.message.body", "0.message.body_tree"},
-		{"one message's thread", "/api/v1/messages/" + messageID, "message.body", "message.body_tree"},
-		{"the issue's ask list", "/api/v1/issues/" + issue.Key + "/asks", "0.question", "0.question_tree"},
-		{"an ask option in the list", "/api/v1/issues/" + issue.Key + "/asks", "0.options.0.label", "0.options.0.label_tree"},
-		{"one ask", "/api/v1/asks/" + askID, "ask.question", "ask.question_tree"},
-		{"one ask's answer", "/api/v1/asks/" + askID, "ask.answer.text", "ask.answer.text_tree"},
-		{"the caller's answer history", "/api/v1/me/answers", "rows.0.question", "rows.0.question_tree"},
-		{"a document's text", "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text", "markdown", "markdown_tree"},
+	// Each row is read twice: the live answer carries the tree, and the OpenAPI document's own
+	// 200 schema for the route declares it there. The second reading is what holds a route row
+	// to the shaped read its handler writes (routes_shapes.go), since a row naming the model
+	// inside that read declares no tree at all. The architecture tree and one node's references
+	// are rows of the schema reading alone - the trees they carry need an architecture source
+	// and a stored reference this issue has neither of - and they are the two rows that were
+	// found naming the model (INFRA-635).
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	for _, test := range []struct{ name, pattern, target, textPath, treePath string }{
+		{"the issue's comment list", "/api/v1/issues/{key}/comments",
+			"/api/v1/issues/" + issue.Key + "/comments", "0.body", "0.body_tree"},
+		{"one comment's thread", "/api/v1/comments/{id}",
+			"/api/v1/comments/" + commentID, "comment.body", "comment.body_tree"},
+		{"the issue's message list", "/api/v1/issues/{key}/messages",
+			"/api/v1/issues/" + issue.Key + "/messages", "0.message.body", "0.message.body_tree"},
+		{"one message's thread", "/api/v1/messages/{id}",
+			"/api/v1/messages/" + messageID, "message.body", "message.body_tree"},
+		{"the issue's ask list", "/api/v1/issues/{key}/asks",
+			"/api/v1/issues/" + issue.Key + "/asks", "0.question", "0.question_tree"},
+		{"an ask option in the list", "/api/v1/issues/{key}/asks",
+			"/api/v1/issues/" + issue.Key + "/asks", "0.options.0.label", "0.options.0.label_tree"},
+		{"one ask", "/api/v1/asks/{id}", "/api/v1/asks/" + askID, "ask.question", "ask.question_tree"},
+		{"one ask's answer", "/api/v1/asks/{id}", "/api/v1/asks/" + askID, "ask.answer.text", "ask.answer.text_tree"},
+		{"the caller's answer history", "/api/v1/me/answers",
+			"/api/v1/me/answers", "rows.0.question", "rows.0.question_tree"},
+		{"a document's text", "/api/v1/artifacts/{id}/text",
+			"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text", "markdown", "markdown_tree"},
+		{"a project's architecture", "/api/v1/projects/{key}/architecture", "", "", "components.0.prose_tree"},
+		{"a node's own text", "/api/v1/references", "", "", "node.text_tree"},
+		{"the text a reference pinned", "/api/v1/references", "", "", "node.pin.text_tree"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			requireDisplayTree(t, handler, test.target, test.textPath, test.treePath)
+			if test.target != "" {
+				requireDisplayTree(t, handler, test.target, test.textPath, test.treePath)
+			}
+			requireTreeInAnswerSchema(t, document, test.pattern, test.treePath)
 		})
 	}
 
@@ -217,6 +242,96 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 			}
 		}
 	})
+}
+
+// requireTreeInAnswerSchema fails unless the emitted document declares the display tree at
+// treePath of the 200 answer the GET of pattern gives. Every path a reader walks here is one a
+// live answer carries, so the two readings of a row hold the document to what the handler
+// writes.
+func requireTreeInAnswerSchema(t *testing.T, document map[string]any, pattern, treePath string) {
+	t.Helper()
+	schema := openAPIAnswerSchema(t, document, pattern)
+	for _, step := range strings.Split(treePath, ".") {
+		child := openAPISchemaChild(document, schema, step)
+		if child == nil {
+			t.Fatalf("the 200 schema of GET %s reaches no %q on the way to %s", pattern, step, treePath)
+		}
+		schema = child
+	}
+	want := displayTreeSchema(t)
+	if !reflect.DeepEqual(schema, want) {
+		t.Errorf("GET %s declares %s as %v, and the display tree is %v", pattern, treePath, schema, want)
+	}
+}
+
+// openAPIAnswerSchema is the JSON body the document says the GET of pattern answers 200 with.
+func openAPIAnswerSchema(t *testing.T, document map[string]any, pattern string) map[string]any {
+	t.Helper()
+	paths, _ := document["paths"].(map[string]any)
+	item, _ := paths[pattern].(map[string]any)
+	get, _ := item["get"].(map[string]any)
+	responses, _ := get["responses"].(map[string]any)
+	answer, _ := responses["200"].(map[string]any)
+	content, _ := answer["content"].(map[string]any)
+	body, _ := content["application/json"].(map[string]any)
+	schema, declared := body["schema"].(map[string]any)
+	if !declared {
+		t.Fatalf("the document declares no JSON 200 answer for GET %s", pattern)
+	}
+	return schema
+}
+
+// openAPISchemaChild is the schema one step of an answer path stands at: a name is a property of
+// an object, a number an item of a list. A reference is followed to what it names, and a schema
+// written as a choice of several - a nilable field is its own shape or null - is searched
+// through, since the path stands on whichever arm declares it.
+func openAPISchemaChild(document, schema map[string]any, step string) map[string]any {
+	if reference, names := schema["$ref"].(string); names {
+		components, _ := document["components"].(map[string]any)
+		schemas, _ := components["schemas"].(map[string]any)
+		declared, found := schemas[strings.TrimPrefix(reference, "#/components/schemas/")].(map[string]any)
+		if !found {
+			return nil
+		}
+		return openAPISchemaChild(document, declared, step)
+	}
+	if _, isIndex := strconv.Atoi(step); isIndex == nil {
+		if items, holds := schema["items"].(map[string]any); holds {
+			return items
+		}
+	} else if properties, holds := schema["properties"].(map[string]any); holds {
+		if child, declared := properties[step].(map[string]any); declared {
+			return child
+		}
+	}
+	for _, choice := range []string{"anyOf", "allOf", "oneOf"} {
+		arms, _ := schema[choice].([]any)
+		for _, arm := range arms {
+			armSchema, isObject := arm.(map[string]any)
+			if !isObject {
+				continue
+			}
+			if child := openAPISchemaChild(document, armSchema, step); child != nil {
+				return child
+			}
+		}
+	}
+	return nil
+}
+
+// displayTreeSchema is what model.DisplayTree tells the emitter its bytes are, which is the
+// schema every tree field of the document carries.
+func displayTreeSchema(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := model.DisplayTree{}.JSONSchemaBytes()
+	if err != nil {
+		t.Fatalf("the display tree's own schema: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("read the display tree's own schema: %v", err)
+	}
+	return schema
 }
 
 // displayTreeFields names every field of row, and of every row it holds, whose JSON name ends
@@ -350,11 +465,11 @@ func TestASearchHitCarriesTheTreeOfItsSnippet(t *testing.T) {
 		if result.SnippetTree == nil {
 			t.Fatalf("hit %s carries no snippet_tree", result.ID)
 		}
-		highlighted := strings.Join(highlightedText(t, result.SnippetTree), " ")
+		highlighted := strings.Join(highlightedText(t, json.RawMessage(result.SnippetTree)), " ")
 		if !strings.Contains(strings.ToLower(highlighted), "astrolabe") {
 			t.Errorf("hit %s highlights %q, want the matched word", result.ID, highlighted)
 		}
-		if strings.Contains(treeText(t, result.SnippetTree), markStart) {
+		if strings.Contains(treeText(t, json.RawMessage(result.SnippetTree)), markStart) {
 			t.Errorf("hit %s keeps a sentinel in its tree: %s", result.ID, result.SnippetTree)
 		}
 	}

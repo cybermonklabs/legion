@@ -279,7 +279,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactRead"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -446,7 +446,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedMessage"
+                  "$ref": "#/components/schemas/MessageWithTrees"
                 }
               }
             }
@@ -648,7 +648,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactRead"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -1078,7 +1078,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ShapedAsk"
+                    "$ref": "#/components/schemas/AskWithTrees"
                   },
                   "type": "array"
                 }
@@ -1137,7 +1137,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/ShapedAsk"
+                      "$ref": "#/components/schemas/AskWithTrees"
                     },
                     {
                       "properties": {
@@ -1370,7 +1370,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ShapedComment"
+                    "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
                 }
@@ -2319,7 +2319,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedAsk"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2377,7 +2377,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedAsk"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2599,7 +2599,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedAsk"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2901,7 +2901,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedComment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3126,7 +3126,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedComment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3177,7 +3177,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedComment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3312,7 +3312,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShapedComment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -5026,7 +5026,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ArtifactRead"
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
                   },
                   "type": "array"
                 }
@@ -5178,7 +5178,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactRead"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -5643,7 +5643,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/ShapedAsk"
+                      "$ref": "#/components/schemas/AskWithTrees"
                     },
                     {
                       "properties": {
@@ -5890,7 +5890,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ShapedComment"
+                    "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
                 }
@@ -6417,7 +6417,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/ShapedMessage"
+                      "$ref": "#/components/schemas/MessageWithTrees"
                     },
                     {
                       "properties": {
@@ -8389,7 +8389,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArchitectureTreeRead"
+                  "$ref": "#/components/schemas/ArchitectureTree"
                 }
               }
             }
@@ -8849,7 +8849,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ArtifactRead"
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
                   },
                   "type": "array"
                 }
@@ -9001,7 +9001,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactRead"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -9724,7 +9724,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GraphReferencesRead"
+                  "$ref": "#/components/schemas/GraphReferences"
                 }
               }
             }
@@ -10682,7 +10682,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlockRead"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -10750,7 +10750,6 @@
           "created_at",
           "mentions",
           "deliveries",
-          "reply_block",
           "reply_block",
           "lost"
         ],
@@ -11240,7 +11239,7 @@
       "ApprovalRequestResponse": {
         "properties": {
           "approval": {
-            "$ref": "#/components/schemas/ArtifactApprovalRead"
+            "$ref": "#/components/schemas/ArtifactApprovalWithTrees"
           },
           "artifact_id": {
             "type": "string"
@@ -11248,7 +11247,7 @@
           "ask": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ShapedAsk"
+                "$ref": "#/components/schemas/AskWithTrees"
               },
               {
                 "type": "null"
@@ -11515,6 +11514,67 @@
         ],
         "type": "object"
       },
+      "ArchitectureTree": {
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureComponentRead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "not_architectural": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeNone"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "retired_links": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeRetired"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeSource"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ArchitectureTreeTotals"
+          },
+          "unassigned": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeIssueRef"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sources",
+          "totals",
+          "components",
+          "unassigned",
+          "not_architectural",
+          "retired_links"
+        ],
+        "type": "object"
+      },
       "ArchitectureTreeComponent": {
         "properties": {
           "depends_on": {
@@ -11696,68 +11756,6 @@
           "status",
           "reason",
           "inherited_from"
-        ],
-        "type": "object"
-      },
-      "ArchitectureTreeRead": {
-        "properties": {
-          "components": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureComponentRead"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "not_architectural": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeNone"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "retired_links": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeRetired"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "sources": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeSource"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "totals": {
-            "$ref": "#/components/schemas/ArchitectureTreeTotals"
-          },
-          "unassigned": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeIssueRef"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "sources",
-          "totals",
-          "components",
-          "unassigned",
-          "not_architectural",
-          "retired_links",
-          "components"
         ],
         "type": "object"
       },
@@ -11986,7 +11984,7 @@
         ],
         "type": "object"
       },
-      "ArtifactApprovalRead": {
+      "ArtifactApprovalWithTrees": {
         "properties": {
           "ask_id": {
             "type": "string"
@@ -12093,80 +12091,6 @@
           "to",
           "token",
           "references"
-        ],
-        "type": "object"
-      },
-      "ArtifactRead": {
-        "properties": {
-          "approval": {
-            "$ref": "#/components/schemas/ArtifactApprovalRead"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "created_by": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "id": {
-            "type": "string"
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "primary": {
-            "type": "boolean"
-          },
-          "project": {
-            "type": "string"
-          },
-          "ref_key": {
-            "type": "string"
-          },
-          "role": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "slug": {
-            "type": "string"
-          },
-          "versions": {
-            "items": {
-              "$ref": "#/components/schemas/Version"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "issue_key",
-          "project",
-          "session_id",
-          "ref_key",
-          "slug",
-          "name",
-          "kind",
-          "primary",
-          "created_by",
-          "created_at",
-          "versions"
         ],
         "type": "object"
       },
@@ -12486,6 +12410,80 @@
         ],
         "type": "object"
       },
+      "ArtifactWithTrees": {
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ArtifactApprovalWithTrees"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          },
+          "ref_key": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/Version"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "project",
+          "session_id",
+          "ref_key",
+          "slug",
+          "name",
+          "kind",
+          "primary",
+          "created_by",
+          "created_at",
+          "versions"
+        ],
+        "type": "object"
+      },
       "AskAnchorArtifact": {
         "properties": {
           "name": {
@@ -12548,7 +12546,7 @@
         ],
         "type": "object"
       },
-      "AskAnswerWithTree": {
+      "AskAnswerWithTrees": {
         "properties": {
           "act": {
             "$ref": "#/components/schemas/ActorAct"
@@ -12726,14 +12724,14 @@
         ],
         "type": "object"
       },
-      "AskEditPreviousRead": {
+      "AskEditPreviousWithTrees": {
         "properties": {
           "multiple": {
             "type": "boolean"
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOptionRead"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -12764,12 +12762,11 @@
           "question",
           "options",
           "multiple",
-          "urgency",
-          "options"
+          "urgency"
         ],
         "type": "object"
       },
-      "AskEditRead": {
+      "AskEditWithTrees": {
         "properties": {
           "at": {
             "type": "string"
@@ -12778,14 +12775,13 @@
             "$ref": "#/components/schemas/Actor"
           },
           "previous": {
-            "$ref": "#/components/schemas/AskEditPreviousRead"
+            "$ref": "#/components/schemas/AskEditPreviousWithTrees"
           }
         },
         "required": [
           "previous",
           "edited_by",
-          "at",
-          "previous"
+          "at"
         ],
         "type": "object"
       },
@@ -12854,7 +12850,7 @@
         ],
         "type": "object"
       },
-      "AskOptionRead": {
+      "AskOptionWithTrees": {
         "properties": {
           "description": {
             "type": "string"
@@ -12901,7 +12897,7 @@
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/AskAnswerWithTree"
+              "$ref": "#/components/schemas/AskAnswerWithTrees"
             },
             "type": [
               "array",
@@ -12909,7 +12905,7 @@
             ]
           },
           "ask": {
-            "$ref": "#/components/schemas/ShapedAsk"
+            "$ref": "#/components/schemas/AskWithTrees"
           },
           "claimant": {
             "type": [
@@ -12919,7 +12915,7 @@
           },
           "edits": {
             "items": {
-              "$ref": "#/components/schemas/AskEditRead"
+              "$ref": "#/components/schemas/AskEditWithTrees"
             },
             "type": [
               "array",
@@ -12937,7 +12933,7 @@
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/ShapedComment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -13007,7 +13003,7 @@
         ],
         "type": "object"
       },
-      "AskResolutionRead": {
+      "AskResolutionWithTrees": {
         "properties": {
           "actor": {
             "$ref": "#/components/schemas/Actor"
@@ -13073,7 +13069,7 @@
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/AskAnswerWithTree"
+              "$ref": "#/components/schemas/AskAnswerWithTrees"
             },
             "type": [
               "array",
@@ -13088,7 +13084,7 @@
           },
           "edits": {
             "items": {
-              "$ref": "#/components/schemas/AskEditRead"
+              "$ref": "#/components/schemas/AskEditWithTrees"
             },
             "type": [
               "array",
@@ -13106,7 +13102,7 @@
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/ShapedComment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -13148,6 +13144,152 @@
           "route_status",
           "route_holder",
           "route_status_reason"
+        ],
+        "type": "object"
+      },
+      "AskWithTrees": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at"
         ],
         "type": "object"
       },
@@ -13553,11 +13695,11 @@
       "BroadcastRecipient": {
         "properties": {
           "message": {
-            "$ref": "#/components/schemas/ShapedMessage"
+            "$ref": "#/components/schemas/MessageWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/ShapedMessage"
+              "$ref": "#/components/schemas/MessageWithTrees"
             },
             "type": [
               "array",
@@ -14271,11 +14413,11 @@
       "CommentRead": {
         "properties": {
           "comment": {
-            "$ref": "#/components/schemas/ShapedComment"
+            "$ref": "#/components/schemas/CommentWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/ShapedComment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -14331,6 +14473,173 @@
         },
         "required": [
           "attempt"
+        ],
+        "type": "object"
+      },
+      "CommentWithTrees": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answers": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/CommentDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "mentions": {
+            "items": {
+              "$ref": "#/components/schemas/CommentMention"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Suggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turn": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "author",
+          "body",
+          "anchor",
+          "reply_to",
+          "answers",
+          "ask_id",
+          "turn",
+          "resolved",
+          "resolved_by",
+          "resolved_at",
+          "edited_at",
+          "suggestion",
+          "created_at",
+          "mentions",
+          "deliveries",
+          "reply_block"
         ],
         "type": "object"
       },
@@ -14432,7 +14741,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlockRead"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -14500,7 +14809,6 @@
           "created_at",
           "mentions",
           "deliveries",
-          "reply_block",
           "reply_block"
         ],
         "type": "object"
@@ -17920,7 +18228,7 @@
         ],
         "type": "object"
       },
-      "GraphReferencesRead": {
+      "GraphReferences": {
         "properties": {
           "edges": {
             "items": {
@@ -18232,7 +18540,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswerWithTree"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -18309,7 +18617,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOptionRead"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -18342,7 +18650,7 @@
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolutionRead"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -18382,8 +18690,6 @@
           "answer",
           "created_at",
           "edited_at",
-          "options",
-          "answer",
           "priority",
           "last_reply",
           "snoozed_until",
@@ -18582,7 +18888,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswerWithTree"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -18653,7 +18959,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOptionRead"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -18680,7 +18986,7 @@
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolutionRead"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -18714,8 +19020,6 @@
           "answer",
           "created_at",
           "edited_at",
-          "options",
-          "answer",
           "last_reply"
         ],
         "type": "object"
@@ -19152,7 +19456,7 @@
         "properties": {
           "artifacts": {
             "items": {
-              "$ref": "#/components/schemas/ArtifactRead"
+              "$ref": "#/components/schemas/ArtifactWithTrees"
             },
             "type": [
               "array",
@@ -19446,7 +19750,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswerWithTree"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -19517,7 +19821,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOptionRead"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -19544,7 +19848,7 @@
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolutionRead"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -19575,8 +19879,6 @@
           "answer",
           "created_at",
           "edited_at",
-          "options",
-          "answer",
           "last_reply"
         ],
         "type": "object"
@@ -20224,11 +20526,11 @@
       "MessageRead": {
         "properties": {
           "message": {
-            "$ref": "#/components/schemas/ShapedMessage"
+            "$ref": "#/components/schemas/MessageWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/ShapedMessage"
+              "$ref": "#/components/schemas/MessageWithTrees"
             },
             "type": [
               "array",
@@ -20345,7 +20647,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlockRead"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -20369,7 +20671,92 @@
           "broadcast_id",
           "created_at",
           "deliveries",
-          "reply_block",
+          "reply_block"
+        ],
+        "type": "object"
+      },
+      "MessageWithTrees": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "broadcast_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/MessageDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "in_reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "author",
+          "body",
+          "target",
+          "in_reply_to",
+          "broadcast_id",
+          "created_at",
+          "deliveries",
           "reply_block"
         ],
         "type": "object"
@@ -20405,7 +20792,7 @@
       "MyAnswerRow": {
         "properties": {
           "answer": {
-            "$ref": "#/components/schemas/AskAnswerWithTree"
+            "$ref": "#/components/schemas/AskAnswerWithTrees"
           },
           "ask_id": {
             "type": "string"
@@ -21594,7 +21981,7 @@
         ],
         "type": "object"
       },
-      "ReplyBlockRead": {
+      "ReplyBlockWithTrees": {
         "properties": {
           "block_id": {
             "type": "string"
@@ -21852,7 +22239,7 @@
       "SearchAsk": {
         "properties": {
           "answer": {
-            "$ref": "#/components/schemas/AskAnswerWithTree"
+            "$ref": "#/components/schemas/AskAnswerWithTrees"
           },
           "resolution": {
             "$ref": "#/components/schemas/AskResolution"
@@ -22233,409 +22620,6 @@
           "since",
           "total",
           "items"
-        ],
-        "type": "object"
-      },
-      "ShapedAsk": {
-        "properties": {
-          "anchor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Anchor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "anchor_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "anchor_block": {
-            "$ref": "#/components/schemas/BlockPath"
-          },
-          "anchor_block_error": {
-            "type": "string"
-          },
-          "answer": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AskAnswerWithTree"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "approval": {
-            "$ref": "#/components/schemas/AskApproval"
-          },
-          "approval_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "artifact_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "block_artifact": {
-            "$ref": "#/components/schemas/AskBlockArtifact"
-          },
-          "block_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "edited_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "multiple": {
-            "type": "boolean"
-          },
-          "opened_event_id": {
-            "type": "integer"
-          },
-          "options": {
-            "items": {
-              "$ref": "#/components/schemas/AskOptionRead"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "question": {
-            "type": "string"
-          },
-          "question_tree": {
-            "additionalProperties": true,
-            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
-            "properties": {
-              "type": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          "referenced_by_count": {
-            "type": "integer"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/AskResolutionRead"
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "state": {
-            "type": "string"
-          },
-          "urgency": {
-            "type": "string"
-          },
-          "waiting_on": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "issue_key",
-          "artifact_id",
-          "block_id",
-          "author",
-          "kind",
-          "question",
-          "options",
-          "multiple",
-          "urgency",
-          "anchor",
-          "state",
-          "answer",
-          "created_at",
-          "edited_at",
-          "options",
-          "answer"
-        ],
-        "type": "object"
-      },
-      "ShapedComment": {
-        "properties": {
-          "anchor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Anchor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "anchor_block": {
-            "$ref": "#/components/schemas/BlockPath"
-          },
-          "anchor_block_error": {
-            "type": "string"
-          },
-          "answers": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "artifact_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "ask_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "body": {
-            "type": "string"
-          },
-          "body_tree": {
-            "additionalProperties": true,
-            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
-            "properties": {
-              "type": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "deliveries": {
-            "items": {
-              "$ref": "#/components/schemas/CommentDelivery"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "edited_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "mentions": {
-            "items": {
-              "$ref": "#/components/schemas/CommentMention"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "reply_block": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ReplyBlockRead"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "reply_to": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "resolved": {
-            "type": "boolean"
-          },
-          "resolved_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "resolved_by": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "suggestion": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Suggestion"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "turn": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "issue_key",
-          "artifact_id",
-          "author",
-          "body",
-          "anchor",
-          "reply_to",
-          "answers",
-          "ask_id",
-          "turn",
-          "resolved",
-          "resolved_by",
-          "resolved_at",
-          "edited_at",
-          "suggestion",
-          "created_at",
-          "mentions",
-          "deliveries",
-          "reply_block",
-          "reply_block"
-        ],
-        "type": "object"
-      },
-      "ShapedMessage": {
-        "properties": {
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "body": {
-            "type": "string"
-          },
-          "body_tree": {
-            "additionalProperties": true,
-            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
-            "properties": {
-              "type": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          "broadcast_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "deliveries": {
-            "items": {
-              "$ref": "#/components/schemas/MessageDelivery"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "in_reply_to": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "reply_block": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ReplyBlockRead"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "target": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "issue_key",
-          "author",
-          "body",
-          "target",
-          "in_reply_to",
-          "broadcast_id",
-          "created_at",
-          "deliveries",
-          "reply_block",
-          "reply_block"
         ],
         "type": "object"
       },

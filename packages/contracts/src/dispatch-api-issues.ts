@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ArchitectureTreeRead, IssueCollaboratorPerson } from "./dispatch-api.generated";
+import type { IssueCollaboratorPerson } from "./dispatch-api.generated";
 import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
@@ -183,13 +183,6 @@ export type CheckResultCurrency = "current" | "older" | "unknown";
 export const CheckWhenSchema = z.enum(["before_merge", "after_merge", "default_branch"]);
 
 export type CheckWhen = z.output<typeof CheckWhenSchema>;
-
-/** The project's component model, the body `GET /api/v1/projects/{key}/architecture` answers.
- *  The route table names that body `ArchitectureTreeRead` since it came to describe the prose
- *  trees the read carries, and the read is the model's own fields with those trees beside them,
- *  so the older name still names the body a caller is given and every caller that declared it
- *  keeps compiling. */
-export type ArchitectureTree = ArchitectureTreeRead;
 
 /** How an issue counts for a component; the strongest wins when several apply. */
 export type ArchitectureTreeAttachment = "direct" | "inherited" | "contained";

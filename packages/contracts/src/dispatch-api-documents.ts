@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { ArtifactApprovalRead, ArtifactRead } from "./dispatch-api.generated";
 import { ActorSchema, InboundWriterSchema } from "./dispatch-api-core";
 import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields } from "./dispatch-api-refs";
@@ -96,12 +95,6 @@ export const ArtifactApprovalSchema = z
   })
   .readonly();
 
-/** A document's approval as the web app reads it, with the tree of the reason its latest review
- *  gave. The approval itself is part of the artifact a message-bus payload carries
- *  (`WrittenArtifactCreatedEventPayloadSchema`) and gains no field; a tree rides on this reading
- *  of it, which every route that answers the dashboard serves. */
-export type ArtifactApprovalWithTrees = ArtifactApprovalRead;
-
 export const artifactFields = {
   id: z.string(),
   issue_key: z.string().nullable(),
@@ -133,11 +126,6 @@ export const artifactFields = {
 };
 
 export const ArtifactSchema = z.strictObject(artifactFields).readonly();
-
-/** A document as the web app reads it: the artifact, its approval carrying the tree of that
- *  approval's reason. The tree is absent unless the request sent `Dispatch-Trees: 1`, so this
- *  reading is an `Artifact` wherever one is wanted. */
-export type ArtifactWithTrees = ArtifactRead;
 
 export const WrittenArtifactCreatedEventPayloadSchema = z
   .strictObject({ artifact: ArtifactSchema, ...referenceChangesFields })
