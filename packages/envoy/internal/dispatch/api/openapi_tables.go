@@ -59,11 +59,11 @@ var schemaNames = map[reflect.Type]string{
 
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go
-	// names say that this package shaped them; the names here are the ones main's TypeScript
-	// published and a consumer imports, which
-	// packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml announces.
-	// Declared under their Go names, every one of these shapes would reach a client under two
-	// exported names at once: the generated one and the published one aliasing it.
+	// names say that this package shaped them; the names here are the TypeScript names a client
+	// imports. The eleven `WithTrees` names are new with this change, which
+	// packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml announces; the last
+	// two below are names main already exports. Declared under their Go names, every one of these
+	// shapes would reach a client under two exported names at once.
 	reflect.TypeOf(shapedAsk{}):               "AskWithTrees",
 	reflect.TypeOf(askOptionRead{}):           "AskOptionWithTrees",
 	reflect.TypeOf(model.AskAnswerWithTree{}): "AskAnswerWithTrees",

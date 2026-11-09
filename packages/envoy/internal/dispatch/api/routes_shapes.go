@@ -399,11 +399,11 @@ type liveWritePauseQuery struct {
 // A third: a row names the shape its handler writes, trees and all. A read that shows a stored
 // text answers a shaped read whose fields carry that text's tree (display_trees.go), and the row
 // names that read rather than the model inside it, or the document would describe a body without
-// the fields Dispatch sends and a client generated from it could not hold them. The rule is held
-// to by the test that reads each such route's emitted answer for the tree fields the shape
-// carries (display_trees_test.go), rather than by a reading of the handlers. Two things that
-// look like the same fault and are not: a write answers the row it wrote, so
-// POST /artifacts/{id}/reviews and
+// the fields Dispatch sends and a client generated from it could not hold them. The test that
+// reads a route's emitted answer for the tree fields its shape carries (display_trees_test.go)
+// holds the rule for the routes its table lists, and a new read that carries a tree adds a row
+// there; the routes it does not list rest on this rule alone. Two things that look like the same
+// fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews and
 // POST .../plan-reviews name model.ArtifactReview while the GET beside them names
 // []artifactReviewRead - the handlers write what docs.WriteReview returned, and the dashboard
 // draws the read rather than the write's answer (ApprovalChip.tsx invalidates and refetches);

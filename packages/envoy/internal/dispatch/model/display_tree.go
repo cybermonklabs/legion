@@ -43,8 +43,7 @@ func (DisplayTree) JSONSchemaBytes() ([]byte, error) {
 }
 
 // InlineJSONSchema marks the schema to be written where each tree field stands rather than
-// declared under a name of its own (jsonschema-go's SchemaInliner). No client imports a name
-// for a tree - it reads one where the read it asked for carries it - so a declaration would add
-// an export to the published surface and tell a reader of the field nothing it does not already
-// read there.
+// declared under a name of its own (jsonschema-go's SchemaInliner). The name a client imports
+// for a tree is the hand-written `DisplayTree` of @legion/contracts (dispatch-api-core.ts),
+// which this schema matches; a declaration here would export a second name for the same shape.
 func (DisplayTree) InlineJSONSchema() {}
