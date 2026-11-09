@@ -33,7 +33,7 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // type, the relation and index it names, the index condition it carries - nil when it carries
 // none, which is not the same as an empty one - the name of the subplan it begins and its place
 // under its own parent, what an analyzed plan measured of it (its loops and the rows each
-// answered, both 0 in a plan explained without ANALYZE), and its children.
+// answered, both 0 in a plan explained without ANALYZE), the CTE it scans, and its children.
 type planNode struct {
 	NodeType           string            `json:"Node Type"`
 	RelationName       string            `json:"Relation Name"`
@@ -43,6 +43,7 @@ type planNode struct {
 	ParentRelationship string            `json:"Parent Relationship"`
 	ActualLoops        float64           `json:"Actual Loops"`
 	ActualRows         float64           `json:"Actual Rows"`
+	CTEName            string            `json:"CTE Name"`
 	Plans              []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
@@ -198,6 +199,44 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 		})
 	}
 	return scans
+}
+
+// Node is one node of a plan, whatever that node reads: its type, the relation, index and CTE
+// it names (each empty when the node names none), the subplan it runs under (empty: none, so
+// it runs with the plan rather than once per row of what drives it) and what
+// `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+type Node struct {
+	Type, Relation, Index, CTE, Subplan string
+	Loops, Rows                         float64
+}
+
+// String names the node as a failure message cites it: its type, and whichever of the relation,
+// the index and the CTE it names.
+func (n Node) String() string {
+	description := describeScan(n.Type, n.Relation, n.Index)
+	if n.CTE != "" {
+		description += " on " + n.CTE
+	}
+	return description
+}
+
+// Nodes is every node of planJSON — one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level
+// array — at any depth, in the order the walk meets them. Scans is this walk narrowed to the
+// nodes that name a relation; a caller reads the whole of it when the node it must judge reads
+// no relation at all, as a "CTE Scan" does: a CTE scanned more than once is a side the
+// statement pays for per row of whatever drives it, and its loops are the only place the plan
+// says so (store.TestTheEmbeddingProjectKeyBatchReadsOneBoundedIndexScan).
+func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
+	t.Helper()
+	var nodes []Node
+	for _, node := range planNodes(t, planJSON) {
+		nodes = append(nodes, Node{
+			Type: node.NodeType, Relation: node.RelationName, Index: node.IndexName,
+			CTE: node.CTEName, Subplan: node.subplan,
+			Loops: node.ActualLoops, Rows: node.ActualRows,
+		})
+	}
+	return nodes
 }
 
 // describeScan names one scan node as a failure message cites it. A Bitmap Index Scan reports no

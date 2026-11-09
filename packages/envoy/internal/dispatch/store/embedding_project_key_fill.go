@@ -30,20 +30,63 @@ const EmbeddingProjectKeyBatch = 200
 // (internal/dispatch/duty/ticker.go:22).
 var embeddingProjectKeyProgressEvery = 30 * time.Second
 
+// fillEmbeddingProjectKeysCursorQuery reads the cursor the next batch starts from. It is a
+// statement of its own so that the batch below can be planned against the values it answers,
+// bound as parameters, which is what lets the planner read them as the constants they are.
+//
+// The cursor is read `for update`, which is what makes two processes filling at once take
+// different batches rather than the same one: the lock is held to the batch's commit, so the
+// second waits for the first and then reads the cursor it moved. The pass also runs under the
+// lease embeddings-project-key-fill (api.RunEmbeddingProjectKeyFill), which keeps a second
+// process out of the fill altogether; this lock is what still holds where a lease has expired
+// under a process that stalled rather than stopped, and it costs one read of a one-row table
+// per batch.
+//
+// Why the cursor is not a CTE of the batch any longer. It was `with progress as (select kind,
+// id from embeddings_project_key_backfill for update)`, joined to embeddings in the batch's
+// own CTE, and the planner made that join a nested loop whose inner side is the cursor:
+// measured on the load-test deployment's own database, 1,104,667 embedded rows,
+// `EXPLAIN (ANALYZE, BUFFERS)` of the batch as the fill issues it read
+//
+//	->  CTE Scan on progress p (actual time=316.918..316.918 rows=1.00 loops=400)
+//	->  Index Scan using embeddings_pkey on embeddings e (actual time=0.028..1.794 rows=400.00 loops=1)
+//	Rows Removed by Join Filter: 200
+//	Execution Time: 126769.773 ms
+//
+// - 127 s for one batch of 200 rows, which is about eight days for the table, and the whole of
+// it is the cursor re-read once per candidate row. A cursor the planner cannot see is also a
+// cursor it cannot push into the index: the scan answered 400 rows for a batch of 200 and a
+// join filter threw half of them away, where a bound pair is an index condition and the scan
+// answers exactly the batch. The shape passed its tests and a warm reading of it because on a
+// small warm database the same statement is fast - the fill labelled 2,200 rows in 30 s there -
+// so the test that holds this shape in place is a plan test, not a timing one
+// (TestTheEmbeddingProjectKeyBatchReadsOneBoundedIndexScan).
+const fillEmbeddingProjectKeysCursorQuery = `select kind, id from embeddings_project_key_backfill for update`
+
 // fillEmbeddingProjectKeysBatchQuery is one batch: it takes the next EmbeddingProjectKeyBatch
 // rows by keyset from the cursor, labels each one whose project_key is still null from the
 // owner the row belongs to, moves the cursor to the last row it took, and answers the rows it
-// labelled and whether the pass is finished. $1 is the batch size.
-//
-// The cursor is read `for update`, which is what makes two processes filling at once take
-// different batches rather than the same one: the second waits for the first's batch to commit
-// and then reads the cursor it moved.
+// labelled and whether the pass is finished. $1 and $2 are the cursor
+// fillEmbeddingProjectKeysCursorQuery answered, $3 the batch size.
 //
 // `batch` is the keyset: the next rows above the cursor in (kind, id) order, which is
 // embeddings' own primary key, so the scan starts where the last batch stopped instead of
 // counting past it as an `offset` would. It takes the rows of every kind, the issue's whole-text
 // rows among the four window kinds, because every arm of meaning search now reads the column
 // (api/search.go).
+//
+// No index is added for this read, and in particular no partial
+// `embeddings (kind, id) where project_key is null`. The keyset is the table's own primary
+// key, so a batch is one descent of embeddings_pkey and exactly $3 entries of it wherever the
+// cursor stands - the plan test reads 200 entries at the start of the table and 200 from the
+// middle of it. What a partial index buys a backfill is the labelled rows a late batch walks
+// past, and a keyset leaves none to walk past: every row the pass reads it leaves behind it.
+// The rows it reads and does not write are the ones stored since 20261109120000, which the
+// write functions labelled themselves, and those are spread over the whole key range rather
+// than banked above the cursor. Against nothing it would cost a second index built over
+// 1,104,667 rows under the ACCESS EXCLUSIVE lock of a migration (20261109120000's header), an
+// entry to maintain on every row written for as long as it existed, and an index that shrinks
+// to empty as the pass it serves finishes.
 //
 // `labelled` writes only where project_key is still null, so a row written since 20261109120000
 // - which the write functions label themselves - is read and left alone rather than rewritten,
@@ -57,15 +100,18 @@ var embeddingProjectKeyProgressEvery = 30 * time.Second
 // returns nothing, so a cursor taken from the write would stall on the first such row. `done`
 // is set when the batch took no further row, which is the pass finished; the cursor then stays
 // where it is.
+//
+// `batch` is read once and kept. Two references to a CTE already mean `as materialized`, which
+// is written out here because the defect this statement replaced was a side the planner read
+// again for every candidate row, and an edit that left this CTE with one reference would
+// quietly inline it into the two statements that read it.
 const fillEmbeddingProjectKeysBatchQuery = `
-	with progress as (
-		select kind, id from embeddings_project_key_backfill for update
-	), batch as (
+	with batch as materialized (
 		select e.kind, e.id
-		  from embeddings e, progress
-		 where (e.kind, e.id) > (progress.kind, progress.id)
+		  from embeddings e
+		 where (e.kind, e.id) > ($1::text, $2::text)
 		 order by e.kind, e.id
-		 limit $1
+		 limit $3
 	), last as (
 		select b.kind, b.id from batch b order by b.kind desc, b.id desc limit 1
 	), labelled as (
@@ -148,6 +194,12 @@ func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
 // fillEmbeddingProjectKeysBatch runs one batch in a transaction of its own and commits it,
 // answering the rows it labelled and whether the batch took no further row, which is the pass
 // finished.
+//
+// Two statements, one transaction: the cursor is read and locked first and the batch is then
+// planned against its values. Both properties the one statement had are the transaction's and
+// not the statement's - the row lock is held to the commit, and the batch and the cursor it
+// moves commit together or not at all - so splitting it costs a round trip to a one-row table
+// and buys the plan fillEmbeddingProjectKeysCursorQuery's comment measures.
 func (s *Store) fillEmbeddingProjectKeysBatch(ctx context.Context) (int64, bool, error) {
 	// A batch is a transaction like any other, so it is marked like any other: nothing it runs
 	// may take a second pooled connection while it is open.
@@ -157,9 +209,14 @@ func (s *Store) fillEmbeddingProjectKeysBatch(ctx context.Context) (int64, bool,
 		return 0, false, fmt.Errorf("begin an embeddings project_key fill batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	var fromKind, fromID string
+	if err := tx.QueryRow(ctx, fillEmbeddingProjectKeysCursorQuery).Scan(&fromKind, &fromID); err != nil {
+		return 0, false, fmt.Errorf("take the embeddings project_key fill's cursor: %w", err)
+	}
 	var labelled int64
 	var finished bool
-	if err := tx.QueryRow(ctx, fillEmbeddingProjectKeysBatchQuery, EmbeddingProjectKeyBatch).Scan(&labelled, &finished); err != nil {
+	if err := tx.QueryRow(ctx, fillEmbeddingProjectKeysBatchQuery, fromKind, fromID, EmbeddingProjectKeyBatch).
+		Scan(&labelled, &finished); err != nil {
 		return 0, false, fmt.Errorf("label a batch of embeddings rows with their project: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
