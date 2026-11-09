@@ -89,7 +89,7 @@ test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment sh
       await expect(
         card.getByRole("button", {
           expanded: false,
-          name: new RegExp(name.replace(/[()]/g, "\\$&")),
+          name: new RegExp(name.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")),
         })
       ).toBeVisible();
     }
