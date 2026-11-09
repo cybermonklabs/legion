@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    An issue keeps its admission slot until it is done, leaves the workflow or waits only for its merge, so a root waiting on a person keeps the slot it was admitted with and its architect resumes on the pass that reads the answer, however full the cap is. The architect skills and the root architect's prompt say so.
+    The `waiting-for-slot` notice the entry above describes never shipped in a release and is gone with this change: an answered root holds its row already, so its resume waits for no slot. An architect reads its place in the line from `waitingLine` in its own record.
+custom:
+    Issue: pr3206
