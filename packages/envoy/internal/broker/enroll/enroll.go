@@ -528,13 +528,17 @@ func (s *Service) tokenLoginListed(subject, service string) bool {
 // other read of a launcher credential by something that does not name one answers
 // (revokeCredential, RetireCredential).
 //
-// The pair is what makes the handler's credential the proved key's. The pods of one
-// ServiceAccount share one credential row on the schema this release ships (IssueTokenLoginTx's
-// subject-only conflict target), and a login moves that row's key_thumbprint and pod_uid, so a
-// sibling pod logging in between the proof's own lookup (AuthenticateLauncher) and this read
-// would hand the caller the sibling's PodUID, and Revoke's own-account branch would then judge
-// the request as that sibling. A row whose key has moved is no credential of this caller's, and
-// the route refuses it (401 LAUNCHER_INVALID) rather than acting under another pod's identity.
+// The pair is what makes the handler's credential the proved key's. A login upserts the
+// credential row and writes the login's own key_thumbprint and pod_uid onto it
+// (IssueTokenLoginTx), so a login landing between the proof's own lookup (AuthenticateLauncher)
+// and this read moves the row out from under the proof: a read by launcher id alone would hand
+// the caller whatever identity the row then holds, and Revoke's own-account branch would judge
+// the request as the pod that row names. A login bound to no pod takes one row per subject on
+// either schema (IssueTokenLoginTx's pod-less conflict target), so another pod-less login of
+// that subject still moves this caller's row, and a pod's own re-login moves its own row's key
+// under the same id, so the pair is right on either schema. A row whose key has moved is no
+// credential of this caller's, and the route refuses it (401 LAUNCHER_INVALID) rather than
+// acting under another pod's identity.
 func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (Credential, error) {
 	var cred Credential
 	err := s.Store.Pool.QueryRow(ctx, `select id, operator, service, host, subject, coalesce(pod_uid,'') from launcher_credentials where id=$1 and key_thumbprint=$2`, id, thumbprint).
@@ -1595,15 +1599,15 @@ func machineCredential(cred Credential) bool {
 //
 //   - such an enrollment ends under the credential that made it, and only while that credential
 //     is the one its own pod holds: cred.PodUID is the enrollment's runtime id (ownPod, the
-//     reading podUnderTokenLogin makes of the same pair at Create). Each test refuses what the
-//     other lets through. On the schema this release ships the pods of one account share a
-//     credential id (IssueTokenLoginTx's subject-only conflict target), so the
-//     enrolling-credential test reads true for a sibling pod's enrollment and the pod uid is
-//     what refuses it; and a pod whose own enrollment another credential made — a service login
-//     a person approved, which enrols any pod — brings a matching pod uid, and the
-//     enrolling-credential test is what refuses that. So a session pod of an account both
-//     settings name ends its own enrollment and no other pod's of that account, on either
-//     schema.
+//     reading podUnderTokenLogin makes of the same pair at Create). cred.PodUID is the caller's
+//     own pod, because api's authLauncher reads the credential by launcher id and proved key
+//     thumbprint together (CredentialForKey, whose doc gives the race a read by id alone would
+//     lose). The enrolling-credential test alone refuses a pod whose own enrollment another
+//     credential made — a service login a person approved, which enrols any pod — since that
+//     case brings a matching pod uid. The pod uid refuses a sibling pod's enrollment on either
+//     schema, and it is the only test that refuses one made while the two pods shared one
+//     credential row. So a session pod of an account both settings name ends its own
+//     enrollment and no other pod's of that account, on either schema.
 //
 //   - every other enrollment with no operator ends under the credential that made it, and a pod
 //     enrollment under the same launcher logging in again from another pod as well

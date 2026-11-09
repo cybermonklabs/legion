@@ -9,9 +9,9 @@ import (
 // and the count only moves when a route is deliberately added or removed, as
 // testdata/routes.txt pins the table itself.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
-	// 172 production rows, the count testdata/routes.txt pins (routes_table_test.go), plus the
-	// 13 rows Deps.TestHooksEnabled adds.
-	const shapedRoutes = 185
+	// 174 production rows, the count testdata/routes.txt pins (routes_table_test.go), plus the
+	// 14 rows Deps.TestHooksEnabled adds.
+	const shapedRoutes = 188
 	if len(routeShapes) != shapedRoutes {
 		t.Fatalf("routeShapes has %d entries, want %d (update the pin when adding a route)", len(routeShapes), shapedRoutes)
 	}
