@@ -144,7 +144,19 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
           whose automatic minimum size is its min-content width, and `overflow-wrap` leaves
           that width alone. Measured at 320 px with a 118 character path: untouched and with
           `break-words`, 807 px of text in a 288 px box and a page 823 px wide; with
-          `break-all`, 288 px in 288 and a page that fits (R17). */}
+          `overflow-wrap: anywhere`, with `word-break: break-word` and with `break-all`, 288 px
+          in 288 and a page that fits. Those four readings are what make the reason above
+          checkable rather than plausible: of the values tried, the only one that left the page
+          broken is `overflow-wrap: break-word`, which is the only one whose "soft wrap
+          opportunities introduced by the word break are NOT considered when calculating
+          min-content intrinsic sizes" (CSS Text Level 4, read on the MDN reference), while
+          `anywhere`'s are. A minimum size that reads min-content therefore moves under every
+          value that fixed it and not under the one that did not (R17). It breaks the key as readily
+          as the title, which is accepted: the key starts the line, so a boundary falls inside
+          it only where the key itself is wider than the box - about 36 characters at 320 px,
+          so a project key of some thirty characters - and a key broken over two lines is a
+          better failure than a page that scrolls sideways. Giving the key its own `shrink-0`
+          span would avoid it and restructures the row to protect a case nobody has seen. */}
       <Link
         className={`min-w-0 break-all font-medium ${linkText} ${linkHoverText}`}
         to={buildIssuePath({ key: child.key, kind: "issue" })}
