@@ -2156,9 +2156,12 @@ failure — the fixture a row uploads as much as a debugging screenshot. Two
 workers run two rows at once, so a path shared between rows is a file one row
 reads while another writes it, and a fixed absolute path is somebody else's
 file on a shared box. `e2e/artifacts.e2e.ts` writes the note and the diagram it
-uploads that way; the tree holds no `e2e/fixtures/` directory.
+uploads that way. The tree does hold one `e2e/fixtures/` directory, and nothing
+in it is a file a row made: it is committed seed material, read-only to every
+row, which `e2e/tools/capture-fixture.ts` captured from a live Dispatch. A file
+a row makes still goes under `testInfo.outputPath()`.
 
-`e2e/tools/` holds two tools, and no third.
+`e2e/tools/` holds three tools, and no fourth.
 `check-slow-rows.ts` is the row-length check the `SLOW(>=2s)` paragraph above describes.
 A per-row inventory is no longer a tool's: it comes from the merged JSON report of the
 `dispatch-browser` lane, which the `merge` job of `.github/workflows/dispatch-browser.yaml` writes
@@ -2171,6 +2174,15 @@ nothing unless `E2E_MEASURE_FILE` names a file for the run to write): one
 markdown table per input file, so a base run and a head run read side by side,
 counting a part only for the rows that run it and dividing a part paid once per
 worker over that worker's rows.
+`capture-fixture.ts` writes and re-reads the files under `e2e/fixtures/`:
+`--issue <KEY> --out <path>` captures that issue's `spec` and decisions
+documents at their highest version, with every ask and its answer, and
+`--premortem <slug>` captures a pre-mortem document with its verdict and its
+risks instead. `--verify <path>` re-reads every source of a captured file at
+the version that file records, never by slug, and exits non-zero on the first
+field that differs, so a fixture states what it was captured from and proves
+it. It reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, and never prints the
+token.
 
 `DISPATCH_E2E_PROCESSES` picks how many Dispatch servers the harness runs
 (`e2e/harness-processes.ts`): unset or `1` is the one server above, `2` is two-process mode, and
