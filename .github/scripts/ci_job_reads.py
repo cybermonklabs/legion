@@ -641,9 +641,9 @@ SHUTDOWN_DSN = "postgres://postgres:ci@localhost:5434/postgres?sslmode=disable"
 SHUTDOWN_PACKAGE = "cmd/dispatch"
 SHUTDOWN_TESTS = ["TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument"]
 SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
-# -p 8 and -parallel 12, the five calls the step starts in the background beside the package
-# list, and the streams and logs they write, are ci.yaml's own comments' to explain. The text
-# itself is UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
+# -p 8 and -parallel 12, the seven calls the step starts in the background, and the streams
+# and logs they write, are ci.yaml's own comments' to explain. The text itself is
+# UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
 # UNIT_TEST_LEAD is the longest-first order ci.yaml's comment gives its reason for: go test starts
 # the packages in the order its arguments name them, so the longest must lead or it ends the step
 # alone. The names are import paths because that is what `go list ./...` prints, and the lines of
@@ -841,13 +841,30 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_CALL = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The whole unit step, comments and all: five calls started in the background, the package list
-# in the foreground, a wait for each, and one replay group per call. It is built here rather
-# than beside UNIT_TEST_PATTERN above because the race-impossible call's -run comes from the
-# walk over packages/envoy that this file does just above. ci.yaml holds this text exactly,
-# indentation aside, and check-ci-filters.sh fails when the two differ.
+# The whole unit step, comments and all: seven calls started in the background longest first,
+# a wait for each, and one replay group per call. It is built here rather than beside
+# UNIT_TEST_PATTERN above because the race-impossible call's -run comes from the walk over
+# packages/envoy that this file does just above. ci.yaml holds this text exactly, indentation
+# aside, and check-ci-filters.sh fails when the two differ.
 UNIT_TEST_SCRIPT = f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+# Longest first. The seven calls share this runner's four cores, so the step is over
+# when its longest call is, and a call that starts late ends as late as it started.
+# Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
+# is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
+# 24.1 s, the race-impossible call 35.9 s to 397.2 s, the package list 76.4 s to
+# 524.5 s, routes 94.9 s to 130.6 s, the shutdown call 110.7 s to 166.4 s. The step
+# was 543 s and the package list was its critical path at 448 s: it started 76.4 s in,
+# after three other calls had begun building and were competing for the cores, and
+# internal/dispatch/pmdoc, its own longest package, started with it. So the list is
+# started first and the race-impossible call, 361 s and the next longest, second; the
+# short calls follow, each of them many times over inside those two
+# (dispatch://INFRA-1075). The `go list` that builds the list's arguments runs ahead of
+# every call for the same reason: what the longest call needs waits on nothing.
+lead="{UNIT_TEST_LEAD_TEXT}"
+rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" &
+unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
 # internal/bus counts HoldsSeed's allocations, which the race runtime's own
@@ -895,11 +912,11 @@ routes=$!
 # the server naming that holder. It cannot share the routes service in either
 # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
 # has been blown by a sibling's clone before - so 5434 is named on this call and
-# nowhere else. The package list below skips this test by name, which is unique in the
+# nowhere else. The package list above skips this test by name, which is unique in the
 # module (dispatch://INFRA-1075).
 DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 2m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
 shutdown=$!
-# internal/testnats runs its server in the test process, so the package list below
+# internal/testnats runs its server in the test process, so the package list above
 # starts no container. The two-image matrix, which proves a rendered authorization on
 # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
 # reproduce: it sits behind the natslive tag, and this call is where it runs
@@ -914,7 +931,7 @@ shutdown=$!
 # on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each package runs
 # only the tests its tag adds: `-tags natslive ./pkg` would re-run the package's
 # untagged tests, which already run elsewhere - internal/testnats in the package list
-# below, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
+# above, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
 # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
 # source at run time, and no test name is spelled here. Each assignment is a line of
 # its own and runs before the call it feeds: under bash -e it carries the script's exit
@@ -933,10 +950,8 @@ integration=$!
 # stream: its log is everything it prints.
 go vet -tags modellive ./agentloop/ > "$RUNNER_TEMP/go-test-logs/agentloop-vet.log" 2>&1 &
 vet=$!
-lead="{UNIT_TEST_LEAD_TEXT}"
 s=0
-rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+wait "$unit" || s=$?
 p=0
 wait "$impossible" || p=$?
 r=0
@@ -949,8 +964,8 @@ i=0
 wait "$integration" || i=$?
 v=0
 wait "$vet" || v=$?
-# One group per call: the package list first, then the background calls in the order
-# they were started. Each is its own log, then its stream - the package result lines
+# One group per call, in the order the calls were started: the package list first,
+# then the rest. Each is its own log, then its stream - the package result lines
 # when it passed, the whole stream when it failed - and an ::error:: naming it when it
 # failed. The step's status is the first non-zero of the seven, and the package list,
 # which prints as it goes, writes no log of its own.
@@ -1391,7 +1406,7 @@ GATES = [
         # (dispatch://INFRA-1075).
         #
         # The unit step, whose six calls run at the same time (ci.yaml says why): the package
-        # list in the foreground, and the plain run of what the race build cannot make, the
+        # list, which starts first, and the plain run of what the race build cannot make, the
         # routes package, the two natslive calls, the integration suite and the agentloop vet
         # beside it. One Run each, which together are everything the step compiles:
         #   * the package list is ./... but the race lane's packages, internal/integration and

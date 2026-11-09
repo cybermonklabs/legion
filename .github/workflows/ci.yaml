@@ -4320,7 +4320,7 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # The step below runs the module's packages in the foreground and, beside them, five calls
+      # The step below runs the module's packages in the background and, beside them, five calls
       # that were steps of their own around it until dispatch://INFRA-1075: the plain run of what
       # the race build cannot make, the routes package, the container-backed NATS matrix, the
       # integration suite and the agentloop vet. The package list uses about half this runner's
@@ -4328,8 +4328,9 @@ jobs:
       # on one package's serial tail, and those five steps ran one after another on cores it had
       # left idle: on the slower of the two attempts measured, the race-impossible step 60 s,
       # routes 13 s, natslive 12 s, integration 3 s and the vet 8 s, the 90 s this job spent on
-      # test steps running one at a time. Each of the five is started in the background at the
-      # head of this step now, so the step costs the longest of the six rather than their sum.
+      # test steps running one at a time. All six are started in the background at the head of
+      # this step now, longest first, so the step costs the longest of the six rather than their
+      # sum.
       # The race-impossible call joined them last, once the measurement dispatch://INFRA-985
       # asked for had been made; the comment on that call says what was measured and what it
       # came back with.
@@ -4344,8 +4345,8 @@ jobs:
       # output. -count=1 keeps the restored build cache from replaying a stored result as
       # `(cached)`. What a background call prints outside its stream cannot be left to interleave
       # with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
-      # replayed with its stream; the package list holds the foreground and prints as it goes.
-      # The step waits for all five, replays one group per call, and exits with the first
+      # replayed with its stream; the package list, which prints as it goes, writes no log of
+      # its own. The step waits for all six, replays one group per call, and exits with the first
       # non-zero status of the six, each failing call named in an ::error:: of its own.
       #
       # The API package used to run first and on its own in this job, because the per-test
@@ -4395,6 +4396,28 @@ jobs:
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+          # Longest first. The seven calls share this runner's four cores, so the step is over
+          # when its longest call is, and a call that starts late ends as late as it started.
+          # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
+          # is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
+          # 24.1 s, the race-impossible call 35.9 s to 397.2 s, the package list 76.4 s to
+          # 524.5 s, routes 94.9 s to 130.6 s, the shutdown call 110.7 s to 166.4 s. The step
+          # was 543 s and the package list was its critical path at 448 s: it started 76.4 s in,
+          # after three other calls had begun building and were competing for the cores, and
+          # internal/dispatch/pmdoc, its own longest package, started with it. So the list is
+          # started first and the race-impossible call, 361 s and the next longest, second; the
+          # short calls follow, each of them many times over inside those two
+          # (dispatch://INFRA-1075). The `go list` that builds the list's arguments runs ahead of
+          # every call for the same reason: what the longest call needs waits on nothing.
+          lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
+          github.com/sjawhar/envoy/cmd/dispatch-seed
+          github.com/sjawhar/envoy/internal/dispatch/outbox
+          github.com/sjawhar/envoy/internal/pgmigrate
+          github.com/sjawhar/envoy/cmd/dispatch
+          github.com/sjawhar/envoy/cmd/broker"
+          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
           # internal/bus counts HoldsSeed's allocations, which the race runtime's own
@@ -4442,11 +4465,11 @@ jobs:
           # the server naming that holder. It cannot share the routes service in either
           # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
           # has been blown by a sibling's clone before - so 5434 is named on this call and
-          # nowhere else. The package list below skips this test by name, which is unique in the
+          # nowhere else. The package list above skips this test by name, which is unique in the
           # module (dispatch://INFRA-1075).
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
           shutdown=$!
-          # internal/testnats runs its server in the test process, so the package list below
+          # internal/testnats runs its server in the test process, so the package list above
           # starts no container. The two-image matrix, which proves a rendered authorization on
           # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
           # reproduce: it sits behind the natslive tag, and this call is where it runs
@@ -4461,7 +4484,7 @@ jobs:
           # on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each package runs
           # only the tests its tag adds: `-tags natslive ./pkg` would re-run the package's
           # untagged tests, which already run elsewhere - internal/testnats in the package list
-          # below, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
+          # above, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
           # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
           # source at run time, and no test name is spelled here. Each assignment is a line of
           # its own and runs before the call it feeds: under bash -e it carries the script's exit
@@ -4480,15 +4503,8 @@ jobs:
           # stream: its log is everything it prints.
           go vet -tags modellive ./agentloop/ > "$RUNNER_TEMP/go-test-logs/agentloop-vet.log" 2>&1 &
           vet=$!
-          lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
-          github.com/sjawhar/envoy/cmd/dispatch-seed
-          github.com/sjawhar/envoy/internal/dispatch/outbox
-          github.com/sjawhar/envoy/internal/pgmigrate
-          github.com/sjawhar/envoy/cmd/dispatch
-          github.com/sjawhar/envoy/cmd/broker"
           s=0
-          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          wait "$unit" || s=$?
           p=0
           wait "$impossible" || p=$?
           r=0
@@ -4501,8 +4517,8 @@ jobs:
           wait "$integration" || i=$?
           v=0
           wait "$vet" || v=$?
-          # One group per call: the package list first, then the background calls in the order
-          # they were started. Each is its own log, then its stream - the package result lines
+          # One group per call, in the order the calls were started: the package list first,
+          # then the rest. Each is its own log, then its stream - the package result lines
           # when it passed, the whole stream when it failed - and an ::error:: naming it when it
           # failed. The step's status is the first non-zero of the seven, and the package list,
           # which prints as it goes, writes no log of its own.

@@ -127,12 +127,16 @@ jobs:
       # the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
       # restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
       # here saves either one.
+      # The three paths are the save's exactly, the zip exclusion included: actions/cache keys
+      # an entry on its path list, so a restore naming two where the save names three misses
+      # this family's entry every time (dispatch://INFRA-1075).
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
       # One `go build -o <directory>/` writes one binary per package, each named after it:
@@ -946,12 +950,15 @@ jobs:
       # go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
       # this job builds the Dispatch server and the dev OIDC issuer, which only that family's
       # entry holds. It saves none.
+      # The three paths are the save's exactly, for the reason the binaries job's step of this
+      # name gives (dispatch://INFRA-1075).
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
@@ -1101,12 +1108,15 @@ jobs:
       # go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
       # this job's run-server.sh builds the Dispatch server, which only that family's entry
       # holds. It saves none.
+      # The three paths are the save's exactly, for the reason the binaries job's step of this
+      # name gives (dispatch://INFRA-1075).
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
