@@ -135,9 +135,8 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	case errors.Is(err, enroll.ErrPodSelfEnrollOnly):
 		writeError(w, http.StatusForbidden, "POD_SELF_ENROLL_ONLY", err.Error())
 		return
-	// A pod enrolling itself under a session name, which the pods of its account share one
-	// principal for, so the name it picked is a sibling pod's and the enrollment would take that
-	// pod's grants (enroll.ErrPodSelfEnrollNoSession). A pod registers no agent session.
+	// A pod enrolling itself under a session name (enroll.ErrPodSelfEnrollNoSession, whose own
+	// doc says why a name such a pod picked would be a sibling pod's).
 	case errors.Is(err, enroll.ErrPodSelfEnrollNoSession):
 		writeError(w, http.StatusForbidden, "POD_SELF_ENROLL_NO_SESSION", err.Error())
 		return

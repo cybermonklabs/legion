@@ -130,13 +130,20 @@ func (r podRig) loginWithKey(t *testing.T, account, podUID string, key loginKey)
 	return cred
 }
 
+// podEnrollment is the pod enrollment account's pod podUID presents under cred, the one row
+// enroll and enrollSession both send.
+func (r podRig) podEnrollment(t *testing.T, cred Credential, account, podUID string) Enrollment {
+	t.Helper()
+	return Enrollment{
+		Kind: "pod", RuntimeID: podUID, Thumbprint: "tp-" + podUID + "-" + cred.ID.String(),
+		PodToken: r.token(t, account, podUID),
+	}
+}
+
 // enroll enrols podUID under cred with the token account presents for it.
 func (r podRig) enroll(t *testing.T, cred Credential, account, podUID string) (Enrollment, error) {
 	t.Helper()
-	return r.svc.Create(context.Background(), cred, Enrollment{
-		Kind: "pod", RuntimeID: podUID, Thumbprint: "tp-" + podUID + "-" + cred.ID.String(),
-		PodToken: r.token(t, account, podUID),
-	})
+	return r.svc.Create(context.Background(), cred, r.podEnrollment(t, cred, account, podUID))
 }
 
 // enrollSession is enroll stating session as the agent session the enrollment belongs to: what
@@ -144,17 +151,17 @@ func (r podRig) enroll(t *testing.T, cred Credential, account, podUID string) (E
 // send.
 func (r podRig) enrollSession(t *testing.T, cred Credential, account, podUID, session string) (Enrollment, error) {
 	t.Helper()
-	return r.svc.Create(context.Background(), cred, Enrollment{
-		Kind: "pod", RuntimeID: podUID, Thumbprint: "tp-" + podUID + "-" + cred.ID.String(),
-		PodToken: r.token(t, account, podUID), SessionID: str(session),
-	})
+	in := r.podEnrollment(t, cred, account, podUID)
+	in.SessionID = str(session)
+	return r.svc.Create(context.Background(), cred, in)
 }
 
 // TestAPodsOwnLoginEnrolsItsOwnPodAlone: a pod that logs in with its own projected token holds a
 // credential bound to that one pod, and it enrols that pod. Another pod UID of the same account,
 // whose token it would have to have read out of that pod, is refused ErrPodSelfEnrollOnly — the
 // narrowing kind vm already makes, without which one pod holding such a login enrols every pod
-// whose token it can read.
+// whose token it can read. A request carrying both faults, another pod UID and a session name,
+// is answered the pod UID's refusal: podUnderTokenLogin reads the pod UID first.
 func TestAPodsOwnLoginEnrolsItsOwnPodAlone(t *testing.T) {
 	r := newPodRig(t)
 	cred := r.login(t, selfAccount, "pod-uid-self")
@@ -173,6 +180,11 @@ func TestAPodsOwnLoginEnrolsItsOwnPodAlone(t *testing.T) {
 	}
 	if got := r.rows(t, "pod-uid-other"); got != 0 {
 		t.Fatalf("enrollments naming pod-uid-other = %d, want none", got)
+	}
+
+	both, err := r.enrollSession(t, cred, selfAccount, "pod-uid-other", "role-g1")
+	if !errors.Is(err, ErrPodSelfEnrollOnly) {
+		t.Fatalf("Create(another pod of its own account, under a session name) = %+v, %v; want ErrPodSelfEnrollOnly, the pod uid read before the name", both, err)
 	}
 }
 

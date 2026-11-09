@@ -32,11 +32,10 @@ type caller struct {
 	// name carries, which authenticate checks against the route's before the handler runs.
 	account Account
 	// service is the login the ServiceAccount token that authenticated the request made,
-	// machine.Service.VerifyServiceToken's own answer: the service BROKER_SERVICE_LOGINS says
-	// that account logs in as, which a serviceAuth handler logs when it acts, the account
-	// whose token it presented, and the pod that token was bound to, empty for one bound to
-	// none. The account and the pod come with the service because a serviceAuth handler reads
-	// them to tell the caller's own pod from every other pod a request may name.
+	// machine.Service.VerifyServiceToken's own answer: the service that account logs in as,
+	// the account whose token it presented, and the pod that token was bound to, empty for one
+	// bound to none. serviceAuth hands the whole of it to the handler and says why all three
+	// travel together.
 	service machine.ServiceAccount
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.

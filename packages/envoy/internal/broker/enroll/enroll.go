@@ -54,7 +54,7 @@ var (
 	// one whose subject is the very ServiceAccount the presented pod token proves — whose runtime
 	// id names another pod. Such a credential belongs to one pod, the pod whose token logged in
 	// (launcher_credentials.pod_uid), so it enrols that pod and nothing else, and under no session
-	// name (ErrPodSelfEnrollNoSession).
+	// name (ErrPodSelfEnrollNoSession, which says why).
 	ErrPodSelfEnrollOnly = errors.New("a pod's own machine login enrols that pod alone")
 	// ErrPodSelfEnrollNoSession refuses a session name on the enrolment ErrPodSelfEnrollOnly holds
 	// to one pod: a pod enrolling itself under its own token login. Every pod of one account
@@ -562,10 +562,9 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // when the token proves the login's own account (ErrPodSelfEnrollOnly for any other pod of it),
 // or a pod of an account BROKER_SERVICES binds to the login's service, which is the deployment
 // saying that service launches those pods (ErrPodNotLaunched for anything else). A pod enrolling
-// its own pod states no session name (ErrPodSelfEnrollNoSession), because the pods of one
-// account enrol under one principal and the name it picked would be a sibling pod's, whose
-// grants this enrollment would then take (adopt); a launcher's enrolment of a pod it launches
-// states one as before. A machine whose
+// its own pod states no session name either (ErrPodSelfEnrollNoSession), while a launcher's
+// enrolment of a pod it launches states one as before; podUnderTokenLogin holds both rules and
+// says why. A machine whose
 // Google identity token the exchange
 // accepted enrolls a session under the credential that exchange minted it, which is why it
 // needs no kind and no token of its own here: the credential is the proof. Such a session
@@ -617,13 +616,8 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		if claims.PodUID != in.RuntimeID {
 			return Enrollment{}, ErrPodIdentity
 		}
-		if err := s.podUnderTokenLogin(cred, claims, in.RuntimeID); err != nil {
+		if err := s.podUnderTokenLogin(cred, claims, in); err != nil {
 			return Enrollment{}, err
-		}
-		// A pod enrolling itself takes no session name. The reading is podUnderTokenLogin's own
-		// pod branch: a token login (no operator) whose subject the presented token proves.
-		if cred.Operator == nil && ownPod(cred, claims.Subject) && in.SessionID != nil && *in.SessionID != "" {
-			return Enrollment{}, ErrPodSelfEnrollNoSession
 		}
 		in.Subject = &claims.Subject
 	}
@@ -1477,23 +1471,34 @@ func authorized(cred Credential, kind string, operator *string) bool {
 //     it (Credential.PodUID, from its kubernetes.io pod uid), so it enrols that pod and no other
 //     pod of the account. A login from a token
 //     bound to no pod has no pod of its own and so enrols none of them.
+//     Such an enrolment also states no session name (ErrPodSelfEnrollNoSession, whose own doc
+//     says why). The pod UID is read first, so a request with both faults — another pod of the
+//     account, under a session name — is ErrPodSelfEnrollOnly.
 //
 //   - a pod of an account BROKER_SERVICES binds to the login's own service, which is the
 //     deployment saying that service launches those pods. That is how the Legion daemon enrols
 //     its workers, and it is the same fact requests.Machine reads to decide an enrolled pod is
 //     that service's, so nothing new has to be configured for a deployment that already serves a
-//     service's secrets to its pods.
+//     service's secrets to its pods. It states a session name as before: the launcher names the
+//     session each pod it starts runs, and that name is the launcher's own to give.
 //
 // A credential a person approved — a person's own machine login, or a service's login approved
 // through a machine-login code, neither of which carries a subject — keeps that person's approval
 // as its authorization and is not held to either rule.
-func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, runtimeID string) error {
+//
+// It reads two fields of the enrollment, its runtime id and its session name, and takes the
+// enrollment itself rather than the two values, so no caller can pair one request's pod UID
+// with another's session name.
+func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrollment) error {
 	if cred.Operator != nil || cred.Subject == nil {
 		return nil
 	}
 	if ownPod(cred, claims.Subject) {
-		if cred.PodUID != runtimeID {
-			return fmt.Errorf("%w: this login is pod %q's, the enrollment names %q", ErrPodSelfEnrollOnly, cred.PodUID, runtimeID)
+		if cred.PodUID != in.RuntimeID {
+			return fmt.Errorf("%w: this login is pod %q's, the enrollment names %q", ErrPodSelfEnrollOnly, cred.PodUID, in.RuntimeID)
+		}
+		if in.SessionID != nil && *in.SessionID != "" {
+			return ErrPodSelfEnrollNoSession
 		}
 		return nil
 	}

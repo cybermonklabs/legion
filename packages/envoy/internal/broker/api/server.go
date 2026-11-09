@@ -452,18 +452,13 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 
 // serviceCaller authenticates a service's own projected ServiceAccount token for authenticate,
 // the credential serviceAuth's routes take, and answers the login that token made as one
-// machine.ServiceAccount: the service BROKER_SERVICE_LOGINS lets that account log in as, the
-// account itself, and the pod the token was bound to. It is the token login's own check
-// (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
-// login accept exactly the same credential: the same verifier, the same hour-from-issue bound on a
-// copied token, and the same list, and the handler is given what that check returned. The
-// account and the pod travel with the service because BROKER_SERVICE_LOGINS may name an account
-// BROKER_SERVICES binds to a service, and then a pod of that account logs its service in and
-// calls these routes: a handler reading what such a caller may do needs to know which pod it
-// is. An account the list does
-// not name is 403 ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a
-// broker that trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's
-// routes then authenticate no one. No refusal repeats the token.
+// machine.ServiceAccount, which serviceAuth hands the handler. It is the token login's own
+// check (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
+// login accept exactly the same credential: the same verifier, the same hour-from-issue bound
+// on a copied token, and the same list. An account the list does not name is 403
+// ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
+// trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
+// authenticate no one. No refusal repeats the token.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
