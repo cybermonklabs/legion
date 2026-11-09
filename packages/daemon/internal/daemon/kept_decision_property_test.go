@@ -804,12 +804,13 @@ type keptRun struct {
 // was owed nothing is no telling of any debt, and is reported with the debt it left unpaid.
 //
 // Each seed's operations are its own: the generator is the only source of choices, the machines'
-// clock never moves (stillClock), and every wait is for a goroutine the step started. A run whose
-// steps all ran one at a time replays exactly from its seed; the two steps that run rows beside
-// each other — raceRow, which holds one catch-up's publish open while one other operation runs,
-// and runTogether, which runs several due rows at once on lanes of their own — are ordered by
-// PostgreSQL and the Go scheduler as much as by the seed, so a failure either reaches is reported
-// with its seed and its whole trace and may need more than one replay to come back.
+// timers are armed and never fire (stillClock, whose Now is the wall clock), and every wait is
+// for a goroutine the step started. A run whose steps all ran one at a time replays exactly from
+// its seed; the two steps that run rows beside each other — raceRow, which holds one catch-up's
+// publish open while one other operation runs, and runTogether, which runs several due rows at
+// once on lanes of their own — are ordered by PostgreSQL and the Go scheduler as much as by the
+// seed, so a failure either reaches is reported with its seed and its whole trace and may need
+// more than one replay to come back.
 // LEGION_KEPT_PROPERTY_SEED runs one seed, LEGION_KEPT_PROPERTY_RUNS how many seeds and
 // LEGION_KEPT_PROPERTY_STEPS how many operations each drives.
 //
@@ -3674,10 +3675,27 @@ func (r *keptRun) tracef(format string, args ...any) {
 	r.trace = append(r.trace, fmt.Sprintf("%3d %s", r.step, fmt.Sprintf(format, args...)))
 }
 
-// fatalf ends the run with what broke, the seed that replays it, the step it broke at and every
-// operation that led there.
+// fatalf ends the run with what broke, how to replay it, the step it broke at and every operation
+// that led there. What replays a run depends on the test: a seed driver hard-codes its seeds
+// (kept_decision_handover_seeds_test.go, kept_decision_regression_seeds_test.go) and reads
+// LEGION_KEPT_PROPERTY_SEED not at all, so -run names its subtest, while
+// TestKeptDecisionsReachTheCurrentArchitectOnce takes the seed from that variable
+// (keptPropertySeeds). Either replay can take more than one run, since the two steps that run
+// rows beside each other are ordered by PostgreSQL and the Go scheduler as well as by the seed.
 func (r *keptRun) fatalf(format string, args ...any) {
 	r.t.Helper()
-	r.t.Fatalf("%s\n\nseed %d, step %d (LEGION_KEPT_PROPERTY_SEED=%d replays this run)\ntrace:\n%s",
-		fmt.Sprintf(format, args...), r.seed, r.step, r.seed, strings.Join(r.trace, "\n"))
+	r.t.Fatalf("%s\n\nseed %d, step %d (replay with go test -run '%s' ./internal/daemon/; the seed drivers hard-code "+
+		"their seeds, and LEGION_KEPT_PROPERTY_SEED=%d names this one to TestKeptDecisionsReachTheCurrentArchitectOnce "+
+		"alone)\ntrace:\n%s",
+		fmt.Sprintf(format, args...), r.seed, r.step, keptRunPattern(r.t.Name()), r.seed, strings.Join(r.trace, "\n"))
+}
+
+// keptRunPattern is go test's -run pattern for one test by its full name, each element of the
+// path anchored so that no sibling subtest runs beside it.
+func keptRunPattern(name string) string {
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		parts[i] = "^" + part + "$"
+	}
+	return strings.Join(parts, "/")
 }

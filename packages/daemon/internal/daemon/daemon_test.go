@@ -276,8 +276,9 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
-// stillClock is time that never moves: the machines' timers are armed and never fire, so a test
-// sees only what it drove.
+// stillClock is a clock whose timers never fire: the machines arm them and nothing wakes, so a
+// test sees only what it drove. Its Now is the wall clock, so what is due by the time of day — an
+// outbox row's next_at — still comes due as the run goes on.
 type stillClock struct{}
 
 func (stillClock) Now() time.Time { return time.Now() }
