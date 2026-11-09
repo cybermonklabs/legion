@@ -94,9 +94,10 @@ const (
 	_ = uint(podMemory - podGoMemoryLimit - podGoMemoryLimitMargin - podMemoryOutsideTheRuntime)
 
 	// These mirror constants of internal/dispatch/docs, which this package cannot read:
-	// roomBudgetBytes, bytesOfHeapAStateByte, roomCopies, maxPeerInsertAtTheBound,
-	// maxPeerByteCreep, maxRoomStateBytes and maxMessageBytes. Each is the figure the cut of
-	// INFRA-179 left: one price a state byte in place of the six the budget charged before, and
+	// roomBudgetBytes, bytesOfHeapAStateByte, bytesOfHeapAStruct, roomCopies,
+	// maxPeerInsertAtTheBound, maxPeerByteCreep, maxRoomStateBytes and maxMessageBytes. Each is
+	// the figure the cut of INFRA-179 left: two prices in place of the six the budget charged
+	// before - a state byte and a struct, the larger of the two terms deciding - and
 	// the room's state cap in place of the unrendered bound and the frame total
 	// (dispatch://INFRA-179/artifact/infra179-new-design-md).
 	//
@@ -107,7 +108,8 @@ const (
 	// the message floor reaches the room's hook while one byte more does not; and the state cap
 	// drive fails unless exactly as many margin records are admitted as fit under it.
 	roomBudgetBytesForTest         = 2 << 30
-	bytesOfHeapAStateByteForTest   = 14
+	bytesOfHeapAStateByteForTest   = 17
+	bytesOfHeapAStructForTest      = 630
 	roomCopiesForTest              = 2
 	maxPeerInsertAtTheBoundForTest = 8 << 10
 	maxPeerByteCreepForTest        = 64 << 10
@@ -156,21 +158,26 @@ const (
 	// itself, under the update's own header, which ygo encodes in a few dozen bytes. It is set
 	// past any of them, and only the room a person types in is sized from it.
 	keystrokeUpdateBytesForTest = 64
-	// keystrokeChargeForTest is the most one keystroke adds to its room's charge: its update's
-	// own bytes, which the room's observer adds to the room's tracked state as it drains that
-	// update, at the one price and at both copies (roomWeightForTest). Nothing else charges a
-	// keystroke now: the structure part, the densest-byte price and the count that re-based them
-	// all went with the cut.
-	keystrokeChargeForTest = keystrokeUpdateBytesForTest * bytesOfHeapAStateByteForTest * roomCopiesForTest
+	// keystrokeChargeForTest is the most one keystroke adds to its room's charge, by either
+	// term (roomWeightForTest): its update's own bytes, which the room's observer adds to the
+	// room's tracked state as it drains that update, and the structs it leaves the room, which
+	// are its own item and the one split it makes of the item it landed in. Nothing else
+	// charges a keystroke now: the structure part, the densest-byte price and the count that
+	// re-based them all went with the cut.
+	keystrokeStructsForTest = 2
+	keystrokeChargeForTest  = max(keystrokeUpdateBytesForTest*bytesOfHeapAStateByteForTest, keystrokeStructsForTest*bytesOfHeapAStructForTest) * roomCopiesForTest
 )
 
 // roomWeightForTest is what the room budget charges a room whose tracked state is stateBytes
-// long, as the server charges it (docs' roomWeight): its state at one price in each of its two
-// copies, 28 bytes a state byte. A room's tracked state is the stored state its load decoded
-// plus the bytes of every update its own observer has drained since, so a drive weighs a room by
-// what the store holds for it (memoryHarness.storedState) and what it has sent into it.
-func roomWeightForTest(stateBytes int64) int64 {
-	return stateBytes * bytesOfHeapAStateByteForTest * roomCopiesForTest
+// long and whose document holds structs structs, as the server charges it (docs' roomWeight):
+// the larger of its state at one price and its structs at the other, in each of its two copies.
+// A room's tracked state is the stored state its load decoded plus the bytes of every update
+// its own observer has drained, so a drive weighs a room by what the store holds for it
+// (memoryHarness.storedState) and what it has sent into it; its structs are the structs that
+// stored state decodes to (docs.StateStructsForTest). A drive that can name no struct count
+// passes zero, which leaves the state term to decide.
+func roomWeightForTest(stateBytes, structs int64) int64 {
+	return max(stateBytes*bytesOfHeapAStateByteForTest, structs*bytesOfHeapAStructForTest) * roomCopiesForTest
 }
 
 // scanCeilingForTest is the most items the scans of a browser's update of updateBytes bytes may
@@ -854,7 +861,7 @@ func (p *memoryServer) setRoomBudget(t *testing.T, bytes int64) {
 }
 
 // unboundedRoomBudget is a room budget no drive of one document's bounds comes near: a room of a
-// mebibyte of prose is charged about 84 MB of it (roomWeightForTest), and a drive that writes
+// mebibyte of prose is charged about 93 MB of it (roomWeightForTest), and a drive that writes
 // tens of megabytes into one room would fill the real budget.
 const unboundedRoomBudget = 1 << 50
 
@@ -969,7 +976,7 @@ func TestMarginFloodUpdatesStopAtTheRoomsStateCapAndTheFrameStaysUnderTheFloor(t
 // The room budget refuses the browser its own arithmetic says it has no room for: documents of a
 // mebibyte of prose, each edited once, opened until one is refused with 4503 and DOC_BUSY, under
 // the Go limit a 4 GiB pod gives the server. A room is charged its stored state at one price in
-// each of its two copies, 28 bytes a state byte, from the moment its load decodes that state
+// each of its two copies, 34 bytes a state byte, from the moment its load decodes that state
 // (roomWeightForTest, docs' chargeLoadedRoom). Nothing is reserved for a room before it loads,
 // so an admission is weighed against what the open rooms already hold and nothing else: the room
 // that crosses the limit is the last one admitted, not the next one refused, and the refusals
@@ -1664,18 +1671,19 @@ func holdsMark(tree *pmdoc.Node, ref pmdoc.MarkRef) bool {
 func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 	// proofComment is the mark a comment anchors with (docs.MarkComment).
 	const growers, markID, unheldMarkID, commentMark = 4, "memory-unrecorded-mark", "memory-unrecorded-mark-unheld", "proofComment"
-	// A hundred shrinks are one browser's five cuts of fifty bytes each, sent to twenty
+	// A hundred shrinks are one browser's ten cuts of fifty bytes each, sent to ten
 	// documents in the order it made them: ygo's update observer encodes a transaction's structs
 	// beside what that transaction deleted (sjawhar/ygo v1.55.1-sami.1, collectAndEncodeLocked,
 	// crdt/doc.go:844-873, reearth/ygo#350), so each carries its own cut alone, where at
 	// v1.54.1-sami.3 each carried the cuts before it too, which a document that has taken them
 	// holds.
 	//
-	// Twenty documents and not twenty-five because the one price holds fewer rooms of a mebibyte
-	// than the six prices did: the budget admits twenty-six, and the drive needs four of them
-	// for the writes it refuses and the mark it leaves. The hundred is the acceptance's own
-	// figure and is kept whole by cutting five times in each.
-	const shrunk, cutsEach, cutBytes = 20, 5, 50
+	// Ten documents and not twenty-five because the two prices hold fewer rooms of a mebibyte
+	// than the six did: the budget admits what roomBudgetBytesForTest divided by one such room's
+	// weight comes to and one more, which the drive reads from the shape it stores rather than
+	// naming here, and it needs four of them for the writes it refuses and the mark it leaves.
+	// The hundred is the acceptance's own figure and is kept whole by cutting ten times in each.
+	const shrunk, cutsEach, cutBytes = 10, 10, 50
 	// markAuthor is the reader whose abandoned composer left both unrecorded marks behind, and is
 	// nobody this drive connects as: the sweep keeps an unrecorded mark whose author still has a
 	// browser on its room, the composer still open in front of them
@@ -1898,9 +1906,12 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 		for _, update := range shrinking {
 			shrinkBytes += len(update)
 		}
+		// What the shrinks are priced at is their own bytes and no struct count: a delete
+		// integrates nothing, and the splits it leaves in items the rooms already held are
+		// not counted here, so this names the state term alone (roomWeightForTest).
 		t.Logf("the budget charged %d of %d bytes before the shrinks and %d after them, %d more, against the %d their own bytes are priced at over %d documents",
 			before.charged, before.limit, after.charged, after.charged-before.charged,
-			roomWeightForTest(int64(shrunk*shrinkBytes)), shrunk)
+			roomWeightForTest(int64(shrunk*shrinkBytes), 0), shrunk)
 		if after.charged+after.reserved+after.asks <= after.limit {
 			t.Errorf("after the shrinks a browser was refused at %d charged and %d reserved of %d bytes asking %d, which fit: the server stopped being full, so what it refused above it would now admit",
 				after.charged, after.reserved, after.limit, after.asks)
@@ -1958,25 +1969,34 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 const gcFloodClient = 5_000_000
 
 // A browser cannot push a document past the decode cap, over a real document socket of a real
-// server. A room is brought near the cap by an update of GC structs its allowance admits, and
-// one that would take it one struct past - sized from the structs the room's own document holds,
-// which is what the apply's allowance is built from (crdt.Doc.StructCount, docs'
-// peerApplyAllowance) - is refused with 4413 and DOC_TOO_LARGE and taken back out whole, leaving
+// server. A room is brought to within capHeadroom structs of the cap by updates of GC structs
+// its allowance admits, and one that would take it one struct past - sized from the structs the
+// room's own document holds, which is what the apply's allowance is built from
+// (crdt.Doc.StructCount, docs' peerApplyAllowance) - is refused with 4413 and DOC_NEEDS_REBUILD,
+// the rebuild the decode cap offers (docs' peerRule.refusal), and taken back out whole, leaving
 // the room as it was. The frame that takes the room to the cap exactly is admitted, and so is a
 // frame of delete ranges, which integrates nothing: the splits a delete makes in items the
 // document already held are not the update's own and are not counted against it
 // (crdt.ApplyBudget.Structs), so a document at the cap can still be trimmed. The stored document
 // then loads in a new room of a new server, within the cap.
 //
+// The fill is gcFillFrame structs a frame and no more because a GC struct is a deleted item's
+// clock, which the apply's byte allowance counts (crdt.ApplyBudget.Bytes, sjawhar/ygo
+// v1.55.1-sami.8): a frame of more than about 500,000 of them is over the document's own byte
+// bound before its structs are weighed at all, and would be refused for the bytes rather than
+// for the cap this drives. capHeadroom is what is left above the fill, so the two frames that
+// meet the cap - the one past it and the one that reaches it - are a kilobyte each and are
+// weighed by the cap alone.
+//
 // Before the cut the room kept a running struct total of its own and charged each struct of an
 // update with the two splits it could cause, which is why a frame of a third of the cap's
-// structs was refused where this one takes it; ygo counts what the apply integrates now, so the
+// structs was refused where these take it; ygo counts what the apply integrates now, so the
 // drive asks for the exact frame the cap refuses. internal/dispatch/docs holds the same cap in
 // process (TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused); what this drive adds is
 // that the room a real socket drove is left byte for byte as it was and that its stored history
 // loads again.
 func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
-	const nearStructs = 340_000
+	const gcFillFrame, capHeadroom = 262_144, 1_024
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
 	stored := server.upload(t, "json", memory.issue, "# Capped\n\nOne paragraph of ordinary prose.\n")
@@ -1987,33 +2007,46 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	room := stored.artifactID
 	filling := server.openBrowser(t, room)
 	t.Cleanup(filling.leave)
-	requireApplied(t, filling, gcFrame(gcFloodClient, nearStructs, 1), fmt.Sprintf("an update of %d GC structs", nearStructs))
-	before := canonicalState(t, filling.state(t))
-	held, err := docs.StateStructsForTest(before)
-	if err != nil {
-		t.Fatalf("count the room's structs: %v", err)
+	// Each fill frame is a client of its own, so none of its structs is a clock the room already
+	// holds of that client, and the room's own count after each is what the next is sized from.
+	fillClient := uint64(gcFloodClient)
+	var before []byte
+	var held int64
+	for {
+		var err error
+		before = canonicalState(t, filling.state(t))
+		if held, err = docs.StateStructsForTest(before); err != nil {
+			t.Fatalf("count the room's structs: %v", err)
+		}
+		short := int(maxUpdateItemsForTest - capHeadroom - held)
+		if short <= 0 {
+			break
+		}
+		frame := min(short, gcFillFrame)
+		requireApplied(t, filling, gcFrame(fillClient, frame, 1), fmt.Sprintf("an update of %d GC structs", frame))
+		fillClient++
 	}
 	left := int(maxUpdateItemsForTest - held)
-	t.Logf("the room holds %d structs after an update of %d GC structs, %d short of the %d-struct decode cap", held, nearStructs, left, maxUpdateItemsForTest)
+	t.Logf("the room holds %d structs after %d fill frames, %d short of the %d-struct decode cap", held, fillClient-gcFloodClient, left, maxUpdateItemsForTest)
 	if left < 2 {
 		t.Fatalf("the room is %d structs short of the cap, want room for the frame that reaches it and the one that passes it", left)
 	}
 	refusing := server.openBrowser(t, room)
 	t.Cleanup(refusing.leave)
-	past := gcFrame(gcFloodClient+1, left+1, 1)
+	past := gcFrame(fillClient, left+1, 1)
 	applied, closed, err := refusing.send(refusing.updateFrame(past))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("a %d-byte update of %d GC structs, one past the cap: applied %v, closed %v", len(past), left+1, applied, closed)
-	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
+	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
 	if state := canonicalState(t, filling.state(t)); !bytes.Equal(state, before) {
 		t.Fatalf("the room holds a %d-byte state after the refused update, want the %d-byte state it held", len(state), len(before))
 	}
 	// What the cap admits: the frame that reaches it exactly, and a frame of delete ranges,
 	// which integrates nothing of its own whatever the room already holds.
-	requireApplied(t, filling, gcFrame(gcFloodClient+2, left, 1), fmt.Sprintf("an update of %d GC structs, to the cap exactly", left))
-	requireApplied(t, filling, deleteRangesFrame(gcFloodClient+3, 64), "an update of 64 delete ranges into a room at the cap")
+	requireApplied(t, filling, gcFrame(fillClient+1, left, 1), fmt.Sprintf("an update of %d GC structs, to the cap exactly", left))
+	requireApplied(t, filling, deleteRangesFrame(fillClient+2, 64), "an update of 64 delete ranges into a room at the cap")
 	atTheCap := canonicalState(t, filling.state(t))
 	capped, err := docs.StateStructsForTest(atTheCap)
 	if err != nil {
@@ -3973,9 +4006,9 @@ func (p *memoryServer) chargedAgainstOneByte(t *testing.T, probe, when string) i
 
 // mebibyteFleet is copies of one stored document of a mebibyte of prose (cloneDocuments), its
 // stored state for browsers to edit, its stored version's count of elements, and what the room
-// budget charges a room that loads it, computed as the server computes it (storedShape): its
-// stored state at one price over both copies (roomWeightForTest). copies is how many a drive
-// needs, given that weight.
+// budget charges a room that loads it, computed as the server computes it (storedShape): the
+// larger of its stored state at one price and its structs at the other, over both copies
+// (roomWeightForTest). copies is how many a drive needs, given that weight.
 type mebibyteFleet struct {
 	copies   []string
 	state    []byte
@@ -3994,8 +4027,8 @@ func (h *memoryHarness) mebibyteFleet(t *testing.T, copies func(weight int64) in
 	setup.stop(t)
 	shape := h.storedShape(t, "a mebibyte of prose", source.artifactID)
 	state := h.storedState(t, source.artifactID)
-	if want := roomWeightForTest(int64(len(state))); shape.weight != want {
-		t.Fatalf("a mebibyte of prose is charged %d bytes, want its %d bytes of stored state at %d a byte, %d", shape.weight, len(state), bytesOfHeapAStateByteForTest*roomCopiesForTest, want)
+	if want := roomWeightForTest(int64(len(state)), shape.structs); shape.weight != want {
+		t.Fatalf("a mebibyte of prose is charged %d bytes, want the %d its %d bytes of stored state and its %d structs come to", shape.weight, want, len(state), shape.structs)
 	}
 	return mebibyteFleet{
 		copies:   h.cloneDocuments(t, source.artifactID, copies(shape.weight)),
@@ -4641,8 +4674,9 @@ func requireBrowserForgotten(t *testing.T, server *memoryServer, room string, wa
 }
 
 // storedShape is a stored document a struct-dense drive copies (cloneDocuments), and what the
-// room budget charges a room that loads it, computed here as the server computes it: the bytes
-// of the stored state a load decodes, at the one price and at both copies (roomWeightForTest).
+// room budget charges a room that loads it, computed here as the server computes it: the larger
+// of the bytes of the stored state a load decodes at one price and the structs that state
+// decodes to at the other, over both copies (roomWeightForTest).
 // Those bytes are the whole stored history as the store hands it over, folded where it holds
 // several rows, which is exactly what a load reads and decodes (docs' loadDecodedHistory,
 // chargeLoadedRoom) - so the drive reads it the way a load does rather than summing the rows.
@@ -4687,10 +4721,10 @@ func (h *memoryHarness) storedShape(t *testing.T, name, artifactID string) store
 		t.Fatalf("the latest version of %s measures %+v, want it counted", name, size)
 	}
 	shape.rendered, shape.elements = len(markdown), size.Elements
-	shape.weight = roomWeightForTest(int64(shape.stateBytes))
-	t.Logf("%s: %d bytes of stored state in %d rows holding %d structs, its latest version %d bytes making %d elements; a room that loads it is charged %d bytes, its state at %d bytes a byte over both copies",
+	shape.weight = roomWeightForTest(int64(shape.stateBytes), shape.structs)
+	t.Logf("%s: %d bytes of stored state in %d rows holding %d structs, its latest version %d bytes making %d elements; a room that loads it is charged %d bytes, the larger of its state at %d bytes a byte and its structs at %d a struct, over both copies",
 		name, shape.stateBytes, rows, shape.structs, shape.rendered, shape.elements, shape.weight,
-		bytesOfHeapAStateByteForTest*roomCopiesForTest)
+		bytesOfHeapAStateByteForTest*roomCopiesForTest, bytesOfHeapAStructForTest*roomCopiesForTest)
 	return shape
 }
 
