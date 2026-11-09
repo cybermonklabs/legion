@@ -22,7 +22,6 @@ import {
   mintMarker,
   setRecordMode,
   verdictsUnkeepable,
-  writeIdentities,
   writeIdentity,
   writeVerdict,
 } from "../askgate-marker";
@@ -797,7 +796,7 @@ describe("absence is a statement only when the store was read whole", () => {
   const refused = async (reason = "failure 7: say what changed, not that something did") =>
     writeVerdict(
       join(stateDir, "sessions", "ses-1"),
-      writeIdentities("dispatch_message", await dryArgs(MESSAGE))[0] ?? "",
+      writeIdentity("dispatch_message", await dryArgs(MESSAGE)),
       reason,
       Date.now()
     );
@@ -972,11 +971,7 @@ describe("absence is a statement only when the store was read whole", () => {
     writeRecord();
     writeVerdict(
       join(stateDir, "sessions", "ses-1"),
-      writeIdentities(
-        "dispatch_artifact",
-        await dryArgs(upload("--path", brief)),
-        Buffer.from(text)
-      )[0] ?? "",
+      writeIdentity("dispatch_artifact", await dryArgs(upload("--path", brief)), Buffer.from(text)),
       "failure 10: the brief says nothing the issue does not",
       Date.now()
     );
@@ -1003,11 +998,11 @@ describe("absence is a statement only when the store was read whole", () => {
     writeRecord();
     writeVerdict(
       join(stateDir, "sessions", "ses-1"),
-      writeIdentities(
+      writeIdentity(
         "dispatch_artifact",
         await dryArgs(["artifact", "--issue", "DSP-1", "--name", "brief.md", "--path", brief]),
         Buffer.from(text)
-      )[0] ?? "",
+      ),
       "failure 10: the brief says nothing the issue does not",
       Date.now()
     );
@@ -1053,39 +1048,6 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(messagePosts()).toHaveLength(0);
   });
 
-  // A verdict written by the version before this one is still found. The two artifacts fail in
-  // opposite directions across an upgrade: a marker that stops being recognised reads as stale
-  // and refuses where the session chose block, while a verdict that stops being recognised
-  // reads as none and posts — fail-open and permanent, this branch's own defect reintroduced by
-  // its deployment.
-  test("a verdict the previous version filed is still found after the upgrade", async () => {
-    writeRecord();
-    const args = await dryArgs(MESSAGE);
-    // The encoding of the previous head: sorted pairs, no type tag.
-    const prior = (value: unknown): unknown =>
-      typeof value === "string"
-        ? value.replace(/\s+$/, "")
-        : Array.isArray(value)
-          ? value.map(prior)
-          : typeof value !== "object" || value === null
-            ? value
-            : Object.entries(value as Record<string, unknown>)
-                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-                .map(([key, member]) => [key, prior(member)]);
-    const was = sha(prior({ tool: "dispatch_message", args }));
-    expect(was).not.toBe(writeIdentity("dispatch_message", args));
-    writeVerdict(
-      join(stateDir, "sessions", "ses-1"),
-      was,
-      "failure 7: say what changed, not that something did",
-      Date.now()
-    );
-    const { code, stdout } = await run(MESSAGE);
-    expect(code).toBe(1);
-    expect(stdout).toContain("AskGate reviewed this write and did not send it");
-    expect(messagePosts()).toHaveLength(0);
-  });
-
   // The stop is a conclusion about the session now, not a latch: a fault that clears is noticed,
   // and it takes the verdict store and the mark both failing to reach it. A transient fault
   // permanently stopping a healthy session is the shape this branch refused to ship twice.
@@ -1102,61 +1064,62 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(verdictsUnkeepable(session, Date.now())).toBe(false);
     // A fault in the verdict store alone is not it: the mark can still be written, which is
     // what degrades the session to strict instead of stopping it.
-    mkdirSync(join(session, "askgate-verdicts"), { recursive: true });
-    chmodSync(join(session, "askgate-verdicts"), 0o500);
+    mkdirSync(join(session, "askgate-verdicts-v2"), { recursive: true });
+    chmodSync(join(session, "askgate-verdicts-v2"), 0o500);
     try {
       expect(verdictsUnkeepable(session, Date.now())).toBe(false);
     } finally {
-      chmodSync(join(session, "askgate-verdicts"), 0o700);
+      chmodSync(join(session, "askgate-verdicts-v2"), 0o700);
     }
     // And the probe leaves nothing behind.
     expect(readdirSync(session).filter((name) => name.startsWith(".probe-"))).toEqual([]);
   });
 
-  // The mixed-version case that is actually reachable: released main mints markers under a raw
-  // JSON.stringify of the arguments, and the new CLI reads them. Refusing one told the agent
-  // its arguments differed from the reviewed ones, which was untrue, and repeated until the
-  // sweep — in block mode, for every reviewed literal write of the session.
-  test("a marker of the encoding released versions mint is honoured, not refused", async () => {
-    writeRecord();
-    const args = await dryArgs(MESSAGE);
-    const shipped = sha(args);
-    expect(shipped).not.toBe(argsDigest(args));
-    const file = join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`);
-    writeFileSync(
-      file,
-      JSON.stringify({
-        v: 2,
-        argv: argvDigest(MESSAGE),
-        args: shipped,
-        files: [],
-        toolCallId: "call-1",
-        outcome: "verdict",
-        createdAt: Date.now(),
-      }),
-      { mode: 0o600 }
-    );
-    const { code, stdout } = await run(MESSAGE);
-    expect(code).toBe(0);
-    expect(stdout).not.toContain("arguments differ");
-    expect(stdout).not.toContain("AskGate");
-    expect(messagePosts()).toHaveLength(1);
-    expect(existsSync(file)).toBe(false);
+  // A verdict of a scheme this version does not read is never decoded: it is detected, and the
+  // write is held. Reading one would oblige every future version to keep every encoding it has
+  // ever used, exactly, forever, and this branch is the evidence that the obligation cannot be
+  // met. A foreign store fails closed, and the cost is bounded by the session.
+  test("a verdict store of another scheme holds the write without being read", async () => {
+    for (const mode of ["block", "warn"] as const) {
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      posts.length = 0;
+      writeRecord("ses-1", undefined, mode);
+      const older = join(stateDir, "sessions", "ses-1", "askgate-verdicts");
+      mkdirSync(older, { recursive: true });
+      writeFileSync(join(older, "0".repeat(64)), JSON.stringify({ v: 1, reason: "no", at: 1 }));
+      const { code, stdout } = await run(MESSAGE);
+      expect({ mode, code }).toEqual({ mode, code: mode === "block" ? 1 : 0 });
+      expect(stdout).toContain("a scheme this version does not read");
+      expect(stdout).toContain(older);
+    }
   });
 
-  // A damaged file under one identity must not hide a readable verdict under another: returning
-  // on the first answer made `unknown` win, and warn mode posts an unknown.
-  test("a corrupt name does not hide a readable verdict filed under another", async () => {
-    writeRecord("ses-1", undefined, "warn");
-    const session = join(stateDir, "sessions", "ses-1");
-    const names = writeIdentities("dispatch_message", await dryArgs(MESSAGE));
-    writeVerdict(session, names[1] ?? "", "failure 7: say what changed", Date.now());
-    mkdirSync(join(session, "askgate-verdicts"), { recursive: true });
-    writeFileSync(join(session, "askgate-verdicts", names[0] ?? ""), "{broken");
+  // Litter is not a verdict. The probe writes `.probe-<hex>` into the store and a write leaves
+  // `.<hex>.tmp` while it renames, so a failed removal would otherwise make a session that
+  // recorded nothing read as holding a foreign verdict — at the next scheme change, long after
+  // anyone remembered why.
+  test("a store of another scheme holding only litter is not a verdict", async () => {
+    writeRecord();
+    const older = join(stateDir, "sessions", "ses-1", "askgate-verdicts");
+    mkdirSync(older, { recursive: true });
+    writeFileSync(join(older, ".probe-deadbeef"), "{}");
+    writeFileSync(join(older, ".abc123.tmp"), "{}");
     const { code, stdout } = await run(MESSAGE);
-    expect(code).toBe(1);
-    expect(stdout).toContain("AskGate reviewed this write and did not send it");
-    expect(messagePosts()).toHaveLength(0);
+    expect(code).toBe(0);
+    expect(stdout).toContain("posted without review");
+    expect(stdout).not.toContain("a scheme this version does not read");
+    expect(messagePosts()).toHaveLength(1);
+  });
+
+  // The mark is not versioned and keeps its name: it says a verdict was lost, which no encoding
+  // changes, and it is not a verdict store.
+  test("the lost-verdict mark is no foreign store", async () => {
+    writeRecord();
+    markVerdictsLost(join(stateDir, "sessions", "ses-1"), Date.now());
+    const { stdout } = await run(MESSAGE);
+    expect(stdout).toContain("could not write down");
+    expect(stdout).not.toContain("a scheme this version does not read");
   });
 
   test("a standing refusal reaches no other issue and no other text", async () => {

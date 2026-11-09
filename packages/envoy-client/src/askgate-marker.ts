@@ -14,7 +14,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { hasErrnoCode, messageFor } from "./errors";
 
 /**
@@ -769,11 +769,6 @@ export type Consumed =
  * sweep at the gate's next mint takes an expired marker, and the store goes with its session. A
  * lost race for a marker (another process unlinked it first) goes on to the next.
  */
-/** Whether a marker's bound digest is this write's, under the current encoding or the first. */
-function binds(bound: string, reviewed: string, prior: string): boolean {
-  return bound === reviewed || bound === prior;
-}
-
 export function consumeMarker(
   stores: readonly string[],
   argv: readonly string[],
@@ -783,12 +778,6 @@ export function consumeMarker(
 ): Consumed {
   const key = argvDigest(argv);
   const reviewed = argsDigest(args);
-  // The encoding markers were actually minted under before `canonicalText`: a raw
-  // `JSON.stringify` in the parser's insertion order, which is what every released version
-  // wrote. Not `priorCanonical`, which is the verdict encoding and no version ever minted a
-  // marker with: hashing that widened the accept set by a region nothing could reach while
-  // leaving the real mixed-version marker refused.
-  const priorReviewed = digest(args);
   let changed: FileOperand | undefined;
   let mismatched = false;
   let expired = false;
@@ -826,12 +815,10 @@ export function consumeMarker(
           changed ??= { flag: differs.flag, operand: differs.operand };
           continue;
         }
-        // A marker of the first encoding binds the same arguments under another digest. Its
-        // review really did cover this write, so it is honoured rather than refused: refusing
-        // it told the agent "its arguments differ from the ones AskGate reviewed", which is
-        // untrue — only the encoding moved — and a refusal consumes nothing, so the lie
-        // repeated until the sweep took the marker.
-        if (marker.files.length !== files.length || !binds(marker.args, reviewed, priorReviewed)) {
+        // A marker of an earlier encoding binds another digest and reads as `stale`, which
+        // fails closed and lives at most two hours. Only the verdict side needs a scheme
+        // story, because only an unrecognised verdict fails open.
+        if (marker.files.length !== files.length || marker.args !== reviewed) {
           mismatched = true;
           continue;
         }
@@ -891,7 +878,7 @@ export function consumeMarker(
  * permission — and it outlives a restart of the gate, since the directory is the session's. A
  * session with no live owner has AskGate off altogether and nothing here is read.
  */
-const VERDICTS = "askgate-verdicts";
+const VERDICTS = "askgate-verdicts-v2";
 /**
  * The file that marks a session whose gate lost a verdict it could not write
  * (`markVerdictsLost`). It sits in the session's own directory, beside its AskGate record and
@@ -952,70 +939,46 @@ export function uploadBytesOf(
   return typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined;
 }
 
-/**
- * The encoding verdicts were written under before `canonicalText`, kept so that a verdict a
- * previous version recorded is still found after an upgrade.
- *
- * The two artifacts fail in opposite directions across a version boundary, and only one of them
- * needs this. A marker whose digest stops being recognised reads as `stale`, which refuses where
- * the session chose block: it fails closed, and markers are short-lived and swept, so an upgrade
- * invalidating them costs a resend. A verdict whose identity stops being recognised reads as
- * `none`, which posts — fail-open, permanent, and exactly the defect this branch exists to
- * remove, reintroduced by its own deployment. So the lookup reads both identities and the mint
- * writes only the current one.
- */
-function priorCanonical(value: unknown): unknown {
-  if (typeof value === "string") return value.replace(/\s+$/, "");
-  if (Array.isArray(value)) return value.map(priorCanonical);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([key, member]) => [key, priorCanonical(member)]);
-}
-
-/** The identity a verdict of the previous version was filed under. */
-function priorIdentity(
-  tool: string,
-  args: Readonly<Record<string, unknown>>,
-  uploadBytes?: Uint8Array
-): string {
-  const { path: named, content: inline, ...rest } = args;
-  const bytes =
-    uploadBytes ?? (typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined);
-  const upload = typeof named === "string" || typeof inline === "string";
-  const judged = upload && bytes !== undefined ? { ...rest, content: bytesDigest(bytes) } : args;
-  return digest(priorCanonical({ tool, args: judged }));
-}
-
-/**
- * Every identity this write may have been filed under: the current one first, then those of
- * earlier versions. A gate of one version and a CLI of another meet across an upgrade — the
- * installed shim resolves the plugin per invocation — and a verdict that goes unrecognised
- * posts the write it refused.
- */
-const IDENTITY_SCHEME = "2";
-
-/**
- * Every name this write's verdict may be filed under, the current one first. The name carries
- * the scheme that produced it (`2-<identity>`), where the first scheme's did not: without that,
- * the next change to `canonicalText` has the same fail-open behaviour this one did, since a
- * verdict nobody recognises reads as none and posts. A scheme after this one adds its own
- * prefix and appends the ones before it here.
- */
-export function writeIdentities(
-  tool: string,
-  args: Readonly<Record<string, unknown>>,
-  uploadBytes?: Uint8Array
-): string[] {
-  return [
-    `${IDENTITY_SCHEME}-${writeIdentity(tool, args, uploadBytes)}`,
-    priorIdentity(tool, args, uploadBytes),
-  ];
-}
-
-/** `<session>/askgate-verdicts`, where that session's verdicts of no are kept. */
+/** `<session>/askgate-verdicts-v2`, where this scheme's verdicts of no are kept. */
 function verdictDir(session: string): string {
   return join(session, VERDICTS);
+}
+
+/** A verdict store of some scheme: this one, or `askgate-verdicts` from the first. */
+const VERDICT_STORE = /^askgate-verdicts(-v[0-9]+)?$/;
+
+/**
+ * Whether this session holds verdicts of a scheme this version cannot read.
+ *
+ * It never decodes one. A foreign store is detected and the write is held, which is the whole of
+ * the compatibility story: reading an old verdict would oblige every future version to keep every
+ * encoding it has ever used, exactly, forever, and six rounds of this branch are the evidence
+ * that the obligation cannot be met — a fallback added in one commit missed the scheme the commit
+ * before it was writing.
+ *
+ * Entries beginning with a dot do not count. The probe writes `.probe-<hex>` here and a write
+ * leaves `.<hex>.tmp` while it renames, so litter from a failed removal would otherwise make a
+ * session that recorded no verdict at all read as holding a foreign one — at the next scheme
+ * change, long after anyone remembered why.
+ */
+function foreignVerdicts(session: string): string | undefined {
+  const mine = basename(verdictDir(session));
+  let names: string[];
+  try {
+    names = readdirSync(session);
+  } catch {
+    return undefined;
+  }
+  for (const name of names) {
+    if (name === mine || !VERDICT_STORE.test(name)) continue;
+    const dir = join(session, name);
+    try {
+      if (readdirSync(dir).some((entry) => !entry.startsWith("."))) return dir;
+    } catch {
+      return dir;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1157,18 +1120,18 @@ function readVerdictFile(file: string): Record<string, unknown> | "gone" | "unre
  * no verdict store at all has said nothing: an older gate wrote none, and a session that has
  * refused nothing writes none.
  */
-export function readVerdict(session: string, identities: readonly string[]): VerdictRead {
-  // Every identity is read before anything is concluded, and a verdict outranks a damaged file:
-  // returning on the first answer let a corrupt `2-<identity>` hide a readable refusal filed
-  // under the earlier name, and `unknown` posts in warn mode where the refusal would not. This
-  // is the precedence the model states, applied within the lookup as well as around it.
-  let damaged: VerdictRead | undefined;
-  for (const identity of identities) {
-    const found = readOneVerdict(session, identity);
-    if (found?.kind === "refused") return found;
-    if (found !== undefined) damaged ??= found;
-  }
-  if (damaged !== undefined) return damaged;
+export function readVerdict(session: string, identity: string): VerdictRead {
+  const found = readOneVerdict(session, identity);
+  if (found !== undefined) return found;
+  // A store of another scheme, holding anything: this version cannot say what it holds, and one
+  // thing it can hold is a refusal of this very write.
+  const foreign = foreignVerdicts(session);
+  if (foreign !== undefined)
+    return {
+      kind: "unknown",
+      why: `this session holds AskGate verdicts of a scheme this version does not read (${foreign})`,
+      path: foreign,
+    };
   const lost = join(session, VERDICTS_LOST);
   const mark = readVerdictFile(lost);
   if (mark === "gone") return { kind: "none" };

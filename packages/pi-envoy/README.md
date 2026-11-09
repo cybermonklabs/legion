@@ -508,9 +508,11 @@ review refused that very write (dispatch://INFRA-2079, row 3.5):
   those bytes and warn mode's whole meaning is that a revise does not hold the write. A verdict
   is not spent by being read and is never swept: it goes when a later review of the same write
   allows it, or with the session.
-- **Where the verdicts are, by name.** `<state>/sessions/<id>/askgate-verdicts/` holds one file
-  per refused write, named `<scheme>-<identity>` (`2-…` for the current encoding, bare hex for
-  the first), whose body is the reason the review gave and when. `<state>/sessions/<id>/askgate-verdicts-lost`
+- **Where the verdicts are, by name.** `<state>/sessions/<id>/askgate-verdicts-v2/` holds one
+  file per refused write, named by the write's identity, whose body is the reason the review
+  gave and when. The directory carries the scheme, so a change to the encoding is a new
+  directory: a verdict of another scheme is never decoded, only detected, and a session holding
+  one refuses every gated write in block mode until it ends. `<state>/sessions/<id>/askgate-verdicts-lost`
   is the mark: its presence makes the session read a write it has nothing recorded against as
   unknown rather than unreviewed, for the rest of that session's life, and it never clears. An
   operator whose session refuses every unreviewed write should look for that file first — the

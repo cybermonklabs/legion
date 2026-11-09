@@ -699,8 +699,8 @@ the command (dispatch://INFRA-2079, row 3.5). A write no review ever saw carries
 verdict: it posts with a warning in every mode, where the session's block choice used to refuse
 it. A file that changed after the gate read it, other arguments, a marker past its age, and
 evidence that cannot be read fall between the two and are refused where the session chose block.
-A session's verdicts live in `<state>/sessions/<id>/askgate-verdicts/`, one file per refused
-write named `<scheme>-<identity>`, and `<state>/sessions/<id>/askgate-verdicts-lost` marks a
+A session's verdicts live in `<state>/sessions/<id>/askgate-verdicts-v2/`, one file per refused
+write named by the write's identity, the directory carrying the scheme that wrote it, and `<state>/sessions/<id>/askgate-verdicts-lost` marks a
 session whose gate reached a verdict it could not write down: while that file is there the
 session reads a write with nothing recorded against it as unknown rather than unreviewed, and it
 never clears on its own. The CLI writes the ledger line before it posts. The gate writes the
