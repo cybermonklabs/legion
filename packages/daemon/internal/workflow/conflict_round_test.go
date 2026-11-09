@@ -30,7 +30,7 @@ const (
 func conflictRoundEngine() *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), MergeQueueRole: "merge-queue",
-		ReviewRoundCap: 3, MaxFixAttempts: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester,
+		ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester,
 		ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC) },
 	}, nil)
