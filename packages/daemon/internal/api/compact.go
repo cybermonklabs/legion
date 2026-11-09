@@ -341,7 +341,7 @@ const freshSessionName = "fresh_session (`legion claims retry --fresh-session`)"
 // would leave the operator waiting on a resume that never comes (the daemon's controllerKeeper,
 // supervise.Claim.RuleHolds). The keeper launches a queued controller, resumes one the daemon
 // suspended, and retries one that failed or retired.
-const controllerKeeperName = "the daemon's controller keeper, whose resume an operator's own suspension holds"
+const controllerKeeperName = "the daemon's controller keeper (whose resume an operator's own suspension holds)"
 
 // startsAgainName is what a refusal names as starting the claim again once its process is gone —
 // a claim that is suspended, failed or retired (startsAgain) — which the claim's role decides.
