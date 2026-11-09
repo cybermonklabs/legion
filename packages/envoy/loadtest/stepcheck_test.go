@@ -479,3 +479,42 @@ func TestStepCheckReportsNoNegativeLoss(t *testing.T) {
 		t.Errorf("a step that lost nothing reports a negative loss: %q", line)
 	}
 }
+
+// TestStepCheckReadsCriterionFFromWhatTheStepHolds: the (f) clause's reading is what the step's
+// own files hold, not the sentence of a step that holds everything. The clause is rendered from
+// critReading whatever the verdict, and critReading answered "no step-failed.json, and
+// cgroup.json is there and not failed" for every step that is not a failed row, so a step whose
+// directory holds no cgroup.json at all printed that sentence under the word FAIL: the clause
+// named as missing a file it said was there (dispatch://INFRA-988). The same reading now has to
+// hold for the two cgroup.json files that give the criterion nothing to read - one of no role,
+// and one that sampled every container but Dispatch's.
+func TestStepCheckReadsCriterionFFromWhatTheStepHolds(t *testing.T) {
+	clause := "R8 (f) " + passCriteria[critFailed].text
+	for _, c := range []struct {
+		name   string
+		change func(*stepFixture)
+		want   string
+	}{
+		{"no cgroup.json", func(f *stepFixture) { f.cgroup = nil }, "the step has no cgroup.json"},
+		{"a cgroup.json of no role", func(f *stepFixture) {
+			f.cgroup.Roles = map[string]cgroupRole{}
+			// A run that names a generator role the sampler read no series for is an error and
+			// no reading at all (curves.go markVoid), which would never reach a clause; this
+			// step recorded no generator, so the file is read as it stands.
+			f.sum.Config.GeneratorRole = ""
+		}, "no role at all"},
+		{"a cgroup.json that did not sample Dispatch", func(f *stepFixture) {
+			delete(f.cgroup.Roles, dispatchRoleName)
+		}, "holds no " + dispatchRoleName + " role"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newStepFixture()
+			c.change(f)
+			out, _ := f.check(t, "2x-"+strings.ReplaceAll(c.name, " ", "-"))
+			wantClause(t, out, clause, "FAIL", c.want)
+			if line := clauseLine(t, out, clause); strings.Contains(line, "cgroup.json is there") {
+				t.Errorf("the clause says the step holds a cgroup.json it does not: %q", line)
+			}
+		})
+	}
+}

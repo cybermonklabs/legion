@@ -747,6 +747,12 @@ work rather than on a count Postgres settles in minutes.
 
 It refuses rather than waits wherever waiting cannot help:
 
+- **A deployment that holds none of the seed.** The coverage report counts no issue at all, so
+  the database `-url` reads is not the one `-pg` was seeded, or the seed did not land. Nothing
+  lacks a vector in a database that holds nothing, so without this the gate reported "meaning
+  search covers the seed: 0 items current" and the seed finished 0; it is the only check of
+  `seed-finish` that reads the deployment rather than the database, so a seed written to another
+  database shows up here or nowhere.
 - **No embedder.** The coverage report answers identity, place and model as null, so nothing the
   deployment holds is ever embedded. The refusal names `DISPATCH_EMBEDDER` and the
   `DISPATCH_AZURE_*` settings, and `loadgen stub-embed` as what stands in for Azure.
@@ -2998,21 +3004,31 @@ its cores and working set from `cgroup.json`. It also holds:
   offered; (b) requests 2xx ≥ 0.99 × sent, and sent/s ≥ 0.95 × the target; (c) delivery p99 from
   arrival ≤ 1,000 ms; (d) no container's mean cores ≥ 0.9 × its CPU limit (`cgroup.json`);
   (e) Dispatch's pool acquire waiters have a p50 of 0; (f) no failed row: no `step-failed.json`,
-  and `cgroup.json` is present and not failed; **(g)** no notification a loop session was owed is
+  and `cgroup.json` is present, not failed and holding the `dispatch` role; **(g)** no notification a loop session was owed is
   lost — every class of `events.by_class` lost 0, which is n/a for a step with no loop session
   class, and where a write on the boundary of a session's life is no loss (The spec loop's
   sessions, above); **(h)** the Cloud SQL instance's cores mean < 0.9 × its vCPUs, from
   `cloudsql-cpu.json`, which is n/a for a step on a database that is not a Cloud SQL instance and
   so has no such file. (e) is FAIL when the sampler measured no waiters: a criterion wants a
-  measurement, and want of one is not a pass.
-- **The void rule** (the `loop` series): a step whose own load generator held a cores mean of
-  **0.7 or more of its own processors** offered what that machine could send and not what the step
-  asked for, so it measures the generator and not Dispatch. It is **void**: neither a pass nor a
-  failure. It ends no knee bracket, it is no knee, and every renderer says `void` of it where
+  measurement, and want of one is not a pass. (d) and (f) read the roles `cgroup.json` holds and
+  not the file's being there, for the same reason: a file of no role at all, and one that sampled
+  every container but Dispatch's, leave the container the test measures unread, so (d) is FAIL
+  rather than a pass over the roles the file does hold, and (f) is FAIL rather than a file to
+  point at.
+- **The void rule** (the `loop` series): a step whose files do not show its own load generator
+  keeping up is **void**: neither a pass nor a failure. That is a generator that held a cores
+  mean of **0.7 or more of its own processors**, which offered what that machine could send and
+  not what the step asked for, so the step measures the generator and not Dispatch; and it is
+  also a step that recorded no `config.generator_role`, one with no `cgroup.json`, and one whose
+  generator role carries no cores mean against its processors, since "not void" is the claim that
+  the generator kept up and those steps hold nothing that supports it.
+  It ends no knee bracket, it is no knee, and every renderer says `void` of it where
   another step reads yes or no — `curves.csv` carries a `void` column saying what voided it (the
-  generator's role, and its cores mean as a share of the machine's processors), and `CURVES.md`
+  generator's role and its cores mean as a share of the machine's processors, or what the step
+  did not record), and `CURVES.md`
   and `KNEES.md` list each void step under the Pass table. What a reader does with a void step is
-  run it again on a larger generator; it measures nothing until then. The generator is
+  run it again, on a larger generator or with the generator recorded; it measures nothing until
+  then. The generator is
   `summary.json` `config.generator_role`, from `loadgen run -generator-role vm-<host>`, and never
   a `vm-` role of `cgroup.json` read by its name: the application VMs report a `vm-` role of their
   own, so only the run that sent the load knows which machine sent it, and a series whose steps

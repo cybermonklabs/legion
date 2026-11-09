@@ -376,6 +376,35 @@ func TestSeedFinishEmbeddingGateRefusesADeploymentWithNoEmbedderAtTheFirstPoll(t
 	}
 }
 
+// TestSeedFinishEmbeddingGateRefusesADatabaseHoldingNoneOfTheSeed: the gate waits until no kind
+// lacks a vector, which is true of a deployment that holds nothing, so against an empty database
+// it logged "meaning search covers the seed: 0 items current" and let the seed finish 0
+// (dispatch://INFRA-988). The gate is the only step of seed-finish that reads the deployment
+// -url names rather than the database -pg names, so a seed written to one database while -url
+// reads another shows up here or nowhere. The deployment's report has to count at least one
+// issue before the gate reports coverage of the seed; a kind the seed left empty is no refusal,
+// which the covered run above reads over a body of issues and comment blocks alone.
+func TestSeedFinishEmbeddingGateRefusesADatabaseHoldingNoneOfTheSeed(t *testing.T) {
+	var logged bytes.Buffer
+	path := filepath.Join(t.TempDir(), "seedfinish.embed.json")
+	cov := &fakeCoverage{steps: []coverageStep{{body: coverageBody(model.SearchCoverageKinds{})}}}
+	f, clock := fakeEmbedFinisher(8*time.Hour, cov, path, &logged)
+	start := *clock
+	err := f.waitEmbedded(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "holds none of the seed") {
+		t.Fatalf("error %v, want the empty database refused; the gate logged:\n%s", err, logged.String())
+	}
+	if cov.reads != 1 || !clock.Equal(start) {
+		t.Errorf("read coverage %d times over %s, want one read and no waiting", cov.reads, clock.Sub(start))
+	}
+	if strings.Contains(logged.String(), "covers the seed") {
+		t.Errorf("the gate reported coverage of a seed the deployment holds none of:\n%s", logged.String())
+	}
+	if record := readCoverageRecord(t, path); !strings.Contains(record.Error, "holds none of the seed") || len(record.Polls) != 1 {
+		t.Errorf("the record holds %d polls and error %q, want one poll and the refusal", len(record.Polls), record.Error)
+	}
+}
+
 // TestSeedFinishEmbeddingGateRetriesAnAnswerItCannotRead: a Dispatch that is restarting answers
 // a non-200 or a body that does not decode; neither fails the seed, and the record keeps both
 // polls with no counts.

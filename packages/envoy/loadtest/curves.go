@@ -105,9 +105,9 @@ var passCriteria = []struct{ id, csv, text, when string }{
 	{"a", "pass_a_commits", "committed events/s ≥ 0.95 × offered", "n/a when offered is 0; FAIL when the commit rows were not read"},
 	{"b", "pass_b_requests", "requests 2xx ≥ 0.99 × sent, and sent/s ≥ 0.95 × target", "n/a when the target is 0"},
 	{"c", "pass_c_delivery", "delivery p99 from arrival ≤ 1,000 ms", "n/a with no events; FAIL when it was not measured"},
-	{"d", "pass_d_cpu_limit", "no container's cores mean ≥ 0.9 × its CPU limit, from cgroup.json", "n/a without cgroup.json, which fails (f)"},
+	{"d", "pass_d_cpu_limit", "no container's cores mean ≥ 0.9 × its CPU limit, from cgroup.json, Dispatch's own container among them", "n/a without cgroup.json, which fails (f); FAIL when cgroup.json holds no dispatch role"},
 	{"e", "pass_e_pool", "Dispatch's pool acquire waiters p50 = 0", "FAIL when the sampler measured none"},
-	{"f", "pass_f_no_failure", "no failed row: no step-failed.json, and cgroup.json present and not failed", ""},
+	{"f", "pass_f_no_failure", "no failed row: no step-failed.json, and cgroup.json present, not failed and holding the dispatch role", ""},
 	{"g", "pass_g_lost", "no notification a loop session was owed is lost: every class of events.by_class lost 0", "n/a for a step with no loop session class; a write on the boundary of a session's life is no loss"},
 	{"h", "pass_h_cloudsql_cpu", "the Cloud SQL instance's cores mean < 0.9 × its vCPUs, from cloudsql-cpu.json", "n/a without cloudsql-cpu.json, which a step on a database that is not Cloud SQL has none of"},
 }
@@ -147,12 +147,12 @@ type curveStep struct {
 	// se is the series rule that judges the step: which criteria count, which factors are grid
 	// steps, and whether a starved generator voids it.
 	se *curveSeries
-	// void is set when the step's own generator was starved (markVoid): voidRole is that
-	// generator's cgroup.json role, voidShare its cores mean as a share of voidLimit, the
-	// machine's processors.
-	void                 bool
-	voidRole             string
-	voidShare, voidLimit float64
+	// void is set when the step's files do not show its own generator keeping up (markVoid), and
+	// voidWhy is what voided it, as the Pass table, KNEES.md and curves.csv print it: the
+	// generator's role and its cores mean as a share of its machine's processors when the files
+	// measured a starved generator, and what the step did not record when they measured nothing.
+	void    bool
+	voidWhy string
 }
 
 // readCurveStep reads the step directory dir and judges it by the series rule se. A directory
@@ -330,6 +330,14 @@ func (s *curveStep) judge() {
 		d := e.DeliveryMsFromArrival
 		v[critDelivery] = check(!e.commitsUnread() && d.N > 0 && d.P99 <= 1000)
 	}
+	// (d) is judged on the roles cgroup.json holds and not on the file's being there. A file
+	// with no role at all sampled nothing, and one without the dispatch role sampled every
+	// container but the one the series exists to measure, so neither shows that no container
+	// reached its limit: over such a file the walk below has nothing to put in overLimit and
+	// would pass the step for want of a reading. What (d) answers for a file that holds some
+	// roles and not dispatch is therefore FAIL and not a pass over the roles it does hold: the
+	// criterion is about the containers the step ran, Dispatch's own among them, and that one
+	// went unread (sampledDispatch).
 	if s.cgroup != nil {
 		for _, name := range slices.Sorted(maps.Keys(s.cgroup.Roles)) {
 			r := s.cgroup.Roles[name]
@@ -337,7 +345,7 @@ func (s *curveStep) judge() {
 				s.overLimit = append(s.overLimit, name)
 			}
 		}
-		v[critCPULimit] = check(len(s.overLimit) == 0)
+		v[critCPULimit] = check(s.sampledDispatch() && len(s.overLimit) == 0)
 	}
 	if len(e.ByClass) > 0 {
 		for _, name := range slices.Sorted(maps.Keys(e.ByClass)) {
@@ -352,23 +360,52 @@ func (s *curveStep) judge() {
 	}
 	r := s.sum.Resources
 	v[critPool] = check(r != nil && r.PoolAcquireGoroutines.N > 0 && r.PoolAcquireGoroutines.P50 == 0)
-	v[critFailed] = check(s.cgroup != nil)
+	// (f) asks the same of the file: a cgroup.json that holds no dispatch role is a sampler that
+	// gave the step no reading of Dispatch, which is the failure (f) is here to report, and a
+	// file of no roles at all is that failure at its widest. The step directory holding a file
+	// named cgroup.json is not what (f) asks (dispatch://INFRA-988).
+	v[critFailed] = check(s.sampledDispatch())
 }
 
-// markVoid marks the step void when its own generator was starved. A step whose load generator
-// ran at generatorStarved of the generator VM's processors offered what that machine could send
-// and not what the step asked for, so it measures the generator and not Dispatch: it is neither a
-// pass nor a failure (findKnees), and the deployment re-runs it with a larger generator.
+// sampledDispatch is true when cgroup.json holds the dispatch role, the container that runs
+// Dispatch in every step of either series: the merge reads the role by that name too
+// (cgroup.go:236), and stepcheck.go dispatchRoleName is the same name. It is what criteria (d)
+// and (f) are judged on: a file with no roles, and a file holding every role but that one, each
+// leave Dispatch unmeasured.
+func (s *curveStep) sampledDispatch() bool { return s.role(dispatchRoleName) != nil }
+
+// markVoid marks the step void unless its own files show its generator keeping up. A step whose
+// load generator ran at generatorStarved of the generator VM's processors offered what that
+// machine could send and not what the step asked for, so it measures the generator and not
+// Dispatch: it is neither a pass nor a failure (findKnees), and the deployment re-runs it with a
+// larger generator.
+//
+// A step whose files say nothing about its generator is void too, and this is why: "not void" is
+// the claim that the generator kept up, and a step that recorded no config.generator_role, or no
+// cgroup.json, or a generator role with no cores mean against its machine's processors, holds
+// nothing that supports it (dispatch://INFRA-988). The deployment records the role for every step
+// it runs (vm/vm.sh:2545 passes -generator-role vm-<host>), so a step of this series that carries
+// none was not run the way the series runs steps, and what it measured is unknown rather than
+// good. Void is the verdict for unknown: the step measures nothing until it is run again.
 //
 // The generator's role is summary.json's config.generator_role, which loadgen run records from
 // -generator-role, and never a vm- role of cgroup.json read by its name: the application VMs
 // report a vm- role of their own (vmsample.go:61-64), so only the run that sent the load knows
 // which machine sent it, and a series whose steps ran on different generators still reads right.
 // A step naming a role its cgroup.json holds no series for is an error, not a step that silently
-// can never be void.
+// can never be void: the run named a machine the sampler did not read, which is a broken pairing
+// of two files and not a missing reading.
 func (s *curveStep) markVoid() error {
+	if !s.se.voidsStarved || s.failed {
+		return nil
+	}
 	name := s.sum.Config.GeneratorRole
-	if !s.se.voidsStarved || s.failed || name == "" || s.cgroup == nil {
+	switch {
+	case name == "":
+		s.void, s.voidWhy = true, "the step records no config.generator_role, so nothing says its generator kept up"
+		return nil
+	case s.cgroup == nil:
+		s.void, s.voidWhy = true, fmt.Sprintf("the step has no cgroup.json, so nothing says %s kept up", name)
 		return nil
 	}
 	r := s.role(name)
@@ -377,26 +414,18 @@ func (s *curveStep) markVoid() error {
 			s.dir, name, strings.Join(slices.Sorted(maps.Keys(s.cgroup.Roles)), ", "))
 	}
 	share, ok := limitShare(r)
-	if !ok || share < generatorStarved {
-		return nil
+	switch {
+	case !ok:
+		s.void, s.voidWhy = true, fmt.Sprintf("cgroup.json gives %s no cores mean against its processors", name)
+	case share >= generatorStarved:
+		s.void, s.voidWhy = true, fmt.Sprintf("%s at %s of its %s processors", name, num(share, 2), num(*r.LimitCores, 2))
 	}
-	s.void, s.voidRole, s.voidShare, s.voidLimit = true, name, share, *r.LimitCores
 	return nil
 }
 
-// voidReason says what voided the step, as the Pass table, KNEES.md and curves.csv name it: the
-// generator's role, and its cores mean as a share of the machine's processors. It is empty for a
-// step that is not void.
-func (s *curveStep) voidReason() string {
-	if !s.void {
-		return ""
-	}
-	return fmt.Sprintf("%s at %s of its %s processors", s.voidRole, num(s.voidShare, 2), num(s.voidLimit, 2))
-}
-
 // passes is true when no criterion the step's series judges is FAIL. A void step is no pass: its
-// generator was starved, so it measured nothing to pass by (markVoid), and every renderer says
-// void of it rather than yes or no (passWord).
+// files do not show its generator keeping up, so it measured nothing to pass by (markVoid), and
+// every renderer says void of it rather than yes or no (passWord).
 func (s *curveStep) passes() bool {
 	if s.void {
 		return false
@@ -978,7 +1007,7 @@ func renderCurvesCSV(se *curveSeries, steps []*curveStep) (string, error) {
 	for _, s := range steps {
 		row := []string{s.name, fmtFloat(s.factor), s.kindName(), strings.Join(s.failedKinds, ";")}
 		if se.voidsStarved {
-			row = append(row, s.voidReason())
+			row = append(row, s.voidWhy)
 		}
 		for _, c := range cols {
 			row = append(row, c.csvCell(s))
@@ -1103,9 +1132,9 @@ func voidNoteMD(md *markdown, steps []*curveStep) {
 	if len(voids) == 0 {
 		return
 	}
-	md.line("\n`%s`: the step's own generator was starved — the machine that ran loadgen held a cores mean of %s or more of its processors — so the step measures the generator and not Dispatch. A void step is neither a pass nor a failure: it ends no knee bracket, and the deployment re-runs it with a larger generator.", voidWord, num(generatorStarved, 2))
+	md.line("\n`%s`: the step's files do not show its own generator keeping up — the machine that ran loadgen held a cores mean of %s or more of its processors, or the step recorded nothing of that machine — so the step measures the generator, or nothing at all, rather than Dispatch. A void step is neither a pass nor a failure: it ends no knee bracket, and the deployment runs it again, on a larger generator or with the generator recorded.", voidWord, num(generatorStarved, 2))
 	for _, s := range voids {
-		md.line("- %s: %s.", s.label(), s.voidReason())
+		md.line("- %s: %s.", s.label(), s.voidWhy)
 	}
 }
 
@@ -1124,7 +1153,8 @@ func voidSteps(steps []*curveStep) []*curveStep {
 // cell, and curves.csv's passes column.
 const voidWord = "void"
 
-// passWord is the Pass column of s: void for a step whose generator was starved, else yes or no.
+// passWord is the Pass column of s: void for a step whose files do not show its generator
+// keeping up, else yes or no.
 func passWord(s *curveStep) string {
 	if s.void {
 		return voidWord
@@ -1226,8 +1256,8 @@ func renderKnees(series []*curveStep, knees []knee) string {
 	if voids := voidSteps(series); len(voids) > 0 {
 		md.line("")
 		for _, s := range voids {
-			md.line("- %sx (step %s): %s (%s): its own generator was starved, so the step measures the generator and not Dispatch. It is neither a pass nor a failure and ends no bracket; re-run it from a larger generator.",
-				fmtFloat(s.factor), s.name, voidWord, s.voidReason())
+			md.line("- %sx (step %s): %s (%s): its files do not show its own generator keeping up, so the step measures the generator, or nothing at all, rather than Dispatch. It is neither a pass nor a failure and ends no bracket; run it again, from a larger generator or with the generator recorded.",
+				fmtFloat(s.factor), s.name, voidWord, s.voidWhy)
 		}
 	}
 	if len(knees) == 0 {

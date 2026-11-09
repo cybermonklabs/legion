@@ -744,6 +744,15 @@ func cgroupReading(r *cgroupRole) (string, bool) {
 	return fmt.Sprintf("cores mean %s, working set max %s", cores, ws), r.CoresMean != nil && r.WorkingSetBytesMax != nil
 }
 
+// roleList names every role a cgroup.json holds, in name order, for a clause that must say what
+// the sampler did read where the role it wanted is absent (critReading, criteria (d) and (f)).
+func roleList(cf *cgroupFile) string {
+	if len(cf.Roles) == 0 {
+		return "no role at all"
+	}
+	return strings.Join(slices.Sorted(maps.Keys(cf.Roles)), ", ")
+}
+
 // listenerClause is the CPU and memory of each listener: every cgroup.json role whose name
 // carries listenerRoleMark. A step that sampled none has no listener reading at all.
 func (sc *stepCheck) listenerClause() stepClause {
@@ -975,10 +984,16 @@ func (sc *stepCheck) critReading(c int) string {
 		return fmt.Sprintf("p99 from arrival %s ms over %s receipts",
 			num(s.Events.DeliveryMsFromArrival.P99, 0), num(float64(s.Events.DeliveryMsFromArrival.N), 0))
 	case critCPULimit:
-		if sc.step.cgroup == nil {
+		// The reading follows (d)'s own rule (curves.go judge): a file that did not sample
+		// Dispatch's container answers nothing about the containers the step ran, so the clause
+		// says which roles it does hold rather than counting them as containers judged.
+		switch {
+		case sc.step.cgroup == nil:
 			return "the step has no cgroup.json"
-		}
-		if len(sc.step.overLimit) > 0 {
+		case !sc.step.sampledDispatch():
+			return fmt.Sprintf("cgroup.json holds no %s role, so nothing read Dispatch's own container; it holds %s",
+				dispatchRoleName, roleList(sc.step.cgroup))
+		case len(sc.step.overLimit) > 0:
 			return "over the limit: " + strings.Join(sc.step.overLimit, ", ")
 		}
 		return fmt.Sprintf("no container of the %d in cgroup.json reached %s of its limit",
@@ -991,10 +1006,20 @@ func (sc *stepCheck) critReading(c int) string {
 		return fmt.Sprintf("pool acquire waiters p50 %s over %s samples",
 			num(r.PoolAcquireGoroutines.P50, 0), num(float64(r.PoolAcquireGoroutines.N), 0))
 	case critFailed:
-		if sc.step.failed {
+		// (f) fails for three different states of the step's files, and the reading says which:
+		// a step-failed.json, no cgroup.json at all, or a cgroup.json that holds no dispatch
+		// role (curves.go judge, sampledDispatch). The last two used to print the ok text, so a
+		// step whose directory holds no cgroup.json read "cgroup.json is there and not failed"
+		// under the word FAIL (dispatch://INFRA-988).
+		switch {
+		case sc.step.failed:
 			return "the step failed: " + strings.Join(sc.step.failedKinds, ", ")
+		case sc.step.cgroup == nil:
+			return "the step has no cgroup.json"
+		case !sc.step.sampledDispatch():
+			return fmt.Sprintf("cgroup.json holds no %s role; it holds %s", dispatchRoleName, roleList(sc.step.cgroup))
 		}
-		return "no step-failed.json, and cgroup.json is there and not failed"
+		return fmt.Sprintf("no step-failed.json, and cgroup.json is there, not failed and holds the %s role", dispatchRoleName)
 	case critLost:
 		if len(sc.step.lostClasses) > 0 {
 			return "classes that lost a notification: " + strings.Join(sc.step.lostClasses, ", ")
@@ -1013,22 +1038,22 @@ func (sc *stepCheck) critReading(c int) string {
 	return ""
 }
 
-// voidClause is R8's void rule: a step whose load generator ran at 0.7 or more of its machine's
-// processors offered what the machine could send and not what the step asked for, so it measures
-// the generator and not Dispatch and runs again with a larger one.
+// voidClause is R8's void rule, as the series rule applies it (curves.go markVoid): a step whose
+// load generator ran at 0.7 or more of its machine's processors offered what the machine could
+// send and not what the step asked for, so it measures the generator and not Dispatch and runs
+// again with a larger one; and so does a step whose files show nothing of its generator, which
+// cannot say the generator kept up. Both are void there, so both read as one failed clause here
+// and the clause prints the rule's own reason rather than a second rule of its own.
+//
+// A step that is not void therefore has a generator role, a cgroup.json and a share of its
+// machine's processors read from them, which is the reading the ok clause prints.
 func (sc *stepCheck) voidClause() stepClause {
 	const name = "R8 void rule: the load generator under 0.7 of its machine"
 	if sc.step.void {
-		return failClause(name, "void: "+sc.step.voidReason())
+		return failClause(name, "void: "+sc.step.voidWhy)
 	}
 	role := sc.step.sum.Config.GeneratorRole
-	if role == "" || sc.step.cgroup == nil {
-		return failClause(name, "no reading: the step has no config.generator_role with a cgroup.json role")
-	}
-	share, ok := limitShare(sc.step.role(role))
-	if !ok {
-		return failClause(name, "no reading: cgroup.json gives "+role+" no cores mean against its processors")
-	}
+	share, _ := limitShare(sc.step.role(role))
 	return okClause(name, fmt.Sprintf("%s at %s of its processors", role, num(share, 2)))
 }
 

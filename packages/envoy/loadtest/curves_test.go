@@ -715,6 +715,23 @@ func generatorStep(t *testing.T, root, name string, f, share float64, role strin
 	return curveFixture(t, root, name, sum, generatorCgroup(role, share, 8))
 }
 
+// loopGenerator is the generator role a loop-series fixture records. vm.sh gives every step of
+// the deployment one (-generator-role vm-<host>, vm/vm.sh:2545), and the void rule voids a step
+// of that series whose files show nothing of its generator (curves.go markVoid), so a fixture
+// meant to be judged carries the role and the sampler series behind it.
+const loopGenerator = "vm-gen"
+
+// loopFixture is curveFixture for a step of the loop series: sum names loopGenerator as its
+// generator and cg holds that role at a fifth of its 8 processors, well under generatorStarved,
+// so the step is judged on its own numbers rather than voided for want of a generator reading.
+func loopFixture(t *testing.T, root, name string, sum summary, cg *cgroupFile) string {
+	t.Helper()
+	sum.Config.GeneratorRole = loopGenerator
+	cores, processors := 1.6, 8.0
+	cg.Roles[loopGenerator] = cgroupRole{Container: "vm", Samples: 120, CoresMean: &cores, LimitCores: &processors}
+	return curveFixture(t, root, name, sum, cg)
+}
+
 // TestCurvesTakeTheLoopFactorOfAStepThatCarriesOne: a step whose run was told which factor of its
 // grid it stands at reads at that factor, and a step without one reads at its rates over the
 // cluster series' baseline, as every step always has.
@@ -763,9 +780,9 @@ func TestCurvesFailAStepThatLostANotification(t *testing.T) {
 		"driver": {Sessions: 1, Expected: 1800, Received: 1800},
 	}
 	out := loopCurves(t,
-		curveFixture(t, root, "1x", kept, fixtureCgroup(2)),
-		curveFixture(t, root, "2x", lost, fixtureCgroup(3)),
-		curveFixture(t, root, "3x", goodSummary(3), fixtureCgroup(4)))
+		loopFixture(t, root, "1x", kept, fixtureCgroup(2)),
+		loopFixture(t, root, "2x", lost, fixtureCgroup(3)),
+		loopFixture(t, root, "3x", goodSummary(3), fixtureCgroup(4)))
 	_, rows := curvesCSV(t, out)
 	for step, want := range map[string]string{"1x": "ok", "2x": "FAIL", "3x": "n/a"} {
 		if got := rows[step]["pass_g_lost"]; got != want {
@@ -796,7 +813,7 @@ func TestCurvesFailAStepThatLostANotification(t *testing.T) {
 func TestCurvesFailTheCloudSQLInstanceAtNineTenthsOfItsVCPUs(t *testing.T) {
 	root := t.TempDir()
 	const vcpus = 16.0
-	dirs := []string{curveFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2))}
+	dirs := []string{loopFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2))}
 	for _, c := range []struct {
 		name    string
 		f       float64
@@ -805,7 +822,7 @@ func TestCurvesFailTheCloudSQLInstanceAtNineTenthsOfItsVCPUs(t *testing.T) {
 	}{
 		{"2x", 2, 0.89, "ok"}, {"3x", 3, 0.9, "FAIL"}, {"4x", 4, 0.91, "FAIL"},
 	} {
-		dirs = append(dirs, withCloudSQLCPU(t, curveFixture(t, root, c.name, goodSummary(c.f), fixtureCgroup(2)), vcpus*c.share, vcpus))
+		dirs = append(dirs, withCloudSQLCPU(t, loopFixture(t, root, c.name, goodSummary(c.f), fixtureCgroup(2)), vcpus*c.share, vcpus))
 	}
 	out := loopCurves(t, dirs...)
 	_, rows := curvesCSV(t, out)
@@ -819,7 +836,7 @@ func TestCurvesFailTheCloudSQLInstanceAtNineTenthsOfItsVCPUs(t *testing.T) {
 		t.Errorf("KNEES.md does not give the instance's cores mean as (h)'s limit:\n%s", knees)
 	}
 
-	bad := curveFixture(t, root, "6x", goodSummary(6), fixtureCgroup(2))
+	bad := loopFixture(t, root, "6x", goodSummary(6), fixtureCgroup(2))
 	if err := os.WriteFile(filepath.Join(bad, "cloudsql-cpu.json"), []byte("{\"cores_mean\":"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +844,7 @@ func TestCurvesFailTheCloudSQLInstanceAtNineTenthsOfItsVCPUs(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cloudsql-cpu.json") {
 		t.Errorf("a cloudsql-cpu.json that does not decode gave %v, want an error that names the file", err)
 	}
-	empty := curveFixture(t, root, "8x", goodSummary(8), fixtureCgroup(2))
+	empty := loopFixture(t, root, "8x", goodSummary(8), fixtureCgroup(2))
 	writeFixtureJSON(t, filepath.Join(empty, "cloudsql-cpu.json"), map[string]any{"cores_mean": 1.5, "limit_cores": 0})
 	err = runCurves([]string{"-out", filepath.Join(t.TempDir(), "curves"), "-series", loopSeries.name, empty})
 	if err == nil || !strings.Contains(err.Error(), "limit_cores") {
@@ -859,7 +876,7 @@ func TestCurvesVoidAStepWhoseGeneratorWasStarved(t *testing.T) {
 	for _, want := range []string{
 		"| 1x | 1 | ok | ok | ok | ok | ok | ok | n/a | n/a | yes |",
 		"| 2x | 2 | ok | ok | ok | ok | ok | ok | n/a | n/a | void |",
-		"`void`: the step's own generator was starved",
+		"`void`: the step's files do not show its own generator keeping up",
 		"- 2x: vm-gen1 at 0.70 of its 8.00 processors.",
 		"- 3x: vm-gen1 at 0.71 of its 8.00 processors.",
 	} {
@@ -890,12 +907,12 @@ func TestCurvesTakeNoKneeFromAVoidStep(t *testing.T) {
 	starved := collapsed(2)
 	starved.Config.GeneratorRole = role
 	out := loopCurves(t,
-		curveFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2)),
+		loopFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2)),
 		curveFixture(t, root, "2x", starved, generatorCgroup(role, 0.8, 8)),
-		curveFixture(t, root, "4x", collapsed(4), fixtureCgroup(3)))
+		loopFixture(t, root, "4x", collapsed(4), fixtureCgroup(3)))
 	knees := readText(t, filepath.Join(out, "KNEES.md"))
 	for _, want := range []string{
-		"- 2x (step 2x): void (vm-gen1 at 0.80 of its 8.00 processors): its own generator was starved, so the step measures the generator and not Dispatch. It is neither a pass nor a failure and ends no bracket; re-run it from a larger generator.",
+		"- 2x (step 2x): void (vm-gen1 at 0.80 of its 8.00 processors): its files do not show its own generator keeping up, so the step measures the generator, or nothing at all, rather than Dispatch. It is neither a pass nor a failure and ends no bracket; run it again, from a larger generator or with the generator recorded.",
 		"## Knee at 4x (step 4x)",
 		"- Bracket: (1, 4): last passing factor 1 (step 1x), failing factor 4.",
 	} {
@@ -915,7 +932,7 @@ func TestCurvesTakeNoKneeFromAVoidStep(t *testing.T) {
 	other := t.TempDir()
 	knees = readText(t, filepath.Join(loopCurves(t,
 		curveFixture(t, other, "1x", first, generatorCgroup(role, 0.8, 8)),
-		curveFixture(t, other, "2x", goodSummary(2), fixtureCgroup(2))), "KNEES.md"))
+		loopFixture(t, other, "2x", goodSummary(2), fixtureCgroup(2))), "KNEES.md"))
 	if !strings.Contains(knees, "No knee: every judged step of the knee series passes.") || strings.Contains(knees, "## Knee at") {
 		t.Errorf("a void first step was counted as the series' first failure:\n%s", knees)
 	}
@@ -969,8 +986,8 @@ func TestCurvesRefineALoopKneeToHalfAStep(t *testing.T) {
 	} {
 		root := t.TempDir()
 		dirs := []string{
-			curveFixture(t, root, fmtFloat(c.pass)+"x", goodSummary(c.pass), fixtureCgroup(2)),
-			curveFixture(t, root, fmtFloat(c.fail)+"x", collapsed(c.fail), fixtureCgroup(2)),
+			loopFixture(t, root, fmtFloat(c.pass)+"x", goodSummary(c.pass), fixtureCgroup(2)),
+			loopFixture(t, root, fmtFloat(c.fail)+"x", collapsed(c.fail), fixtureCgroup(2)),
 		}
 		if got := readText(t, filepath.Join(loopCurves(t, dirs...), "refine.txt")); got != c.wantLoop {
 			t.Errorf("%s under the loop series: refine.txt = %q, want %q", c.name, got, c.wantLoop)
@@ -1013,5 +1030,73 @@ func TestCurvesKeepTheClusterSeriesPassRule(t *testing.T) {
 	err := runCurves([]string{"-out", filepath.Join(t.TempDir(), "curves"), "-series", "spec-loop", dir})
 	if err == nil || !strings.Contains(err.Error(), "cluster or loop") {
 		t.Errorf("an unknown series gave %v, want an error that names the series there are", err)
+	}
+}
+
+// TestCurvesFailACgroupJSONThatDidNotSampleDispatch: criteria (d) and (f) are judged on what
+// cgroup.json holds and not on the file's being there. A file of no role at all, and one that
+// sampled every container but Dispatch's, each left the walk over the roles with nothing to put
+// in overLimit and (f) with a file to point at, so both read ok: the step passed the two
+// criteria that read the sampler on a sampler that read nothing of the container the series
+// measures (dispatch://INFRA-988). Both series judge (d) and (f), and both run Dispatch in a
+// container of that name, so both read the file this way.
+func TestCurvesFailACgroupJSONThatDidNotSampleDispatch(t *testing.T) {
+	root := t.TempDir()
+	noDispatch := fixtureCgroup(2)
+	delete(noDispatch.Roles, dispatchRoleName)
+	_, loop := curvesCSV(t, loopCurves(t,
+		loopFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2)),
+		loopFixture(t, root, "2x", goodSummary(2), noDispatch)))
+	for _, c := range []struct{ step, d, f, passes string }{
+		{"1x", "ok", "ok", "true"},
+		{"2x", "FAIL", "FAIL", "false"},
+	} {
+		if got := loop[c.step]; got["pass_d_cpu_limit"] != c.d || got["pass_f_no_failure"] != c.f || got["passes"] != c.passes {
+			t.Errorf("%s: (d) %q, (f) %q, passes %q; want %q, %q and %q",
+				c.step, got["pass_d_cpu_limit"], got["pass_f_no_failure"], got["passes"], c.d, c.f, c.passes)
+		}
+	}
+
+	// A file of no role at all is read under the cluster series, which has no void rule: under
+	// the loop's, a step with a generator role its cgroup.json holds no series for is an error
+	// and a step with no generator role is void, so neither reaches the two criteria.
+	empty := fixtureCgroup(2)
+	empty.Roles = map[string]cgroupRole{}
+	_, cluster := curvesCSV(t, curves(t, curveFixture(t, t.TempDir(), "1x", goodSummary(1), empty)))
+	if got := cluster["1x"]; got["pass_d_cpu_limit"] != "FAIL" || got["pass_f_no_failure"] != "FAIL" || got["passes"] != "false" {
+		t.Errorf("a cgroup.json of no role: (d) %q, (f) %q, passes %q; want FAIL, FAIL and false",
+			got["pass_d_cpu_limit"], got["pass_f_no_failure"], got["passes"])
+	}
+}
+
+// TestCurvesVoidAStepThatRecordedNoGenerator: the void rule voids a step whose files do not show
+// its generator keeping up, and a step that recorded no config.generator_role is such a step.
+// The rule read the role and left a step that carried none alone, so a starved generator was
+// never void unless the run recorded which machine it ran on, and "not void" was a claim about a
+// machine the step's files hold nothing about (dispatch://INFRA-988). The deployment records the
+// role for every step it runs (vm/vm.sh:2545), so a step of this series without one was not run
+// the way the series runs steps.
+func TestCurvesVoidAStepThatRecordedNoGenerator(t *testing.T) {
+	root := t.TempDir()
+	out := loopCurves(t,
+		curveFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2)),
+		loopFixture(t, root, "2x", goodSummary(2), fixtureCgroup(2)))
+	_, rows := curvesCSV(t, out)
+	if got := rows["1x"]; got["passes"] != voidWord || !strings.Contains(got["void"], "config.generator_role") {
+		t.Errorf("the step that recorded no generator reads passes %q, void %q; want %q and what it did not record",
+			got["passes"], got["void"], voidWord)
+	}
+	if got := rows["2x"]; got["passes"] != "true" || got["void"] != "" {
+		t.Errorf("the step whose generator kept up reads passes %q, void %q; want true and no reason", got["passes"], got["void"])
+	}
+	// A void step ends no bracket and is no knee (findKnees), so the series' first step cannot
+	// be read as its first failure either.
+	if knees := readText(t, filepath.Join(out, "KNEES.md")); strings.Contains(knees, "## Knee at") {
+		t.Errorf("the void step was taken for a knee:\n%s", knees)
+	}
+	// The cluster series has no void rule, so its steps are judged as they always were.
+	_, cluster := curvesCSV(t, curves(t, curveFixture(t, t.TempDir(), "1x", goodSummary(1), fixtureCgroup(2))))
+	if got := cluster["1x"]["passes"]; got != "true" {
+		t.Errorf("the cluster series reads a step with no generator role as %q, want true", got)
 	}
 }

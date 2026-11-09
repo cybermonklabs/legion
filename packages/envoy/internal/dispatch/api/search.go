@@ -907,7 +907,15 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int) (model.SearchRes
 		if slug != nil {
 			result.Artifact = &model.SearchArtifact{Slug: *slug, Name: *name}
 		}
-		result.Snippet = markSnippet(*headline)
+		// A null headline is an empty snippet, not a panic. ts_headline answers null when the
+		// text it is given is null, and txt.text is null for a document hit whose latest
+		// artifact_versions row carries no markdown while an earlier one holds the markdown the
+		// search matched (searchPageAndTailSQL's document arm reads the latest version alone).
+		// The write path refuses the shape that leaves such a row - a blob version under a
+		// document artifact answers ARTIFACT_KIND_MISMATCH - so this is a bound on the scan and
+		// not a path a caller drives: deref costs nothing per row, and without it one row of a
+		// database somebody wrote by hand takes the process down for every search.
+		result.Snippet = markSnippet(deref(headline))
 		result.Href = searchHref(result.Kind, result.Owner, result.Artifact, primary, result.ID, blockID, matchBlockID, q)
 		response.Results = append(response.Results, result)
 	}

@@ -328,6 +328,17 @@ type coveragePoll struct {
 // read, since those rows do not clear by themselves. A poll Dispatch does not answer, or answers
 // with a body that does not decode, is neither: a deployment restarting under the seed is
 // expected, so the gate logs it and reads again until the bound.
+//
+// What it demands of the database before it reports coverage at all is one issue. "Every kind
+// lacks no vector" is true of a database that holds nothing, so over an empty one the gate used
+// to log "meaning search covers the seed: 0 items current" and let the seed finish 0: coverage
+// of nothing read as coverage of the seed (dispatch://INFRA-988). The gate is the only step of
+// seed-finish that reads the deployment -url names rather than the database -pg names, so it is
+// the only check that can catch a seed written to one database while -url reads another, and a
+// judge that passes when it read nothing catches nothing. One issue is the demand because every
+// seed this gate runs after writes issues and because the gate runs after the seed, so the rows
+// are already written when the first poll reads: a report that counts none is reading another
+// database, not an earlier moment of this one, and waiting cannot turn it into the seeded one.
 func (f seedFinisher) waitEmbedded(ctx context.Context) (err error) {
 	if f.coverage == nil {
 		f.lg.Print("no -url: not waiting for meaning search to embed the seed")
@@ -367,6 +378,9 @@ func (f seedFinisher) waitEmbedded(ctx context.Context) (err error) {
 			record.Identity, record.Place, record.Model = coverage.Identity, coverage.Place, coverage.Model
 			if coverage.Identity == nil {
 				return fmt.Errorf("the deployment has no embedder: the coverage report answers identity, place and model as null, so nothing it holds is ever embedded (DISPATCH_EMBEDDER and the DISPATCH_AZURE_* settings; `loadgen stub-embed` stands in for Azure)")
+			}
+			if coverage.Kinds.Issue.Items == 0 {
+				return fmt.Errorf("the deployment at -url holds none of the seed: its coverage report counts no issue at all, and %d searchable items over every kind. Every seed this gate runs after writes issues -- 1,000 of them (seed.go) or one per proposal (loopseed_write.go) -- so -url reads another database than the one -pg was seeded, or the seed did not land", total.Items)
 			}
 			if failed := coverageFailed(coverage.Kinds); failed != "" {
 				return fmt.Errorf("Dispatch gave up embedding rows meaning search ranks: %s", failed)
