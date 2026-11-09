@@ -22,7 +22,9 @@ import (
 // localRun is how to run the live tests by hand, from the repository root.
 const localRun = "From the repository root, build the listener image, then the held-port image the " +
 	"live tests run on top of it, and fetch the docker provider plugin v" + DockerPluginVersion +
-	", whose address and SHA-256 the `pulumi-docker` row of .github/ci-tools.yaml pins:\n" +
+	", whose address and SHA-256 the `pulumi-docker` row of .github/ci-tools.yaml pins. That fetch " +
+	"reads the row with .github/scripts/ci-tools.sh, which parses the manifest with python3 and " +
+	"PyYAML, so this machine needs both:\n" +
 	"  docker buildx build --load -t legion-envoy-smoke:local -f packages/envoy/docker/Dockerfile .\n" +
 	"  docker buildx build --load --build-arg BASE=legion-envoy-smoke:local " +
 	"-t legion-envoy-smoke-heldport:local -f packages/envoy/infra/host/heldportwrapper/Dockerfile .\n" +

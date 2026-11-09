@@ -40,9 +40,13 @@
 #      other, in all four of the fields a row can write one in: `primary_member`,
 #      `mirror_member`, `npm_member` and `second_member`. A member left behind at the old
 #      version while the row and its URLs move names a path the new archive does not hold, so
-#      that install fetches the right bytes and then fails to find the tool inside them. Only
-#      ci.yaml's `tool-fallback` job runs that install, 75 minutes after this gate could have
-#      said so in a second.
+#      that install fetches the right bytes and then fails to find the tool inside them. Where
+#      that is found depends on the side the member is written on. A stale `primary_member`
+#      breaks the install that reads the primary, which for the one row that names one, uv, is
+#      .github/actions/install-uv in ci.yaml's `test` job, on every pull request that selects
+#      it; a stale member on the second side is read only where that source is, which is
+#      ci.yaml's `tool-fallback` job, a job of about half an hour (129228243370 ran 14:41:35Z
+#      to 15:08:43Z, 27 minutes). This gate says it in lint, in a second.
 #      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
 #      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
 #      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.
@@ -108,14 +112,21 @@
 #      `registry.npmjs.org/@oven/bun` as a string to detect).
 #
 #      A URL ON A DOWNLOAD HOST A ROW NAMES is refused unless its text is exactly a row's
-#      `primary`, `mirror_from` or `second_url`, in the same reach the npm half claims and no
-#      more: every *.yml and *.yaml under .github/actions/ and .github/workflows/, and nothing
-#      else. Those hosts are derived from the rows themselves — the hosts of the addresses
-#      whose side is written in a URL word that is not `github-release`, which today is
-#      get.pulumi.com, from the pulumi rows, and files.pythonhosted.org, from the uv row — so a
-#      service this manifest reads a tool from is a service no file may fetch from behind the
-#      manifest's back. That is the hole the Pulumi CLI went through: one source, no row, and
-#      no rule here that could see `https://get.pulumi.com/…` at all.
+#      `primary`, `mirror_from` or `second_url`, in the release-asset half's reach and not the
+#      npm half's: every file under .github/ but this manifest and the files whose name holds
+#      `.test.`, which is the same pass rule 4 makes.
+#      THE TWO HALVES DIFFER IN REACH ON PURPOSE, so a reader does not read one as a slip of
+#      the other. The npm half is narrow for the measured reason stated just above, that this
+#      repository writes the registry's address outside those two directories for reasons that
+#      fetch nothing. No such reason holds here, and a fetch under .github/scripts/ is exactly
+#      what this half is for: the install the Pulumi CLI went in by was a `curl` in an action,
+#      and the same `curl` in a shell script would have been as easy to write and as invisible.
+#      Those hosts are derived from the rows themselves — the hosts of the addresses whose side
+#      is written in a URL word that is not `github-release`, which today is get.pulumi.com,
+#      from the pulumi rows, and files.pythonhosted.org, from the uv row — so a service this
+#      manifest reads a tool from is a service no file may fetch from behind the manifest's
+#      back. That is the hole the Pulumi CLI went through: one source, no row, and no rule here
+#      that could see a get.pulumi.com address at all.
 #      github.com and the package `registry:` names are left out of that set and to the rules
 #      that already own them: a blanket host rule over ghcr.io would refuse every image
 #      reference in the tree.
@@ -124,6 +135,10 @@
 #      address written at another host — a vendor's second domain, a redirect's destination —
 #      is invisible to it. What it closes is the install that writes a row's service and no
 #      row.
+#      Prose is text like any other, so a sentence that writes one of these hosts WITH a path
+#      is refused as a fetch. That is why this header and .github/scripts/ci-tools.sh name
+#      those hosts with no path after them: the one place a whole address of such a service is
+#      written is a row.
 #
 #      A `no_second_source` entry records a URL that has no second source anywhere, and allows
 #      that one URL. It carries `url`, `digest`, `pinned_in` and `why`, and the gate holds it to
@@ -217,8 +232,8 @@ WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 # constant, so the row that fetches the plugin carries what it holds.
 PULUMITEST = Path("packages/envoy/infra/internal/pulumitest/pulumitest.go")
 GITHUB = Path(".github")
-# Rule 3's npm half and its download-host half read these two directories; its release-asset
-# half reads every file under .github/, and so does rule 4.
+# Rule 3's npm half reads these two directories and nothing else; its release-asset half and
+# its download-host half read every file under .github/, and so does rule 4.
 REACHED_DIRECTORIES = (Path(".github/actions"), Path(".github/workflows"))
 HELPER = ".github/scripts/ci-tools.sh"
 REPO_PATHS = Path(".github/scripts/repo-paths.sh")
@@ -1025,8 +1040,8 @@ for file in sorted(GITHUB.rglob("*")):
                     built_remedy=ASSET_BUILT_REMEDY,
                 )
             )
-    # Rule 3's npm half and its download-host half claim every *.yml and *.yaml under
-    # REACHED_DIRECTORIES and nothing else.
+    # Rule 3's npm half claims every *.yml and *.yaml under REACHED_DIRECTORIES and nothing
+    # else, for the measured reason the header gives.
     if file.name.endswith((".yml", ".yaml")) and any(
         directory in file.parents for directory in REACHED_DIRECTORIES
     ):
@@ -1045,22 +1060,24 @@ for file in sorted(GITHUB.rglob("*")):
                     built_remedy=NPM_BUILT_REMEDY,
                 )
             )
-        for match in DOWNLOAD_URL.finditer(text) if DOWNLOAD_URL else ():
-            # The pattern is built from the keys of download_hosts, so what it matched is one
-            # of them, read lower-case as a host is and without the trailing dot a URL may
-            # write.
-            host = match.group("host").lower()
-            found.append(
-                Found(
-                    offset=match.start(),
-                    url=match.group(0).rstrip(",);"),
-                    what=f"a download from {host}",
-                    repository=None,
-                    reason=DOWNLOAD_REASON.format(named_by=download_hosts[host.rstrip(".")]),
-                    remedy=DOWNLOAD_REMEDY,
-                    built_remedy=DOWNLOAD_BUILT_REMEDY,
-                )
+    # The download-host half reads this whole pass, as the release-asset half does: a fetch
+    # under .github/scripts/ is the install this half exists to close.
+    for match in DOWNLOAD_URL.finditer(text) if DOWNLOAD_URL else ():
+        # The pattern is built from the keys of download_hosts, so what it matched is one
+        # of them, read lower-case as a host is and without the trailing dot a URL may
+        # write.
+        host = match.group("host").lower()
+        found.append(
+            Found(
+                offset=match.start(),
+                url=match.group(0).rstrip(",);"),
+                what=f"a download from {host}",
+                repository=None,
+                reason=DOWNLOAD_REASON.format(named_by=download_hosts[host.rstrip(".")]),
+                remedy=DOWNLOAD_REMEDY,
+                built_remedy=DOWNLOAD_BUILT_REMEDY,
             )
+        )
 
     # Two address patterns, the npm one and the download-host one each sweep the file, so the
     # refusals are put back into the order a reader meets them in that file.

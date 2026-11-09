@@ -1222,9 +1222,9 @@ run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 
 echo "case: rule 3 — an npm tarball outside the two directories the npm half reads"
-# The release-asset half widened to every file under .github/; the npm half still reads
-# .github/actions and .github/workflows alone, because this repository writes the npm registry's
-# address outside those two for reasons that fetch nothing.
+# The npm half is the one half that reads .github/actions and .github/workflows alone, because
+# this repository writes the npm registry's address outside those two for reasons that fetch
+# nothing. The release-asset half and the download-host half read every file under .github/.
 root=$(fixture reach-npm-outside)
 cat > "$root/.github/scripts/detect-bun.sh" <<'SCRIPT'
 #!/usr/bin/env bash
@@ -1262,16 +1262,31 @@ check "and sends the reader to the row or to a new one" \
 check "and refuses that one alone, so the row's own address passes" \
   "$(contains "$out" '^::error::1 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
 
-echo "case: rule 3 — the two edges of the download-host half"
-# What this half does not reach, said as a case: a vendor address in a script under
-# .github/scripts/ is outside the reach it claims, and a host no row names is no download host
-# at all, however much it looks like one. Both pass, and the day either changes this case is
-# what turns red.
-root=$(fixture reach-download-host-edges)
-cat > "$root/.github/scripts/stage-plugin.sh" <<'SCRIPT'
+echo "case: rule 3 — a get.pulumi.com fetch in a script under .github/scripts/"
+# The reach this half claims is the release-asset half's and not the npm half's, and this is
+# the case that says so: a vendor fetch written in a shell script is the install it exists to
+# close. The Pulumi CLI's was one `curl` in an action, and the same `curl` one directory over
+# would be the same hole.
+root=$(fixture reach-download-host-script)
+cat > "$root/.github/scripts/fetch-cli.sh" <<'SCRIPT'
 #!/usr/bin/env bash
-# The vendor address written outside the two directories this half reads. Nothing here fetches
-# it in a job: this is the documentation of where those bytes live.
+curl -fsSLO https://get.pulumi.com/releases/sdk/pulumi-v3.270.0-linux-x64.tar.gz
+SCRIPT
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the line and the host" \
+  "$(contains "$out" "^.github/scripts/fetch-cli.sh:2: this file fetches a download from get.pulumi.com at https://get.pulumi.com/releases/sdk/pulumi-v3.270.0-linux-x64.tar.gz, and no row of .github/ci-tools.yaml names that URL.")"
+check "and sends the reader to the row or to a new one" \
+  "$(contains "$out" 'Read the address from the row with .github/scripts/ci-tools.sh, or add a row naming this address and its second source.$')"
+
+echo "case: rule 3 — the two edges of the download-host half"
+# What this half does not reach, said as a case: a file whose name holds `.test.` is a fixture
+# a test feeds to a gate, and a host no row names is no download host at all, however much it
+# looks like one. Both pass, and the day either changes this case is what turns red.
+root=$(fixture reach-download-host-edges)
+cat > "$root/.github/scripts/stage-plugin.test.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+# A fixture address a test feeds to a gate. Nothing fetches it.
 vendor=https://get.pulumi.com/releases/sdk/pulumi-v9.9.9-linux-x64.tar.gz
 SCRIPT
 cat > "$root/.github/workflows/other-host.yaml" <<'YAML'
@@ -1707,17 +1722,19 @@ check "names the file neither rule read" \
   "$(contains "$out" '; 1 file(s) under .github are not valid UTF-8, so neither rule read them: .github/actions/install-tool/binary.dat$')"
 
 echo "case: this repository's own tree"
-# The one case that reads the tree this gate runs over in CI. It passes, and the summary says
-# what the tree holds: eleven rows, each agreeing with its pin, and no no_second_source entry,
-# since the three this change made false went with the rows that replaced them.
-# The middle clause counts the tool URLs the files under .github fetch and name a row for. It
-# is zero today, and that is the shape this change left: every install reads its address out of
-# its row through the helper, so no file under .github writes one at all.
+# The one case that reads the tree this gate runs over in CI. What it proves is the gate's
+# behaviour on that tree: every rule passes, every row agrees with the pin that installs it,
+# and every tool URL the files under .github fetch is one a row or an entry names.
+# Every count in the assertions is read as digits and not as today's number. A row added to
+# this repository, and a no_second_source entry written for the next install with one
+# publisher — which the manifest and AGENTS.md both say that key is kept for — are the tree
+# moving, not this gate changing, and a case that pinned the tally would redden on the day
+# either happened and say nothing about the gate.
 run_gate "$repository"
 check "exits 0" "$(is "$status" 0)"
-check "reads every row and finds no decline left" \
-  "$(contains "$out" '^.github/ci-tools.yaml holds 11 row(s), each agreeing with the pin that installs it, and 0 no_second_source entries;')"
-check "and no file under .github writes a tool address of its own" \
-  "$(contains "$out" '; 0 tool URL(s) fetched by the [0-9]* file(s) under .github that rule 3 reads, this manifest not among them, name one of those;')"
+check "reads every row of the tree and each agrees with its pin" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds [0-9]* row(s), each agreeing with the pin that installs it, and [0-9]* no_second_source entr')"
+check "and every tool URL a file under .github fetches is one the manifest names" \
+  "$(contains "$out" '; [0-9]* tool URL(s) fetched by the [0-9]* file(s) under .github that rule 3 reads, this manifest not among them, name one of those;')"
 
 summary "check-ci-tools.sh"

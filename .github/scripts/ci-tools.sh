@@ -25,9 +25,12 @@
 # ci_tools_source_name below and writes none of its own: a row that moved to another source
 # while an action held the old word would name a service that served no byte of what it
 # installed.
-# ci_tools__source_fetch below is the one list of those words, and it is read for both sides, so
-# no word is printed for a row and then refused when the bytes are fetched. What each word reads
-# is the row's own fields for the side the word is written on:
+# ci_tools__source_fetch below is this file's one list of those words, and it is read for both
+# sides, so no word is printed for a row and then refused when the bytes are fetched. It is not
+# the tree's only list: .github/scripts/check-ci-tools.sh's own tables decide which words a row
+# may write and which fields each then carries, and .github/scripts/ci-tools-proof.sh reads the
+# words twice more, in its `route_of` and in the two sets its origin serves a route from. What
+# each word reads here is the row's own fields for the side the word is written on:
 #
 #   github-release          `primary` or `second_url`, through the CI_TOOLS_GITHUB_BASE seam.
 #                           It is most rows' primary, and it is a second source as well: Pulumi
@@ -182,10 +185,14 @@
 #   CI_TOOLS_NPM_BASE      default https://registry.npmjs.org.
 #   CI_TOOLS_URL_BASE      default empty, which fetches the URL a `pypi` or `pulumi-releases`
 #                          side of a row writes exactly as the row wrote it. Set, it replaces
-#                          that URL's scheme and host and keeps its path, so
-#                          https://files.pythonhosted.org/packages/u/uv.whl under
-#                          CI_TOOLS_URL_BASE=http://127.0.0.1:9/url is fetched at
-#                          http://127.0.0.1:9/url/packages/u/uv.whl. It replaces a scheme and a
+#                          that URL's scheme and host and keeps its path, so a row written at
+#                          files.pythonhosted.org whose path is /packages/u/uv.whl is fetched
+#                          under CI_TOOLS_URL_BASE=http://127.0.0.1:9/url at
+#                          http://127.0.0.1:9/url/packages/u/uv.whl. The host is named here
+#                          without a path after it because rule 3 of
+#                          .github/scripts/check-ci-tools.sh reads every file under .github/
+#                          as text and refuses a whole address on a host a row names, this
+#                          file included. It replaces a scheme and a
 #                          host rather than one literal prefix, because every row of such a
 #                          source writes an address of its own. Read by ci_tools__seamed_url
 #                          alone, so every such URL is fetched the one way.
@@ -197,6 +204,13 @@
 ci_tools__error() {
   printf '::error::ci-tools: %s\n' "$*" >&2
 }
+
+# The exit code ci_tools_extract's zip reader answers an absent member with. It is 3 and not 1
+# so that python3's own exit 1 — every failure it raises on the bytes themselves, a zip it
+# cannot read, a member whose CRC-32 does not match, a failed inflate — stays a code of its
+# own, and the two are told apart by this one number rather than by reading a message. The
+# reader is handed it as an argument, so this line is the one place it is written.
+ci_tools__no_such_member=3
 
 # ci_tools__manifest: the manifest this call reads.
 ci_tools__manifest() {
@@ -288,24 +302,6 @@ ci_tools__read() {
   return 1
 }
 
-# ci_tools__read_optional <variable> <row> <field>: that field of that row into <variable>, and
-# an empty string where the row carries no such field. It is how the fields a row writes only
-# where it uses them are read — `primary_digest`, `primary_digest_of` and `primary_member` — so
-# a row that uses none of them is read without a refusal about a field it was never going to
-# carry, and a row that leaves one out is read as the "" a row that does not use it writes.
-ci_tools__read_optional() {
-  local __variable=$1 __row=$2 __field=$3 __key __value
-  ci_tools__row "$__row" || return 1
-  printf -v "$__variable" '%s' ''
-  while IFS=$'\t' read -r __key __value; do
-    if [ "$__key" = "$__field" ]; then
-      printf -v "$__variable" '%s' "$__value"
-      return 0
-    fi
-  done <<<"$ci_tools__row_fields"
-  return 0
-}
-
 # ci_tools_field <row> <field>: one field of that row, printed. It is what a call site outside
 # this file reads a row with.
 ci_tools_field() {
@@ -327,8 +323,10 @@ ci_tools_field() {
 # `second` is the row's own `second_source` and `primary` is its own `primary_source`, and a
 # word ci_tools__source_fetch below reads no source of that side with is refused rather than
 # printed: that one case decides which words each side of a row is written in, so a word this
-# file would name and then refuse to fetch cannot exist, and a new source is one edit in one
-# place.
+# file would name and then refuse to fetch cannot exist. Adding a source is one edit here and
+# one in the other place that decides a word, the SECOND_FIELDS, PRIMARY_SOURCES and
+# URL_SOURCES tables of .github/scripts/check-ci-tools.sh, which refuse a row whose word this
+# file would never be asked about.
 #
 # Neither side is a constant. Most rows' primary is a GitHub release asset and the pulumi CLI's
 # is get.pulumi.com, and a third party fetches the primary bytes of jj (mise) and of Bun
@@ -732,30 +730,60 @@ ci_tools__fetch_npm() {
 # own path, which is a temporary file of this run and carries no suffix: a `.whl` or a `.zip`
 # with python3's zipfile, which this file already reads every row of the manifest with, and
 # anything else with `tar -xzO`, which is how the npm fetch above reads its tarball.
-# Prints what happened, and returns non-zero, where the archive holds no such member, so the
-# caller refuses by the member and the archive rather than by the digest of an empty file.
+# Prints what happened, and returns non-zero, where the member did not come out, so the caller
+# refuses by the member and the archive rather than by the digest of an empty file.
+# THE TWO WAYS THAT CAN HAPPEN ARE NOT ALIKE, and the zip arm says which it met. A member the
+# archive does not hold is a row naming a path that archive has not got, which is a mistake in
+# this repository; anything else python3 answers with — a zip it cannot read at all, a member
+# whose CRC-32 the archive's own header no longer matches, an inflate that failed — is the
+# bytes at that address not being the bytes they should be, which is the supply-chain signal
+# this file's header is about, and the sentence says so and quotes what python3 reported.
+# The tar arm cannot tell the two apart and does not claim to: one changed byte breaks the
+# gzip framing, and `tar -xzO` answers a damaged stream and an absent member with the same
+# exit code, so its sentence names the member and the archive and leaves tar's own words on
+# stderr to say which it was. Nothing unverified is installed either way: this returns
+# non-zero and the caller places nothing.
 # It is public because .github/scripts/ci-tools-proof.sh takes a row's pinned member out of the
 # archive ci_tools_fetch_primary staged for it, rather than fetching that archive a second time
 # through ci_tools_fetch, and a second extractor there would be a second rule for how an
 # archive is read.
 ci_tools_extract() {
-  local archive=$1 member=$2 destination=$3 url=$4 name status=0
+  local archive=$1 member=$2 destination=$3 url=$4 name reported='' status=0
   # The suffix is read off the address with no query and no fragment, which PyPI writes.
   name=${url%%\?*}
   name=${name%%#*}
   case "$name" in
     *.whl | *.zip)
-      PYTHONDONTWRITEBYTECODE=1 python3 -c '
+      # python3's stderr is read rather than discarded: for anything but an absent member it
+      # is the only thing that says what was wrong with those bytes, and the sentence below
+      # quotes its last line, which is the exception and its message.
+      reported=$(
+        PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import shutil
 import sys
 import zipfile
 
-archive, member, destination = sys.argv[1:4]
-with zipfile.ZipFile(archive) as held, held.open(member) as source, open(destination, "wb") as sink:
-    shutil.copyfileobj(source, sink)
-' "$archive" "$member" "$destination" 2>/dev/null || status=$?
-      if [ "$status" -ne 0 ]; then
+archive, member, destination, absent = sys.argv[1:5]
+try:
+    with zipfile.ZipFile(archive) as held, held.open(member) as source, open(destination, "wb") as sink:
+        shutil.copyfileobj(source, sink)
+except KeyError:
+    # The archive read, and it holds no member of that name. Every other failure is left to
+    # python3 itself, so its traceback reaches stderr and the caller quotes it.
+    sys.exit(int(absent))
+' "$archive" "$member" "$destination" "$ci_tools__no_such_member" 2>&1
+      ) || status=$?
+      if [ "$status" -eq "$ci_tools__no_such_member" ]; then
         printf 'the archive at %s holds no %s (python3 exit %s)\n' "$url" "$member" "$status"
+        return 1
+      fi
+      if [ "$status" -ne 0 ]; then
+        # The whole of what python3 said goes to the log, frames and all, and the sentence
+        # below carries its last line, which is the exception itself: a refusal is one
+        # annotation line, and a reader who wants the rest reads the lines above it.
+        [ -z "$reported" ] || printf '%s\n' "$reported" >&2
+        printf 'the archive at %s did not give up %s, and not because it holds no such member: %s. What that address served is no readable archive of the bytes this row pins, which is a signal about those bytes (python3 exit %s)\n' \
+          "$url" "$member" "${reported##*$'\n'}" "$status"
         return 1
       fi
       ;;
@@ -906,10 +934,10 @@ ci_tools__second_source() {
 # none has nothing to take out either.
 ci_tools__primary_digest() {
   local __row=$1 __digest=$2 __of=$3 __named
-  ci_tools__read_optional __named "$__row" primary_digest || return 1
+  ci_tools__read __named "$__row" primary_digest || return 1
   if [ -n "$__named" ]; then
     printf -v "$__digest" '%s' "$__named"
-    ci_tools__read_optional "$__of" "$__row" primary_digest_of || return 1
+    ci_tools__read "$__of" "$__row" primary_digest_of || return 1
     return 0
   fi
   printf -v "$__of" '%s' ''
@@ -934,12 +962,12 @@ ci_tools__primary_digest() {
 ci_tools__primary_open() {
   local row=$1 file=$2 url=$3 word=$4
   local digest of='' member extracted report status=0
-  ci_tools__read_optional digest "$row" primary_digest || return 1
+  ci_tools__read digest "$row" primary_digest || return 1
   if [ -n "$digest" ]; then
-    ci_tools__read_optional of "$row" primary_digest_of || return 1
+    ci_tools__read of "$row" primary_digest_of || return 1
     ci_tools__hold "$row" "$file" "$word" "$digest" "$of" || return 1
   fi
-  ci_tools__read_optional member "$row" primary_member || return 1
+  ci_tools__read member "$row" primary_member || return 1
   [ -n "$member" ] || return 0
   extracted=$(ci_tools__tempfile "$row-member") || {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"

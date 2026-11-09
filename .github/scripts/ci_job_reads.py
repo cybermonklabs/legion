@@ -805,10 +805,6 @@ TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before th
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
 TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
 TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
-# The step that reads what every head install answers, which is where the docker provider
-# plugin's tarball is read: the plugin prints no version, so its reading is its name and its
-# digest.
-TOOL_VERSIONS_STEP = "Check every tool is the version its row pins"
 # The step of the tool-fallback-arm job the reads below cite, beside the fault step that job
 # shares with the one above: the reading of the Bun this runner holds, which the rig makes
 # against the bun-linux-aarch64 row.
@@ -1487,7 +1483,7 @@ GATES = [
     # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
     # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
     # the gate beside it, the rig and the fault proxy it drives, the eight actions it installs
-    # through, and the three files a row's version is pinned in.
+    # through, and the two files a row's version is pinned in that a step of it reads.
     gate("tool_fallback", "tool-fallback", reads=reads(
         (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
                                   f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
@@ -1517,11 +1513,6 @@ GATES = [
                                                ".github/actions/install-jj reads that same ARG, while the mise row "
                                                "that action installs mise from is pinned to this file's "
                                                "ARG MISE_VERSION and ARG MISE_SHA256 by .github/scripts/check-ci-tools.sh"),
-        (f"{INFRA}/internal/pulumitest/pulumitest.go",
-         f"{at('tool-fallback', TOOL_VERSIONS_STEP)}: the docker provider plugin prints no version, so its "
-         "reading is the `-v<version>-` its tarball's name must hold, which is what pulumitest.newHome "
-         "refuses a tarball without, and .github/scripts/check-ci-tools.sh holds the pulumi-docker row's "
-         "version to this file's `const DockerPluginVersion`"),
         (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
                          ".github/actions/setup-bun installs the Bun it pins"),
     ) + CI_SELF),

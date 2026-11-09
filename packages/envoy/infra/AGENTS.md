@@ -478,6 +478,9 @@ provider plugin as `.github/actions/install-docker-plugin` does.
 The `pulumi-docker` row of `.github/ci-tools.yaml` pins the plugin's version and its SHA-256, that
 action fetches it through `.github/scripts/ci-tools.sh`, and the row carries a second source so a
 release-asset outage does not stop the job.
+That helper reads the row by parsing the manifest with `python3` and PyYAML, so a machine running
+either fetch by hand needs both; without PyYAML the fetch ends in an import traceback rather than
+a tarball.
 Then, from the repository root:
 
 ```sh

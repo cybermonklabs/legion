@@ -4,11 +4,12 @@
 # pins stops the fetch there and the second source is never read, a second source that serves
 # other bytes is refused the same way, a refusal of both names both sources, and no refusal of any
 # kind leaves a file at the destination. A row whose second source writes an address of its own is
-# served whole or by the member it names, a row whose primary carries a `primary_digest` is held
-# to it before its `primary_member` is taken out, and ci_tools_fetch_primary leaves the archive
-# the primary served rather than that member. It also runs the repository's own
-# .github/ci-tools.yaml through the helper, so a row this file cannot parse fails here rather
-# than in a job.
+# served whole or by the member it names, an archive that holds no such member and one that holds
+# it and cannot give it back are refused in different words, a row whose primary carries a
+# `primary_digest` is held to it before its `primary_member` is taken out, and
+# ci_tools_fetch_primary leaves the archive the primary served rather than that member. It also
+# runs the repository's own .github/ci-tools.yaml through the helper, so a row this file cannot
+# parse fails here rather than in a job.
 #
 # NO CASE REACHES THE NETWORK. Each case starts an HTTP origin of its own on 127.0.0.1, at a port
 # the kernel picks, serving a directory this file builds: `github/…` for the release asset,
@@ -145,6 +146,26 @@ zip_of "$work/payloads/wheeled.whl" \
   wheeled-7.0.0.data/scripts/wheeled wheeled-7.0.0.dist-info/METADATA
 zip_of "$work/payloads/wheeled.no-member.whl" wheeled-7.0.0.dist-info/METADATA
 
+# The same wheel with the last byte of its member's own data changed. zip_of stores its members
+# rather than deflating them, so that byte is the member's and nothing else, and python3's
+# zipfile refuses it by the CRC-32 the archive's own header holds: an archive that holds the
+# member and cannot give it back, which is the failure the case below holds apart from an
+# archive that holds no such member at all.
+cp "$work/payloads/wheeled.whl" "$work/payloads/wheeled.damaged.whl"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$work/payloads/wheeled.damaged.whl" \
+  wheeled-7.0.0.data/scripts/wheeled <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+archive, member = sys.argv[1:3]
+with zipfile.ZipFile(archive) as held, held.open(member) as source:
+    payload = source.read()
+bytes_of = Path(archive).read_bytes()
+last = bytes_of.rindex(payload) + len(payload) - 1
+Path(archive).write_bytes(bytes_of[:last] + bytes([bytes_of[last] ^ 0x01]) + bytes_of[last + 1:])
+PY
+
 # The plugin tarball a second source serves whole, and a tarball whose member is the row's bytes,
 # which is the member rule on an archive that is no wheel.
 mkdir -p "$work/plugin-build" "$work/tarmember-build"
@@ -181,6 +202,9 @@ tools:
     digest_of: the fixture's release tarball, whole
     primary_source: github-release
     primary: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 7
     mirror_from: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
@@ -191,6 +215,9 @@ tools:
     digest_of: the binary inside the fixture's release tarball
     primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 7
     mirror_from: https://github.com/example/jjlike/releases/download/v2.0.0/jjlike.tar.gz
@@ -201,6 +228,9 @@ tools:
     digest_of: the binary the package holds
     primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 7
     npm_package: "@fixture/packaged"
@@ -214,6 +244,9 @@ tools:
     digest_of: the fixture's release tarball, whole
     primary_source: github-release
     primary:
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 7
     mirror_from: https://github.com/example/nullprimary/releases/download/v4.0.0/nullprimary.tar.gz
@@ -226,6 +259,9 @@ tools:
     digest_of: the fixture's release tarball, whole
     primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: s3
     max_time: 7
   # The pulumi CLI's shape: the primary is a service of its own and the second source is the
@@ -236,6 +272,9 @@ tools:
     digest_of: the CLI tarball, whole
     primary_source: pulumi-releases
     primary: https://get.example.com/releases/sdk/clitool-v10.0.0-linux-x64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: github-release
     second_url: https://github.com/example/clitool/releases/download/v10.0.0/clitool-v10.0.0-linux-x64.tar.gz
     second_member: ""
@@ -248,6 +287,9 @@ tools:
     digest_of: the fixture's release tarball, whole
     primary_source: ghcr-mirror
     primary: https://github.com/example/oddprimary/releases/download/v11.0.0/oddprimary.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 7
   # uv's shape: the row's `digest` is of the binary, the primary serves a tarball holding it
@@ -273,6 +315,9 @@ tools:
     digest_of: the plugin tarball, whole
     primary_source: github-release
     primary: https://github.com/example/plugin/releases/download/v8.0.0/plugin-v8.0.0-linux-amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: pulumi-releases
     second_url: https://releases.example.com/plugins/plugin-v8.0.0-linux-amd64.tar.gz
     second_member: ""
@@ -285,6 +330,9 @@ tools:
     digest_of: the binary inside the tarball the second source serves
     primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: pulumi-releases
     second_url: https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
     second_member: ./jjlike
@@ -738,7 +786,8 @@ check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: pypi — the archive holds no such member"
 # An archive without the member is a refusal naming the member and the archive, and not an empty
-# file the digest check would refuse for the wrong reason.
+# file the digest check would refuse for the wrong reason. The code python3 exits with is the
+# helper's own for this one failure, which is what tells it from the case below.
 origin url-member-missing
 rm -- "$root/$WHEELED_ASSET_PATH"
 cp "$work/payloads/wheeled.no-member.whl" "$root/$WHEEL_PATH"
@@ -746,7 +795,26 @@ dest="$work/dest/url-member-missing"
 run ci_tools_fetch wheeled "$dest"
 check "fails" "$(is "$status" 1)"
 check "names both sources, the member and the archive" \
-  "$(contains "$out" '^::error::ci-tools: wheeled: no source served the bytes; github-release: curl exit 22; pypi: the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl holds no wheeled-7.0.0.data/scripts/wheeled (python3 exit 1)$')"
+  "$(contains "$out" '^::error::ci-tools: wheeled: no source served the bytes; github-release: curl exit 22; pypi: the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl holds no wheeled-7.0.0.data/scripts/wheeled (python3 exit 3)$')"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: pypi — the archive holds the member and its bytes are damaged"
+# One byte of the member's own data changed, which python3's zipfile meets as a CRC-32 the
+# archive's own header no longer matches. Nothing unverified is installed either way, and the
+# two are not the same thing to say: this one is a signal about the bytes that address served,
+# and the refusal says so and quotes what python3 reported rather than calling the member
+# absent, as the case above is.
+origin url-member-damaged
+rm -- "$root/$WHEELED_ASSET_PATH"
+cp "$work/payloads/wheeled.damaged.whl" "$root/$WHEEL_PATH"
+dest="$work/dest/url-member-damaged"
+run ci_tools_fetch wheeled "$dest"
+check "fails" "$(is "$status" 1)"
+check "refuses it as an integrity failure, quoting what python3 said" \
+  "$(contains "$out" "^::error::ci-tools: wheeled: no source served the bytes; github-release: curl exit 22; pypi: the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl did not give up wheeled-7.0.0.data/scripts/wheeled, and not because it holds no such member: zipfile.BadZipFile: Bad CRC-32 for file 'wheeled-7.0.0.data/scripts/wheeled'. What that address served is no readable archive of the bytes this row pins, which is a signal about those bytes (python3 exit 1)$")"
+check "and does not call the member absent" \
+  "$(is "$(contains "$out" "holds no wheeled-7.0.0.data/scripts/wheeled")" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 

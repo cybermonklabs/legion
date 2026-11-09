@@ -1,4 +1,4 @@
-# The tools a CI job of this repository installs from a GitHub release asset, one row per asset.
+# The tool assets a CI job of this repository installs, one row per asset.
 # Each row names the one pinned digest both of that tool's sources are checked against, where its
 # second source is, and how that source is filled.
 # An hour of 504s on GitHub's release assets holds every merge of this repository, because each of
@@ -83,11 +83,12 @@
 # WHY A DECLINE IS AN ENTRY UNDER `no_second_source:` AND NOT A ROW.
 # Some bytes CI installs are published in one place and nowhere else, and the manifest must be
 # able to state that rather than force a fiction (dispatch://INFRA-1974).
-# A `tools:` row cannot carry it: ci.yaml's `tool-fallback` job fails for a row no install reads,
-# .github/scripts/check-ci-tools.sh refuses a `second_source` that is none of the five words
-# .github/scripts/ci-tools.sh reads a source with before the row is read at all, and a row's
-# `primary` must hold the row's `version`, which no URL a job builds from an ARG or a Go constant
-# can.
+# A `tools:` row cannot carry it, and the reason is what a row says rather than any field of it:
+# a row is the statement that two sources serve these bytes, which is the one thing a decline
+# denies. The gate reads that statement as a shape — ci.yaml's `tool-fallback` job fails for a
+# row no install reads, and .github/scripts/check-ci-tools.sh refuses a `second_source` that is
+# none of the five words .github/scripts/ci-tools.sh reads a source with, before the row is read
+# at all — so a row of one source is refused whichever way it is written.
 # So a decline is an entry of its own key, invisible to .github/scripts/ci-tools.sh,
 # .github/scripts/mirror-ci-tools.sh, .github/scripts/ci-tools-proof.sh and `tool-fallback`, and
 # read by the gate alone.

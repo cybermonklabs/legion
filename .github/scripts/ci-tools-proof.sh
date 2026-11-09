@@ -301,6 +301,9 @@ NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
 # The source words each route is reached by, which is what decides the row a request is about:
 # the seam a case sets points the helper here, and the word the row writes on that side says
 # which of its two addresses it then asks for.
+# This program is started with the manifest and nothing else, so these two sets are its own
+# and not the shell's `route_of`; that function says where the other readings of these words
+# are, and a new source word moves all of them together.
 GITHUB_WORDS = {"github-release"}
 URL_WORDS = {"pypi", "pulumi-releases"}
 
@@ -570,19 +573,27 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as held:
 ' "$archive" "$member" "$binary"
 }
 
-# zip_member <archive> <member>: that member of that zip on stdout, read the way
-# .github/scripts/ci-tools.sh reads a `.whl`, for the round trip `stage` makes of what pack_zip
-# wrote.
-zip_member() {
-  PYTHONDONTWRITEBYTECODE=1 python3 -c '
-import shutil
-import sys
-import zipfile
-
-archive, member = sys.argv[1:3]
-with zipfile.ZipFile(archive) as held, held.open(member) as source:
-    shutil.copyfileobj(source, sys.stdout.buffer)
-' "$1" "$2"
+# packed_back <row> <archive> <member> <what that archive is called>: the round trip of what
+# this rig packed — that member taken back out and held to the row's own pinned digest. The
+# origin serves this archive and an install reads the member out of it, so a pack that does
+# not give the pinned bytes back is this rig's own defect and must not read as the install's,
+# which is why it dies rather than returning.
+# The member comes out with the helper's own ci_tools_extract, the one place this repository
+# takes a member out of an archive, and the archive's own path stands in for the address it
+# would have come from: ci_tools_extract reads the shape off that name, and the names this rig
+# packs under are the names the origin serves, so a `.tgz` goes to `tar -xzO` and a `.whl` to
+# python3's zipfile exactly as an install's would.
+packed_back() {
+  local row=$1 archive=$2 member=$3 what=$4 back report pinned read_back status=0
+  back="$work/round-trip-$row"
+  rm -f -- "$back"
+  report=$(ci_tools_extract "$archive" "$member" "$back" "$archive") || status=$?
+  [ "$status" -eq 0 ] || die "$row: the $what this rig packed did not give $member back: $report"
+  pinned=$(ci_tools_digest "$row")
+  read_back=$(sha256sum -- "$back")
+  rm -f -- "$back"
+  [ "${read_back%% *}" = "$pinned" ] ||
+    die "$row: the $what this rig packed holds ${read_back%% *}, not the pinned $pinned"
 }
 
 # stage_member <row> <archive> <member> <file>: the row's own pinned bytes out of the archive
@@ -606,10 +617,9 @@ stage_member() {
 stage() {
   [ "$#" -eq 0 ] || die "stage takes no argument, and this call gave $#"
   mkdir -p "$payload"
-  local row digest file name names read_back member primary_name failures=""
+  local row file name names member primary_name failures=""
   for row in $STAGED_ROWS; do
     note "staging $row"
-    digest=$(ci_tools_digest "$row")
     # The name the row's primary URL serves its bytes under, and the member of what it serves
     # the row's own `digest` is of, which only a row whose primary serves an archive around the
     # pinned bytes names.
@@ -655,20 +665,11 @@ stage() {
         case $name in
           *.tgz)
             pack_npm "$row" "$file" "$payload/$name"
-            # The round trip, because the origin serves this tarball and the helper reads the
-            # member out of it: a pack that did not come back as the pinned bytes is this rig's
-            # own defect and must not read as the install's.
-            read_back=$(tar -xzOf "$payload/$name" "$(ci_tools_field "$row" npm_member)" | sha256sum)
-            [ "${read_back%% *}" = "$digest" ] ||
-              die "$row: the tarball this rig packed holds ${read_back%% *}, not the pinned $digest"
+            packed_back "$row" "$payload/$name" "$(ci_tools_field "$row" npm_member)" tarball
             ;;
           *.whl | *.zip)
             pack_zip "$row" "$file" "$payload/$name"
-            # The same round trip for the same reason: the helper reads this archive for its
-            # `second_member`, so what the origin serves must give that member back whole.
-            read_back=$(zip_member "$payload/$name" "$(ci_tools_field "$row" second_member)" | sha256sum)
-            [ "${read_back%% *}" = "$digest" ] ||
-              die "$row: the wheel this rig packed holds ${read_back%% *}, not the pinned $digest"
+            packed_back "$row" "$payload/$name" "$(ci_tools_field "$row" second_member)" wheel
             ;;
           # A hard link and not a copy, for pack_npm's reason: both files are under this rig's
           # own directory and no payload file is ever written to, so the staged file and every
@@ -1189,9 +1190,16 @@ origin_served() {
 # route_of <source> <the caller a refusal names>: the origin route one source serves, read from
 # the one word that source has — the name a refusal of .github/scripts/ci-tools.sh carries,
 # which is also the manifest's own `second_source` word.
-# It is this rig's one list of those five words: `payload_names` above decides which fields a
-# row's second-source names come from by the route this answers, so the rig holds no second
-# list of the words and cannot read one here it refuses there.
+# It is this shell's one reading of those five words: `payload_names` above decides which
+# fields a row's second-source names come from by the route this answers, so nothing in this
+# shell holds a second list of them.
+# THE ORIGIN HOLDS ITS OWN, and that is said here rather than left for a reader to find: the
+# origin is a program of its own, started with the manifest and no word of this shell, and its
+# GITHUB_WORDS and URL_WORDS decide which of a row's two addresses each route serves a name
+# from. A new source word is an edit here, an edit in those two sets, and an edit in the
+# tables of .github/scripts/check-ci-tools.sh and the one case of
+# .github/scripts/ci-tools.sh's ci_tools__source_fetch, which decide what a row may write at
+# all.
 route_of() {
   case $1 in
     github-release) printf '/github/\n' ;;

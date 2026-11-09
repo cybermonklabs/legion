@@ -2003,10 +2003,13 @@ jobs:
             # source every tool install reads when the first source does not serve the bytes:
             # the manifest that names both sources of each row, the fetch helper every install
             # goes through, the filler and the gate beside it, the rig and the fault proxy it
-            # drives, the eight actions it installs through, and the three files a row's version
-            # is pinned in (.bun-version for the bun rows, the worker image's Dockerfile for
-            # mise, jj and uv, and packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
-            # `const DockerPluginVersion` the gate holds the pulumi-docker row's version to).
+            # drives, the eight actions it installs through, and the two files a row's version is
+            # pinned in that the job itself reads (.bun-version for the bun rows and the
+            # worker image's Dockerfile for mise, jj and uv).
+            # packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
+            # `const DockerPluginVersion` the gate holds the pulumi-docker row's version to,
+            # is not here and no step of either job reads it: a raise of that constant must
+            # move the row, and .github/ci-tools.yaml is in this list.
             # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
             # job drives the same action over the same manifest through the same helper, so a
             # change that selects one of them must select both, and one list cannot drift from
@@ -2030,7 +2033,6 @@ jobs:
               - '.github/actions/install-docker-plugin/**'
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
-              - 'packages/envoy/infra/internal/pulumitest/pulumitest.go'
               - '.github/workflows/ci.yaml'
             # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
             # through the crane .github/actions/install-crane installs), the package mode of
@@ -2333,7 +2335,7 @@ jobs:
   # rather than downloading one inside the fault.
   # That is what keeps ci-ok green during the very outage this job proves survivable: this job
   # is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
-  # Dockerfile, packages/envoy/infra/internal/pulumitest/pulumitest.go and the eight actions, so
+  # Dockerfile, the manifest and the helper beside it, and the eight actions, so
   # a step of it that waited on a release host would turn every pull request touching one of
   # those files red on exactly the day the fallback is doing its work.
   # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
@@ -2747,23 +2749,16 @@ jobs:
           "$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
           # The docker provider plugin prints no version of its own: nothing is installed, and
           # what the action hands back is the tarball the live tests are given. Its reading is
-          # therefore the two things that decide what that tarball is — the `-v<version>-` in
-          # its base name, which is the shape pulumitest.newHome refuses a tarball without, and
-          # the row's own digest, read by the one digest reader of this repository.
-          # Neither of the two is a version, so this keeps its own word as the bunx reading
-          # does rather than joining the list below, whose sentence is about versions and which
-          # would otherwise name this one row twice where both readings fail.
+          # therefore the row's own digest, read by the one digest reader of this repository.
+          # The name of that tarball is no reading at all: install-docker-plugin builds it
+          # from `ci_tools_field pulumi-docker version`, the field this step would compare it
+          # with, so the two cannot disagree. What holds the name to the constant the live
+          # tests read is .github/scripts/check-ci-tools.sh, in lint.
+          # A digest is no version, so this keeps its own word as the bunx reading does rather
+          # than joining the list below, whose sentence is about versions.
           plugin=read
           tarball="${{ steps.docker-plugin.outputs.tarball }}"
-          version=$(ci_tools_field pulumi-docker version)
-          echo "pulumi-docker is the tarball $tarball, and its row pins $version"
-          case ${tarball##*/} in
-            *-v"$version"-*) ;;
-            *)
-              echo "::error::the docker provider plugin tarball ${tarball##*/} holds no -v$version-, so pulumitest.newHome refuses it whatever its bytes are" >&2
-              plugin=refused
-              ;;
-          esac
+          echo "pulumi-docker is the tarball $tarball, and its row pins $(ci_tools_field pulumi-docker version)"
           ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball this job installed" ||
             plugin=refused
           # The name that Bun install must have left beside the bun one of those lines read. It
@@ -2985,10 +2980,15 @@ jobs:
       # member out never looks at, so a wheel changed there would hand the pinned binary back
       # whole and this case would install it. The member is what this row's digest answers for.
       # A corrupted wheel is then refused when its member is read and not by the digest:
-      # python3's zipfile hands over no member whose CRC the archive's own header no longer
-      # matches, which is the shape the bun npm case already has, where the changed byte breaks
-      # the gzip framing instead. Either way nothing unverified is installed, which is what the
-      # case is for.
+      # python3's zipfile hands over no member whose CRC-32 the archive's own header no longer
+      # matches. .github/scripts/ci-tools.sh says that in the words of what it is — the bytes
+      # that address served are not a readable archive of what this row pins, quoting what
+      # python3 reported — and not as a member the archive does not hold, which is the other
+      # way a member can fail to come out and a different thing to tell a reader.
+      # The bun npm case meets the same byte differently: there the change breaks the gzip
+      # framing, and `tar -xzO` answers a damaged stream and an absent member alike, so that
+      # refusal names the member and leaves tar's own words to say which it was.
+      # Either way nothing unverified is installed, which is what the case is for.
       - name: Corrupt uv for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
