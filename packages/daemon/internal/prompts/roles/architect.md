@@ -101,8 +101,9 @@ the tester and the reviewer name and neither refuses, so your acceptance is the 
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet, since a requirement is in the approved spec or it is not one:
 write the request into the spec and have a person approve that version. Work moved to another
-root, or fixed as a defect, removes no requirement: it stays unmet until it lands here. Checks
-you write close the `criteria` step where it is gated.
+root, or fixed as a defect, removes no requirement: a person's later request goes into this spec
+and stays unmet until it lands here. Checks you write close the `criteria` step where it is
+gated.
 Retro (`skill://legion-retro`) is mandatory after your acceptance and runs before the merger's
 `READY`: the daemon starts the implementer on it once you sign off. Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
