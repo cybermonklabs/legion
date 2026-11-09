@@ -10,10 +10,11 @@
 // are that suite.
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   clearVerdict,
+  MARKER_MAX_AGE_MS,
   markVerdictsLost,
   mintMarker,
   pidNamespace,
@@ -172,29 +173,44 @@ async function resend(s: Fixture, who: "main" | "sub") {
 }
 
 describe("every remedy the CLI prints, followed", () => {
-  /** The six states that print a resend, each arranged on a live session. */
-  const states: Array<[string, (s: Fixture) => void]> = [
-    [
-      "a recorded refusal of this write",
-      () => {
-        // Arranged by the review itself, in the test below.
-      },
-    ],
-    [
-      "a marker of this call that cannot be read",
-      (s) => {
+  /**
+   * Every state the CLI prints a resend from, enumerated from `dispatch-cli.ts` rather than
+   * from a previous round's list. `arrange` puts the state in place; `repair` carries out any
+   * clause of the advice that comes before the resend, since a remedy is followed as written or
+   * it is not followed at all.
+   */
+  const states: Array<{
+    readonly name: string;
+    readonly arrange: (s: Fixture) => void;
+    readonly repair?: (s: Fixture) => void;
+    /** Whether the state holds the write at all; `false` means it posts with a warning. */
+    readonly holds: boolean;
+  }> = [
+    { name: "a recorded refusal of this write", arrange: () => {}, holds: true },
+    {
+      name: "a marker of this call that cannot be read",
+      arrange: (s) => {
         clearVerdict(s.dir(), identity());
-        const file = mintMarker(
-          s.store,
-          { argv: BASE, args: ARGS, files: [], toolCallId: "x", outcome: "verdict" },
-          Date.now()
+        writeFileSync(
+          mintMarker(
+            s.store,
+            { argv: BASE, args: ARGS, files: [], toolCallId: "x", outcome: "verdict" },
+            Date.now()
+          ),
+          "{not-json"
         );
-        writeFileSync(file, "{not-json");
       },
-    ],
-    [
-      "a marker bound to other arguments",
-      (s) => {
+      // Clause one of its own advice: remove the file. The resend after it is a different
+      // question from the resend before it.
+      repair: (s) => {
+        for (const name of readdirSync(join(s.store, "markers")))
+          rmSync(join(s.store, "markers", name), { force: true });
+      },
+      holds: true,
+    },
+    {
+      name: "a marker bound to other arguments",
+      arrange: (s) => {
         clearVerdict(s.dir(), identity());
         mintMarker(
           s.store,
@@ -208,10 +224,23 @@ describe("every remedy the CLI prints, followed", () => {
           Date.now()
         );
       },
-    ],
-    [
-      "no verdict capability",
-      (s) => {
+      holds: true,
+    },
+    {
+      name: "a marker past its age",
+      arrange: (s) => {
+        clearVerdict(s.dir(), identity());
+        mintMarker(
+          s.store,
+          { argv: BASE, args: null, files: [], toolCallId: "x", outcome: "verdict" },
+          Date.now() - 3 * MARKER_MAX_AGE_MS
+        );
+      },
+      holds: true,
+    },
+    {
+      name: "no verdict capability",
+      arrange: (s) => {
         clearVerdict(s.dir(), identity());
         const file = join(
           s.dir(),
@@ -222,62 +251,83 @@ describe("every remedy the CLI prints, followed", () => {
         delete record.caps;
         writeFileSync(file, JSON.stringify(record));
       },
-    ],
-    [
-      "a foreign verdict store",
-      (s) => {
+      holds: true,
+    },
+    {
+      name: "a foreign verdict store",
+      arrange: (s) => {
         clearVerdict(s.dir(), identity());
         const older = join(s.dir(), "askgate-verdicts-v9");
         mkdirSync(older, { recursive: true });
         writeFileSync(join(older, "deadbeef"), "{}");
       },
-    ],
-    [
-      "a lost verdict",
-      (s) => {
+      holds: true,
+    },
+    {
+      name: "a lost verdict",
+      arrange: (s) => {
         clearVerdict(s.dir(), identity());
         markVerdictsLost(s.dir(), Date.now());
       },
-    ],
+      holds: true,
+    },
+    {
+      // The state this whole change exists for: no review ever saw the write, so it posts with
+      // a warning, and a subagent's posts too.
+      name: "nothing recorded against the write",
+      arrange: (s) => clearVerdict(s.dir(), identity()),
+      holds: false,
+    },
+    {
+      name: "a file changed after the review",
+      arrange: (s) => {
+        clearVerdict(s.dir(), identity());
+        const body = join(s.work, "body.md");
+        writeFileSync(body, "reviewed");
+        mintMarker(
+          s.store,
+          {
+            argv: ["comment", "--issue", "DSP-1", "--body-file", body],
+            args: { issue: "DSP-1", body: "reviewed" },
+            files: [{ flag: "--body-file", operand: body, sha256: "0".repeat(64) }],
+            toolCallId: "x",
+            outcome: "verdict",
+          },
+          Date.now()
+        );
+      },
+      holds: false,
+    },
   ];
 
-  for (const [state, arrange] of states) {
-    for (const who of ["main", "sub"] as const) {
-      test(`${state}, resent by ${who === "main" ? "the main agent" : "a task subagent"}`, async () => {
-        const s = session();
-        try {
-          // The review runs and refuses, which both records the verdict and arranges the first
-          // state. Every other state clears it and puts its own in place.
-          expect((await s.gate("main"))?.block).toBe(true);
-          expect(readVerdict(s.dir(), identity()).kind).toBe("refused");
-          arrange(s);
-          // The write is held, and the refusal prints its advice.
-          const held = await s.cli();
-          expect({ state, who, code: held.code }).toEqual({ state, who, code: 1 });
-          expect(held.out).toContain("a task subagent's literal write");
-          // Now follow it. The review allows from here, so only the marker it mints decides.
-          s.allow();
-          const first = await resend(s, who);
-          expect({ state, who, posted: first.posts }).toEqual({
-            state,
-            who,
-            posted: who === "main" ? 1 : 0,
-          });
-          // And a subagent's second attempt is no better than its first, which is the cost the
-          // caveat exists to spare it.
-          if (who === "sub") {
-            const second = await resend(s, who);
-            expect({ state, posts: second.posts, code: second.code }).toEqual({
-              state,
-              posts: 0,
-              code: 1,
-            });
-          }
-        } finally {
-          s.stop();
-        }
-      }, 30_000);
-    }
+  // The rule the renderer applies and the rule this measures must be one fact: the caveat is
+  // carried by a resend when, and only when, following it as a task subagent is refused.
+  // Asserting the caveat is simply *present* is what let it spread to four states where it is
+  // false — including the unreviewed-post warning, which tells the population this change
+  // exists to unblock to route every write through its parent.
+  for (const { name, arrange, repair, holds } of states) {
+    test(`${name}: the caveat is there exactly where a subagent's resend is refused`, async () => {
+      const s = session();
+      try {
+        expect((await s.gate("main"))?.block).toBe(true);
+        expect(readVerdict(s.dir(), identity()).kind).toBe("refused");
+        arrange(s);
+        const printed = await s.cli();
+        expect({ name, holds: printed.code === 1 }).toEqual({ name, holds });
+        const caveat = printed.out.includes("a task subagent's literal write");
+        repair?.(s);
+        // From here the review allows, so only what the resend's marker binds decides.
+        s.allow();
+        const again = await resend(s, "sub");
+        expect({ name, caveat, refused: again.posts === 0 }).toEqual({
+          name,
+          caveat: again.posts === 0,
+          refused: again.posts === 0,
+        });
+      } finally {
+        s.stop();
+      }
+    }, 30_000);
   }
 
   // The one state no resend clears, for either kind, and the reason it is worse than a refusal:

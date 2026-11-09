@@ -304,7 +304,16 @@ export function askgateStore(
 
 /** This process as an owner, its store under the CLI state root `root`. */
 export function selfOwner(root: string): AskgateOwner {
-  const start = processStart(process.pid);
+  // Naming, not liveness: a `/proc` entry of this very process that cannot be read must still
+  // yield a record, since no record at all reads as the gate being off — the posting
+  // direction. `processStart` now throws on a fault so that `ownerLive` can treat an owner it
+  // cannot judge as live; here the old degradation to a pid-only owner is what is wanted.
+  let start: string | null = null;
+  try {
+    start = processStart(process.pid);
+  } catch {
+    start = null;
+  }
   const ns = pidNamespace();
   return { pid: process.pid, start, ns, store: askgateStore(root, process.pid, start, ns) };
 }

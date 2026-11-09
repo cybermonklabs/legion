@@ -93,8 +93,9 @@ function stateWriteFailed(problem: string): string {
  */
 const REFUSAL_STANDS: Advice = {
   lead: "This call carries no marker, so no gate read the command that ran it, and AskGate's refusal of these arguments stands for this session.",
-  resend:
-    "Send the corrected write, or send this one again as one bash call of literal words so AskGate reviews it afresh; a review that allows it replaces the refusal.",
+  anywhere: "Send the corrected write, which is a different write and meets no refusal.",
+  viaMarker:
+    "Or send this one again as one bash call of literal words so AskGate reviews it afresh; a review that allows it replaces the refusal.",
 };
 
 /**
@@ -105,7 +106,8 @@ const REFUSAL_STANDS: Advice = {
  */
 const MARKER_UNREADABLE: Advice = {
   lead: "A marker is written whole and owner-only, so one that cannot be read was changed by something other than AskGate, and what it holds may be a refusal of this very write. The write is not sent on that. Read the file named above and remove it if you know what it was.",
-  resend: "Then send the write again as one bash call of literal words so AskGate reviews it.",
+  anywhere:
+    "Then send the write again as one bash call of literal words so AskGate reviews it: with the file gone the state is repaired, so this works whatever ran the call.",
 };
 
 /**
@@ -148,21 +150,47 @@ const STORE_RECOVERY: Advice = {
  */
 interface Advice {
   readonly lead: string;
-  readonly resend?: string;
+  /** What to do, where doing it works whatever kind of agent ran the call. */
+  readonly anywhere?: string;
+  /**
+   * What to do, where it works only by getting a marker bound to this write — which a task
+   * subagent cannot, so this clause alone carries the caveat.
+   */
+  readonly viaMarker?: string;
 }
 
 /** The one caveat, attached wherever a resend is advised. */
 const SUBAGENT_CANNOT_RESEND =
   "That is the main agent's to send: a task subagent's literal write is given a marker carrying no review, which is passed over here, so resending from one is refused however many times it is tried.";
 
-/** Renders advice, carrying the subagent caveat wherever a resend is part of it. */
-const advise = ({ lead, resend }: Advice): string =>
-  resend === undefined ? lead : `${lead} ${resend} ${SUBAGENT_CANNOT_RESEND}`;
+/**
+ * Renders advice. The caveat is carried by a `viaMarker` clause of a **refusal** and by nothing
+ * else: a message announcing that the write went out forbids the one action that works, and in
+ * the state this whole change exists for — a subagent's write that no review saw — the resend
+ * posts with no warning at all. So the renderer decides it, not each site: a `posted` message
+ * cannot carry the caveat however its advice is written.
+ */
+const advise = ({ lead, anywhere, viaMarker }: Advice, held: boolean): string =>
+  [
+    lead,
+    anywhere,
+    viaMarker === undefined
+      ? undefined
+      : held
+        ? `${viaMarker} ${SUBAGENT_CANNOT_RESEND}`
+        : viaMarker,
+  ]
+    .filter((part) => part !== undefined)
+    .join(" ");
 
-/** The resend every "cannot tell" advises, with what ends that state after it. */
+/**
+ * The resend every "cannot tell" advises, with what ends that state after it. A `viaMarker`
+ * clause: the uncertainty stands until a marker bound to this write answers it, and a
+ * subagent's resend is given one that binds nothing.
+ */
 const resendThen = (ends: string): Advice => ({
   lead: "No marker was tampered with and nothing of the call is at fault.",
-  resend: `Send it again as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it. ${ends}`,
+  viaMarker: `Send it again as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it. ${ends}`,
 });
 
 /**
@@ -683,19 +711,21 @@ export async function runDispatchCli(
                   ? {
                       refused: {
                         lead: LITERAL_FORM,
-                        resend: "Send the write again in that form, as a bash call of its own.",
+                        viaMarker: "Send the write again in that form, as a bash call of its own.",
                       },
-                      posted: { lead: LITERAL_FORM, resend: "Send the next one in that form." },
+                      posted: { lead: LITERAL_FORM, anywhere: "Send the next one in that form." },
                     }
                   : {
                       refused: {
                         lead: SAME_MESSAGE,
-                        resend:
+                        // A marker that binds no files never reports a changed one, so a
+                        // subagent is not held here at all and needs no caveat.
+                        anywhere:
                           "Send the call again in a later message than the one that changes the file.",
                       },
                       posted: {
                         lead: SAME_MESSAGE,
-                        resend:
+                        anywhere:
                           "Send a write in a later message than the call that changes its file.",
                       },
                     },
@@ -731,9 +761,9 @@ export async function runDispatchCli(
                     advice: {
                       refused: {
                         lead: LITERAL_FORM,
-                        resend: "Send the write again in that form, as a bash call of its own.",
+                        viaMarker: "Send the write again in that form, as a bash call of its own.",
                       },
-                      posted: { lead: LITERAL_FORM, resend: "Send the next one in that form." },
+                      posted: { lead: LITERAL_FORM, anywhere: "Send the next one in that form." },
                     },
                   };
         }
@@ -747,7 +777,13 @@ export async function runDispatchCli(
         advice: { refused: STORE_RECOVERY, posted: STORE_RECOVERY },
       };
     }
-    if (finding !== undefined && (reviewed || finding.verdict === "refused")) {
+    // An upload the gate would not review is in this branch only so its verdict is read, and
+    // `unknown` is an answer as much as `refused` is: discarding it posted `plan.txt` silently
+    // where the identical bytes in `plan.md` were refused — the same one-shell-word hole, one
+    // arm over, reached through a session that had merely lost a verdict. Only `none` and
+    // `stale` are dropped for such a call, which leave it exactly as it was.
+    const answered = finding?.verdict === "refused" || finding?.verdict === "unknown";
+    if (finding !== undefined && (reviewed || answered)) {
       // The asks this write would open for a person, counted from the write's own text: the
       // one number pi-envoy's record of an unmarked write carries, so a session holding a
       // Dispatch token alone can count the asks that went out, or were refused, unreviewed.
@@ -767,7 +803,7 @@ export async function runDispatchCli(
       // store read whole and holding nothing lets the write out.
       if (finding.verdict === "refused" || (finding.verdict !== "none" && finding.mode === "block"))
         return refuse(
-          `${notCalled} ${finding.reason}. ${advise(finding.advice.refused)}`,
+          `${notCalled} ${finding.reason}. ${advise(finding.advice.refused, true)}`,
           REFUSED,
           parsed.tool,
           {
@@ -800,8 +836,8 @@ export async function runDispatchCli(
       }
       warn(
         finding.verdict === "none"
-          ? `dispatch: warning: dispatch ${command} posted without review: ${finding.reason}. No review ran for this call, so AskGate refused nothing. ${advise(finding.advice.posted)}`
-          : `dispatch: warning: AskGate is on for this session in warn mode, and ${finding.why}, so this write posts unreviewed. ${advise(finding.advice.posted)}`
+          ? `dispatch: warning: dispatch ${command} posted without review: ${finding.reason}. No review ran for this call, so AskGate refused nothing. ${advise(finding.advice.posted, false)}`
+          : `dispatch: warning: AskGate is on for this session in warn mode, and ${finding.why}, so this write posts unreviewed. ${advise(finding.advice.posted, false)}`
       );
       if (unrecorded !== undefined) {
         // With the ledger gone, these warnings are the whole account of the write, so they have

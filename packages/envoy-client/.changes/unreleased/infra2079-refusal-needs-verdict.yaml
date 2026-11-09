@@ -52,11 +52,18 @@ body: |-
   refused in both. Only ENOENT establishes absence anywhere on this path: a session directory
   with search permission but no read, an EIO or a path component that is no directory each read
   as unknown rather than as holding nothing, which is what let a stored rejection post.
-  A refusal that advises sending the write again now carries, automatically, the one thing that
-  makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
+  An upload the gate would not review has its verdict read, and an uncertain answer holds it:
+  discarding everything but a refusal there posted a non-markdown suffix silently while the
+  identical bytes under `.md` were held, in a session that had merely lost a verdict. Every
+  artifact upload of such a session is now refused in block mode.
+  A refusal that advises sending the write again carries, on the clause that needs it and on no
+  other, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
   argv-only marker and an argv-only marker answers no uncertainty. Advice is a lead and an
   optional resend clause, and the renderer appends that caveat to any advice carrying one, so a
-  refusal added later cannot describe a resend a subagent cannot make. The record-recovery
+  refusal added later cannot describe a resend a subagent cannot make. A message announcing that
+  the write posted never carries it, since nothing was refused and the resend it would forbid is
+  the one that works; nor does a clause that works whatever ran the call, such as sending a
+  corrected write, or resending after the advice's own repair has removed the unreadable marker. The record-recovery
   advice is a different case and says so: a subagent returns before the record is rewritten, so
   only the main agent's next call repairs it.
   Three reads on the decision path still answered a fault with a permission. A cross-namespace

@@ -1466,6 +1466,31 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(postsTo(ARTIFACTS)).toHaveLength(0);
   });
 
+  // An upload the gate would not review is read for a verdict, and `unknown` is an answer as
+  // much as a refusal is. Discarding it posted the non-markdown suffix silently where the
+  // identical bytes under `.md` were held — the same one-shell-word hole, reached through a
+  // session that had merely lost a verdict and needed no tampering at all.
+  test("an uncertain session holds an upload under any suffix", async () => {
+    const text = "# Plan\n";
+    writeRecord();
+    markVerdictsLost(join(stateDir, "sessions", "ses-1"), Date.now());
+    for (const name of ["plan.md", "plan.txt"]) writeFileSync(join(stateDir, name), text);
+    for (const file of ["plan.md", "plan.txt"]) {
+      const { code, stdout } = await run([
+        "artifact",
+        "--issue",
+        "DSP-1",
+        "--name",
+        "plan",
+        "--path",
+        join(stateDir, file),
+      ]);
+      expect({ file, code }).toEqual({ file, code: 1 });
+      expect(stdout).toContain("could not write down");
+    }
+    expect(postsTo(ARTIFACTS)).toHaveLength(0);
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();
