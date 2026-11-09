@@ -27,11 +27,11 @@ var (
 // the parser would read as literal text anyway (`Use ** for bold`, `2 * 3`, `snake_case`) is the
 // author's and stays, and nothing inside a code span is ever a delimiter.
 //
-// This is the port of the browser's own balancer, packages/dispatch/web/src/features/refs/
-// markdown-fragment.ts, which the palette has run on a snippet since before the server read one:
-// the two must agree character for character, so a snippet the server reads for display shows
-// what the browser showed. Its markdownHead is not ported, since nothing on the server cuts a
-// body's head.
+// This began as the port of the browser's own balancer, which the palette ran on a snippet
+// before the server read one. That reading is gone from the browser with the rest of its
+// markdown parsing (the server sends the snippet's tree now), so this is the one balancer left
+// and the shapes it must hold are the ones fragment_test.go pins. The browser's markdownHead
+// was never ported, since nothing on the server cuts a body's head.
 
 // SearchSnippetWords is how many words a search hit's snippet holds when ts_headline cut the body
 // to its window (headlineOptions in internal/dispatch/api/search.go: MaxWords=24). A body that

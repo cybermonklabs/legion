@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-// The shapes below are the browser balancer's own, one Go test per shape
-// packages/dispatch/web/src/features/refs/markdown-fragment.test.ts covers, so the two readings
-// of a cut snippet can be compared line for line. They come from ts_headline with search.go's
-// options (MaxWords=24, MinWords=12, MaxFragments=1) run on a real Postgres.
+// The shapes below were the browser balancer's own, one Go test per shape its suite covered,
+// when both readings of a cut snippet existed and had to agree. The browser's is gone with the
+// rest of its markdown parsing, so these are now the whole record of what a cut snippet must
+// come back as. They come from ts_headline with search.go's options (MaxWords=24, MinWords=12,
+// MaxFragments=1) run on a real Postgres.
 
 func balanced(t *testing.T, fragment, want string) {
 	t.Helper()
