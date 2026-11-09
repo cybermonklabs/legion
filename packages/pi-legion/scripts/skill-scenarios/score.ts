@@ -120,6 +120,9 @@ const DaemonLine = z.looseObject({
   at: z.string(),
   path: z.string(),
   status: z.number(),
+  /** On a `GET /legion/v1/state`, the phase that read was answered with (daemon-standin.ts), so
+   * a reader can tell the read_record that saw `accepting` from one taken before it. */
+  served: z.string().optional(),
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
   to: z.string().optional(),
@@ -1012,15 +1015,23 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const acceptedAt = daemonLines.find(
     (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
   )?.at;
+  // The read is the one whose answer showed `accepting`: the stand-in records the phase each
+  // state read served (`served`), so a read taken before the completion was accepted, which
+  // answers `reviewing`, is not the read the rule asks for. Taking any 200 on that route, as
+  // this did until 2026-11-09, scored the claim boot's own read.
   const readAfter =
     acceptedAt === undefined
       ? undefined
       : daemonLines.find(
-          (line) => line.path === "/legion/v1/state" && line.status === 200 && line.at > acceptedAt
+          (line) =>
+            line.path === "/legion/v1/state" &&
+            line.status === 200 &&
+            line.served === "accepting" &&
+            line.at > acceptedAt
         )?.at;
   const toldImplementer =
     readAfter !== undefined &&
-    publishedTo(session(runDir), "implementer", [world.head], runDir, readAfter);
+    publishedTo(runDir, "reviewer", "implementer", [world.head], readAfter);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1091,311 +1102,97 @@ function namesCommit(text: string, sha: string): boolean {
  * run_project). The words are the role names themselves, not the `by` constants above, which
  * name the roles of the gh calls the stand-in recorded. */
 type Role = "implementer" | "reviewer" | "architect";
-/** `text` as a JSON object, or undefined when it is neither. */
-function jsonObject(text: string): Record<string, unknown> | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : undefined;
+/** One line of `<run>/published.jsonl`: a message Envoy accepted on a role topic of this run,
+ * with the time, the topic and the body Envoy carried (record-publishes.ts), or a boundary the
+ * rig writes as it boots an agent (`boot`, the role of the agent whose turn starts there). */
+const PublishedLine = z.looseObject({
+  at: z.string(),
+  topic: z.string().optional(),
+  message: z.string().optional(),
+  boot: z.string().optional(),
+});
+/** A message that reached a role topic: the fact, not an intention read out of an agent's code. */
+interface Publish {
+  readonly at: string;
+  readonly topic: string;
+  readonly message: string;
 }
-/** The object literal that starts at `text[from]`, which must be `{`, with its own braces
- * balanced and braces inside a string left alone, or undefined when it never closes. */
-function braced(text: string, from: number): string | undefined {
-  let depth = 0;
-  let quote = "";
-  for (let i = from; i < text.length; i += 1) {
-    const c = text[i];
-    if (quote !== "") {
-      if (c === "\\") i += 1;
-      else if (c === quote) quote = "";
+/** Every message Envoy accepted on a role topic of this run, in the order it accepted them, or
+ * those of one agent's turn when `by` names a role.
+ *
+ * Until 2026-11-09 this was worked out from the agent's own transcript: the arguments of an
+ * `envoy_publish` tool call, the JSON content of a `write` to `xd://envoy_publish`, and an
+ * evaluator over the source of an `eval` cell. A reader of intent is wrong in both directions —
+ * it passes a run on a message the agent wrote and never sent, and fails one whose message was
+ * sent in a shape it could not read — and it times a cell by the call's own timestamp, which is
+ * taken before the cell runs. What the servers did is recorded instead: the rig subscribes to
+ * the bus for the length of a run and appends every message Envoy published on one of this run's
+ * role topics, and the score and the harness read that one file, so no publish can score a wake
+ * the next agent never had (`rig.sh`'s reviewer_wake calls `score.ts published`, which is the
+ * `lastPublishTo` below).
+ *
+ * The run's agents do not overlap — the rig stops one before it boots the next (worker_boot) —
+ * so the `boot` line it writes as each agent starts divides the file into one window per agent,
+ * and `by` reads one window. A run whose file holds no boot line has published nothing of any
+ * agent's, which `unscored` reads as a rig error rather than as an act not done. */
+function publishes(runDir: string, by?: Role): Publish[] {
+  const sends: Publish[] = [];
+  let booted = "";
+  for (const line of parsed(path.join(runDir, "published.jsonl"), PublishedLine)) {
+    if (line.boot !== undefined) {
+      booted = line.boot;
       continue;
     }
-    if (c === '"' || c === "'" || c === "`") quote = c;
-    else if (c === "{") depth += 1;
-    else if (c === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(from, i + 1);
-    }
+    if (line.topic === undefined) continue;
+    if (by !== undefined && booted !== by) continue;
+    sends.push({ at: line.at, topic: line.topic, message: line.message ?? "" });
   }
-  return undefined;
+  return sends;
 }
-/** The string literal that starts at `text[from]`, with the index just past it, read as Python
- * and JavaScript both write one: `'…'`, `"…"`, `` `…` `` and Python's triple quotes, with `\n`,
- * `\t`, `\"`, `\'`, `\\` and `` \` `` as they are written. A template literal's `${…}` is read
- * through `resolve`, which answers a name the same code assigned: an agent that writes the head
- * into a `const` and then interpolates it has written the message as plainly as one that typed
- * the sha, and a scorer that stopped at the first `${` would read that publish as unreadable. An
- * interpolation `resolve` cannot answer leaves the whole string unread, since the text that
- * reached the topic is then not in the call. */
-function literalAt(
-  text: string,
-  from: number,
-  resolve: (name: string) => string | undefined
-): { value: string; end: number } | undefined {
-  const triple = ['"""', "'''"].find((q) => text.startsWith(q, from));
-  const quote = triple ?? ['"', "'", "`"].find((q) => text.startsWith(q, from));
-  if (quote === undefined) return undefined;
-  let out = "";
-  for (let i = from + quote.length; i < text.length; i += 1) {
-    if (text.startsWith(quote, i)) return { value: out, end: i + quote.length };
-    if (text[i] === "\\") {
-      const escaped = text[i + 1] ?? "";
-      out += { n: "\n", t: "\t", r: "\r" }[escaped] ?? escaped;
-      i += 1;
-      continue;
-    }
-    if (quote === "`" && text.startsWith("${", i)) {
-      const close = text.indexOf("}", i);
-      if (close < 0) return undefined;
-      const inside = text.slice(i + 2, close).trim();
-      const value = /^[A-Za-z_$][\w$]*$/.test(inside) ? resolve(inside) : undefined;
-      if (value === undefined) return undefined;
-      out += value;
-      i = close;
-      continue;
-    }
-    out += text[i];
-  }
-  return undefined;
-}
-/** The string an expression begins with, where a message of any size is written as more than one
- * literal: Python's parenthesised run of adjacent strings, which is how an agent wraps a long
- * message, and either language's `+` between parts, with a name among them resolved as an
- * interpolation is. It stops at the end of the value — a comma, a closing brace, or the end of
- * the expression — and reads nothing where a part is neither a literal nor a name `resolve`
- * answers, since the text that reached the topic is then not in the call. */
-function stringLiteral(
-  source: string,
-  resolve: (name: string) => string | undefined = () => undefined
-): string | undefined {
-  let out: string | undefined;
-  let depth = 0;
-  for (let i = 0; i < source.length; i += 1) {
-    const c = source[i] ?? "";
-    // The value ends where the statement does: at a `;`, and at the line's end once a part has
-    // been read, since a run of parts over more than one line is written inside parentheses.
-    if (c === ";") return out;
-    if (c === "\n" && depth === 0 && out !== undefined) return out;
-    if (/\s/.test(c) || c === "+") continue;
-    if (c === "(") {
-      depth += 1;
-      continue;
-    }
-    if (c === ")" && depth > 0) {
-      depth -= 1;
-      continue;
-    }
-    if (c === "," || c === "}" || c === ")") return out;
-    const literal = literalAt(source, i, resolve);
-    if (literal !== undefined) {
-      out = (out ?? "") + literal.value;
-      i = literal.end - 1;
-      continue;
-    }
-    // A name is a part of this value only once a literal has been read: an expression that is
-    // one name alone is the caller's to resolve (readString), and reading it here would ask the
-    // resolver for the very name it is resolving.
-    const name = out === undefined ? undefined : /^[A-Za-z_$][\w$]*/.exec(source.slice(i))?.[0];
-    const value = name === undefined ? undefined : resolve(name);
-    if (name === undefined || value === undefined) return undefined;
-    out += value;
-    i += name.length - 1;
-  }
-  return out;
-}
-/** The string an expression of `code` evaluates to, as far as reading the code can tell: its own
- * literal, the value of a name the same code assigned, or the contents of a file the code opens,
- * which a run writes under its own directory and this reads from there alone. `seen` stops a
- * name that resolves through itself. undefined when it is none of those, which leaves the
- * publish unreadable rather than empty: an empty message would read as a message that named
- * nothing. */
-function readString(
-  expression: string,
-  code: string,
-  runDir: string,
-  seen: Set<string> = new Set(),
-  before = code.length
-): string | undefined {
-  // The name is added to `seen` by the lookup below, not here: adding it before the call would
-  // make that lookup's own guard refuse the name it was asked for.
-  const resolve = (name: string) =>
-    seen.has(name) ? undefined : readString(name, code, runDir, seen, before);
-  const literal = stringLiteral(expression, resolve);
-  if (literal !== undefined) return literal;
-  const file = /open\(\s*(['"])(.*?)\1\s*\)\s*\.\s*read\(\)/.exec(expression)?.[2];
-  if (file !== undefined) {
-    // A relative path is the agent's, so it is resolved against the agent's own working
-    // directory (`<run>/cwd`, rig.sh's worker_boot) and not against the run directory, which is
-    // nowhere the agent stands; an absolute path under the run directory is read as given. The
-    // run directory bounds both, so a publish that reads a file outside the run stays unread.
-    const resolved = path.resolve(path.join(runDir, "cwd"), file);
-    return resolved.startsWith(`${path.resolve(runDir)}/`) && existsSync(resolved)
-      ? readFileSync(resolved, "utf8")
-      : undefined;
-  }
-  const name = /^\s*([A-Za-z_$][\w$]*)\s*(?:[,}]|$)/.exec(expression)?.[1];
-  if (name === undefined || seen.has(name)) return undefined;
-  // The value is the **last** assignment the code makes before `before`, not the first one it
-  // holds: a cell that writes a draft and then rewrites it publishes the second, and a reader
-  // that took the first would report a message the topic never received.
-  const assignments = [
-    ...code.matchAll(new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*`, "g")),
-  ].filter((match) => match.index < before);
-  const at = assignments.at(-1);
-  if (at === undefined) return undefined;
-  return readString(
-    code.slice(at.index + at[0].length),
-    code,
-    runDir,
-    new Set([...seen, name]),
-    code.length
-  );
-}
-/** The value of `key` in the object literal `object`, read through `readString`: `undefined` when
- * the object has no such key — `envoy_publish` takes both `topic` and `message`, so a call that
- * names one of them something else published nothing and the tool refused it — and `null` when
- * the key is there and its value is beyond reading. A shorthand property (`{ topic, message }`)
- * is the name itself, which `readString` resolves in the code around the call. */
-function fieldIn(
-  object: string,
-  key: string,
-  code: string,
-  runDir: string,
-  before: number
-): string | null | undefined {
-  const at = object.search(new RegExp(`['"]?${key}['"]?\\s*:`));
-  if (at >= 0)
-    return (
-      readString(object.slice(object.indexOf(":", at) + 1), code, runDir, new Set(), before) ?? null
-    );
-  return new RegExp(`[{,]\\s*${key}\\s*[,}]`).test(object)
-    ? (readString(key, code, runDir, new Set(), before) ?? null)
-    : undefined;
-}
-/** What a tool call published on Envoy — each topic it sent to with the message it carried, and
- * how many publishes of it this could not read. `envoy_publish` takes both as its own arguments,
- * a session that reaches the device as an xd:// one writes them as the JSON `content` of a
- * `write` to `xd://envoy_publish`, and a session may call the same tool from `eval`, where the
- * call sits in the code the tool ran. Which tool carries the publish is no part of the rule —
- * the rule asks the agent to publish the wake — so a scorer that reads one tool scores the
- * harness rather than the agent; measured on the batch of 2026-11-08T13:08Z, where two
- * `threads-closed` reviewers published to the architect's topic from `eval` and read as having
- * sent nothing. A publish whose topic or message this cannot read is counted in `unreadable`
- * and never scored as a send: `unscored` makes such a run a rig error, so an instrument that
- * cannot see an act never reports it as an act not done. A call that names the device anywhere
- * else, a `bash` command or a message about publishing among them, published nothing. */
-function publishesIn(
-  call: { tool: string; path: string; args: string },
-  runDir: string
-): { sent: { topic: string; message: string }[]; unreadable: number } {
-  const args = jsonObject(call.args);
-  const direct =
-    call.tool === "envoy_publish"
-      ? args
-      : call.tool === "write" && call.path === "xd://envoy_publish"
-        ? jsonObject(typeof args?.content === "string" ? args.content : "")
-        : undefined;
-  if (direct !== undefined) {
-    return typeof direct.topic === "string"
-      ? {
-          sent: [
-            {
-              topic: direct.topic,
-              message: typeof direct.message === "string" ? direct.message : "",
-            },
-          ],
-          unreadable: 0,
-        }
-      : { sent: [], unreadable: 0 };
-  }
-  const code = call.tool === "eval" && typeof args?.code === "string" ? args.code : undefined;
-  if (code === undefined) return { sent: [], unreadable: 0 };
-  const sent: { topic: string; message: string }[] = [];
-  let unreadable = 0;
-  for (const match of code.matchAll(/envoy_publish\s*\(/g)) {
-    // A call inside a comment ran nothing: a cell that shows the reader what it would send, or
-    // leaves a line out while keeping it, publishes no message and must not score one.
-    const lineStart = code.lastIndexOf("\n", match.index) + 1;
-    const beforeIt = code.slice(lineStart, match.index);
-    if (/(^|[^:])(#|\/\/)/.test(beforeIt)) continue;
-    const open = code.indexOf("{", match.index + match[0].length - 1);
-    const object = open < 0 ? undefined : braced(code, open);
-    const topic =
-      object === undefined ? undefined : fieldIn(object, "topic", code, runDir, match.index);
-    const message =
-      object === undefined ? undefined : fieldIn(object, "message", code, runDir, match.index);
-    // A call missing either field is no publish: the tool takes both and refuses what it is
-    // given otherwise, as a reviewer of 2026-11-08T16:44Z found when it wrote `body:` and then
-    // sent the same message again with `message:`.
-    if (topic === undefined || message === undefined) continue;
-    if (topic === null || message === null) unreadable += 1;
-    else sent.push({ topic, message });
-  }
-  return { sent, unreadable };
-}
-/** Whether the agent published to `role`'s topic with `envoy_publish`, the call sitting in the
- * transcript because `envoy_publish` is a tool of the session and no `gh` call records it. The
- * loop after an approval that leaves text threads open runs in `accepting`, where the daemon
- * starts no phase and records no review, so every step of it is carried by one of these
- * messages and a step that sends none leaves the next role never learning its turn began
- * (review-threads.md, *After an approval that leaves text threads open*). The role is read from
- * the topic the call sent to and from nothing else: a message to the architect that says "the
- * reviewer can resolve these" is no wake of the reviewer, and the call's own text names both
- * roles. `names` are the strings the rule says the message must carry, matched against the
- * message body alone for the same reason, and a commit is named by any prefix of seven
- * hexadecimal digits or more, as a reply names one (namesCommit). A message that names none of
- * them is no wake, since the next role cannot act on it, and a caller with nothing to require
- * passes an empty list, which no message satisfies rather than every message satisfying it. */
+/** Whether a message of this run reached `role`'s topic naming one of `names`. The loop after an
+ * approval that leaves text threads open runs in `accepting`, where the daemon starts no phase
+ * and records no review, so every step of it is carried by one of these messages and a step that
+ * sends none leaves the next role never learning its turn began (review-threads.md, *After an
+ * approval that leaves text threads open*). The role is read from the topic the message reached
+ * and from nothing else: a message to the architect that says "the reviewer can resolve these"
+ * is no wake of the reviewer. `names` are the strings the rule says the message must carry,
+ * matched against the body alone for the same reason, and a commit is named by any prefix of
+ * seven hexadecimal digits or more, as a reply names one (namesCommit). A message that names
+ * none of them is no wake, since the next role cannot act on it, and a caller with nothing to
+ * require passes an empty list, which no message satisfies rather than every message satisfying
+ * it. `after` is a time Envoy's own record is ordered against, so a message that reached the
+ * topic before it is no answer to what happened then. */
 function publishedTo(
-  entries: SessionEntry[],
+  runDir: string,
+  by: Role | undefined,
   role: Role,
   names: string[],
-  runDir: string,
   after = ""
 ): boolean {
-  return toolCalls(entries).some(
-    (call) =>
-      call.at > after &&
-      publishesIn(call, runDir).sent.some(
-        (sent) =>
-          sent.topic.endsWith(`-${role}`) &&
-          names.some(
-            (name) =>
-              name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
-          )
+  return publishes(runDir, by).some(
+    (sent) =>
+      sent.at > after &&
+      sent.topic.endsWith(`-${role}`) &&
+      names.some(
+        (name) => name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
       )
   );
 }
-/** Every role this session published to, in the order it sent them: what *else* a wake went to.
- * The rule sends the implementer's message to the reviewer's topic **and to that topic alone**
- * (review-threads.md step 2), so a run that copies the architect in has not done the step the
- * loop is measured on — the architect's own wake belongs to the reviewer, after its second
- * approval, and a copy before it is the architect being told a thing that has not happened. */
-function publishedRoles(entries: SessionEntry[], runDir: string): string[] {
-  return toolCalls(entries).flatMap((call) =>
-    publishesIn(call, runDir)
-      .sent.map((sent) => /-(implementer|reviewer|architect)$/.exec(sent.topic)?.[1] ?? "")
-      .filter((role) => role !== "")
-  );
+/** Every role this agent's messages reached, in the order they reached them: what *else* a wake
+ * went to. The rule sends the implementer's message to the reviewer's topic **and to that topic
+ * alone** (review-threads.md step 2), so a run that copies the architect in has not done the
+ * step the loop is measured on — the architect's own wake belongs to the reviewer, after its
+ * second approval, and a copy before it is the architect being told a thing that has not
+ * happened. */
+function publishedRoles(runDir: string, by: Role): string[] {
+  return publishes(runDir, by)
+    .map((sent) => /-(implementer|reviewer|architect)$/.exec(sent.topic)?.[1] ?? "")
+    .filter((role) => role !== "");
 }
-/** The last publish this session made to `role`'s topic, as the rig's own reader wants it: the
- * message the next agent would have read, or undefined when it published none. One reader for
- * the scorer and for the harness both (`rig.sh`'s reviewer_wake calls `score.ts published`), so
- * a publish shape one of them reads and the other does not cannot score a wake that reached
- * nobody: measured on 2026-11-09, where an `eval` publish scored `toldReviewer` while the
- * reviewer half booted with an empty prompt. */
-function lastPublishTo(
-  entries: SessionEntry[],
-  role: string,
-  runDir: string
-): { topic: string; message: string } | undefined {
-  return toolCalls(entries)
-    .flatMap((call) => publishesIn(call, runDir).sent)
+/** The last message of this run that reached `role`'s topic, as the rig's own reader wants it:
+ * the message the next agent is given, or undefined when none reached it. */
+function lastPublishTo(runDir: string, role: string): Publish | undefined {
+  return publishes(runDir)
     .filter((sent) => sent.topic.endsWith(`-${role}`))
     .at(-1);
 }
@@ -1403,15 +1200,15 @@ function lastPublishTo(
  * route, and the architect is the only role that can move the issue for it
  * (review-threads.md step 4). */
 function toldArchitect(
-  entries: SessionEntry[],
-  threads: z.infer<typeof Threads>,
-  runDir: string
+  runDir: string,
+  by: Role | undefined,
+  threads: z.infer<typeof Threads>
 ): boolean {
   return publishedTo(
-    entries,
+    runDir,
+    by,
     "architect",
-    threads.flatMap((thread) => [thread.id, thread.path]),
-    runDir
+    threads.flatMap((thread) => [thread.id, thread.path])
   );
 }
 
@@ -1578,7 +1375,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   const told =
-    toldArchitect(fixSession, threads, runDir) || toldArchitect(reviewSession, threads, runDir);
+    toldArchitect(runDir, "implementer", threads) || toldArchitect(runDir, "reviewer", threads);
   // The two sends this scenario's agents own. The loop runs in `accepting`, where the daemon
   // starts no phase, so a step that sends none leaves the next role never learning its turn
   // began: the implementer's push is told to the reviewer's topic with the new head, and the
@@ -1586,16 +1383,23 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // which is the architect's gate because READY reads the round's first approval. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  const toldReviewer = publishedTo(fixSession, "reviewer", tip === undefined ? [] : [tip], runDir);
+  const toldReviewer = publishedTo(
+    runDir,
+    "implementer",
+    "reviewer",
+    tip === undefined ? [] : [tip]
+  );
   // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
-  const toReviewerAlone = publishedRoles(fixSession, runDir).every((role) => role === "reviewer");
+  const toReviewerAlone = publishedRoles(runDir, "implementer").every(
+    (role) => role === "reviewer"
+  );
   const toldArchitectOfHead = publishedTo(
-    reviewSession,
+    runDir,
+    "reviewer",
     "architect",
-    tip === undefined ? [] : [tip],
-    runDir
+    tip === undefined ? [] : [tip]
   );
   // code-defect: the finding has one route, and it is the message to the architect. A review
   // submitted here is submitted in `accepting`, where the daemon records none
@@ -1685,6 +1489,13 @@ const CASED: Record<string, CasedScenario> = Object.fromEntries(
  * text under test when it is a failure of the rig. It is a rig error instead (unscored), as a run
  * whose own agent got no model turn already is. A scenario absent here boots one agent. */
 const BOOTS: Record<string, string[]> = { "threads-closed": [RESOLVES] };
+/** The agents whose own sends a scenario scores, in the order the rig boots them. Each owns the
+ * window of `<run>/published.jsonl` that its boot line opens, so a run missing one of these
+ * lines holds no record of that agent's sends (`unscored`). */
+const SENDERS: Record<string, Role[]> = {
+  "reviewer-text-findings": [RESOLVES],
+  "threads-closed": [FIXES, RESOLVES],
+};
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
  * batch's Postgres container (its id) and the server on it. */
@@ -3972,23 +3783,14 @@ function unscored(
     if (!booted.some((entry) => entry.message?.role === "assistant"))
       return `the ${role} half never started: sessions/${role} holds no transcript, or one with no assistant message`;
   }
-  // A publish the scorer cannot read is the scorer's limit, not an act the agent did not do, so
-  // the run is a rig error rather than a failure: the send conditions of this loop would
-  // otherwise read a message that exists as a message never sent. It happens when a call made
-  // from `eval` builds its topic or its message out of something that is not in the code and
-  // not in a file of the run (publishesIn).
-  for (const [role, booted] of [
-    ["", entries],
-    ...(BOOTS[scenario] ?? []).map(
-      (role) => [role, sessionIn(path.join(runDir, "sessions", role))] as const
-    ),
-  ] as const) {
-    const unreadable = toolCalls(booted).reduce(
-      (count, call) => count + publishesIn(call, runDir).unreadable,
-      0
-    );
-    if (unreadable > 0)
-      return `${unreadable} publish call${unreadable === 1 ? "" : "s"} of ${role === "" ? "the run's own agent" : `the ${role} half`} name${unreadable === 1 ? "s" : ""} a topic or a message this scorer cannot read`;
+  // What each agent sent is Envoy's own record of this run (`publishes`), into which the rig
+  // writes a boot line as it starts each agent. A run whose record is missing, or missing the
+  // line of an agent whose sends the score reads, is a rig error rather than a run that sent
+  // nothing: the recorder did not run, or wrote somewhere else.
+  const recorded = parsed(path.join(runDir, "published.jsonl"), PublishedLine);
+  for (const role of SENDERS[scenario] ?? []) {
+    if (!recorded.some((line) => line.boot === role))
+      return `<run>/published.jsonl carries no boot line of the ${role} half, so nothing recorded what Envoy accepted for it`;
   }
   for (const call of calls) {
     const named: string[] = [];
@@ -4442,7 +4244,7 @@ if (import.meta.main) {
     // Two readers of one fact disagreed before this (2026-11-09): a publish made from `eval`
     // scored `toldReviewer` while the reviewer half booted with an empty prompt.
     const runDir = rest[0] ?? "";
-    const sent = lastPublishTo(session(runDir), rest[1] ?? "", runDir);
+    const sent = lastPublishTo(runDir, rest[1] ?? "");
     console.log(JSON.stringify(sent ?? null));
   } else {
     console.error(

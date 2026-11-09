@@ -4900,13 +4900,15 @@ begin review-thread
 # (LEGION-631): the implementer answered the reviewer's round 1 thread in its correction round
 # and resolved nothing, so the record tree-reviewed took after the correction reads unresolved
 # with the implementer's reply newest; the reviewer's re-review read the fix, answered in its own
-# words and resolved the thread there, so the record at the approval reads resolved with the
-# reviewer's reply newest. The bot's thread, opened after the implementer's last run, the
-# reviewer alone adjudicated: it replied on it and resolved it with its own gh, which GitHub does
-# not refuse the review App (probed on this pull request at 2026-11-08T03:13:33Z, which answered
-# `isResolved: true`), so the thread reads resolved with the reviewer's reply on it. The resolver
-# is not read from GitHub, which records no App against a resolution; what is read is that the
-# role that judged the thread answered it and that the thread is closed. The route a plugin
+# words and resolved the thread, which it may do after it approves, so the record read once that
+# resolution landed reads resolved with the reviewer's reply newest, while the snapshot the
+# approval left holds only what that moment held. The bot's thread, opened after the
+# implementer's last run, the reviewer alone adjudicated: it replied on it and resolved it with
+# its own gh, which GitHub does not refuse the review App (probed on this pull request at
+# 2026-11-08T03:13:33Z, which answered `isResolved: true`), so the thread reads resolved with the
+# reviewer's reply on it. The resolver is not read from GitHub, which records no App against a
+# resolution; what is read is that the role that judged the thread answered it and that the
+# thread is closed. The route a plugin
 # before `DaemonAPIVersion`'s LEGION-631 entry (`internal/api/version.go`) posted to answers 404
 # (acceptance 4).
 thread_newest_by "$evidence/review-thread-after-correction.json" implementer false ||
@@ -4921,29 +4923,38 @@ review_thread "$thread_id" >"$evidence/review-thread-resolved.json" ||
   fail "read the reviewer's thread $thread_id once resolved"
 thread_newest_by "$evidence/review-thread-resolved.json" reviewer true ||
   fail "after its approval the reviewer's thread $thread_id read $(jq -c . "$evidence/review-thread-resolved.json"), want isResolved true with the reviewer's reply as its newest submitted comment"
-on_tree "$tree1" until_true 600 "the reviewer's reply on the bot's thread $bot_thread_id and its own resolution of it" bot_thread_answered "$bot_thread" reviewer true
-review_thread "$bot_thread_id" >"$evidence/bot-thread-resolved.json" || fail "read the bot's thread $bot_thread_id once resolved"
-thread_resolved_with_reply "$evidence/bot-thread-resolved.json" reviewer ||
-  fail "the bot's thread $bot_thread_id read $(jq -c . "$evidence/bot-thread-resolved.json"), want isResolved true with a submitted reply of the reviewer's"
+# The bot's thread is read once: the wait's own read writes the record the controls below mutate
+# and the note quotes, and judges it there, so the thread is fetched and checked one time rather
+# than polled and then read again.
+bot_thread_recorded() {
+  review_thread "$bot_thread_id" >"$evidence/bot-thread-resolved.json" &&
+    thread_resolved_with_reply "$evidence/bot-thread-resolved.json" reviewer
+}
+on_tree "$tree1" until_true 600 "the reviewer's reply on the bot's thread $bot_thread_id and its own resolution of it" bot_thread_recorded
 threads_code=$(curl -sS --max-time 20 -o "$evidence/threads-resolve-404.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   --data '{"grantId":"stage4b-none","threads":["stage4b-none"]}' "http://$host:$port_daemon/legion/v1/threads/resolve" 2>&1) ||
   fail "the daemon's API did not answer the deleted threads route probe: $(scrub <<<"$threads_code")"
 [ "$threads_code" = 404 ] || fail "POST /legion/v1/threads/resolve answered $threads_code $(cat "$evidence/threads-resolve-404.json"), want 404: the daemon still serves a thread route"
 # Controls: the implementer's record read resolved (a thread it closed itself, the rule before
-# this head), and the reviewer's thread with a later implementer reply appended (a resolution the
-# reviewer did not answer), both fail; the bot's record left unresolved, or stripped of the
-# reviewer's reply (a resolution of a thread nobody adjudicated), fails too.
+# this head), and the resolved record with a later implementer reply appended (a resolved thread
+# the reviewer no longer answers last), both fail; the bot's record left unresolved, or stripped
+# of the reviewer's reply (a resolution of a thread nobody adjudicated), fails too. The second is
+# built from the record read once the reviewer resolved the thread, never from the snapshot the
+# approval left, which may read unresolved: a control that is unresolved fails on its isResolved
+# alone and never reaches the author its clause tests, so its resolution is read back first.
 jq '.isResolved = true' "$evidence/review-thread-after-correction.json" >"$evidence/review-thread-resolved-negative.json"
 expect_failure review-thread-answered-and-resolved thread_newest_by "$evidence/review-thread-resolved-negative.json" implementer false
 jq --arg author "$(role_app_slug implementer)" '.comments += [{author: $author, body: "Fixed in 0000000: the line is appended.", state: "SUBMITTED"}]' \
-  "$evidence/review-thread-at-approval.json" >"$evidence/review-thread-unanswered-negative.json"
+  "$evidence/review-thread-resolved.json" >"$evidence/review-thread-unanswered-negative.json"
+jq -e '.isResolved == true' "$evidence/review-thread-unanswered-negative.json" >/dev/null ||
+  fail "the review-thread-not-answered-by-reviewer control reads $(jq -c . "$evidence/review-thread-unanswered-negative.json"), want isResolved true: its newest comment's author must be the only thing wrong with it"
 expect_failure review-thread-not-answered-by-reviewer thread_newest_by "$evidence/review-thread-unanswered-negative.json" reviewer true
 jq '.isResolved = false' "$evidence/bot-thread-resolved.json" >"$evidence/bot-thread-unresolved-negative.json"
 expect_failure bot-thread-answered-unresolved thread_resolved_with_reply "$evidence/bot-thread-unresolved-negative.json" reviewer
 jq --arg author "$(role_app_slug reviewer)" '.comments |= [.[0]] + [.[1:][] | select(.author != $author)]' "$evidence/bot-thread-resolved.json" >"$evidence/bot-thread-unanswered-negative.json"
 expect_failure bot-thread-not-answered-by-reviewer thread_resolved_with_reply "$evidence/bot-thread-unanswered-negative.json" reviewer
 thread_newest_by "$evidence/review-thread-after-correction.json" implementer false || fail "the thread record failed its own check after its controls"
-note "the reviewer's thread $thread_id: answered by the implementer after the correction and left open ($(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .body | split("\n")[0]' "$evidence/review-thread-after-correction.json")), answered and resolved by the reviewer at the approval; the bot's thread $bot_thread_id: answered by the reviewer ($(jq -r --arg author "$(role_app_slug reviewer)" '[.comments[] | select(.state == "SUBMITTED" and .author == $author)] | last | .body | split("\n")[0]' "$evidence/bot-thread-resolved.json")) and resolved with its own gh (isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json") at the approval, true now); POST /legion/v1/threads/resolve answers $threads_code"
+note "the reviewer's thread $thread_id: answered by the implementer after the correction and left open ($(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .body | split("\n")[0]' "$evidence/review-thread-after-correction.json")), answered and resolved by the reviewer, read back once it was (isResolved $(jq -r .isResolved "$evidence/review-thread-at-approval.json") at the approval, true now); the bot's thread $bot_thread_id: answered by the reviewer ($(jq -r --arg author "$(role_app_slug reviewer)" '[.comments[] | select(.state == "SUBMITTED" and .author == $author)] | last | .body | split("\n")[0]' "$evidence/bot-thread-resolved.json")) and resolved with its own gh (isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json") at the approval, true now); POST /legion/v1/threads/resolve answers $threads_code"
 pass
 
 begin completion-closed

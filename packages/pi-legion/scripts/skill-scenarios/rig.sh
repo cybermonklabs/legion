@@ -375,7 +375,7 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # ports and directory. `booted` is the role of the agent a run has already run, empty until the
 # first one, and `sessions_dir` the Oh My Pi session directory of the agent running now: a run
 # that boots more than one agent gives each its own (worker_boot).
-R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
+R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' record_pid='' runs_pid='' batch_scenario=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url='' booted='' sessions_dir=''
 
 label_dir() {
@@ -776,7 +776,7 @@ stop_panes() {
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
-  for pid in "$daemon_pid" "$dispatch_pid"; do
+  for pid in "$daemon_pid" "$dispatch_pid" "$record_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -1993,6 +1993,11 @@ worker_boot() {
     sessions_dir=$R/sessions
   fi
   mkdir -p "$sessions_dir"
+  # The record of what Envoy accepted gets a line for this agent's start, which opens the window
+  # of the file its own sends sit in: the run's agents never overlap, since the one before this
+  # has exited and its stand-in is stopped just above, so every message after this line and
+  # before the next is this agent's (record-publishes.ts, score.ts's `publishes`).
+  [ -z "$R" ] || printf '{"at":"%s","boot":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$role" >>"$R/published.jsonl"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
@@ -2177,6 +2182,15 @@ cmd_run() {
   # The run's own record of its case, which the scorer holds to the name above.
   [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
   cp "$P/built-from" "$R/built-from"
+  # What Envoy accepted on this run's role topics, recorded by a subscriber of the bus rather than
+  # read out of an agent's own code afterwards (record-publishes.ts): `<run>/published.jsonl` is
+  # what the score and reviewer_wake both read, so neither works out what was sent from what the
+  # agent wrote. Started before any agent of the run, stopped with the run (stop_run).
+  : >"$R/published.jsonl"
+  start_process record bun "$here/record-publishes.ts" "$R/published.jsonl" \
+    "legion-$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")-"
+  await_start record "$record_pid" 30 "the publish recorder to subscribe" \
+    grep -q '^recording ' "$R/logs/record.log"
   case $scenario in
   ask-on-message) run_ask_on_message "$name" ;;
   measure-before-ask) run_measure_before_ask "$name" ;;

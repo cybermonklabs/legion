@@ -1084,50 +1084,15 @@ post_bot_thread() {
   fi
   printf '%s\n' "$id"
 }
-# bot_thread_replies COMMENT prints the review thread whose first comment is COMMENT: its isResolved
-# on the first line, then each reply's author (GraphQL names an App by its bare slug) and first
-# line, tab-separated.
-bot_thread_replies() {
-  # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
-  timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
-    query($owner: String!, $name: String!, $number: Int!) {
-      repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-        reviewThreads(first: 100) { nodes { isResolved comments(first: 50) { nodes { id author { login } body } } } } } } }' \
-    --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].id == \"$1\") |
-      (.isResolved | tostring), (.comments.nodes[1:][] | \"\\(.author.login)\\t\\(.body | ltrimstr(\" \") | split(\"\\n\")[0])\")"
-}
-# bot_thread_node_id COMMENT prints the node id of the review thread whose first comment is COMMENT:
-# the id a resolution names (the reviewer's message to the implementer, the implementer's
-# resolveReviewThread).
-bot_thread_node_id() {
-  # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
-  timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
-    query($owner: String!, $name: String!, $number: Int!) {
-      repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-        reviewThreads(first: 100) { nodes { id comments(first: 1) { nodes { id } } } } } } }' \
-    --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].id == \"$1\") | .id" | grep .
-}
-# bot_thread_answered COMMENT ROLE RESOLVED: the bot's thread carries a reply by ROLE's App
-# (role_app_slug) and reads isResolved RESOLVED (`true` or `false`). One helper for both readings
-# the proofs take of that thread: the implementer answers it and resolves nothing, so its round
-# is `bot_thread_answered <c> implementer false`, and the reviewer adjudicates it and resolves it,
-# so the round after is `bot_thread_answered <c> reviewer true`. The review App resolves its own
-# threads, probed on sjawhar/legion#2827 at 2026-11-08T03:13:33Z, where GitHub answered
-# isResolved true; the resolver is not read back, and no word of the reply is read either:
-# nothing resolves a thread on a magic form. Both readings are polled rather than read once,
-# since the reviewer may resolve after it approves.
-bot_thread_answered() {
-  local replies author
-  author=$(role_app_slug "$2") || return 1
-  replies=$(bot_thread_replies "$1") || return 1
-  [ "$(head -1 <<<"$replies")" = "$3" ] && grep -q "^$author"$'\t' <<<"$replies"
-}
 # review_threads prints every review thread on the proof's pull request as one JSON array: each
-# thread's node id, its isResolved, and each comment's author (GraphQL names an App by its bare
-# slug), body, state (a draft in a pending review is PENDING) and the state of the review it
-# belongs to (reviewState; a comment outside any review, which GitHub does not produce here, reads
-# null). A pull request with more threads or comments than one page holds fails rather than print
-# part of them.
+# thread's node id, its isResolved, and each comment's node id, author (GraphQL names an App by
+# its bare slug), body, state (a draft in a pending review is PENDING) and the state of the review
+# it belongs to (reviewState; a comment outside any review, which GitHub does not produce here,
+# reads null). It is the one GraphQL read of the threads: review_thread picks one of them by its
+# node id and review_thread_of_comment by the id of the comment that opened it, and every check
+# below judges what one of those printed, so every reading of a thread comes from this query. A
+# pull request with more threads or comments than one page holds fails rather than print part of
+# them.
 review_threads() {
   local page
   # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
@@ -1135,10 +1100,10 @@ review_threads() {
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
         reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { id isResolved
-          comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body state pullRequestReview { state } } } } } } } }') || return 1
+          comments(first: 100) { pageInfo { hasNextPage } nodes { id author { login } body state pullRequestReview { state } } } } } } } }') || return 1
   jq -ce '.data.repository.pullRequest.reviewThreads
     | if .pageInfo.hasNextPage or any(.nodes[]; .comments.pageInfo.hasNextPage) then error("more review threads or comments than one page") else . end
-    | [.nodes[] | {id, isResolved, comments: [.comments.nodes[] | {author: .author.login, body, state, reviewState: .pullRequestReview.state}]}]' <<<"$page"
+    | [.nodes[] | {id, isResolved, comments: [.comments.nodes[] | {id, author: .author.login, body, state, reviewState: .pullRequestReview.state}]}]' <<<"$page"
 }
 # reviewer_thread prints the node id of the one review thread the Legion reviewer opened with a
 # CHANGES_REQUESTED review on the proof's pull request, or fails naming how many such threads it
@@ -1154,21 +1119,21 @@ reviewer_thread() {
 }
 # review_thread ID prints that thread, as review_threads prints each.
 review_thread() { review_threads | jq -ce --arg id "$1" '.[] | select(.id == $id)'; }
+# review_thread_of_comment COMMENT prints the thread whose first comment is the comment node id
+# COMMENT, as review_threads prints each: the id the REST API answers when a thread is opened
+# (post_bot_thread) is the id GraphQL gives that same comment.
+review_thread_of_comment() {
+  review_threads | jq -ce --arg comment "$1" '.[] | select(.comments[0].id == $comment)'
+}
+# bot_thread_node_id COMMENT prints the node id of the review thread whose first comment is
+# COMMENT: the id a resolution names (the reviewer's message to the implementer, the implementer's
+# resolveReviewThread).
+bot_thread_node_id() { review_thread_of_comment "$1" | jq -er .id; }
 # thread_newest_by_live ID ROLE RESOLVED: the same reading taken from GitHub now rather than from
 # a file, for an until_true that waits on a reviewer's own resolution — which may land after its
-# approval, since a thread is resolved once the reviewer has read the fix.
-thread_newest_by_live() {
-  local now
-  now=$(mktemp) || return 1
-  review_thread "$1" >"$now" || {
-    rm -f "$now"
-    return 1
-  }
-  thread_newest_by "$now" "$2" "$3"
-  local read=$?
-  rm -f "$now"
-  return "$read"
-}
+# approval, since a thread is resolved once the reviewer has read the fix. A read that fails
+# prints no thread, which the reading rejects, so the wait polls on.
+thread_newest_by_live() { thread_newest_by <(review_thread "$1") "$2" "$3"; }
 # thread_newest_by FILE ROLE RESOLVED: the thread FILE holds (review_thread's output) reads
 # isResolved RESOLVED (`true` or `false`) and its newest submitted comment is ROLE's App's
 # (role_app_slug). One helper for both readings the proofs take: the implementer's
@@ -1180,15 +1145,29 @@ thread_newest_by() {
   jq -e --arg author "$author" --argjson resolved "$3" '.isResolved == $resolved
     and ([.comments[] | select(.state == "SUBMITTED")] | last | .author == $author)' "$1" >/dev/null
 }
-# thread_resolved_with_reply FILE ROLE: the thread FILE holds is resolved and carries a submitted
-# reply by ROLE's App (role_app_slug) somewhere after its opening comment: the bot's thread the
-# reviewer answered and the implementer, told its id, resolved without a reply of its own.
-thread_resolved_with_reply() {
+# thread_answered_by FILE ROLE RESOLVED: the thread FILE holds (review_thread's output) reads
+# isResolved RESOLVED (`true` or `false`) and carries a submitted reply by ROLE's App
+# (role_app_slug) somewhere after its opening comment. It is the reading a thread gets where the
+# role that judged it answered it without having the last word: the bot's.
+thread_answered_by() {
   local author
   author=$(role_app_slug "$2") || return 1
-  jq -e --arg author "$author" '.isResolved == true
+  jq -e --arg author "$author" --argjson resolved "$3" '.isResolved == $resolved
     and any(.comments[1:][]; .state == "SUBMITTED" and .author == $author)' "$1" >/dev/null
 }
+# thread_resolved_with_reply FILE ROLE: the thread FILE holds is resolved and carries that reply:
+# the bot's thread the reviewer answered and resolved itself.
+thread_resolved_with_reply() { thread_answered_by "$1" "$2" true; }
+# bot_thread_answered COMMENT ROLE RESOLVED: the same reading taken from GitHub now, of the thread
+# the comment COMMENT opened. One helper for both readings the proofs take of that thread: the
+# implementer answers it and resolves nothing, so its round is
+# `bot_thread_answered <c> implementer false`, and the reviewer adjudicates it and resolves it,
+# so the round after is `bot_thread_answered <c> reviewer true`. The review App resolves its own
+# threads, probed on sjawhar/legion#2827 at 2026-11-08T03:13:33Z, where GitHub answered
+# isResolved true; the resolver is not read back, and no word of the reply is read either:
+# nothing resolves a thread on a magic form. Both readings are polled rather than read once,
+# since the reviewer may resolve after it approves.
+bot_thread_answered() { thread_answered_by <(review_thread_of_comment "$1") "$2" "$3"; }
 # threads_all_resolved FILE ID: every review thread FILE holds (review_threads' output) is resolved,
 # and the thread ID is one of them.
 threads_all_resolved() {
