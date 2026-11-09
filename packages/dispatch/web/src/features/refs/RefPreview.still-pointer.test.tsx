@@ -42,7 +42,7 @@ function Harness(): ReactNode {
   );
 }
 
-test("a reference that slid out from under a still pointer still opens its card", () => {
+test("a reference that slid out from under a still pointer opens its card, and the reader's next movement decides it", () => {
   // The card's own read is never answered: what this row is about is the card opening, and until
   // its target answers the card heads with the reference's short form.
   const getIssue = spyOn(api, "getIssue").mockImplementation(() => new Promise(() => {}));
@@ -56,19 +56,25 @@ test("a reference that slid out from under a still pointer still opens its card"
     // The page draws something above the reference while the open delay runs, so the anchor
     // moves and the browser reports the pointer leaving it with no movement of the reader's
     // behind it. happy-dom lays nothing out, so the move is the measurement moving.
-    const moved = spyOn(reference, "getBoundingClientRect").mockReturnValue({
+    spyOn(reference, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 24,
     } as DOMRect);
     fireEvent.pointerOut(reference, { pointerType: "mouse", relatedTarget: document.body });
+
+    // The request is kept, not granted: the reader's next movement is what decides it, and this
+    // one lands on the reference where the page left it, so the card they asked for opens on
+    // the delay it was already waiting out.
+    fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
     act(() => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip").textContent).toContain("CORE-1");
 
-    // And the reader's own next movement still decides it: away from the reference, it goes.
-    moved.mockRestore();
-    fireEvent.pointerMove(document, { clientX: 500, clientY: 500, pointerType: "mouse" });
+    // And a movement that leaves the reference closes it as any other does, so a card kept
+    // under a still pointer never stands over nothing once that pointer has moved. The anchor
+    // stays where the page left it this time, so nothing but the reader has moved.
+    fireEvent.pointerOut(reference, { pointerType: "mouse", relatedTarget: document.body });
     act(() => {
       jest.advanceTimersByTime(REF_PREVIEW_CLOSE_DELAY_MS);
     });
