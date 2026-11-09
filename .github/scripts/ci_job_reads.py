@@ -846,7 +846,7 @@ GATES = [
          "HEAD_SHA and HEAD_MESSAGE to the push payload's head"),
         (".github/ci-images.yaml", f"{at('test', 'Test the CI image mirror')}: mirror-ci-images.test.sh:322-351 builds "
                                    "its ordering fixture from the repository's own rows"),
-        (".github/ci-tools.yaml", f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh:746 runs "
+        (".github/ci-tools.yaml", f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh:777 runs "
                                   f"the gate over this repository's own tree, and {at('test', 'Test the tool fetch helper')}: "
                                   "ci-tools.test.sh:525-532 reads every row of the repository's own manifest"),
         (".github/e2e-scripts.json", f"{at('test', 'Test the e2e proof selector')}: select-e2e-proofs.test.sh runs the "
