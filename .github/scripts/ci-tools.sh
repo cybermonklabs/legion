@@ -34,10 +34,11 @@
 #   an unwritable one with says the same of this run — but its status is 1 and not 23, so its
 #   callers report it as they report every other failure of that read, each naming a source:
 #   ci_tools__primary_open prints `<word> served the bytes, and this run cannot write …`, and
-#   ci_tools__second_source prints `no source served the bytes; <word>: this run cannot
-#   write …`, whose prefix is wrong, since that source did serve them. Neither is reachable
-#   where a destination is a fresh mktemp, which every destination of this file is, and the
-#   naming is the caller's rather than this cause's: the rule below is of exit 23 alone.
+#   ci_tools__second_source prints `no source served the bytes; [<primary word>: <what it
+#   did>; ]<word>: this run cannot write …`, whose claim that no source served is wrong, since
+#   that source did serve them. Neither is reachable where a destination is a fresh mktemp,
+#   which every destination this file hands ci_tools_extract is, and the naming is the
+#   caller's rather than this cause's: the rule below is of exit 23 alone.
 #   A MEMBER THE ARCHIVE DOES NOT HOLD, which python3's zipfile answers for by name: the archive
 #   read, and it holds no member of that name, which is a row naming a path that archive has not
 #   got and a mistake in this repository.
@@ -55,7 +56,7 @@
 # Every exit names the source that served the bytes — `github-release`, `ghcr-mirror`, `npm`,
 # `pypi` or `pulumi-releases` — except the one curl answers with exit 23, which names none,
 # because no source is what failed. ci_tools_extract's unwritable destination is that same
-# fault of this run and not that exit, and its caller does name a source, as the rule above
+# fault of this run and not that exit, and its callers do name a source, as the rule above
 # says. A failure leaves no file at the destination, so a call site that checks the exit
 # status never runs a half-written or unverified file, and one that does not check it finds
 # nothing to run.
