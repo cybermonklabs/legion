@@ -100,14 +100,16 @@ const erasedMessageFields = ["bodySize", "cookies", "headersSize"] as const;
  *  issued), `set-cookie`, `authorization`, `idempotency-key` (one write's intent, which a replay
  *  of a different write must not reuse).
  *  A value that differs between two runs and says nothing about the answer: `date` (the server's
- *  clock), `host` and `referer` (the origin the recording was made from, which this file no
- *  longer names), `user-agent` and the `sec-ch-ua` family (the browser build, which moves with
+ *  clock), `host`, `origin` and `referer` (the origin the recording was made from, which this
+ *  file no longer names: the URLs are retargeted at the placeholder and these three would
+ *  otherwise keep the port the harness happened to serve on), `user-agent` and the `sec-ch-ua` family (the browser build, which moves with
  *  Playwright), `if-none-match` (the browser's own cache state). */
 const erasedHeaders: Record<string, true> = {
   authorization: true,
   cookie: true,
   date: true,
   host: true,
+  origin: true,
   "idempotency-key": true,
   "if-none-match": true,
   referer: true,
