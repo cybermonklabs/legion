@@ -19,11 +19,12 @@ the same way and wakes nobody.
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
-The daemon released the slot of `<KEY>` and no waiting issue took it: the work of that issue ended
-or left the workflow — its merge, `accepting`, a blocker, its own children, a person
-(`awaiting_person`, which also sends its own `awaiting-person` wake), or its tree finishing. A
-slot is one issue with work, a root or a child, so the issue it names may be either. Name the free
-slots; take nothing.
+The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
+left the workflow, it reached `awaiting_merge`, or its tree closed or stopped running. An issue
+takes its slot when the daemon starts it and keeps it
+until it is done, leaves the workflow or waits only for its merge,
+so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
+child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
 
@@ -70,14 +71,14 @@ wake gives it>; `todo` with the `legion` label queues it again". Other admission
 ## `awaiting-person on <KEY>` (`{kind: "awaiting-person", reason}`)
 
 A root whose architect asked a person a question, or handed its spec to a person for approval, and
-now waits only on them: the daemon returned its slot while the architect stays live to read the
-person's comments and replies. Read `issues.<KEY>.waitingOn`. Do not park it or start anything, and
-take nothing for the slot it returned: it is no reason to label or admit an issue ([Free
-slots](skill://legion-controller/SKILL.md#free-slots)). The person's answer puts it among the
-issues at the front of `admission.waiting` by itself, and its promotion gives its architect the
-answer task: at once, holding no slot, when its design gate has already opened, and at the next
-free slot while its architect is still writing the first spec. A lost label or a foreign
-Dispatch claim sends the separate `unslotted` wake.
+now waits only on them: it keeps the slot it took when the daemon started it, and its architect
+stays live to read the person's comments and replies. Read `issues.<KEY>.waitingOn`. Do not park
+it or start anything, and take nothing for its wait: the wait frees no slot and is no reason to
+label or admit an issue ([Free slots](skill://legion-controller/SKILL.md#free-slots)). The
+person's answer puts it in `admission.waiting` by itself, among the issues whose work came back,
+oldest first, and its promotion gives its architect the answer task, taking no further slot, so
+it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
+`unslotted` wake.
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 
@@ -169,6 +170,36 @@ records you were sent in it.
 An update round over the issue's pod, or over one claim's own process, is not finishing. Handle
 it as `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
+
+## `provider-errors on <KEY>` (`{kind: "provider-errors", role, reason}`)
+
+Six turns of `<KEY>`'s `role` in a row ended in an error the model's provider returned: a content
+filter, a rate limit, an overload, or any other failure of the provider. `reason` names the model
+and the HTTP status the provider answered, when it answered one, and carries no text the provider
+wrote. Nothing is held and nothing is stopped: the daemon keeps the task, prompts the same session
+with it again, and waits at most ten minutes between prompts for as long as the errors last. You
+are told once, and again only once the run has gone back to zero, which it does three ways: at a
+turn of that role that ends with no provider error, at a compaction of its session that ran (one
+Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
+recorded session is forgotten, by `fresh_session` or an operator's `legion claims forget-session`.
+A second notice after you compacted that claim is how you see that it is still refused.
+
+Read the role's claim in `read_state`. Name the run and its model in the day's report. When the
+reason names no status, the turns ended on nothing but a message, which is what a content filter
+leaves: the session has already stepped down its model chain, so a run that long says the whole
+chain refuses the same work. Either way, `envoy_publish` the key, the role and the reason to the
+issue's architect, which is who can narrow the work. Re-admit nothing and park nothing, because
+the task is not lost and the session still runs.
+
+One claim that stays stuck after that is yours to act on, and `compact` is the first thing you
+reach for: it has the daemon shorten that claim's Oh My Pi session to a text summary and send it
+whatever task it owed again, and the claim keeps its session, its workspace and everything it
+knows of its issue. The answer says whether the session was compacted and, when it was not, why;
+the claim is back either way, and whatever task it owed has gone again. Use `fresh_session` only
+when the claim is still refused after a compaction, because a new session loses everything the old
+one held — what the worker learned of its issue, and what it had not yet pushed or written down —
+and cures nothing in a provider outage, where the next session's turns are refused as the last
+one's were.
 
 ## GitHub mentions
 

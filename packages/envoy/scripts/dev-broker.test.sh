@@ -25,10 +25,13 @@
 # instance's broker actually answered; (e) the two concurrent instances bind two different
 # ports; (f) each instance's broker trusts the dev-oidc-issuer that instance started, lists
 # its dev caller and exchange account, exports the caller token that issuer wrote, and stops the
-# issuer on exit; and (g) that same issuer serves the code flow for the broker's own sign-in
+# issuer on exit; (g) that same issuer serves the code flow for the broker's own sign-in
 # client and signs the approver in, the broker's BROKER_SIGNIN_* naming that issuer, client,
 # domain and a 0600 secret file in the run's workdir, and the banner names the broker's own
-# approval page.
+# approval page; and (h) each instance registers its one service under both halves a service
+# needs - BROKER_SERVICE_LOGINS for the account that logs in as it and BROKER_SERVICES for the
+# account its pods run as - and its banner says how to take the secret that service owns, with
+# the pod uid its own issuer bound.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -144,8 +147,15 @@ client="" secret_file="" sign_in_as=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
+      audience_account_and_file="${2}"
       account_and_file="${2#*=}"
       printf 'fake-token-for-%s\n' "${account_and_file%%=*}" >"${account_and_file#*=}"
+      # The real issuer's own line for each file it wrote, which dev-broker.sh reads the
+      # pod uid of its pod token out of: `<file> holds <account>'s token for audience
+      # <audience> (pod <uid>)`. One uid per account, as the real issuer binds one pod
+      # per service account.
+      account="${account_and_file%%=*}"
+      echo "dev-oidc-issuer: ${account_and_file#*=} holds ${account}'s token for audience ${audience_account_and_file%%=*} (pod pod-uid-of-${account##*:})" >&2
       ;;
     --code-flow)
       client="${2%%=*}"
@@ -177,7 +187,7 @@ if [[ $# -ne 0 ]]; then
   echo "fake broker: unexpected arguments: $*" >&2
   exit 2
 fi
-echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-}" >&2
+echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "broker listening addr=127.0.0.1:$$" >&2
 exec sleep 999999
@@ -384,6 +394,32 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s signs people in to its broker at that same issuer, with a 0600 secret it never prints, and names its broker'"'"'s approval page\n' "$label"
+
+  # The registered service's two halves. A stack that logs the daemon account in
+  # (BROKER_SERVICE_LOGINS) and binds no pod account to that service (BROKER_SERVICES) serves no
+  # secret the service owns - the policy refuses the owner tag as malformed on every reread -
+  # and enrols no pod of that account (403 POD_NOT_LAUNCHED), so the two are asserted together,
+  # with the pod account the issuer minted the pod token for. The banner's enrolment command
+  # names that pod by the uid the issuer bound it to, so a reader takes the service-owned secret
+  # by pasting it.
+  local service="legion-daemon"
+  local registrar="system:serviceaccount:example-ns:example-daemon"
+  local pod_account="system:serviceaccount:example-ns:example-worker"
+  if ! grep -qF "service-logins=${service}=${registrar} services=${service}=${pod_account}" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker does not register ${service} with both halves (the login's account and its pods')" >&2
+    exit 1
+  fi
+  # `--` before each pattern: these start with a dash, which grep would otherwise read as its
+  # own option.
+  if ! grep -qF -- "--pod-uid pod-uid-of-${pod_account##*:}" "$log_file" \
+    || ! grep -qF -- "--service ${service}" "$log_file" \
+    || ! grep -qF -- "DEMO_SERVICE_TOKEN" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not say how to take its service-owned secret as a pod of ${service}" >&2
+    exit 1
+  fi
+  printf 'PASS: %s registers %s under both halves and tells a reader how to take the secret it owns\n' "$label" "$service"
   port="$bound"
 
   local pid="${instance_pid[$n]}"

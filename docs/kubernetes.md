@@ -1071,7 +1071,53 @@ A tree volume is a PersistentVolumeClaim, so the copy itself runs where that cla
 
 ### Starting fresh when a session is lost or wedged
 
-Use this recovery when a stopped claim's session was lost with its volume, after importing its file session before its volume can be reaped, or when its agent is wedged after a provider refusal.
+A provider's content filter asks nothing of the operator.
+Any of the four providers' filters (Anthropic's, OpenAI's, Google's and Amazon Bedrock's) moves the session to the next model of the deployment's own `retry.fallbackChains`, in the same session, and the plugin brings it back to the role's own model an hour later.
+The refusal that lands after the model has already sent text is one of them: Oh My Pi does not walk its chain for that one, because the turn cannot be replayed, so the plugin walks it (`packages/pi-legion/src/model-fallback.ts`).
+Each further refusal of the same model doubles that wait, to at most eight hours, and a clean turn on the model puts it back to one hour.
+The two waits are a pane's and a pod's environment, `LEGION_REFUSAL_COOLDOWN_MS` (3600000, one hour) and `LEGION_REFUSAL_COOLDOWN_MAX_MS` (28800000, eight hours):
+the daemon passes each to the worker it launches while its own environment holds it, and to its own controller, which the same fallback serves; a role told neither runs on those two numbers (`refusalCooldownVariables`, `internal/daemon/specs.go`).
+The plugin writes each arming into the session's own transcript, so a worker the daemon relaunches on that session waits out the time that was left rather than coming back early.
+
+Every deployment sets `retry.fallbackRevertPolicy: never` beside its `retry.fallbackChains`, wherever it keeps them (the operator's `overlay.yml`, or a `role_config_files` overlay of its own).
+Without it Oh My Pi returns the session to a model it suppressed itself, for a rate limit or for an error it could not classify, as soon as that suppression ends, and its floor for one it cannot time is five minutes, well inside the plugin's hour.
+For a refusal the setting changes nothing, and the reason differs by path.
+A refusal that lands before the model has sent any text is one Oh My Pi walks the chain for itself, and it pins the fallback it walks to, which the revert leaves alone however it is set; that pin ends at the plugin's timed return, a `setModel`, which clears it and puts the session back on the role's own model.
+A refusal that lands after the text Oh My Pi leaves where it is, so the revert has no fallback of its own to move: there the plugin's own `setModel` walks the chain, and the same timed return brings the session back.
+`scripts/e2e/refusal-fallback-omp.sh` measures the difference on a ten-minute cooldown: with the setting, no request at all reaches the refused model between the fifth minute and the tenth, and the first request after the tenth goes to that model again.
+
+Two commands replace what a provider keeps refusing, and the compaction is the first of them, because a new session loses what the old one held — what the worker learned of its issue, and what it had not pushed or written down yet:
+
+```sh
+legion claims compact --claim <token> --operator-token-file <file>
+```
+
+It has the claim's Oh My Pi session write a summary of itself and then sends the claim whatever task it owes again, however much of the provider-error ladder's wait was left: the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
+The summary is text, because the daemon asks with instructions of its own: Oh My Pi runs its image-based snapcompact method only for a compaction that carries none, and a worker resumed on those images would need a vision model to read its own past (`compactInstructions`, `packages/daemon/internal/api/compact.go`).
+The answer says whether the session was compacted and, when it was not, why — Oh My Pi's own words for a compaction it refused or skipped, `Already compacted` or `Nothing to compact (session too small)`, and the daemon's for a wait that ran out or a transport that failed — and whatever task the claim owed has gone again either way.
+The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
+While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused because the claim is stored working.
+
+A session the compaction left refused is the fresh session's, which is the last resort here:
+
+```sh
+legion claims retry --claim <token> --operator-token-file <file> --fresh-session
+```
+
+It reaches a claim whose agent is registered, ready or idle and one that is suspended, failed or retired, with no suspension held over it — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, and a root architect as much as a phase worker — suspending it where it is live, forgetting the session it recorded, and starting it again (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
+A phase worker comes back with the task of the phase its issue stands in now, and a root architect with its tree's catch-up.
+No `forget-session` comes before it, and no recovery here needs an edit of the daemon's store.
+
+Both refuse a claim the daemon records as working, since compacting or suspending a claim in a turn would cut that turn off and that turn may be the one that ends the run of refusals, and both refuse a claim between states, queued or with a launch in flight.
+Both refuse a claim a suspension is held over as well, in whatever state the hold found it, since what such a claim waits for is that hold's end rather than anything either recovery would do, and a claim left working under a relaunch the daemon's wake pacing parked.
+Both refuse a claim left working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of that claim is running, and neither sends the operator back for a turn's end.
+Each refusal says what the claim is doing when it is given, and which operation reaches each state `legion claims list` shows: it names no report, turn, hold or relaunch to come, and ends by telling the caller to ask again later and read the claim's state in that list.
+The compaction refuses three more: a claim that is suspended, failed or retired, which runs no session to ask and whose refusal names what starts it again, the fresh session for a workflow role and the daemon's controller keeper for the project's own controller claim, a claim whose agent has registered and is not ready yet, which has no session to ask either and which the fresh session reaches, and a claim whose role runs on the Claude Code harness, which has no Oh My Pi session to compact at all.
+The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the claim by its issue and role rather than by a token the controller never sees: the effect, the refusals and the answer are the operator's own and only the authentication differs, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first and a fresh session only when the claim is still refused after it (`skills/legion-controller`).
+The controller's own claim is the one asymmetry: a fresh session of it is refused whatever state it is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
+The controller cannot name itself through its own door either way, since `controller` is no role a claim token is built from, so the operator's `--claim` is the one way onto that claim.
+
+Use `legion claims forget-session` for a session that is gone rather than refused: a stopped claim's session lost with its volume, or a file session imported before its volume can be reaped.
 Read the claim's recorded session from `legion claims list`, then run:
 
 ```sh
@@ -1721,6 +1767,40 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 So a daemon left on the earlier release counts the new child slots of its own project against its cap and admits nothing until they drain.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that keeps a slot to the merge
+
+This release's migration `20261109060737_drop_awaiting_slot_notice` takes the column `awaiting_slot_notice_at` off `issues`, drops the trigger `issues_carried_slot_notice_cleared` with the function behind it, and puts `issues_awaiting_shape` back in the form `0057_awaiting_person` wrote.
+Re-pinning an image asks for part of that back, and which part follows the release.
+Pull request cybermonklabs/legion#2989 added `awaiting_slot_notice_at`, and the commit it merged as, `6c72aaee111c`, is release `legion-v19.45.0`: every release from `legion-v19.45.0` on carries the column.
+The newest, `legion-v19.47.0`, names it three times in `packages/daemon/internal/record/store.go` — in the `issueColumns` select list, in the `PutIssue` insert and its values, and in that insert's `on conflict ... do update set` — and scans it in `scanIssue`.
+So once this migration has dropped the column, pinning any release from `legion-v19.45.0` on fails every issue read and every `PutIssue` with `column "awaiting_slot_notice_at" does not exist`, which is every fact, tick and boot pass that daemon makes, until the column is back.
+Run this with the daemon stopped, before that image is pinned:
+
+```sql
+alter table issues add column if not exists awaiting_slot_notice_at timestamptz;
+```
+
+Nothing else of #2989 need come back.
+That daemon reads and writes the column and asks nothing else of the shape: the trigger only cleared a mark a write had left standing, and the two clauses this migration took out of `issues_awaiting_shape` only refused a mark outside an answered wait, so the constraint without them refuses nothing that daemon writes.
+A rollback to a release before `legion-v19.45.0` needs no statement at all: `legion-v19.44.0` names `awaiting_slot_notice_at` nowhere in `packages/daemon/internal/record/store.go`, so its `PutIssue` names no such column in its insert or its on-conflict update and nothing of it reads one.
+
+What the rollback does bring back is the earlier release's slot rule: an issue gives its row up the moment no worker of it has work, so a root in `accepting`, one waiting on a person and one waiting for its merge hold none again.
+It reads the `slots` rows as it finds them, and this release leaves a row standing for each of those issues, so the earlier release's first admission pass releases them and its cap counts what that release expects.
+
+**A queued `waiting-for-slot` notice must go before this release is pinned, not after.**
+This release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind nor the `waiting_for_slot` field the earlier release wrote, so a row still queued at the upgrade fails for ever on its backoff and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`).
+Run this with the daemon stopped, before this release's image is pinned:
+
+```sql
+delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot';
+```
+
+This release's own migration runs that statement too (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
+No daemon of the earlier release can write such a row after the migration has run: every release from `legion-v19.45.0` on names `awaiting_slot_notice_at` among the columns it reads an issue with, so with the column dropped every issue read it makes fails, before it reaches the code that would queue the notice; and that queue and the issue write marking the root are one transaction, so neither is written without the other.
+The step costs an operator one statement with the daemon stopped, and it leaves the outbox clean whatever order the restart takes.
+
+Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -2017,7 +2097,7 @@ Opening it logs `supervise: the process speaks another plugin contract; its work
 Three cases keep the immediate relaunch, each costing at most the one turn in flight and no disk:
 a claim whose recorded contract is below that contract, whose plugin has no op to answer with;
 a registration that still differs from the daemon's, whose own agent is refused and whose process exits on that refusal, so no running turn could ever send the signal;
-and the project controller's own claim, whatever contract it records, because the controller's `legion` tool has `read_state` and `set_status` and no `ready_for_update` at all (`packages/pi-legion/src/tools.ts`), so a round over it would wait for an answer no controller turn can give.
+and the project controller's own claim, whatever contract it records, because the controller's `legion` tool has `read_state`, `set_status`, `compact` and `fresh_session` and no `ready_for_update` at all (`packages/pi-legion/src/tools.ts`), so a round over it would wait for an answer no controller turn can give.
 The controller loses nothing by it: its pod holds no issue workspace, so it has nothing to push, and it is the one of the three relaunched where it stands while a turn runs.
 A worker's turn is waited out instead:
 a claim below the contract that is in a turn is left running, its relaunch held until the turn ends (`refreshPlugin` records it, `turnEnded` runs it, both in `packages/daemon/internal/supervise/`), because a worker that cannot be asked to push first is exactly the worker whose unpushed turn the relaunch would throw away.
@@ -4070,14 +4150,18 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` bounds the issues at work, not the pods: an issue that only waits — for its merge, in `accepting`, on a blocker, on its children or on a person — keeps its pod and holds no slot, so a deployment runs at least one pod per open issue of every live tree and nothing caps that number.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue keeps its admission slot from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and its pod can stand where it holds no slot — through the merge wait, after a merge wait sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues waiting for their merge, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+Fewer run than that bound, for two reasons.
+Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
+And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
 A pod the pool cannot place stays `Pending`, unscheduled;
 once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same pool, and the claim fails once its launch failures run out
 — no later than its registration deadline.
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 250m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for the pods of every open tree a deployment runs at once, per-pod sum, plus those two, since `admission_cap` bounds the issues at work rather than the pods a waiting issue keeps.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods a merge wait and a production check keep.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -4535,12 +4619,18 @@ A phase worker or sub-architect pod that dies mid-task
 — is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`), and prompted with the daemon's catch-up rather than a replay of the interrupted task (LEGION-179).
 The death is seen twice over: at once, when the pod's worker stream closes and the daemon's one reconnect (`connect` awaiting a fresh registration for `worker_rpc_timeout_seconds`) finds none;
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
-Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon sends the Envoy listener `DELETE /v1/sessions/<the session the claim registered>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>`.
+Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.
+`view=registration` is the registration-only answer: the session bucket's own entry, with neither the role claims nor the session's interest record joined to it, so a claims view still refilling and an interest record this build cannot decode — neither of which the stop uses — cannot refuse the read and leave the dead session's claims standing.
+`include=unresponsive` rides with it for a listener that predates the selector, which answers the full row instead, and that row carries no `client_instance_id`, so against such a listener the stop rests on the moment alone: deploy the listener before the daemon.
 That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
 The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
-The moment is a condition, not a label, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
-the listener deletes the registration only while it was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept — rather than taking a working session's registration away.
-The request is bounded at 5 seconds, so a stop the listener does not answer is abandoned rather than left in flight.
+The delete names the dead process's own registration rather than a moment alone, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
+the listener deletes only while the stored entry carries that client instance id, or none, and was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept, with the listener's own reason — rather than taking a working session's registration away.
+Each condition is there to make the other's weakness bearable, and the listener keeps the entry whenever either refuses it (dispatch://INFRA-2064).
+A registration's `UpdatedAt` is stamped by the listener's own clock at every write, not by the registering process, so on clocks that agree the dead pane's last heartbeat is stamped before the probe; a stop dated earlier than the probe's own moment reads that heartbeat as a registration written since and refuses the stop that is owed, and carrying the probe's moment undated is what deletes it.
+The instance id, minted once per client process, is what makes carrying it undated safe: where the read answered the dead process's own entry, a relaunch's registration is refused by its own identity whatever the two clocks say.
+Where the read was answered so late that the entry it handed back was already the successor's, the id names that successor and only the moment keeps the registration.
+The read and the delete share one 5-second bound, so a stop the listener does not answer is abandoned rather than left in flight, and a read it does not answer sends no delete at all: such a read leaves unknown whether the entry names a client process, and a delete sent then would rest on the moment alone for an entry that may name one, while an entry the listener answers with no instance id is deleted on the moment alone, since no other delete is possible for it.
 A listener that refuses the stop or cannot be reached costs nothing but that promptness, and the daemon logs it.
 Each death counts one `launchFailures`, so a pod that keeps dying before its `/worker/ready` reaches `worker-died` at `MAX_LAUNCH_FAILURES` exactly like a boot that never confirms; a confirmed ready resets the count.
 A finished worker whose pod dies while idle
@@ -5051,12 +5141,13 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **`role_config_files`** gives one role Oh My Pi overlays no other role gets:
   a top-level `legion.yaml` key mapping a role (an issue role, or `controller` under `controller: daemon`) to absolute paths of overlays in the operator's mounts.
-  A deployment that wants a model fallback chain only for the roles whose output a machine checks keeps `retry.modelFallback` off in the operator's `overlay.yml` and puts the chain in an overlay of its own, in a ConfigMap of its own (`apply.sh` writes only `legion-operator-route`'s two keys):
+  A deployment that wants a model fallback chain only for the roles whose output a machine checks keeps `retry.modelFallback` off in the operator's `overlay.yml` and puts the chain in an overlay of its own, in a ConfigMap of its own (`apply.sh` writes only `legion-operator-route`'s two keys), with `retry.fallbackRevertPolicy: never` beside it ([Starting fresh when a session is lost or wedged](#starting-fresh-when-a-session-is-lost-or-wedged)):
 
   ```yaml
   # fallback.yml: kubectl -n legion create configmap legion-operator-roles --from-file=fallback.yml
   retry:
     modelFallback: true
+    fallbackRevertPolicy: never
     fallbackChains:
       default: [anthropic/claude-opus-5:xhigh]
   ```
@@ -5220,7 +5311,10 @@ each issue's pod (every role of it alike) and the image probe's.
   When the daemon's pods run as several accounts, the setting names each in a `legion-daemon=` entry of its own.
   The broker refuses to start with a namespace's `default` account in `BROKER_SERVICES`, since every pod there that names no account runs as it, so pods that receive service-owned secrets name a dedicated account.
   The daemon's own ServiceAccount, which logs in, is a different account from its pods', and it is named in `BROKER_SERVICE_LOGINS`, not `BROKER_SERVICES`;
-  the broker refuses to start with an account in `BROKER_SERVICE_LOGINS` that is a namespace's `default` or one `BROKER_SERVICES` binds, since every pod running as it could then log in as the daemon.
+  the broker refuses to start with an account in `BROKER_SERVICE_LOGINS` that is a namespace's `default`, since every pod running as it could then log in as the daemon.
+  An account `BROKER_SERVICES` binds may be named in `BROKER_SERVICE_LOGINS` as well, which is a pod of that account logging the service in to enrol itself (`agent-secrets enroll --pod`):
+  such a login enrols the one pod whose token made it, and any other pod UID is refused `403 POD_SELF_ENROLL_ONLY`;
+  that enrolment states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`, since the pods of one account enrol under one principal, so a name such a pod picked would be a sibling pod's and the enrolment would take that sibling's grants.
   Without the block, pods carry none of this.
   An older worker image is refused at the image probe: the block's pod variables are daemon API contract 8.
   A pod's agent-secrets volumes are fixed when it is created, so turning the block on, or changing its `audience` or `token_expiry_seconds`, reports every running workflow role stale at the restart that brings the change, and each issue pod is replaced with its roles moving into the new one together ([A pod whose address moved](#a-pod-whose-address-moved)).
@@ -5566,7 +5660,7 @@ The controller is the one Legion session a person talks to.
 `controller: daemon` needs `dispatch_url` (`controller: daemon needs dispatch_url: …`), and the loader refuses any value but the two.
 
 Under either mode a controller reads its daemon's resolved settings
-— `max_fix_attempts`, `worker_boot_timeout_seconds`, `admission_cap` and the rest of `legion.yaml`, with every credential, credential source and credential file path left out
+— `review_round_cap`, `worker_boot_timeout_seconds`, `admission_cap` and the rest of `legion.yaml`, with every credential, credential source and credential file path left out
 — from `read_state`'s `settings` (contract 35, LEGION-791), never from the ConfigMap in `legion-system`, which the account the project's pods run as may not read.
 
 ### Controller liveness

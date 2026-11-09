@@ -49,11 +49,13 @@ func partyListener(t *testing.T) (*httptest.Server, func() []map[string]any) {
 }
 
 // The body names the party, and the comment is delivered to it in the mode the request asks for:
-// nothing but the text said who it was for.
+// nothing but the text said who it was for. The send is the mention sender's, behind the create's
+// own answer, so the attempt is read once it has settled (settledCommentDeliveries) rather than
+// off the 201, which carries it pending.
 func TestCommentBodyMentionDelivers(t *testing.T) {
 	listener, sends := partyListener(t)
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Body mention", "before")
 
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -63,8 +65,10 @@ func TestCommentBodyMentionDelivers(t *testing.T) {
 		created.Mentions[0].Delivery != "btw" {
 		t.Fatalf("body mention = %#v, want one btw mention of session:s1", created.Mentions)
 	}
-	if len(created.Deliveries) != 1 || created.Deliveries[0].State != "sent" {
-		t.Fatalf("body delivery = %#v, want one sent delivery", created.Deliveries)
+	attempts := settledCommentDeliveries(t, database, created.ID)
+	if len(attempts) != 1 || attempts[0].Target != "session:s1" || attempts[0].State != "sent" ||
+		attempts[0].Delivery != "btw" {
+		t.Fatalf("body delivery = %#v, want one sent btw attempt of session:s1", attempts)
 	}
 	if len(sends()) != 1 {
 		t.Fatalf("sends = %#v, want one", sends())
@@ -76,7 +80,7 @@ func TestCommentBodyMentionDelivers(t *testing.T) {
 func TestCommentBodyMentionRepeatDeliversOnce(t *testing.T) {
 	listener, sends := partyListener(t)
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Repeated party", "before")
 
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -85,8 +89,8 @@ func TestCommentBodyMentionRepeatDeliversOnce(t *testing.T) {
 	if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" {
 		t.Fatalf("repeated party = %#v, want one mention", created.Mentions)
 	}
-	if len(created.Deliveries) != 1 {
-		t.Fatalf("repeated party deliveries = %#v, want one", created.Deliveries)
+	if attempts := settledCommentDeliveries(t, database, created.ID); len(attempts) != 1 {
+		t.Fatalf("repeated party deliveries = %#v, want one", attempts)
 	}
 	if len(sends()) != 1 {
 		t.Fatalf("sends = %#v, want one", sends())
@@ -98,16 +102,17 @@ func TestCommentBodyMentionRepeatDeliversOnce(t *testing.T) {
 func TestCommentArrayAndBodyNameOneParty(t *testing.T) {
 	listener, sends := partyListener(t)
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Array and body", "before")
 
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body":     "[planner](dispatch://agent/s1) please look.",
 		"mentions": []map[string]any{{"target": "session:s1"}},
 	}))
-	if len(created.Mentions) != 1 || len(created.Deliveries) != 1 || len(sends()) != 1 {
+	attempts := settledCommentDeliveries(t, database, created.ID)
+	if len(created.Mentions) != 1 || len(attempts) != 1 || len(sends()) != 1 {
 		t.Fatalf("array and body = %#v / %#v / %#v, want one of each",
-			created.Mentions, created.Deliveries, sends())
+			created.Mentions, attempts, sends())
 	}
 }
 
@@ -116,7 +121,7 @@ func TestCommentArrayAndBodyNameOneParty(t *testing.T) {
 func TestCommentMentionsArrayStillServed(t *testing.T) {
 	listener, sends := partyListener(t)
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Array caller", "before")
 
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -124,9 +129,10 @@ func TestCommentMentionsArrayStillServed(t *testing.T) {
 		"mentions": []map[string]any{{"target": "session:s1"}},
 		"delivery": "aside",
 	}))
+	attempts := settledCommentDeliveries(t, database, created.ID)
 	if len(created.Mentions) != 1 || created.Mentions[0].Delivery != "aside" ||
-		len(created.Deliveries) != 1 || created.Deliveries[0].State != "sent" {
-		t.Fatalf("array caller = %#v / %#v", created.Mentions, created.Deliveries)
+		len(attempts) != 1 || attempts[0].State != "sent" {
+		t.Fatalf("array caller = %#v / %#v", created.Mentions, attempts)
 	}
 	if len(sends()) != 1 {
 		t.Fatalf("sends = %#v, want one", sends())

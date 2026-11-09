@@ -128,7 +128,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
-| `awaiting_person` | none | The root returned its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
+| `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
@@ -140,14 +140,15 @@ head — brings the pod back and resumes the same sessions where they stopped.
 
 A failed test, red CI on the head in testing, review, acceptance, retro or merging (a check or workflow the
 base branch requires), or a review that requests changes sends the issue back to `implementing`,
-and the change goes through the tester again before the reviewer sees it. Two reds are the
-exception: one the tester planned, with its own failing tests, and red CI within the fix attempt
-that ran out the project's `max_fix_attempts`, which waits for the architect
-([review signalling](#review-signalling)). The review round and CI are two rules, each read on its
+and the change goes through the tester again before the reviewer sees it. One red is the
+exception: the one the tester planned, with its own failing tests
+([review signalling](#review-signalling)). No count of reds changes that: a red that stands for
+the head sends the work back every time, however many came before it. The review round and CI are
+two rules, each read on its
 own: the reviewer's approval of the head ends the round whatever CI says at that commit, since the
 reviewer reads the code commit's checks on GitHub before it approves, and a red the daemon reads
 later sends the work back to the implementer from wherever the issue stands. Red CI on the head of
-an issue in `awaiting_merge` sends it back too, at any fix-attempt count, when the head's own checks
+an issue in `awaiting_merge` sends it back too, when the head's own checks
 or required workflow runs are red: the work returns through testing, review and `READY`, and the
 daemon takes back the merge it submitted, since that submission names a commit about to be
 replaced; the issue, and the project's merge-queue role when one is set, are told the `READY` is
@@ -157,17 +158,20 @@ withdrawn.
 
 Legion works only the issues handed to it with the Dispatch label **`legion`** (in any case), so it
 can share a Dispatch project with people and other agents. A root issue is admitted when it carries
-the label, is in `todo`, and a slot is free. A slot is one issue with work, a root or a child, so
-a tree of four working issues holds four slots. The number of slots is `admission_cap` in the
-daemon's configuration, four by default; an issue that finds no free slot waits in line, and a
-labelled `todo` root takes its place in that line in the project board's order.
+the label, is in `todo`, and a slot is free. A slot is one issue the daemon has started, a root or a
+child, so a tree of four started issues holds four of them. The number of slots is `admission_cap`
+in the daemon's configuration, four by default; an issue that finds no free slot waits in line, and
+a labelled `todo` root takes its place in that line in the project board's order.
 
-An issue holds a slot while a worker of it has work: in planning, implementing, testing,
-reviewing, retro or merging, and a root while its architect writes the spec, before the design
-gate first opens. It holds none while it only waits — for its merge, in `accepting`, on a blocker,
-on its own children, or on a person — and gets one again when it has work again, oldest wait
-first. Giving a slot back stops nothing: every worker of the issue stays live in the issue's pod
-and answers questions until the issue closes.
+An issue takes a slot when the daemon starts it — a root at its admission, which starts its
+architect, a child at the start of its first phase — and it keeps that slot
+until it is done, leaves the workflow or waits only for its merge.
+So it holds its slot through every wait as well: in `accepting`, on a blocker, on its own children,
+on a person, and in merging while a closed design gate holds its merge request. An issue holding a
+slot starts its next phase whatever the cap says, and an issue holding none, a child its architect
+has just released among them, waits in line while the project stands at the cap. A slot stops
+nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
+questions until the issue closes.
 
 An issue gets the label in one of three ways:
 
@@ -183,10 +187,11 @@ one on its own.
 A child issue needs no label: it runs under its tree once the root is admitted. Taking the label
 off a waiting root takes it out of line; taking it off a running tree does not stop the tree.
 
-A root whose architect asked you a question and now waits only on your answer gives its slot back
-rather than holding the project up: once nothing else of its tree runs and the architect has taken
-the task it was last given, the root moves to `awaiting_person` and the slot goes to the next root
-in line at once. Its architect keeps its pod, reading your comments and replies as they arrive.
+A root whose architect asked you a question and now waits only on your answer keeps its slot while
+it waits: once nothing else of its tree runs and the architect has taken the task it was last
+given, the root moves to `awaiting_person`, holding the row it took at its admission, so the
+project admits its next root only as a slot frees elsewhere. Its architect keeps its pod, reading
+your comments and replies as they arrive.
 Its tree stays live for its children, and `waitingOn` in `legion state` names the question and when the
 wait began. Your act on any ask of the root answers it, whichever ask the wait names: your answer,
 resolution, or reply that hands an open ask back to the agent; so does your approval or changes
@@ -195,21 +200,19 @@ when nothing is asked of you any more: Dispatch retracts the question because it
 left the spec, a session closes it, or a session hands it back to the agent's turn. The answered
 root goes into the waiting line's first part, among the issues whose work came back, oldest first,
 and so behind every issue of that part whose work came back before it, a root's own first phase
-included, and its promotion there gives the same architect
-session a task naming what answered it and what is still with you: at once, taking no slot, once
-the root's design gate has opened, and at the next free
-slot while its architect is still writing the first spec. While it waits for that slot,
-`waitingLine` on the issue gives its place in the line and the line's length, and its architect,
-while its session is live and holds its Envoy role, is sent one `waiting-for-slot` notice saying
-where the root stands and that the daemon starts the architect again by itself; neither is
-anything for you to act on, and a root whose architect the daemon released while it waited carries
-the place with no notice beside it. An
+included, and its promotion there gives the same architect session a task naming what answered it
+and what is still with you. That promotion takes no further slot, since the root has held one all
+along, so it resumes however full the cap is, whether or not its design gate has opened. Until the
+pass that reads your answer resumes it, the root stands in the admission line as well, and
+`waitingLine` on the issue gives its place in the line and the line's length. The daemon sends
+its architect nothing about that wait and resumes the root by itself on that pass,
+so neither the place nor the wait is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the
 wait began is one the architect already read. Taking the label off, or a person or an outside session
 claiming the root on Dispatch, takes it out of the workflow instead: Legion never resumes work
-another owner took. A root whose architect requested approval of its spec and registered that version waits the same way, on the design gate, until the person reviews the spec or a newer version hands the request back to the architect. The slot
-a waiting root returns is no reason for the controller to label or admit anything: a root you
-handed to Legion takes it through the waiting line.
+another owner took. A root whose architect requested approval of its spec and registered that version waits the same way, on the design gate, until the person reviews the spec or a newer version hands the request back to the architect. A root's
+wait on you is no reason for the controller to label or admit anything: a root you
+handed to Legion takes its place through the waiting line.
 
 A parked root waits on nobody. When a person approves its spec, asks for changes, or answers or
 replies on one of its asks, the controller reads the decision. If the controller parked the root
@@ -348,30 +351,22 @@ Legion uses GitHub's own review mechanisms rather than labels:
   `pull-request-missing`, once per handoff commit.
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
   opened, Legion's reviewer) accepts the reply.
-- Two limits flag a loop: after `review_round_cap` counted rounds (three by default), or once
-  `max_fix_attempts` pushes fail to turn CI green (three by default), the daemon posts a message on
-  the issue and tells the architect; neither stops a worker. At the round cap the architect decides,
-  in the turn the notice wakes, whether to narrow the next rounds, split work off (into a sibling
-  child, or, on a root, an ask whether the rest needs an issue of its own), or let converging rounds
-  run, and posts that decision on the issue. Every move back to an earlier phase counts a round: a
-  tester's fail, a review's request for changes, a worker's move back, and the daemon's own move
-  when CI turns red, when the head starts conflicting with its base, or when GitHub's merge queue
-  reports its entry for the head unmergeable on the base branch's own tip. A move made while the
-  record holds the head conflicting with its base is a conflict round, which `review_round_cap`
-  does not count: the implementer answers such a round with a forward merge, which no reviewer
-  asked for, and the cap's message names both numbers, the rounds counted and the conflict rounds
-  left out. Once `max_fix_attempts` runs out,
-  CI red within the attempt that ran it out - the head whose push was counted, and every head pushed
-  on top of it until a push lands on a head CI judged green or on a settled head whose base requires
-  nothing - no longer sends the work back from testing, review, retro or merging by itself: the
-  issue stays in its phase through every red in that attempt until the architect moves it, or a
-  worker's own decision does (a tester's fail, a review's request for changes). A head pushed onto
-  green CI, or onto a settled head whose base branch requires no check and no workflow, raises no
-  count and leaves the attempt, so its red sends the work back as usual. Every other push stays in
-  the attempt, whether it is counted or not: one onto a head CI has not judged yet, and one onto the
-  held red that counts nothing, such as the tester's red tests, which the review App pushes. The
-  next push onto a
-  red raises the count and is told again. A `READY` is withdrawn on red CI at any count (below).
+- One limit flags a loop: after `review_round_cap` counted rounds (three by default) the daemon
+  posts a message on the issue and tells the architect; it stops no worker. At that cap the
+  architect decides, in the turn the notice wakes, whether to narrow the next rounds, split work
+  off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
+  let converging rounds run, and posts that decision on the issue. Every move back to an earlier
+  phase counts a round: a tester's fail, a review's request for changes, a worker's move back, and
+  the daemon's own move when CI turns red, when the head starts conflicting with its base, or when
+  GitHub's merge queue reports its entry for the head unmergeable on the base branch's own tip. A
+  move made while the record holds the head conflicting with its base is a conflict round, which
+  `review_round_cap` does not count: the implementer answers such a round with a forward merge,
+  which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
+  the conflict rounds left out. Nothing counts the pushes onto a red head, and no count of them
+  ever holds an issue: a red that stands for the head sends the work back from testing, review,
+  acceptance, retro or merging every time, however many came before it, and a `READY` is withdrawn
+  on red CI (below). The architect is who decides that a pull request has gone red too often, and
+  it decides that from the issue rather than from a cap.
 
 ## READY and the merge
 

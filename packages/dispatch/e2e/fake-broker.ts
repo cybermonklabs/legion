@@ -1,4 +1,6 @@
 import type {
+  ApproverGrantResp,
+  ApproverGrantsResponse,
   CredentialPendingResponse,
   CredentialPendingRow,
   DecisionResponse,
@@ -21,8 +23,9 @@ import { harnessPorts } from "./harness-ports";
 // this through
 // DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness switch is left unset
 // (e2e/harness-broker.ts), and it lists nothing until a test seeds a request through
-// /__fixture/pending, a machine login through /__fixture/machine-logins or a sign-in through
-// /__fixture/signins, relaying each row as seeded: a
+// /__fixture/pending, a grant through /__fixture/grants, a machine login through
+// /__fixture/machine-logins or a sign-in through /__fixture/signins, relaying each row as
+// seeded: a
 // secret request's row carries the `approve_url` of its page on the broker that the Inbox links
 // to (an absolute URL, which e2e/broker-approval.e2e.ts points at a record on the real broker,
 // e2e/run-broker.sh), a machine login's row none. It verifies no caller: the token the server
@@ -46,6 +49,13 @@ export interface FakeMachineLogin {
  *  here too. Revoking it drops it from the list, as the real broker's revoke does. */
 export type FakeSignIn = PersonSignInResp & { readonly person: string };
 
+/** A live grant as `GET /v1/grants?approver=<login>` lists it, beside the login whose list holds
+ *  it. That login is not the grant's own `approver`: the broker lists a grant to the person who
+ *  approved it and to the operator of the session holding it, and a judged grant of a shared
+ *  secret to every signed-in person. The row is the SPA's own type, so a change to the contract
+ *  fails the typecheck here too. */
+export type FakeGrant = ApproverGrantResp & { readonly listedFor: string };
+
 /** Every piece of fixture state this listener holds; `PUT /__fixture/reset` replaces it whole. */
 interface FakeBrokerState {
   /** Whether this broker serves RFC 8628's device grant, which its RFC 8414 metadata names and
@@ -53,13 +63,14 @@ interface FakeBrokerState {
    *  while BROKER_MACHINE_LOGIN_URL is set, which the suite's own broker does, so it is the
    *  default here and a row that drives the other answer sets it back by resetting. */
   deviceGrant: boolean;
+  grants: FakeGrant[];
   machineLogins: FakeMachineLogin[];
   pending: FakePendingRequest[];
   signIns: FakeSignIn[];
 }
 
 function emptyState(): FakeBrokerState {
-  return { deviceGrant: true, machineLogins: [], pending: [], signIns: [] };
+  return { deviceGrant: true, grants: [], machineLogins: [], pending: [], signIns: [] };
 }
 
 let state = emptyState();
@@ -127,8 +138,16 @@ const server = Bun.serve({
       };
       return Response.json(body);
     }
+    // The grants one person's page lists, as the real broker answers them: the rows seeded for
+    // that login, each without the fixture's own `listedFor`, which no broker sends.
     if (request.method === "GET" && url.pathname === "/v1/grants") {
-      return Response.json({ grants: [] });
+      const approver = url.searchParams.get("approver");
+      const body: ApproverGrantsResponse = {
+        grants: state.grants
+          .filter((row) => row.listedFor === approver)
+          .map(({ listedFor: _, ...row }) => row),
+      };
+      return Response.json(body);
     }
     // The RFC 8414 document, public on the real broker too: Dispatch reads
     // `grant_types_supported` from it and serves the machine-code page only while it names the
@@ -212,6 +231,11 @@ const server = Bun.serve({
     if (request.method === "PUT" && url.pathname === "/__fixture/pending") {
       const pending = (await request.json()) as FakePendingRequest[];
       state = { ...state, pending };
+      return Response.json({ ok: true });
+    }
+    if (request.method === "PUT" && url.pathname === "/__fixture/grants") {
+      const grants = (await request.json()) as FakeGrant[];
+      state = { ...state, grants };
       return Response.json({ ok: true });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/machine-logins") {
