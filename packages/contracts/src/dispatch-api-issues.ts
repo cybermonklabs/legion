@@ -1,10 +1,6 @@
 import { z } from "zod";
-import type {
-  ArchitectureTree,
-  ArchitectureTreeComponent,
-  IssueCollaboratorPerson,
-} from "./dispatch-api.generated";
-import { ActorSchema, type DisplayTree, ExternalLinkSchema } from "./dispatch-api-core";
+import type { ArchitectureTreeRead, IssueCollaboratorPerson } from "./dispatch-api.generated";
+import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
 
@@ -188,18 +184,12 @@ export const CheckWhenSchema = z.enum(["before_merge", "after_merge", "default_b
 
 export type CheckWhen = z.output<typeof CheckWhenSchema>;
 
-/** One component as the web app reads it, with the tree of the prose its source's files declare
- *  it with. The component itself is the shared row of the model, and gains no field; a tree
- *  rides on this reading of it, absent unless the request sent `Dispatch-Trees: 1`. */
-export type ArchitectureTreeComponentWithTrees = ArchitectureTreeComponent & {
-  readonly prose_tree?: DisplayTree;
-};
-
-/** The project's component model as the web app reads it: the tree, with every component
- *  carrying that tree. The side lists name issues and carry no prose. */
-export type ArchitectureTreeWithTrees = Omit<ArchitectureTree, "components"> & {
-  readonly components: ArchitectureTreeComponentWithTrees[] | null;
-};
+/** The project's component model, the body `GET /api/v1/projects/{key}/architecture` answers.
+ *  The route table names that body `ArchitectureTreeRead` since it came to describe the prose
+ *  trees the read carries, and the read is the model's own fields with those trees beside them,
+ *  so the older name still names the body a caller is given and every caller that declared it
+ *  keeps compiling. */
+export type ArchitectureTree = ArchitectureTreeRead;
 
 /** How an issue counts for a component; the strongest wins when several apply. */
 export type ArchitectureTreeAttachment = "direct" | "inherited" | "contained";

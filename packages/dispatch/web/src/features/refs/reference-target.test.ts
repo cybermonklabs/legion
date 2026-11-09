@@ -13,7 +13,7 @@ import { createElement, type ReactNode } from "react";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
-import type { GraphReferencesWithTrees, IssueReferenceSummary } from "../../api/types";
+import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
   blockQuery,
@@ -289,10 +289,7 @@ test("hovering a block of a comment or message warms its graph read alone, no su
 /** A block's graph read: its current text with the reading the server made of it, and the pin
  *  a pinned reference's read carries, with its own. A reference's title is the tree's plain
  *  words now, so a read with no tree has none. */
-function blockRead(
-  text: string | undefined,
-  pin?: NonNullable<GraphReferencesWithTrees["node"]["pin"]>
-) {
+function blockRead(text: string | undefined, pin?: NonNullable<GraphReferences["node"]["pin"]>) {
   return {
     edges: [],
     node: {
@@ -304,7 +301,7 @@ function blockRead(
       text,
       text_tree: text === undefined ? undefined : displayTree(text),
     },
-  } satisfies GraphReferencesWithTrees;
+  } satisfies GraphReferences;
 }
 
 // A link to a block is titled by the block's text, from its graph read, which an event that can

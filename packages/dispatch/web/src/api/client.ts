@@ -28,7 +28,6 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
-  ArchitectureTreeWithTrees,
   ArtifactVersionContent,
   ArtifactVersionText,
   ArtifactWithTrees,
@@ -40,7 +39,6 @@ import type {
   DispatchEvent,
   DispatchUser,
   DuplicateCandidate,
-  GraphReferencesWithTrees,
   IDCandidate,
   IssueAskThreadRow,
   TargetCandidate,
@@ -1000,10 +998,8 @@ export class DispatchApiClient {
   }
 
   /** The project's component tree with the work attached; 404 SOURCE_NOT_FOUND without a source. */
-  getArchitecture(project: string): Promise<ArchitectureTreeWithTrees> {
-    return this.json<ArchitectureTreeWithTrees>(
-      routeUrl("/api/v1/projects/{key}/architecture", { key: project })
-    );
+  getArchitecture(project: string) {
+    return this.read("/api/v1/projects/{key}/architecture", { key: project });
   }
 
   listAgentTokens() {
@@ -1505,13 +1501,8 @@ export class DispatchApiClient {
 
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
    *  which a document's read otherwise leaves out. */
-  getReferences(
-    reference: string,
-    options: { kind?: string } = {}
-  ): Promise<GraphReferencesWithTrees> {
-    return this.json<GraphReferencesWithTrees>(
-      routeUrl("/api/v1/references", {}, { kind: options.kind, to: reference })
-    );
+  getReferences(reference: string, options: { kind?: string } = {}) {
+    return this.read("/api/v1/references", {}, { kind: options.kind, to: reference });
   }
 
   /** The question map of the document one reference source's text belongs to: every question

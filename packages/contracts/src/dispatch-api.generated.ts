@@ -2833,6 +2833,27 @@ export interface components {
     ApproverGrantsResponse: {
       grants: components["schemas"]["ApproverGrantResp"][] | null;
     };
+    ArchitectureComponentRead: {
+      depends_on: string[] | null;
+      done: number;
+      external: boolean;
+      id: string;
+      issues: components["schemas"]["ArchitectureTreeIssue"][] | null;
+      own_done: number;
+      own_total: number;
+      parent: null | string;
+      paths: string[] | null;
+      prose: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      prose_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      source: string;
+      title: string;
+      total: number;
+    };
     ArchitectureSource: {
       branch: string;
       components: number;
@@ -2846,14 +2867,6 @@ export interface components {
       last_sync_at: null | string;
       project: string;
       repo: string;
-    };
-    ArchitectureTree: {
-      components: components["schemas"]["ArchitectureTreeComponent"][] | null;
-      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
-      retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
-      sources: components["schemas"]["ArchitectureTreeSource"][] | null;
-      totals: components["schemas"]["ArchitectureTreeTotals"];
-      unassigned: components["schemas"]["ArchitectureTreeIssueRef"][] | null;
     };
     ArchitectureTreeComponent: {
       depends_on: string[] | null;
@@ -2893,6 +2906,14 @@ export interface components {
       reason: string;
       status: string;
       title: string;
+    };
+    ArchitectureTreeRead: {
+      components: components["schemas"]["ArchitectureComponentRead"][] | null;
+      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
+      retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
+      sources: components["schemas"]["ArchitectureTreeSource"][] | null;
+      totals: components["schemas"]["ArchitectureTreeTotals"];
+      unassigned: components["schemas"]["ArchitectureTreeIssueRef"][] | null;
     };
     ArchitectureTreeRetired: {
       ids: string[] | null;
@@ -3276,6 +3297,19 @@ export interface components {
       removed_version?: number;
       state: string;
       text: string;
+      version: number;
+    };
+    BlockPinRead: {
+      ref: string;
+      removed_version?: number;
+      state: string;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       version: number;
     };
     BlockReferences: {
@@ -4259,9 +4293,35 @@ export interface components {
       kind: string;
       ref?: string;
     };
-    GraphReferences: {
+    GraphNodeRead: {
+      block_id?: string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_by: components["schemas"]["Actor"][] | null;
+      changed_version?: number;
+      document?: string;
+      id: string;
+      issue_key?: string;
+      kind: string;
+      /** Format: date-time */
+      made_at: null | string;
+      made_by: components["schemas"]["Actor"][] | null;
+      parent: components["schemas"]["GraphNodeParent"] | null;
+      parent_version: null | number;
+      pin?: components["schemas"]["BlockPinRead"];
+      project?: string;
+      ref?: string;
+      text?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
+    GraphReferencesRead: {
       edges: components["schemas"]["GraphEdge"][] | null;
-      node: components["schemas"]["GraphNode"];
+      node: components["schemas"]["GraphNodeRead"];
     };
     Handoff: {
       author: components["schemas"]["Actor"];
@@ -10855,7 +10915,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArchitectureTree"];
+          "application/json": components["schemas"]["ArchitectureTreeRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11651,7 +11711,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["GraphReferences"];
+          "application/json": components["schemas"]["GraphReferencesRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12263,12 +12323,13 @@ export type ApprovalRequestInput = components["schemas"]["ApprovalRequestInput"]
 export type ApprovalRequestResponse = components["schemas"]["ApprovalRequestResponse"];
 export type ApproverGrantResp = components["schemas"]["ApproverGrantResp"];
 export type ApproverGrantsResponse = components["schemas"]["ApproverGrantsResponse"];
+export type ArchitectureComponentRead = components["schemas"]["ArchitectureComponentRead"];
 export type ArchitectureSource = components["schemas"]["ArchitectureSource"];
-export type ArchitectureTree = components["schemas"]["ArchitectureTree"];
 export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeComponent"];
 export type ArchitectureTreeIssue = components["schemas"]["ArchitectureTreeIssue"];
 export type ArchitectureTreeIssueRef = components["schemas"]["ArchitectureTreeIssueRef"];
 export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"];
+export type ArchitectureTreeRead = components["schemas"]["ArchitectureTreeRead"];
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
@@ -12311,6 +12372,7 @@ export type BlockLinks = components["schemas"]["BlockLinks"];
 export type BlockPath = components["schemas"]["BlockPath"];
 export type BlockPathEntry = components["schemas"]["BlockPathEntry"];
 export type BlockPin = components["schemas"]["BlockPin"];
+export type BlockPinRead = components["schemas"]["BlockPinRead"];
 export type BlockReferences = components["schemas"]["BlockReferences"];
 export type BlockTable = components["schemas"]["BlockTable"];
 export type BlockTableCell = components["schemas"]["BlockTableCell"];
@@ -12426,7 +12488,8 @@ export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
-export type GraphReferences = components["schemas"]["GraphReferences"];
+export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
+export type GraphReferencesRead = components["schemas"]["GraphReferencesRead"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];

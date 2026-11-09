@@ -20,7 +20,7 @@ import type {
   AskRead,
   CommentRead,
   DisplayTree,
-  GraphReferencesWithTrees,
+  GraphReferences,
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
   MessageRead,
@@ -252,7 +252,7 @@ export interface ReferenceData {
   readonly ask: AskRead | undefined;
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
-  readonly block: GraphReferencesWithTrees | undefined;
+  readonly block: GraphReferences | undefined;
 }
 
 export interface ReferenceReadOptions {
@@ -350,7 +350,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
  *  under: a block by its block id, every other record by its own. A read that answered nothing
  *  names nothing, and the reference stays as the text wrote it. */
 export function resolvedPrefixItems(
-  answer: GraphReferencesWithTrees | undefined
+  answer: GraphReferences | undefined
 ): Readonly<Record<string, string>> {
   const node = answer?.node;
   const reference = node?.ref;
@@ -366,7 +366,7 @@ export function resolvedPrefixItems(
  *  and that read, for a caller that also shows what an ambiguous prefix matched. */
 export interface WholeRouteRead {
   readonly prefix: string | undefined;
-  readonly resolution: UseQueryResult<GraphReferencesWithTrees>;
+  readonly resolution: UseQueryResult<GraphReferences>;
   readonly route: DispatchReferenceRoute | undefined;
 }
 
@@ -535,13 +535,13 @@ export function useBlockDocument(
 
 /** The text a block reference shows: the text the pinned version held for a pinned reference, the
  *  block's current text otherwise. */
-export function blockText(node: GraphReferencesWithTrees["node"]): string | undefined {
+export function blockText(node: GraphReferences["node"]): string | undefined {
   return node.pin === undefined ? node.text : node.pin.text;
 }
 
 /** The reading Go made of the text `blockText` answers, which a reference's title and card draw
  *  rather than parsing the block's markdown again. */
-export function blockTextTree(node: GraphReferencesWithTrees["node"]): DisplayTree | undefined {
+export function blockTextTree(node: GraphReferences["node"]): DisplayTree | undefined {
   return node.pin === undefined ? node.text_tree : node.pin.text_tree;
 }
 

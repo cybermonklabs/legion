@@ -395,6 +395,20 @@ type liveWritePauseQuery struct {
 // present, not by which type describes them. And a route whose success answer is an object this
 // server does not model - a relay's bytes, a pre-rendered schema, an event stream, a file's
 // bytes - carries no Response and says why in Opaque.
+//
+// A third: a row names the shape its handler writes, trees and all. A read that shows a stored
+// text answers a shaped read whose fields carry that text's tree (display_trees.go), and the row
+// names that read rather than the model inside it, or the document would describe a body without
+// the fields Dispatch sends and a client generated from it could not hold them. Every row was
+// read against its handler once, when the architecture and references rows were found naming
+// model.ArchitectureTree and model.GraphReferences while their handlers answered
+// architectureTreeRead and graphReferencesRead (INFRA-635). Two things that look like the same
+// fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews and
+// POST .../plan-reviews name model.ArtifactReview while the GET beside them names
+// []artifactReviewRead - the handlers write what docs.WriteReview returned, and the dashboard
+// draws the read rather than the write's answer (ApprovalChip.tsx invalidates and refetches);
+// and a model that carries its own tree field needs no shaped read at all, which is why
+// model.MyAnswersResponse, model.MyRepliesResponse and model.SearchResponse stand as they are.
 var routeShapes = map[string]routeShape{
 	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
 	"GET /api/v1/schema/blocks": {
@@ -444,8 +458,11 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
-	"GET /api/v1/projects/{key}/architecture":                              {Status: http.StatusOK, Response: model.ArchitectureTree{}},
-	"GET /api/v1/settings/project-default-assignees":                       {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
+	// The architecture read answers architectureTreeRead, whose components carry the prose's
+	// tree (architecture_tree.go:61), so the row names that read: the document describes the
+	// body the handler sends, and a client generated from it holds the field a reader draws.
+	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
+	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
@@ -526,8 +543,11 @@ var routeShapes = map[string]routeShape{
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
-	"GET /api/v1/issues/{key}/collaborators":               {Status: http.StatusOK, Response: issueCollaborators{}},
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: model.GraphReferences{}, Params: referencesQuery{}},
+	"GET /api/v1/issues/{key}/collaborators": {Status: http.StatusOK, Response: issueCollaborators{}},
+	// The references read answers graphReferencesRead, whose node carries its text's tree and
+	// whose pin carries the pinned text's (references.go:109,157), so the row names that read
+	// for the same reason the architecture row above does.
+	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
 	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},

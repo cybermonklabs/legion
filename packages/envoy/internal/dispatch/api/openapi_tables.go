@@ -207,6 +207,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	{reflect.TypeOf(model.SearchResult{}), "snippet_tree"}:   rawField{Fragment: openAPIDisplayTree},
 	{reflect.TypeOf(model.MyAnswerReply{}), "body_tree"}:     rawField{Fragment: openAPIDisplayTree},
 	{reflect.TypeOf(model.MyAnswerRow{}), "question_tree"}:   rawField{Fragment: openAPIDisplayTree},
+	// The architecture tree's components and the references read's node and pin, which the
+	// route rows name since this change (routes_shapes.go): a component's prose, a node's own
+	// text and the text the pin's version held each reach a reader as a tree.
+	{reflect.TypeOf(architectureComponentRead{}), "prose_tree"}: rawField{Fragment: openAPIDisplayTree},
+	{reflect.TypeOf(graphNodeRead{}), "text_tree"}:              rawField{Fragment: openAPIDisplayTree},
+	{reflect.TypeOf(blockPinRead{}), "text_tree"}:               rawField{Fragment: openAPIDisplayTree},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.

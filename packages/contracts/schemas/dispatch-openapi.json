@@ -8389,7 +8389,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArchitectureTree"
+                  "$ref": "#/components/schemas/ArchitectureTreeRead"
                 }
               }
             }
@@ -9724,7 +9724,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GraphReferences"
+                  "$ref": "#/components/schemas/GraphReferencesRead"
                 }
               }
             }
@@ -11357,6 +11357,99 @@
         ],
         "type": "object"
       },
+      "ArchitectureComponentRead": {
+        "properties": {
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "done": {
+            "type": "integer"
+          },
+          "external": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "own_done": {
+            "type": "integer"
+          },
+          "own_total": {
+            "type": "integer"
+          },
+          "parent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "prose": {
+            "type": "string"
+          },
+          "prose_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "source": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "title",
+          "parent",
+          "depends_on",
+          "paths",
+          "external",
+          "prose",
+          "done",
+          "total",
+          "own_done",
+          "own_total",
+          "issues"
+        ],
+        "type": "object"
+      },
       "ArchitectureSource": {
         "properties": {
           "branch": {
@@ -11412,67 +11505,6 @@
           "last_commit",
           "last_error",
           "components"
-        ],
-        "type": "object"
-      },
-      "ArchitectureTree": {
-        "properties": {
-          "components": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeComponent"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "not_architectural": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeNone"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "retired_links": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeRetired"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "sources": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeSource"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "totals": {
-            "$ref": "#/components/schemas/ArchitectureTreeTotals"
-          },
-          "unassigned": {
-            "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeIssueRef"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "sources",
-          "totals",
-          "components",
-          "unassigned",
-          "not_architectural",
-          "retired_links"
         ],
         "type": "object"
       },
@@ -11657,6 +11689,68 @@
           "status",
           "reason",
           "inherited_from"
+        ],
+        "type": "object"
+      },
+      "ArchitectureTreeRead": {
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureComponentRead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "not_architectural": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeNone"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "retired_links": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeRetired"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeSource"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ArchitectureTreeTotals"
+          },
+          "unassigned": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeIssueRef"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sources",
+          "totals",
+          "components",
+          "unassigned",
+          "not_architectural",
+          "retired_links",
+          "components"
         ],
         "type": "object"
       },
@@ -13182,6 +13276,45 @@
           },
           "text": {
             "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "ref",
+          "text",
+          "state"
+        ],
+        "type": "object"
+      },
+      "BlockPinRead": {
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "removed_version": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "version": {
             "type": "integer"
@@ -17674,7 +17807,113 @@
         ],
         "type": "object"
       },
-      "GraphReferences": {
+      "GraphNodeRead": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_by": {
+            "items": {
+              "$ref": "#/components/schemas/Actor"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "changed_version": {
+            "type": "integer"
+          },
+          "document": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "made_by": {
+            "items": {
+              "$ref": "#/components/schemas/Actor"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphNodeParent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent_version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "pin": {
+            "$ref": "#/components/schemas/BlockPinRead"
+          },
+          "project": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "made_by",
+          "made_at",
+          "changed_by",
+          "changed_at",
+          "parent",
+          "parent_version"
+        ],
+        "type": "object"
+      },
+      "GraphReferencesRead": {
         "properties": {
           "edges": {
             "items": {
@@ -17686,7 +17925,7 @@
             ]
           },
           "node": {
-            "$ref": "#/components/schemas/GraphNode"
+            "$ref": "#/components/schemas/GraphNodeRead"
           }
         },
         "required": [

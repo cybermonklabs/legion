@@ -43,6 +43,14 @@ const architecture = {
 /** A word no seeded text but the document's holds, so the palette's hits are its own. */
 const searchTerm = "astrolabe";
 
+/** The paragraph a block reference cites. Its markdown is the stored text `GET /api/v1/references`
+ *  answers for that block, and the citing link's own title is read from the same node, so the
+ *  card and the link both draw it. */
+const quotedBlock = "A **quoted** paragraph of its own.";
+
+/** `quotedBlock` as a reader sees it, which is the citing link's accessible name. */
+const quotedTitle = "A quoted paragraph of its own.";
+
 /** What the pages this spec opens were seeded with. */
 interface Seeded {
   readonly documentSlug: string;
@@ -94,6 +102,19 @@ async function seedStoredTexts(): Promise<Seeded> {
   await createComment(
     issue.key,
     { body: "A **reply** of the planner's.", reply_to: thread.id },
+    session
+  );
+  // A comment whose second paragraph another comment cites by its block id: a block reference
+  // reads `GET /api/v1/references`, and both the citing link's title and its hover card are
+  // drawn from the text that read's node carries.
+  const quoted = await createComment(
+    issue.key,
+    { body: `First, a line of its own.\n\n${quotedBlock}` },
+    session
+  );
+  await createComment(
+    issue.key,
+    { body: `The detail is in dispatch://${issue.key}/comment/${quoted.id}#b-b2.` },
     session
   );
   // A message to an agent, which the Agents page draws, and a broadcast for the Broadcasts page.
@@ -210,6 +231,17 @@ function surfaces(seeded: Seeded): Surface[] {
       },
     },
     {
+      name: "a block reference's card",
+      show: async (page) => {
+        await page.goto(`/issues/${seeded.issueKey}/conversation`);
+        // A reference to a block of a comment is the surface `GET /api/v1/references` draws:
+        // the link's title and the card under it are both the text that read's node carries.
+        await page.getByRole("link", { name: quotedTitle }).first().hover();
+        const card = page.getByRole("tooltip");
+        await expect(card.locator("strong").filter({ hasText: /^quoted$/ })).toBeVisible();
+      },
+    },
+    {
       name: "the Answers page",
       show: async (page) => {
         await page.goto("/answers");
@@ -248,6 +280,21 @@ function surfaces(seeded: Seeded): Surface[] {
         await expect(bold(page, "SPA")).toBeVisible();
       },
     },
+    {
+      name: "the architecture page, into a component",
+      show: async (page) => {
+        await page.goto("/projects/CORE/architecture");
+        // The tree read carries every component's `prose_tree`, and `ComponentDetails` is its
+        // one reader, so the row walks the tree into a component the way a person does: the
+        // rows themselves draw titles and bars, and the page's stored text is the prose below
+        // them. The row above reaches the same component by its URL instead.
+        await page
+          .getByRole("list", { name: "Components" })
+          .getByRole("link", { exact: true, name: "Web" })
+          .click();
+        await expect(bold(page, "SPA")).toBeVisible();
+      },
+    },
   ];
 }
 
@@ -270,9 +317,9 @@ test("no page that draws stored text parses markdown in either browser engine", 
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one engine proves what the pages parse");
-  // Eleven pages, each loaded in a page of its own, on a two-core box: the default deadline is
-  // one page's.
-  test.setTimeout(240_000);
+  // Thirteen pages, each loaded in a page of its own, on a two-core box: the default deadline
+  // is one page's.
+  test.setTimeout(290_000);
   const seeded = await seedStoredTexts();
   const alice = await asUser(browser, "alice");
   await countParses(alice);
@@ -280,8 +327,8 @@ test("no page that draws stored text parses markdown in either browser engine", 
     const pages = surfaces(seeded);
     const counted = [];
     for (const surface of pages) counted.push(await parsesOf(alice, surface));
-    // One comparison over all eleven, so a page that parses is named beside the ten that do
-    // not rather than stopping the walk at the first.
+    // One comparison over all thirteen, so a page that parses is named beside the twelve that
+    // do not rather than stopping the walk at the first.
     expect(counted).toEqual(
       pages.map((surface) => ({ display: 0, editor: 0, surface: surface.name, workerRequests: 0 }))
     );

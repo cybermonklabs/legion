@@ -1,5 +1,4 @@
-import type { BlockPin, GraphEdge, GraphNode } from "./dispatch-api.generated";
-import type { DisplayTree } from "./dispatch-api-core";
+import type { GraphReferencesRead } from "./dispatch-api.generated";
 
 /**
  * The reference graph: what points at what, read by `GET /api/v1/references` and
@@ -26,25 +25,8 @@ export type GraphEdgeKind =
   | "affects"
   | (string & {});
 
-// BlockPinWithTrees is a pinned block reference as the web app reads it, with the tree of the
-// text the pinned version held. The pin itself stands on a node a shared row carries, and gains
-// no field; a tree rides on this reading of it.
-export type BlockPinWithTrees = BlockPin & {
-  readonly text_tree?: DisplayTree;
-};
-
-// GraphNodeWithTrees is one end of an edge as the web app reads it: the node, the tree of its
-// own text, and its pin carrying the tree of the text that version held. A reference's title is
-// read from one of those trees. Every tree is absent unless the request sent
-// `Dispatch-Trees: 1`, so this reading is a `GraphNode` wherever one is wanted.
-export type GraphNodeWithTrees = Omit<GraphNode, "pin"> & {
-  readonly text_tree?: DisplayTree;
-  readonly pin?: BlockPinWithTrees;
-};
-
-// GraphReferencesWithTrees is GET /api/v1/references as the web app reads it: the queried node
-// carrying its trees, with the edges, which hold no stored text of their own.
-export interface GraphReferencesWithTrees {
-  readonly node: GraphNodeWithTrees;
-  readonly edges: GraphEdge[] | null;
-}
+// GraphReferences is the body `GET /api/v1/references` answers. The route table names that body
+// `GraphReferencesRead` since it came to describe the trees the read carries, and the read is
+// the queried node's own fields with those trees beside them, so the older name still names the
+// body a caller is given and every caller that declared it keeps compiling.
+export type GraphReferences = GraphReferencesRead;
