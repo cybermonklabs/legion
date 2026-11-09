@@ -21,7 +21,7 @@ const judged: FakeGrant = {
   approver: "alice",
   created_at: "2026-10-03T12:07:00Z",
   decided_by: judge,
-  enrollment: { kind: "pod", operator: null, runtime_id: "pod-7", slot: null },
+  enrollment: { kind: "pod", operator: "", runtime_id: "pod-7", slot: null },
   expires_at: "2026-10-03T12:22:00Z",
   grant_id: "11111111-1111-4111-8111-111111111111",
   granted: "approval",

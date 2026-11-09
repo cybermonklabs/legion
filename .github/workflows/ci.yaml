@@ -394,6 +394,9 @@ jobs:
               - 'packages/envoy/internal/broker/requests/*'
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
+              # The response shapes the broker's own handlers marshal, which Dispatch's OpenAPI
+              # emitter names for the routes that relay them.
+              - 'packages/envoy/internal/broker/wire/*'
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
@@ -443,6 +446,8 @@ jobs:
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
+              # The relayed shapes routes_shapes.go names (internal/dispatch/api).
+              - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
@@ -643,6 +648,8 @@ jobs:
               # going's own golden, which a test run of that package reads.
               - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/broker/oauthwire/*'
+              # The relayed shapes routes_shapes.go names.
+              - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
@@ -932,6 +939,12 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
               # src/*.test.ts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # `bun run check:api` renders schemas/dispatch-openapi.json into
+              # src/dispatch-api.generated.ts and compares, and reads no Go at all
+              # (scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
+              # a change to it is judged by envoy-go-checks' `openapi --check`, whose filter
+              # (envoy_go_checks) selects both that Go and this document, so either one alone
+              # starts the job.
             # The shared test fixtures every other Bun package's tests import: its own sources and
             # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
             # Biome, whose root config packages/test-fixtures/biome.json extends.
@@ -1083,6 +1096,10 @@ jobs:
               # when this entry was written.
               - 'packages/dispatch/e2e/**'
               - 'packages/dispatch/web/src/api/types.ts'
+              # And paths.ts beside it: e2e/api.ts is keyed on the generated document's path
+              # patterns now, and reads PathsOf, Op, Query, Body and Answer from that module,
+              # so this program compiles it too.
+              - 'packages/dispatch/web/src/api/paths.ts'
               - 'skills/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
@@ -1153,13 +1170,16 @@ jobs:
               # the check that the list has not fallen behind Playwright; the key their apt
               # archive cache is read and written under, which their "Compute the apt archive
               # cache key" steps call; the memory and CPU sampler their browser steps start and
-              # read back; and the script the merge job runs to take each leg's newest attempt.
+              # read back; the script the merge job runs to take each leg's newest attempt; and
+              # the script that makes the merge job's two reads of its own run, which reads this
+              # run's own attempt's jobs and says a refused blob download was a refused read.
               - '.github/scripts/playwright-install.sh'
               - '.github/playwright-apt-packages.txt'
               - '.github/scripts/playwright-deps-current.sh'
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
+              - '.github/scripts/dispatch-browser-run-reads.sh'
               # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its own
               # process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with its
               # sources, through packages/envoy-client/src/broker-credential.ts:21-22
@@ -1234,7 +1254,7 @@ jobs:
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
               # web, e2e and server-side tests import.
               - 'packages/test-fixtures/src/**'
-              # packages/dispatch/web/vite.config.ts:94-103 aliases @legion/contracts, and tsc and
+              # packages/dispatch/web/vite.config.ts:117-126 aliases @legion/contracts, and tsc and
               # bun read it through the workspace's "bun" export condition.
               - 'packages/contracts/src/**'
               # web/src/features/delivery/lib/applyDelta.test.ts:2-4,
@@ -1287,6 +1307,10 @@ jobs:
               # imports @legion/contracts.
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
+              # internal/dispatch/api/openapi_test.go's
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
+              # so an edit of it alone must start this job.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # Fixtures its Go tests read: cmd/listener/api_test.go:191,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
@@ -1375,6 +1399,10 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - 'packages/envoy/**'
+              # internal/dispatch/api/openapi_test.go's
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
+              # so an edit of it alone must start this job.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
@@ -1465,6 +1493,8 @@ jobs:
               - 'packages/envoy/internal/broker/helper/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
+              # The relayed shapes the Dispatch server its soak starts names (routes_shapes.go).
+              - 'packages/envoy/internal/broker/wire/*'
               # The token client the helper trades through, with the wire corpus its tests replay.
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
@@ -1558,6 +1588,7 @@ jobs:
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
               # internal/broker/judge/model.go mints the account token it reads Dispatch with
@@ -2342,6 +2373,12 @@ jobs:
       - name: Test the browser lane's blob attempt selection
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
 
+      # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
+      # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
+      # refusal messages are checked here rather than on a runner against GitHub.
+      - name: Test the browser lane's run reads
+        run: .github/scripts/dispatch-browser-run-reads.test.sh
+
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
       # notice titles are held here, where no browser and no runner are needed.
@@ -2539,6 +2576,9 @@ jobs:
         working-directory: packages/contracts
       - name: Test contracts
         run: bun run test
+        working-directory: packages/contracts
+      - name: Check the Dispatch API types are generated from the OpenAPI document
+        run: bun run check:api
         working-directory: packages/contracts
       - name: Build contracts
         run: bun run build
@@ -3131,6 +3171,9 @@ jobs:
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
         working-directory: packages/contracts
+      - name: Check the OpenAPI document is generated from the route table
+        run: go run ./cmd/dispatch openapi --check
+        working-directory: packages/envoy
       - name: Check pmdoc fixtures are up to date
         run: bun run check
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen

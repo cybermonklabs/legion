@@ -52,7 +52,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_slot_notice_at, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -211,7 +211,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	if issue.ReadyPending != nil {
 		readyPendingStep, readyPendingVersion = string(issue.ReadyPending.Step), issue.ReadyPending.Version
 	}
-	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, sinceSeq, since any
+	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, slotNoticeAt, sinceSeq, since any
 	var answeredBy Answer
 	var answeredDetail string
 	if issue.Awaiting != nil {
@@ -227,6 +227,9 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		if issue.Awaiting.AnsweredAt != nil {
 			answeredAt = *issue.Awaiting.AnsweredAt
 		}
+		if issue.Awaiting.SlotNoticeAt != nil {
+			slotNoticeAt = *issue.Awaiting.SlotNoticeAt
+		}
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
@@ -240,10 +243,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// each keeps it. memory_carried, the hand-over's own answer, is named here no more than it is
 	// on Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
-		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
+		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_slot_notice_at, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, nullif($16::text, ''), $17, $18, $19, $20, $21, $22, $23, $24, nullif($25::text, ''), nullif($26::text, ''), $27, $28,
-		coalesce($29::text[], '{}'), $30, $31)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, nullif($16::text, ''), $17, $18, $19, $20, $21, $22, $23, $24, nullif($25::text, ''), nullif($26::text, ''), $27, $28, $29,
+		coalesce($30::text[], '{}'), $31, $32)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -254,14 +257,14 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_ask = excluded.awaiting_ask, awaiting_gate_version = excluded.awaiting_gate_version,
 		awaiting_artifact = excluded.awaiting_artifact,
 		awaiting_answered_at = excluded.awaiting_answered_at, awaiting_answered_by = excluded.awaiting_answered_by,
-		awaiting_answered_detail = excluded.awaiting_answered_detail,
+		awaiting_answered_detail = excluded.awaiting_answered_detail, awaiting_slot_notice_at = excluded.awaiting_slot_notice_at,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
 		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, readyPendingVersion, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
-		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, readyPendingStep,
+		slotNoticeAt, sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, readyPendingStep,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -429,11 +432,11 @@ func scanIssue(row scanner) (*Issue, error) {
 	var sinceSeq *int64
 	var readyPendingStep *string
 	var readyPendingVersion *int
-	var since, declaredAt, memoryDrawnAt *time.Time
+	var slotNoticeAt, since, declaredAt, memoryDrawnAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
-		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
+		&slotNoticeAt, &sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
 		return nil, err
 	}
@@ -459,8 +462,12 @@ func scanIssue(row scanner) (*Issue, error) {
 			utc := answeredAt.UTC()
 			answeredAt = &utc
 		}
+		if slotNoticeAt != nil {
+			utc := slotNoticeAt.UTC()
+			slotNoticeAt = &utc
+		}
 		issue.Awaiting = &Awaiting{Artifact: awaitingArtifact, AnsweredAt: answeredAt, AnsweredBy: Answer(answeredBy),
-			AnsweredDetail: answeredDetail, Since: scannedMark(sinceSeq, since)}
+			AnsweredDetail: answeredDetail, SlotNoticeAt: slotNoticeAt, Since: scannedMark(sinceSeq, since)}
 		if awaitingAsk != nil {
 			issue.Awaiting.Ask = *awaitingAsk
 		}
