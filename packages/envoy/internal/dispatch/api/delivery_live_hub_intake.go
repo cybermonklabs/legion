@@ -69,8 +69,10 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 				open = false
 				// No event marks the phase-work set stale while no feed is open, so it is
 				// answered by a read of its own until the subscription that replaces this one
-				// has seeded and watched it (legion_phase_work.go).
-				h.server.legionPhaseWork.unwatch()
+				// has seeded and watched it (legion_phase_work.go). The watch is dropped only
+				// while it is this generation's: a stopping generation reaching here after the
+				// next one has seeded would otherwise drop a watch that is not its own.
+				h.server.legionPhaseWork.unwatch(g.ctx.Done())
 				h.note(deliveryHubNote{what: "feed closed"})
 				h.seedEvents(g)
 				continue

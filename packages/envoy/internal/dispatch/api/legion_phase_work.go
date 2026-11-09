@@ -50,10 +50,10 @@ type legionPhaseWork struct {
 	// one, and nothing here takes the hub's.
 	reading sync.Mutex
 	mu      sync.Mutex
-	// filled is whether a read ever answered this set, and dirtied counts the events that have
-	// marked it stale since: a read answers the rows as they stood before it began, so one
-	// marked stale while it ran is stale still.
-	filled  bool
+	// dirtied counts the events that have marked the set stale: a read answers the rows as they
+	// stood before it began, so one marked stale while it ran is stale still. Whether a read
+	// ever answered the set is no field of its own: a read is what sets the watcher (reseed,
+	// watch), so a set with an open feed is a set a read has filled.
 	dirtied uint64
 	// read is the value of dirtied the newest read started at.
 	read uint64
@@ -168,14 +168,11 @@ func (w *legionPhaseWork) reseed(ctx context.Context, pool *store.Pool, feed <-c
 
 // watch makes feed the set's watcher, the feed whose events mark it stale. A feed already
 // closed watches nothing, so a generation that stopped while its reseed ran leaves the set
-// unwatched rather than watched by a feed nobody reads; and no live feed replaces another,
-// since a generation starts only once the one before it has stopped (deliveryHub.dropLocked,
-// startLocked), so a reseed of a stopped generation that lands after the next one's takes the
-// watch off neither.
+// unwatched rather than watched by a feed nobody reads.
 func (w *legionPhaseWork) watch(feed <-chan struct{}) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if feedOpen(feed) && !feedOpen(w.watching) {
+	if feedOpen(feed) {
 		w.watching = feed
 	}
 }
@@ -183,10 +180,17 @@ func (w *legionPhaseWork) watch(feed <-chan struct{}) {
 // unwatch takes the watcher off, for a feed that closed under a generation still running: until
 // the subscription that replaces it has seeded and watched the set (seedEvents), no event
 // reaches it and each board read answers from a read of its own.
-func (w *legionPhaseWork) unwatch() {
+//
+// It takes the feed whose intake is unwatching, and clears the watch only while that feed is
+// the one watching: a stopping generation's intake can take its closed feed in the same pass as
+// its own done channel, and by then the generation after it may already have seeded and
+// watched, whose watch is not this one's to drop.
+func (w *legionPhaseWork) unwatch(feed <-chan struct{}) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.watching = nil
+	if w.watching == feed {
+		w.watching = nil
+	}
 }
 
 // feedOpen is whether feed still carries the events that mark the set stale: a watcher no
@@ -203,14 +207,14 @@ func feedOpen(feed <-chan struct{}) bool {
 	}
 }
 
-// isCurrent is whether the set can answer a board read: a read has filled it, a feed is
-// watching it, and nothing has marked it stale since that read. A set nothing watches is
-// current for nothing however lately it was filled, since the events that would move it reach
-// no reader while no page is open.
+// isCurrent is whether the set can answer a board read: a feed is watching it, which is also
+// what says a read has filled it, and nothing has marked it stale since that read. A set
+// nothing watches is current for nothing however lately it was filled, since the events that
+// would move it reach no reader while no page is open.
 func (w *legionPhaseWork) isCurrent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.filled && w.read == w.dirtied && feedOpen(w.watching)
+	return w.read == w.dirtied && feedOpen(w.watching)
 }
 
 // fill reads the whole set and takes it as it stands, the index of the sessions the read found
@@ -229,6 +233,6 @@ func (w *legionPhaseWork) fill(ctx context.Context, pool *store.Pool) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.keys, w.roleSessions, w.filled, w.read = work.Keys, work.RoleSessions, true, at
+	w.keys, w.roleSessions, w.read = work.Keys, work.RoleSessions, at
 	return nil
 }
