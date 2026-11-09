@@ -2657,8 +2657,9 @@ func (r *keptRun) busyRefusalEnabled(tree *keptTree) bool {
 // every decision the task names (the claim store's tellKeptDecisions). Oh My Pi then answers that
 // very prompt busy, since the turn it is in is not this task's: the machine takes the
 // confirmation back, charges nothing (supervise's refused), and the write that records it puts
-// back every mark the confirmation told (holdKeptDecisions' insert). The turn ends, and the task
-// is sent again under the id it kept, which the shim and this run read as the same telling.
+// back every mark the confirmation told (the claim store's putBackARetakenConfirmation). The
+// turn ends, and the task is sent again under the id it kept, which the shim and this run read
+// as the same telling.
 func (r *keptRun) busyRefusalAfterAConfirmation(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2803,9 +2804,10 @@ func (r *keptRun) deathEnabled(tree *keptTree) bool {
 // task and tells what it names, and the process is then found gone. Oh My Pi does not go on with
 // an interrupted turn, so the machine takes the task back under a new id the relaunched process's
 // shim has no record of (supervise's interrupted), and the write that records it puts back every
-// mark that confirmation told (holdKeptDecisions). The relaunch's agent comes up and its ready
-// sends the task again, which tells the same decisions to the same architect a second time: the
-// accepted lesser fault, since the turn died and nobody can say what of it the agent read.
+// mark that confirmation told (putBackARetakenConfirmation). The relaunch's agent comes up and
+// its ready sends the task again, which tells the same decisions to the same architect a second
+// time: the accepted lesser fault, since the turn died and nobody can say what of it the agent
+// read.
 func (r *keptRun) deathInTheTasksTurn(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -3690,18 +3692,20 @@ func (r *keptRun) fatalf(format string, args ...any) {
 }
 
 // replay is the command that runs this one failing subtest again, as CI ran it and with nothing
-// served from the test cache: -count=1, since -run is a cacheable flag and the cache keys on the
-// files and the environment rather than on what Postgres holds, so a second identical run would
-// print `ok … (cached)` and run nothing; and -race, which is how CI runs this package
-// (.github/workflows/ci.yaml) and where the schedules that fail come from. A seed driver
-// hard-codes its seeds (kept_decision_handover_seeds_test.go,
-// kept_decision_regression_seeds_test.go) and reads LEGION_KEPT_PROPERTY_SEED not at all, so -run
-// alone names its subtest; under TestKeptDecisionsReachTheCurrentArchitectOnce the subtests are
-// the seeds that variable or LEGION_KEPT_PROPERTY_RUNS makes (keptPropertySeeds), so the seed is
-// named with it or -run matches nothing and the command passes having run no test at all, and
-// the step count goes with it whenever this run took one the default does not give.
+// served from the test cache: CGO_ENABLED=1, which -race needs and a Legion pod leaves at 0
+// (packages/daemon/docker/worker.Dockerfile), where these failures are replayed; -count=1, since
+// -run is a cacheable flag and the cache keys on the files and the environment rather than on
+// what Postgres holds, so a second identical run would print `ok … (cached)` and run nothing;
+// and -race, which is how CI runs this package (.github/workflows/ci.yaml) and where the
+// schedules that fail come from. A seed driver hard-codes its seeds
+// (kept_decision_handover_seeds_test.go, kept_decision_regression_seeds_test.go) and reads
+// LEGION_KEPT_PROPERTY_SEED not at all, so -run alone names its subtest; under
+// TestKeptDecisionsReachTheCurrentArchitectOnce the subtests are the seeds that variable or
+// LEGION_KEPT_PROPERTY_RUNS makes (keptPropertySeeds), so the seed is named with it or -run
+// matches nothing and the command passes having run no test at all, and the step count goes with
+// it whenever this run took one the default does not give.
 func (r *keptRun) replay() string {
-	command := fmt.Sprintf("go test -count=1 -race -run '%s' ./internal/daemon/", keptRunPattern(r.t.Name()))
+	command := fmt.Sprintf("CGO_ENABLED=1 go test -count=1 -race -run '%s' ./internal/daemon/", keptRunPattern(r.t.Name()))
 	if !strings.HasPrefix(r.t.Name(), keptPropertyTest+"/") {
 		return command
 	}
