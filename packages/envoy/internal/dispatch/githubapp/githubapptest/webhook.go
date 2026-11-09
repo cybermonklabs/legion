@@ -363,20 +363,31 @@ func (w *Webhook) attempt(rw http.ResponseWriter, r *http.Request) {
 	_, _ = rw.Write([]byte("{}"))
 }
 
+// describableSchemes are the authentication schemes DescribeAuthorization names. The list is the
+// whole of what a failure's text may quote, and each entry is written out here, so the text is
+// this package's own words and never the caller's bytes.
+var describableSchemes = []string{"Bearer", "Basic", "Digest", "DPoP", "Negotiate", "token"}
+
 // DescribeAuthorization says what an Authorization header carried, for a test fake whose check of
 // it failed: the scheme alone, never the credential behind it. Such a check is about the scheme,
-// and a failure's text is kept by CI and pasted into issues; a header with no space in it is one
-// whole word, which could be the credential itself, so it is counted rather than printed.
+// and a failure's text is kept by CI and pasted into issues.
+//
+// The first word of a header is the scheme only when the sender wrote one. A sender that wrote
+// none sends the credential as that first word, with a trailing space or a second word after it
+// as readily as alone, so a word this package does not know by name is counted rather than
+// printed. A scheme it does know is answered with the spelling in the list above, whatever case
+// the sender used, since HTTP reads a scheme without regard to case.
 func DescribeAuthorization(header string) string {
-	scheme, _, found := strings.Cut(header, " ")
-	switch {
-	case header == "":
+	if header == "" {
 		return "no Authorization header"
-	case found:
-		return fmt.Sprintf("the %q scheme", scheme)
-	default:
-		return fmt.Sprintf("one word of %d characters and no scheme", len(header))
 	}
+	first, _, _ := strings.Cut(header, " ")
+	for _, scheme := range describableSchemes {
+		if strings.EqualFold(first, scheme) {
+			return fmt.Sprintf("the %q scheme", scheme)
+		}
+	}
+	return fmt.Sprintf("a header of %d characters whose first word is no scheme this fake knows", len(header))
 }
 
 // verifyAppJWT checks the bearer is an RS256 JWT that verifies against the fake's public key and
