@@ -7,9 +7,8 @@
 # — curl's exit 23, which is what a runner with no room left answers with — is refused for that
 # on either side, in a sentence that names this run and no service, and no second source is read
 # after one, while a primary that merely does not answer falls through to the second source as
-# it always has. A destination this run cannot open at all is proved before curl is invoked, so
-# that refusal costs no attempt and the origin is asked for nothing, while a destination that
-# opens and fills part way through the write reaches curl and is refused in the same sentence.
+# it always has. A file curl cannot open at all and one it opens and cannot fill are that same
+# exit of curl's and that same refusal, and ci_tools_fetch_primary answers for it as well.
 # A row whose second source writes an address of its own is
 # served whole or by the member it names, a zip that holds no such member and one that holds it
 # and cannot give it back are refused in different words while the tar arm, which can tell
@@ -51,6 +50,14 @@
 # do it, because curl reads its configuration file before the command line and the helper's own
 # bound would win. A CI runner sees neither, so the pinned ladder is what runs there.
 #
+# THE MKTEMP ON THESE CASES' PATH: the write-error cases must name the file a fetch writes into,
+# and that file is a mktemp the helper makes under RUNNER_TEMP. Those cases put an mktemp of
+# their own beside that curl, inert until a case writes the control file it reads. The control
+# file names one row and a path, and the stand-in answers that row's own template — the one
+# ci_tools__tempfile writes for it — with a symlink to that path: to a directory, which curl
+# cannot open, or to /dev/full, which curl opens and cannot fill. Every other call it is handed,
+# in that case and in every other, is the real mktemp.
+#
 # Run from anywhere: .github/scripts/ci-tools.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -84,6 +91,30 @@ cat > "$work/bin/curl" <<SH
 exec "$real_curl" "\$@" --retry-max-time 1
 SH
 chmod 0755 "$work/bin/curl"
+
+# The mktemp those cases run, beside that curl. The control file holds `<row> <target>`, and the
+# answer is one symlink at a fixed path, so the case knows the name the refusal will carry and
+# the helper's own `rm -f` takes the symlink away as it would the temporary file.
+mktemp_control="$work/mktemp-control"
+mktemp_answer="$work/mktemp-answer"
+real_mktemp=$(command -v mktemp)
+cat > "$work/bin/mktemp" <<SH
+#!/usr/bin/env bash
+if [ -s "$mktemp_control" ]; then
+  read -r row target < "$mktemp_control"
+  for argument in "\$@"; do
+    case "\$argument" in
+      */ci-tools-\$row.XXXXXX)
+        ln -sfn "\$target" "$mktemp_answer"
+        printf '%s\n' "$mktemp_answer"
+        exit 0
+        ;;
+    esac
+  done
+fi
+exec "$real_mktemp" "\$@"
+SH
+chmod 0755 "$work/bin/mktemp"
 
 # The three payloads, one per source kind, and a copy of each with one byte changed. Nothing is
 # pulled: each digest below is read off the bytes this file just wrote.
@@ -251,6 +282,11 @@ PY
 # names the member and the archive, names no cause at all, and leaves tar's own words on
 # stderr to say why.
 TAR_WHY='(tar exit 2); what tar printed on stderr above says why'
+
+# The sentence a write error of this run is refused in, written once because that is what the
+# four cases below claim: the stand-in mktemp hands one fetch the file the sentence names, curl
+# cannot write it, and the refusal names this run and that file and no service at all.
+WRITE_WHY="this run could not write $mktemp_answer (curl exit 23), so nothing here is a statement about the bytes that address serves — refusing"
 
 # The CLI tarball: one archive two services serve, which is the row whose primary is a service
 # of its own and whose second source is the release asset.
@@ -489,11 +525,6 @@ origin() {
   base="http://127.0.0.1:$(cat "$work/origins/$name/port")"
 }
 
-# The sixth seam, CI_TOOLS_TEMPFILE, as `(CI_TOOLS_TEMPFILE=<path>)` for the one call that names
-# it and empty everywhere else, where the helper makes its own temporary files under RUNNER_TEMP
-# exactly as a CI job does. run_with_tempfile below is the one thing that sets it.
-seam_env=()
-
 # run <function> <argument…>: the helper, sourced into a shell with errexit, nounset and pipefail
 # on, as a GitHub `run:` step has. Sets `out` to the combined output and `status` to the exit
 # code. Not a subshell, so both survive the call.
@@ -506,21 +537,18 @@ run() {
     CI_TOOLS_URL_BASE="$base/url" \
     PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
-    ${seam_env[@]+"${seam_env[@]}"} \
     bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
   status=$?
   set -e
 }
 
-# run_with_tempfile <path> <function> <argument…>: that same run with the CI_TOOLS_TEMPFILE seam
-# pointed at <path>, the one temporary file the helper may make in it. The seam is set for this
-# call and for no other, so every case beside it runs with the seam unset.
-run_with_tempfile() {
-  local named=$1
-  shift
-  seam_env=(CI_TOOLS_TEMPFILE="$named")
-  run "$@"
-  seam_env=()
+# run_with_mktemp <row> <target> <function> <argument…>: that same run with the stand-in mktemp
+# answering that row's temporary file with a symlink to <target>. The control file is written for
+# this call and removed after it, so every other case runs with the real mktemp.
+run_with_mktemp() {
+  printf '%s %s\n' "$1" "$2" > "$mktemp_control"
+  run "${@:3}"
+  rm -f -- "$mktemp_control"
 }
 
 # run_real <function> <argument…>: the same, against the repository's own manifest with
@@ -610,101 +638,80 @@ check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: github-release — the primary's fetch cannot write the file this run gave it"
-# curl exits 23 where it could not write the file it was handed, and ci_tools_curl proves that
-# same cause by opening the file before it invokes curl at all. Either way it is a failure of
-# this run and of nothing else: a runner with no room left is the live shape of it. So the
-# refusal names this run and the file, says nothing about what the address serves, and the
-# fetch stops there — the second source cannot serve a file this runner will not let a fetch
-# write, and reading it would cost a second full retry ladder for that answer.
-# The CI_TOOLS_TEMPFILE seam is what lets a case name that file: pointed at a symlink to a
-# directory, this run cannot write it, and the helper's own `rm -f` takes the symlink away as
-# it takes away the temporary file it would otherwise have made.
+# curl exits 23 where it could not write the file it was handed, which is a failure of this run
+# and of nothing else: a runner with no room left is the live shape of it. So the refusal names
+# this run and that file, says nothing about what the address serves, and the fetch stops there
+# — the second source cannot serve a file this runner will not let a fetch write, and reading it
+# would cost a second full retry ladder for that answer.
+# The stand-in mktemp is what lets a case name that file: it hands this row's fetch a symlink to
+# a directory, which curl cannot open at any attempt of its ladder.
 origin primary-write-error
-mkdir -p "$work/seam"
-unwritable="$work/seam/primary-write-error"
-ln -sfn "$work/dest" "$unwritable"
 dest="$work/dest/primary-write-error"
-run_with_tempfile "$unwritable" ci_tools_fetch tarred "$dest"
+run_with_mktemp tarred "$work/dest" ci_tools_fetch tarred "$dest"
 check "fails" "$(is "$status" 1)"
 check "names this run and the file, and claims nothing of what the address serves" \
-  "$(contains "$out" "^::error::ci-tools: tarred: this run could not write $unwritable, so $base/$ASSET_PATH was never read into it, and nothing here is a statement about the bytes that address serves (curl exit 23) — refusing$")"
+  "$(contains "$out" "^::error::ci-tools: tarred: $WRITE_WHY$")"
 check "and says of no source that it did not serve the bytes" \
   "$(is "$(contains "$out" 'did not serve the bytes')" false)"
-check "the open refused it before the release asset was asked for" \
-  "$(is "$(asked_for "$log" "/github/")" false)"
+check "curl asked the origin for the release asset" "$(is "$(asked_for "$log" "/github/")" true)"
 check "and the second source was never read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+rm -f -- "$mktemp_answer"
 
-echo "case: the destination is proved before curl, so the ladder never starts"
-# What that pre-check buys: the same fault as the case above, refused without a request. The
-# helper pins `--retry 7 --retry-all-errors`, which rides a local write error out as readily as
-# a reset, so curl handed a file this run cannot write spends seven attempts and 63 s before
-# the helper sees the exit at all. Opening the file first answers in the helper's own code, and
-# this origin's log — which records every path it is asked for, served or not — is where a case
-# reads that no attempt was made.
-origin pre-check-no-attempt
-unwritable="$work/seam/pre-check-no-attempt"
-ln -sfn "$work/dest" "$unwritable"
-dest="$work/dest/pre-check-no-attempt"
-run_with_tempfile "$unwritable" ci_tools_fetch tarred "$dest"
+echo "case: github-release — ci_tools_fetch_primary cannot write the file this run gave it"
+# The fetch that reads the primary alone has a write error arm of its own, and this is what
+# drives it: the same symlink, the same exit 23, and a refusal that names this run and leaves
+# the archive the primary serves at no destination.
+origin primary-only-write-error
+dest="$work/dest/primary-only-write-error"
+run_with_mktemp tarred "$work/dest" ci_tools_fetch_primary tarred "$dest"
 check "fails" "$(is "$status" 1)"
-# Every line of that log begins with the path's own slash, so this prefix is every request.
-check "the origin was asked for nothing at all" "$(is "$(asked_for "$log" "/")" false)"
-check "and no curl of this run said a word" "$(is "$(contains "$out" '^curl: ')" false)"
-check "and it is refused in the words curl's own exit 23 is refused in" \
-  "$(contains "$out" "^::error::ci-tools: tarred: this run could not write $unwritable, so $base/$ASSET_PATH was never read into it, and nothing here is a statement about the bytes that address serves (curl exit 23) — refusing$")"
+check "is refused in the words the primary's write error is refused in" \
+  "$(contains "$out" "^::error::ci-tools: tarred: $WRITE_WHY$")"
+check "and says of no source that it did not serve the bytes" \
+  "$(is "$(contains "$out" 'did not serve the bytes')" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
-# The proof is made at the one place this file invokes curl, which is the function
-# .github/scripts/mirror-ci-tools.sh fetches the asset it copies with, so every fetch of this
-# file and that script's own are covered by the one pre-check.
-ln -sfn "$work/dest" "$unwritable"
-run ci_tools_curl "$unwritable" 7 "$base/$ASSET_PATH"
-check "ci_tools_curl answers with curl's write error" "$(is "$status" 23)"
-check "and asked the origin for nothing" "$(is "$(asked_for "$log" "/")" false)"
-rm -f -- "$unwritable"
+rm -f -- "$mktemp_answer"
 
 echo "case: github-release — the second source's own fetch cannot write it either"
 # The same exit on the other side, refused in the same words: ci_tools_fetch_fallback reads the
 # second source alone, so this is that source's own fetch failing to write, and what is known is
 # again this run and not the service whose bytes were never written down.
 origin second-write-error
-unwritable="$work/seam/second-write-error"
-ln -sfn "$work/dest" "$unwritable"
 dest="$work/dest/second-write-error"
-run_with_tempfile "$unwritable" ci_tools_fetch_fallback clitool "$dest"
+run_with_mktemp clitool "$work/dest" ci_tools_fetch_fallback clitool "$dest"
 check "fails" "$(is "$status" 1)"
 check "is refused in the words the primary's write error is refused in" \
-  "$(contains "$out" "^::error::ci-tools: clitool: this run could not write $unwritable, so $base/$CLITOOL_ASSET_PATH was never read into it, and nothing here is a statement about the bytes that address serves (curl exit 23) — refusing$")"
+  "$(contains "$out" "^::error::ci-tools: clitool: $WRITE_WHY$")"
 check "and says of no source that it served nothing" \
   "$(is "$(contains "$out" 'no source served the bytes')" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+rm -f -- "$mktemp_answer"
 
 echo "case: github-release — a destination that fills part way through the write"
-# The half no pre-check closes, and the half the helper's header says it does not: a
-# destination this run can open and cannot fill. /dev/full is that shape exactly — every write
-# to it is ENOSPC, which is what a runner with no room left gives a fetch part way through the
-# write — so the open passes it, curl is invoked, and the write error is curl's own. It is
-# refused as this run's fault all the same, in the one sentence, and the second source is still
-# not read.
+# The shape a runner actually meets: a destination this run can open and cannot fill. /dev/full
+# is that exactly — every write to it is ENOSPC, which is what a runner with no room left gives
+# a fetch part way through the write — so curl opens it, writes into it, and answers with the
+# same exit 23 it answers a file it could never open with. It is refused as this run's fault in
+# the one sentence, and the second source is still not read.
 origin enospc-mid-write
-unwritable="$work/seam/enospc-mid-write"
-ln -sfn /dev/full "$unwritable"
 dest="$work/dest/enospc-mid-write"
-run_with_tempfile "$unwritable" ci_tools_fetch tarred "$dest"
+run_with_mktemp tarred /dev/full ci_tools_fetch tarred "$dest"
 check "fails" "$(is "$status" 1)"
-check "is refused in the words the pre-check refuses its own half in" \
-  "$(contains "$out" "^::error::ci-tools: tarred: this run could not write $unwritable, so $base/$ASSET_PATH was never read into it, and nothing here is a statement about the bytes that address serves (curl exit 23) — refusing$")"
-check "the open passed it, so the release asset was asked for" \
+check "is refused in the words every write error of this run is refused in" \
+  "$(contains "$out" "^::error::ci-tools: tarred: $WRITE_WHY$")"
+check "the release asset was asked for" \
   "$(is "$(asked_for "$log" "/github/")" true)"
 check "and the second source was never read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+rm -f -- "$mktemp_answer"
 
 echo "case: github-release — a primary that does not serve the bytes still reads the second source"
-# The control for the two cases above: the fall-through is narrowed to curl's write error and
+# The control for the four cases above: the fall-through is narrowed to curl's write error and
 # not removed. This primary answers 404 — curl exit 22, which says something about that address
 # and nothing about this run — so the copy is read and serves the row, exactly as before that
 # one exit was told apart.
