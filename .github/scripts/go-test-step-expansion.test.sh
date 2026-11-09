@@ -129,3 +129,5 @@ else:
 done
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
+
+# INFRA-1413 selection probe, never merged.
