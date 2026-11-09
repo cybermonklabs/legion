@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
+  ASKGATE_RECORD,
   type AskgateMode,
   askgateState,
   bytesDigest,
@@ -119,6 +120,15 @@ const RECORD_RECOVERY =
  */
 const STORE_RECOVERY =
   "This is AskGate's own state for this session and nothing about the call, but a store that cannot be read may hold a refusal of this write, so it is not sent. The path that could not be read is named above. A session whose Oh My Pi process is gone may have its AskGate record removed, which turns AskGate off for that session; tell whoever owns the session if it is live.";
+
+/**
+ * What the agent reads when this session holds verdicts of a scheme this version cannot read,
+ * or a gate that records none. Its own text, because the marker advice is wrong three times
+ * over here: nothing was tampered with, the path named is a directory rather than a file, and
+ * resending cannot help — nothing may write to a foreign store, so no review clears it.
+ */
+const FOREIGN_VERDICTS =
+  "No marker was tampered with and nothing of the call is at fault. A verdict this session holds, or one its gate did not record, cannot be read by this version of the dispatch CLI, so a refusal of this very write cannot be ruled out and it is not sent. Resending changes nothing while the session lives: a new session gets a fresh record from the gate running now, so restarting is what clears it.";
 
 /**
  * What the agent reads when an upload's own file cannot be read here. Its bytes are what the
@@ -502,9 +512,19 @@ export async function runDispatchCli(
         // An upload whose own bytes cannot be read has no identity, and no identity is never
         // no verdict.
         uploadUnread = typeof parsed.args.path === "string" && sends === undefined;
+        // A gate that records no verdicts leaves nothing behind when its review refuses, so an
+        // empty store proves nothing about this write and absence is not a statement. The
+        // record says which, rather than the CLI inferring it from a directory being empty.
+        const capable = gate.kind === "on" && gate.verdicts;
         const said = uploadUnread
           ? undefined
-          : readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes));
+          : capable
+            ? readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes))
+            : ({
+                kind: "unknown",
+                why: "this session's AskGate does not record the writes its reviews refuse, so whether it refused this one cannot be told",
+                path: join(dir, ASKGATE_RECORD),
+              } as const);
         // Step one, and the reason this branch is ordered rather than conditional: this
         // session's own verdict on this write comes before everything else, because it is the
         // only thing here that is a verdict. A verdict is not a mode's to overrule, and it is
@@ -521,6 +541,15 @@ export async function runDispatchCli(
             reason: `AskGate reviewed this write and did not send it: ${said.reason}`,
             advice: { refused: REFUSAL_STANDS, posted: REFUSAL_STANDS },
           };
+        // A marker bound to this very write is a verdict of allow for it, from a review that
+        // read these bytes. It outranks every "cannot tell": those say some refusal may exist
+        // somewhere, and this says what the review decided about this write. It does not
+        // outrank a recorded refusal of this write, which is the case above.
+        else if (
+          gate.kind === "on" &&
+          consumeMarker(gate.stores, argv, parsed.args, files, Date.now(), gate.markers).ok
+        )
+          finding = undefined;
         else if (gate.kind === "broken")
           finding = {
             verdict: "unknown",
@@ -544,10 +573,20 @@ export async function runDispatchCli(
             advice:
               said === undefined
                 ? { refused: UPLOAD_UNREADABLE, posted: UPLOAD_UNREADABLE }
-                : { refused: MARKER_UNREADABLE, posted: MARKER_UNREADABLE },
+                : { refused: FOREIGN_VERDICTS, posted: FOREIGN_VERDICTS },
           };
         } else {
-          const spent = consumeMarker(gate.stores, argv, parsed.args, files, Date.now());
+          // The consume above either took a marker, in which case this is not reached, or took
+          // none and said why. Repeating it here reads the store again after that attempt, so
+          // the reasons below are this call's own.
+          const spent = consumeMarker(
+            gate.stores,
+            argv,
+            parsed.args,
+            files,
+            Date.now(),
+            gate.markers
+          );
           if (!spent.ok && spent.verdict === "stale")
             finding = {
               verdict: "stale",

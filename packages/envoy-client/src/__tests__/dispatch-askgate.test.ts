@@ -135,11 +135,28 @@ function writeRecord(
     start: startOf(process.pid),
     store: store(),
   },
-  mode: "warn" | "block" | null = "block"
+  mode: "warn" | "block" | null = "block",
+  /**
+   * What the gate that wrote this record says it does. The default is this version's gate. A
+   * record with none is a gate from before capabilities: it writes no verdicts, so an empty
+   * store proves nothing, and its markers bind the earlier encoding.
+   */
+  caps: { verdicts?: string; markers?: string } | null = {
+    verdicts: "askgate-verdicts-v2",
+    markers: "canonical",
+  }
 ): void {
   const file = ownerFile(id, owner);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify({ v: 2, ...owner, ...(mode === null ? {} : { mode }) }));
+  writeFileSync(
+    file,
+    JSON.stringify({
+      v: 2,
+      ...owner,
+      ...(mode === null ? {} : { mode }),
+      ...(caps === null ? {} : { caps }),
+    })
+  );
   mkdirSync(join(owner.store, "markers"), { recursive: true });
 }
 
@@ -1142,6 +1159,59 @@ describe("absence is a statement only when the store was read whole", () => {
         chmodSync(session, 0o700);
       }
     }
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // The window this change ships through: a gate from before verdicts, whose review refused a
+  // write and left nothing behind, meeting this CLI. Nothing on disk tells that apart from a
+  // gate that refused nothing, so the record says which — and without the capability, absence
+  // proves nothing and the write is held.
+  test("a gate that records no verdicts makes absence prove nothing", async () => {
+    for (const mode of ["block", "warn"] as const) {
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      posts.length = 0;
+      writeRecord("ses-1", undefined, mode, null);
+      const { code, stdout } = await run(MESSAGE);
+      expect({ mode, code }).toEqual({ mode, code: mode === "block" ? 1 : 0 });
+      expect(stdout).toContain("does not record the writes its reviews refuse");
+    }
+  });
+
+  // Its mirror: the same old gate mints markers under the encoding of its own version, and it
+  // mints a fresh one on every write, so refusing them never ages out. The record names the
+  // encoding, so they are honoured rather than refused with a reason that is not true.
+  test("a marker of the encoding the record declares is honoured", async () => {
+    writeRecord("ses-1", undefined, "block", { verdicts: undefined, markers: "raw" });
+    const args = await dryArgs(MESSAGE);
+    const file = join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        v: 2,
+        argv: argvDigest(MESSAGE),
+        args: sha(args),
+        files: [],
+        toolCallId: "call-1",
+        outcome: "verdict",
+        createdAt: Date.now(),
+      }),
+      { mode: 0o600 }
+    );
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(0);
+    expect(stdout).not.toContain("arguments differ");
+    expect(messagePosts()).toHaveLength(1);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  // An encoding this version cannot compute is not a licence: no digest matches, so the marker
+  // reads as stale and the write is held where the session chose block.
+  test("a marker encoding this version does not know fails closed", async () => {
+    writeRecord("ses-1", undefined, "block", { verdicts: undefined, markers: "v99" });
+    mint(MESSAGE, await dryArgs(MESSAGE));
+    const { code } = await run(MESSAGE);
+    expect(code).toBe(1);
     expect(messagePosts()).toHaveLength(0);
   });
 

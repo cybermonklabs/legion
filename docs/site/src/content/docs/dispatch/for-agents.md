@@ -121,11 +121,17 @@ posts with a `dispatch: warning:` line, on both the command's output and its sta
 is recorded as unreviewed, in every mode. Send the write alone, in the form above, so that it is
 reviewed.
 
-Two writes are refused rather than posted, and both mean a review did run. One AskGate reviewed
+Two writes are refused because a review did run and does not cover them. One AskGate reviewed
 and did not send stays refused however it is sent again, until a review of the same write allows
 it. One whose arguments or files no longer match what AskGate read — a file edited after the
 review, a resend with the text changed — is refused in block mode (`OMP_ASKGATE=block`) and says
 what to send instead.
+
+A write is also held where the command cannot tell whether a review refused it: a marker of the
+call that cannot be read, a session record that cannot be read, and a session whose verdicts
+this version of the command does not read or whose gate recorded none. Those are not a review
+saying no; they are the command unable to say that none did. Each refuses in block mode and
+posts with a warning in warn mode, and the last clears only when the session does.
 
 `{ "askgate": { "enabled": false } }` in the session's own `envoy.json` turns the review off.
 

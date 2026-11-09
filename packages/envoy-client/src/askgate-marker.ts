@@ -324,7 +324,33 @@ interface OwnerText {
   readonly ns?: string | null;
   readonly store: string;
   readonly mode?: unknown;
+  /** Absent in a file written by a gate from before capabilities (`OwnerCaps`). */
+  readonly caps?: unknown;
 }
+
+/**
+ * What a gate says it does, written into its own owner record so the CLI reads a fact instead of
+ * inferring one. Without this, nothing on disk told "this gate wrote no verdict" from "this gate
+ * cannot write verdicts", and an empty store was read as proof that no review had refused —
+ * which is the substitution this whole change exists to remove, rebuilt one layer up.
+ *
+ * `verdicts` names the store a gate records its refusals in, and is held only when it is this
+ * version's own: anything else, absent or unreadable, is **not held**, and absence of a verdict
+ * then proves nothing. `markers` names the encoding its markers bind their arguments under.
+ *
+ * An unrecognised capability is treated as not held, always. That is what lets a gate of any
+ * version write this record safely: a reader that cannot interpret a claim refuses rather than
+ * posts, so no gate — older or newer — can talk a CLI into letting a write through.
+ */
+interface OwnerCaps {
+  readonly verdicts?: string;
+  readonly markers?: string;
+}
+
+/** The marker encoding a gate from before capabilities used: `digest(args)`, insertion order. */
+const MARKERS_RAW = "raw";
+/** The marker encoding of this version: `digest(canonicalText(args))`. */
+const MARKERS_CANONICAL = "canonical";
 
 /**
  * Whether `value` is an owner file's content: its pid, start time and store, and its pid namespace,
@@ -349,7 +375,9 @@ function isOwnerText(value: unknown): value is OwnerText {
  * The mode is per session per owner: a session this process bound in block keeps block whatever a
  * later session of the same process records for itself. A missing or unknown mode is warn.
  */
-function parseOwner(text: string): { owner: AskgateOwner; mode: AskgateMode } | undefined {
+function parseOwner(
+  text: string
+): { owner: AskgateOwner; mode: AskgateMode; verdicts: boolean; markers: string } | undefined {
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -357,10 +385,17 @@ function parseOwner(text: string): { owner: AskgateOwner; mode: AskgateMode } | 
     return undefined;
   }
   if (!isOwnerText(data) || data.v !== 2) return undefined;
-  const { pid, start, ns, store, mode } = data;
+  const { pid, start, ns, store, mode, caps } = data;
+  // A record with no capabilities is not ambiguous: it is a gate from before them, which is a
+  // fact and not a guess. It records no verdicts, and its markers bind the one encoding that
+  // version used. One historical encoder, named by a declared fact rather than tried among
+  // several — and deletable once no such gate is left, with the record itself saying when.
+  const declared: OwnerCaps = typeof caps === "object" && caps !== null ? (caps as OwnerCaps) : {};
   return {
     owner: { pid, start, ns: ns ?? null, store },
     mode: mode === "block" ? "block" : "warn",
+    verdicts: declared.verdicts === VERDICTS,
+    markers: declared.markers === MARKERS_CANONICAL ? MARKERS_CANONICAL : MARKERS_RAW,
   };
 }
 
@@ -454,7 +489,8 @@ export function recordedOwnerMode(dir: string, owner: AskgateOwner): AskgateMode
 
 function ownerText(owner: AskgateOwner, mode: AskgateMode): string {
   const { pid, start, ns, store } = owner;
-  return JSON.stringify({ v: 2, pid, start, ns, store, mode });
+  const caps: OwnerCaps = { verdicts: VERDICTS, markers: MARKERS_CANONICAL };
+  return JSON.stringify({ v: 2, pid, start, ns, store, mode, caps });
 }
 
 /**
@@ -578,7 +614,19 @@ export function recordNamesStore(dir: string): boolean {
 /** What the record of a session's state directory requires of a gated write. */
 export type AskgateState =
   | { readonly kind: "off" }
-  | { readonly kind: "on"; readonly stores: readonly string[]; readonly mode: AskgateMode }
+  | {
+      readonly kind: "on";
+      readonly stores: readonly string[];
+      readonly mode: AskgateMode;
+      /**
+       * Whether every live owner records its refusals where this version reads them. One owner
+       * that does not is enough to make absence meaningless for the whole session: that gate
+       * can have refused a write and left nothing behind.
+       */
+      readonly verdicts: boolean;
+      /** The marker encodings the live owners declare; a marker may come from any of them. */
+      readonly markers: readonly string[];
+    }
   | { readonly kind: "broken"; readonly problem: string };
 
 /**
@@ -595,7 +643,13 @@ export function askgateState(dir: string, now = Date.now()): AskgateState {
     if (hasErrnoCode(error, "ENOENT")) return { kind: "off" };
     return { kind: "broken", problem: `${record}, could not be read: ${messageFor(error)}` };
   }
-  const live: { readonly file: string; readonly store: string; readonly mode: AskgateMode }[] = [];
+  const live: {
+    readonly file: string;
+    readonly store: string;
+    readonly mode: AskgateMode;
+    readonly verdicts: boolean;
+    readonly markers: string;
+  }[] = [];
   for (const name of names) {
     // Not an owner file: a temporary file that its write's `rename` has yet to make one.
     if (!name.endsWith(OWNER_FILE)) continue;
@@ -612,7 +666,13 @@ export function askgateState(dir: string, now = Date.now()): AskgateState {
     if (parsed === undefined)
       return { kind: "broken", problem: `${file}, is not an AskGate record` };
     if (ownerLive(parsed.owner, now)) {
-      live.push({ file, store: parsed.owner.store, mode: parsed.mode });
+      live.push({
+        file,
+        store: parsed.owner.store,
+        mode: parsed.mode,
+        verdicts: parsed.verdicts,
+        markers: parsed.markers,
+      });
     }
   }
   if (live.length === 0) return { kind: "off" };
@@ -630,6 +690,8 @@ export function askgateState(dir: string, now = Date.now()): AskgateState {
     kind: "on",
     stores: live.map(({ store }) => store),
     mode: live.some(({ mode }) => mode === "block") ? "block" : "warn",
+    verdicts: live.every(({ verdicts }) => verdicts),
+    markers: [...new Set(live.map(({ markers }) => markers))],
   };
 }
 
@@ -774,10 +836,17 @@ export function consumeMarker(
   argv: readonly string[],
   args: Readonly<Record<string, unknown>>,
   files: readonly FileDigest[],
-  now: number
+  now: number,
+  /** The marker encodings the session's live owners declare (`askgateState`). */
+  encodings: readonly string[] = [MARKERS_CANONICAL]
 ): Consumed {
   const key = argvDigest(argv);
-  const reviewed = argsDigest(args);
+  // One digest per encoding a live owner says it writes. Not a search over every encoding that
+  // ever existed: the record names which apply, so a gate from before `canonicalText` has its
+  // markers honoured rather than refused with the untrue reason that the arguments differ.
+  const reviewed = new Set(
+    encodings.map((encoding) => (encoding === MARKERS_RAW ? digest(args) : argsDigest(args)))
+  );
   let changed: FileOperand | undefined;
   let mismatched = false;
   let expired = false;
@@ -815,10 +884,13 @@ export function consumeMarker(
           changed ??= { flag: differs.flag, operand: differs.operand };
           continue;
         }
-        // A marker of an earlier encoding binds another digest and reads as `stale`, which
-        // fails closed and lives at most two hours. Only the verdict side needs a scheme
-        // story, because only an unrecognised verdict fails open.
-        if (marker.files.length !== files.length || marker.args !== reviewed) {
+        // A marker whose digest matches none the record declares reads as `stale`, which fails
+        // closed. An earlier encoding is not that case: the owner says it writes one, so it is
+        // honoured. Round seven refused it instead, telling the agent its arguments differed
+        // from the reviewed ones when only the encoding had moved, and since an old gate mints
+        // a fresh old-encoding marker on every write, the sweep never caught up — in block mode
+        // that refused every reviewed literal write for the session's life.
+        if (marker.files.length !== files.length || !reviewed.has(marker.args)) {
           mismatched = true;
           continue;
         }
@@ -1051,10 +1123,9 @@ function canWrite(write: (name: string) => string, now: number): boolean {
     return false;
   } finally {
     // The probe leaves nothing behind, and a removal that fails is not itself a reason to stop:
-    // a leftover `.probe-` is the name of no verdict, since a verdict's name is its scheme and
-    // its identity (`2-<hex>`) and an earlier scheme's was bare hex. Nothing sweeps this
-    // directory — a verdict is never swept — so such a file stays until the session's own
-    // directory goes, read by nothing.
+    // a leftover `.probe-` is read as no verdict, since every entry beginning with a dot is
+    // passed over. Nothing sweeps this directory — a verdict is never swept — so such a file
+    // stays until the session's own directory goes, read by nothing.
     try {
       if (file !== undefined) rmSync(file, { force: true });
     } catch {

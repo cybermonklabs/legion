@@ -49,10 +49,23 @@ body: |-
   refused in both. Only ENOENT establishes absence anywhere on this path: a session directory
   with search permission but no read, an EIO or a path component that is no directory each read
   as unknown rather than as holding nothing, which is what let a stored rejection post.
-  No released version writes verdicts, so no session on the upgrade path holds a foreign store;
-  where one does, nothing may write to it, so an allow cannot lift it and the session refuses
-  every gated write in block mode until it ends. A marker of an earlier encoding needs none of
-  this: it reads as stale, which fails closed, and it lives at most two hours.
+  A gate says what it does in its own owner record: which verdict store it records refusals in,
+  and which encoding its markers bind. Nothing on disk otherwise tells a gate that wrote no
+  verdict from one that cannot write them, and an empty store was read as proof that no review
+  had refused. A record with no capabilities is a gate from before them — it records no
+  verdicts, so every unmarked write of that session is unknown, and its markers bind the one
+  encoding that version used, so they are honoured rather than refused with the untrue reason
+  that the arguments differ. An unrecognised capability is treated as not held, so a verdict
+  store this version does not know is unknown and a marker encoding it cannot compute reads as
+  stale; both fail closed. A marker bound to this very write outranks every such uncertainty,
+  since it is a verdict of allow for this write.
+  The cost is measured rather than bounded by a phrase: a session whose record carries no
+  verdict capability refuses every unmarked write in block mode for the rest of its life,
+  including a subagent's, a script's and an eval cell's, and sessions on this fleet run 22 to 50
+  hours. Restarting the session clears it, since a new session gets a record from the gate
+  running now; nothing else does. In block mode this previously refused every reviewed literal
+  write for the session's life, which is the check restored here rather than described more
+  weakly.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
   leave the loser refused, and now both post, one with the warning. A resent literal call is read
   by the gate and reviewed afresh. dispatch://INFRA-2079, row 3.5.
