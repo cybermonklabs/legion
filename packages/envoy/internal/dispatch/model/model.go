@@ -1260,6 +1260,14 @@ type Ask struct {
 	// snapshot from when the request opened. nil for questions, and for an approval ask whose
 	// document has since been deleted.
 	ApprovalArtifact *AskAnchorArtifact `json:"approval_artifact,omitempty"`
+	// AskedOf is the person this ask waits on: the canonical login of somebody who has signed in
+	// to Dispatch. It is empty until a person hands the ask on, and an empty field means the ask
+	// waits on the assignee of its issue, which is where every ask starts.
+	AskedOf *string `json:"asked_of"`
+	// AskedOfBy is the person who last handed the ask on and AskedOfAt when they did; both are
+	// empty while AskedOf is.
+	AskedOfBy *string    `json:"asked_of_by"`
+	AskedOfAt *time.Time `json:"asked_of_at"`
 	// WaitingOn is whose reply an open ask needs next: a moved approval request stays with its
 	// agent while RequestedVersion is below Version, and a hand-back returns it to the human until
 	// a reply newer than the one it answered decides it. Set on ask reads only (inbox rows, ask lists,
