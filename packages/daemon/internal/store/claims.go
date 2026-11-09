@@ -428,33 +428,27 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
 
-// putDelivery writes a delivery through whichever executor the caller has: the transaction
-// PutDelivery opens, or the one that carries the claim the delivery is confirmed against. The rows
-// the task names go with it: a delivery still unconfirmed holds them, under this claim and this
-// delivery id, taking each from the start row that claimed it and from whatever id the claim's
-// previous delivery held it under; the write that records the confirmation tells them. Both are in
-// the caller's transaction, so no row is ever held by a delivery the store does not hold, and no
-// confirmation commits without telling what it confirmed.
-//
-// An unconfirmed write over a confirmed row is the machine taking its own confirmation back, and
-// that is the one write whose rows are put back (kept_decisions.go). It is read here, from the
-// row this write replaces and before it replaces it, since afterwards nothing says what the
-// write undid. A write whose task names nothing puts nothing back either way, so it skips the
-// read.
-func putDelivery(ctx context.Context, db execQuerier, token claim.Token, d supervise.Delivery) error {
+// putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
+// the one that carries the claim the delivery is confirmed against. It takes a transaction
+// because it reads the row it is about to replace and holds that reading until it has written
+// (kept_decisions.go's putBackARetakenConfirmation), which no autocommit statement can do. The
+// rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
+// this delivery id, taking each from the start row that claimed it and from whatever id the
+// claim's previous delivery held it under; the write that records the confirmation tells them.
+// All of it is in the caller's transaction, so no row is ever held by a delivery the store does
+// not hold, and no confirmation commits without telling what it confirmed.
+func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept := keptDecisions(d.Kept)
 	unconfirmed := d.ConfirmedAt.IsZero()
-	var retaken bool
-	if unconfirmed && len(kept) > 0 {
-		var err error
-		if retaken, err = deliveryConfirmed(ctx, db, token); err != nil {
+	if unconfirmed {
+		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
-	_, err := db.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
+	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, assignment, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, out_of_memory, send_failures, last_send_failure_at, last_send_error,
 		kept_decisions, provider_error_retries, provider_error_note)
@@ -480,9 +474,9 @@ func putDelivery(ctx context.Context, db execQuerier, token claim.Token, d super
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
 	}
 	if unconfirmed {
-		return holdKeptDecisions(ctx, db, token, d.ID, kept, retaken)
+		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
 	}
-	return tellKeptDecisions(ctx, db, token, d.ID)
+	return tellKeptDecisions(ctx, tx, token, d.ID)
 }
 
 // PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation

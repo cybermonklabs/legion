@@ -348,20 +348,26 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	}
 }
 
-// A catch-up of the tree told a person's decision and forgot it (the daemon's settleTold) while a
-// start row's task still named it: that task's delivery was queued, never confirmed, and retired
-// when it reached no claim, which left the row KEPT for the catch-up to name. The start row then
-// runs again — its finish was lost to a crash — and writes that delivery afresh. The write must
-// put nothing back: the architect has been told, and a row standing again is one the tree's next
-// start or catch-up names and tells a second time, which is the fault seed 24 of the daemon's
+// The store's rule, whatever writes it: an unconfirmed write of a delivery over a row that holds
+// no confirmation puts nothing back. Here a catch-up of the tree told a person's decision and
+// forgot it (the daemon's settleTold) while a start row's task still named it, the delivery that
+// task was queued as having been retired, which left the row KEPT for the catch-up to name. A
+// write of that delivery afterwards must leave the row gone: the architect has been told, and a
+// row standing again is one the tree's next start or catch-up names and tells a second time,
+// which is the fault seed 24 of the daemon's
 // TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild reports at random
 // (dispatch://INFRA-2339). The put-back is for one case alone, which the first test of this file
 // holds: this delivery's own confirmation told the row and the machine took that confirmation
 // back.
 //
+// The sequence is driven on the store directly and names no route of the machine's: a start row
+// that runs again queues nothing on a claim that already records it (supervise's queue,
+// internal/supervise/delivery.go:289,308-311). What the row holds is the store's own answer to
+// any writer.
+//
 // This test drives no goroutine, so it needs no race detector: internal/store runs in CI's plain
 // test step, not its race step (.github/workflows/ci.yaml).
-func TestADeliveryWrittenAfreshDoesNotPutBackADecisionAnotherRowTold(t *testing.T) {
+func TestADeliveryWrittenOverNoConfirmationDoesNotPutBackADecisionAnotherRowTold(t *testing.T) {
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-340", "dispatch://LEGION-340/ask/ask-1"
 	r.issue(tree, tree)
@@ -373,7 +379,7 @@ func TestADeliveryWrittenAfreshDoesNotPutBackADecisionAnotherRowTold(t *testing.
 		t.Fatalf("queue the start's task: %v", err)
 	}
 	if err := r.store.RetireDelivery(r.ctx, architect, task.ID); err != nil {
-		t.Fatalf("retire the task that reached no claim: %v", err)
+		t.Fatalf("retire the delivery: %v", err)
 	}
 
 	var told record.KeptDecisions
@@ -398,12 +404,12 @@ func TestADeliveryWrittenAfreshDoesNotPutBackADecisionAnotherRowTold(t *testing.
 	}
 
 	if err := r.store.PutDelivery(r.ctx, architect.Token, task); err != nil {
-		t.Fatalf("write the start's delivery afresh: %v", err)
+		t.Fatalf("write the delivery again, unconfirmed: %v", err)
 	}
 	if stands, claimedBy, heldBy, heldDelivery := r.row(ref); stands {
-		t.Fatalf("%s stands again (claimed by %d, held by %q/%q) after the start's delivery was written afresh; "+
-			"the catch-up under row %d told the architect that decision and no confirmation of this delivery took it back, "+
-			"so the row must stay gone: one standing again is named and told a second time",
+		t.Fatalf("%s stands again (claimed by %d, held by %q/%q) after an unconfirmed write of a delivery over a row "+
+			"holding no confirmation; the catch-up under row %d told the architect that decision and no confirmation of "+
+			"this delivery took it back, so the row must stay gone: one standing again is named and told a second time",
 			ref, claimedBy, heldBy, heldDelivery, catchUp)
 	}
 }

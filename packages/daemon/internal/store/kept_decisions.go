@@ -27,22 +27,56 @@ import (
 // that tree's next start or catch-up names it. The old architect having been prompted with it as
 // well is the lesser fault: a person's decision is never lost.
 
-// deliveryConfirmed is whether the delivery this claim's row holds now is a confirmed one, read
-// under that row's own lock, so that once a row is there no write of another transaction lands
-// between this read and the write that follows it. An unconfirmed write over such a row is the
-// machine taking its own confirmation back, which is the one write that puts back what that
-// confirmation told (holdKeptDecisions). A claim whose row holds no delivery at all — retired, or
-// never written — has no confirmation to take back.
-func deliveryConfirmed(ctx context.Context, db queryRower, token claim.Token) (bool, error) {
+// putBackARetakenConfirmation puts back what this claim's own confirmation told, and does so on
+// one unconfirmed write alone: the one that takes that confirmation back. The confirmation's
+// write told the rows the delivery held and deleted them — a prompt refused busy after a turn of
+// the agent's own confirmed it, a late refusal, a turn its process died in — so the architect
+// never read them and the resend names them again; a second telling is the worst case, never a
+// loss. It inserts, held by this delivery, each decision the delivery names that has no
+// (issue, ref) row and whose issue stands in the claim's tree.
+//
+// Which write that is, is read from the row the write is about to replace: a delivery the claim
+// holds now with a confirmation on it. So this runs before the upsert, since afterwards nothing
+// says what the write undid, and the read takes that row's own lock, so no write of another
+// transaction lands between the two. A claim whose row holds no delivery at all — retired, or
+// never written — has no confirmation to take back, and a task that names nothing has nothing to
+// put back.
+//
+// Every other unconfirmed write — the queue, the mark as sent, a write-back, a send a refusal
+// took back — puts nothing back, because a row of theirs that is missing was told by somebody
+// else: a catch-up of the tree named it while no delivery held it and its telling forgot it
+// (record.Store.ForgetKeptDecisions). Putting such a row back makes it KEPT again, the tree's
+// next start or catch-up names it, and a person's decision reaches one architect twice
+// (dispatch://INFRA-2339). The send-time narrowing drops such a mark from the task (the daemon's
+// rootTask), but only at a send, and a task the root cannot hear yet is written many times
+// before one. An issue that left the claim's tree is never put back.
+func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, kept []byte) error {
+	if len(kept) == 0 {
+		return nil
+	}
 	var confirmed bool
-	switch err := db.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
+	switch err := tx.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
 		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
+		return nil
 	case err != nil:
-		return false, fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
+		return fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
 	}
-	return confirmed, nil
+	if !confirmed {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
+		select named.issue, named.ref, named.decision, named.actor, named.at, $1, $2
+		from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb))
+			as named (ref text, at timestamptz, issue text, decision text, actor text)
+		join issues owner on owner.key = named.issue
+		join claims holder on holder.token = $1 and holder.tree = owner.tree
+		where named.decision is not null and named.actor is not null
+		on conflict (issue, ref) do nothing`,
+		string(token), delivery, kept); err != nil {
+		return fmt.Errorf("put back what the task queued on %s as delivery %s named and its confirmation told: %w", token, delivery, err)
+	}
+	return nil
 }
 
 // holdKeptDecisions marks every row the delivery names held by this claim and delivery id, and
@@ -54,24 +88,11 @@ func deliveryConfirmed(ctx context.Context, db queryRower, token claim.Token) (b
 // this delivery names of its own tree that nothing else has taken). A row another start, catch-up
 // or delivery owns now — the tree a moved issue stands in has claimed or held it — stays theirs.
 //
-// The insert below puts a row back, and runs on one unconfirmed write alone: the one that takes
-// this claim's own confirmation back (retaken, read before the write from the row it replaces).
-// That confirmation's write told the rows the delivery held and deleted them — a prompt refused
-// busy after a turn of the agent's own confirmed it, a late refusal, a turn its process died in —
-// so the architect never read them and the resend names them again; a second telling is the worst
-// case, never a loss. It inserts, held by this delivery, each decision the delivery names that
-// has no (issue, ref) row and whose issue stands in the claim's tree.
-//
-// Every other unconfirmed write — the queue, the mark as sent, a write-back, a start row that
-// runs again after its finish was lost — puts nothing back, because a row of theirs that is
-// missing was told by somebody else: a catch-up of the tree named it while no delivery held it
-// and its telling forgot it (record.Store.ForgetKeptDecisions). Putting such a row back makes it
-// KEPT again, the tree's next start or catch-up names it, and a person's decision reaches one
-// architect twice (dispatch://INFRA-2339). The send-time narrowing drops such a mark from the
-// task (the daemon's rootTask), but only at a send, and a task the root cannot hear yet is
-// written many times before one. An issue that left the claim's tree is never put back. A
-// delivery that names nothing holds nothing.
-func holdKeptDecisions(ctx context.Context, db execer, token claim.Token, delivery string, kept []byte, retaken bool) error {
+// It puts no row back: a row the task names and the table does not hold is
+// putBackARetakenConfirmation's, which runs before the write of the delivery this holds for and
+// only where that write takes this claim's own confirmation back. A delivery that names nothing
+// holds nothing.
+func holdKeptDecisions(ctx context.Context, db execer, token claim.Token, delivery string, kept []byte) error {
 	if len(kept) == 0 {
 		return nil
 	}
@@ -84,19 +105,6 @@ func holdKeptDecisions(ctx context.Context, db execer, token claim.Token, delive
 		where held_by_claim = $1 and held_by_delivery is not null and held_by_delivery <> $2`,
 		string(token), delivery); err != nil {
 		return fmt.Errorf("move the approval the task of %s held to delivery %s: %w", token, delivery, err)
-	}
-	if retaken {
-		if _, err := db.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
-			select named.issue, named.ref, named.decision, named.actor, named.at, $1, $2
-			from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb))
-				as named (ref text, at timestamptz, issue text, decision text, actor text)
-			join issues owner on owner.key = named.issue
-			join claims holder on holder.token = $1 and holder.tree = owner.tree
-			where named.decision is not null and named.actor is not null
-			on conflict (issue, ref) do nothing`,
-			string(token), delivery, kept); err != nil {
-			return fmt.Errorf("put back what the task queued on %s as delivery %s named and its confirmation told: %w", token, delivery, err)
-		}
 	}
 	if _, err := db.Exec(ctx, `update parked_decisions set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
 		from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb)) as named (ref text, at timestamptz),

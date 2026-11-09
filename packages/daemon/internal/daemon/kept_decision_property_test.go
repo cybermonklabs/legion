@@ -3689,16 +3689,25 @@ func (r *keptRun) fatalf(format string, args ...any) {
 		fmt.Sprintf(format, args...), r.seed, r.step, r.replay(), strings.Join(r.trace, "\n"))
 }
 
-// replay is the command that runs this one failing subtest again. A seed driver hard-codes its
-// seeds (kept_decision_handover_seeds_test.go, kept_decision_regression_seeds_test.go) and reads
-// LEGION_KEPT_PROPERTY_SEED not at all, so -run alone names its subtest; under
-// TestKeptDecisionsReachTheCurrentArchitectOnce the subtests are the seeds that variable or
-// LEGION_KEPT_PROPERTY_RUNS makes (keptPropertySeeds), so the seed is named with it or -run
-// matches nothing and the command passes having run no test at all.
+// replay is the command that runs this one failing subtest again, as CI ran it and with nothing
+// served from the test cache: -count=1, since -run is a cacheable flag and the cache keys on the
+// files and the environment rather than on what Postgres holds, so a second identical run would
+// print `ok … (cached)` and run nothing; and -race, which is how CI runs this package
+// (.github/workflows/ci.yaml) and where the schedules that fail come from. A seed driver
+// hard-codes its seeds (kept_decision_handover_seeds_test.go,
+// kept_decision_regression_seeds_test.go) and reads LEGION_KEPT_PROPERTY_SEED not at all, so -run
+// alone names its subtest; under TestKeptDecisionsReachTheCurrentArchitectOnce the subtests are
+// the seeds that variable or LEGION_KEPT_PROPERTY_RUNS makes (keptPropertySeeds), so the seed is
+// named with it or -run matches nothing and the command passes having run no test at all, and
+// the step count goes with it whenever this run took one the default does not give.
 func (r *keptRun) replay() string {
-	command := fmt.Sprintf("go test -run '%s' ./internal/daemon/", keptRunPattern(r.t.Name()))
-	if strings.HasPrefix(r.t.Name(), keptPropertyTest+"/") {
-		return fmt.Sprintf("LEGION_KEPT_PROPERTY_SEED=%d %s", r.seed, command)
+	command := fmt.Sprintf("go test -count=1 -race -run '%s' ./internal/daemon/", keptRunPattern(r.t.Name()))
+	if !strings.HasPrefix(r.t.Name(), keptPropertyTest+"/") {
+		return command
+	}
+	command = fmt.Sprintf("LEGION_KEPT_PROPERTY_SEED=%d %s", r.seed, command)
+	if r.steps != keptPropertySteps {
+		command = fmt.Sprintf("LEGION_KEPT_PROPERTY_STEPS=%d %s", r.steps, command)
 	}
 	return command
 }
