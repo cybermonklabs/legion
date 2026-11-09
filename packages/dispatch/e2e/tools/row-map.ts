@@ -163,6 +163,14 @@ if (process.argv.includes("--search")) {
   // the list and a reviewer reads it; that is the division k2 asks for.
   const literal = /(?:toHaveText|toContainText|getByText|toHaveValue)\(\s*"([^"]{4,})"/g;
   const files = [...new Set(moved.map((row) => row.file))].sort();
+  const root = recordings.replace(/\/$/, "");
+  const committed = recordingsUnder(root);
+  if (committed.length === 0) {
+    throw new Error(
+      `There are no recordings under ${root}, so this search would read nothing and report ` +
+        "nothing. Record them with `bun run e2e:stub:record` in packages/dispatch."
+    );
+  }
   console.error(
     "Literals a stubbed row asserts that its own recording also holds. Most are the row's own " +
       "seeding; read each for a value the server chose rather than the row.\n"
@@ -170,9 +178,12 @@ if (process.argv.includes("--search")) {
   for (const file of files) {
     const source = readFileSync(`${suiteDirectory}${file}`, "utf8");
     const family = file.replace(/\.stub\.e2e\.ts$/, "");
+    // A recording's path is `<project>/<family>/<row>.har`, and a row that runs in both stubbed
+    // projects has one under each, so a family's recordings are every path whose second
+    // segment is its own.
     const recorded = new Map<string, string>();
-    for (const name of recordingsUnder(`${recordings}${family}`)) {
-      recorded.set(name, readFileSync(`${recordings}${family}/${name}`, "utf8"));
+    for (const name of committed.filter((path) => path.split("/")[1] === family)) {
+      recorded.set(name, readFileSync(`${root}/${name}`, "utf8"));
     }
     const hits = new Set<string>();
     for (const match of source.matchAll(literal)) {

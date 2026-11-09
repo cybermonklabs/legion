@@ -5,7 +5,7 @@
  *  (`e2e/tools/row-map.ts`) - and four copies of a path are four chances for one of them to go
  *  on reading a directory the others have left.
  */
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestInfo } from "@playwright/test";
@@ -44,9 +44,10 @@ export function recordingPath(test: TestInfo, extension: string): string {
   return join(recordingsDirectory(), test.project.name, spec, `${row}${extension}`);
 }
 
-/** Every `<project>/<family>/<row>.har` under `root`, by its path relative to `root`, sorted. A
- *  root that does not exist answers an empty list: before the first family moved there was
- *  none, and the callers each say what they do with that. */
+/** Every `<project>/<family>/<row>.har` under `root`, by its path relative to `root`, sorted.
+ *  A root that does not exist answers an empty list - before the first family moved there was
+ *  none, and each caller says what it does with that - and every other failure is thrown, so a
+ *  directory that cannot be read is not read as a tree holding nothing. */
 export function recordingsUnder(root: string): string[] {
   const found: string[] = [];
   const walk = (directory: string): void => {
@@ -58,8 +59,9 @@ export function recordingsUnder(root: string): string[] {
   };
   try {
     walk(root);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !existsSync(root)) return [];
+    throw error;
   }
   return found.sort();
 }
