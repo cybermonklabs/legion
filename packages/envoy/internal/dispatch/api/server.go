@@ -633,6 +633,18 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// (routeScopes).
 		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
 	}
+	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
+		// A row with no shape is a row the generated OpenAPI document would leave out, so the
+		// one definition of the API would stop being one; the table is refused rather than
+		// mounted (routes_shapes.go).
+		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
+	}
+	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
+		// A shape for a route nothing serves is a shape the document would describe and no
+		// caller could reach — a row renamed or deleted and its entry left behind — so the
+		// table is refused rather than mounted (routeShapes).
+		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
+	}
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
 	for _, route := range routes {
@@ -1286,6 +1298,11 @@ func (maxBytesDiscarder) Header() http.Header             { return nil }
 func (maxBytesDiscarder) Write(value []byte) (int, error) { return len(value), nil }
 func (maxBytesDiscarder) WriteHeader(int)                 {}
 
+// actorInput is the body of every route whose only input is who acts.
+type actorInput struct {
+	Actor *model.Actor `json:"actor"`
+}
+
 // decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value, which
 // declares every member the body may carry. A string the body holds anywhere that carries U+0000
 // is refused, naming where it stands (unstorableJSON).
@@ -1329,8 +1346,14 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
+// errorBody is the body of every refusal writeError answers, on every route.
+type errorBody struct {
+	Code  string `json:"code"`
+	Error string `json:"error"`
+}
+
 func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, map[string]string{"error": message, "code": code})
+	WriteJSON(w, status, errorBody{Code: code, Error: message})
 }
 
 func encodeJSON(value any) ([]byte, error) {

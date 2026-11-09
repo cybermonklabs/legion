@@ -42,7 +42,10 @@ export function groupItems({
 }): ReactNode[] {
   const heading =
     group.label === undefined ? null : (
-      <li className="pt-2" key={`heading-${group.key}`} role="presentation">
+      // A plain list item: `role="presentation"` here took the item out of the list while
+      // leaving it a child of the `<ul>`, which is a list element with a child that is no list
+      // item (axe's `list`, serious). The band divider is an item of the list it divides.
+      <li className="pt-2" key={`heading-${group.key}`}>
         {/* A band divider, not a heading that competes with the rows under it. */}
         <h2 className={`text-xs font-semibold tracking-wide uppercase ${textMutedOnCanvas}`}>
           <DisclosureToggle
@@ -58,7 +61,7 @@ export function groupItems({
     heading,
     ...rows.map((row) => renderRow(row)),
     held > 0 && !folded ? (
-      <li key={`more-${group.key}`} role="presentation">
+      <li key={`more-${group.key}`}>
         <button
           className={`min-h-11 rounded-lg border px-3 py-1.5 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
           data-inbox-show-more={group.key}

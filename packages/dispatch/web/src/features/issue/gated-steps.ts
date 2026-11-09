@@ -49,10 +49,20 @@ export function gatedStepEntries(
   issue: IssueDetails | undefined
 ): StepEntry[] {
   const steps = project?.gated_steps;
-  if (steps === undefined || steps.length === 0 || issue === undefined || issue.parent !== null) {
+  if (steps === undefined || steps === null || steps.length === 0) {
+    return [];
+  }
+  if (issue === undefined || issue.parent !== null) {
     return [];
   }
   return steps
-    .filter((step) => GATED_STEPS.includes(step))
+    .filter(isGatedStep)
     .map((step) => ({ step, label: STEP_LABELS[step], document: stepDocument(issue, step) }));
+}
+
+/** Whether this build knows a step word. `Project.gated_steps` is a list of plain strings in the
+ *  generated document, because a Dispatch newer than this build may gate a fourth step, so this
+ *  is where one it does not know is left out rather than drawn without a name. */
+function isGatedStep(step: string): step is GatedStep {
+  return (GATED_STEPS as readonly string[]).includes(step);
 }

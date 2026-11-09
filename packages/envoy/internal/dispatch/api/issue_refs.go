@@ -12,6 +12,11 @@ import (
 
 var externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
 
+// issueRefResolved is the body GET /api/v1/issues/resolve answers.
+type issueRefResolved struct {
+	Key string `json:"key"`
+}
+
 func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -21,7 +26,7 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]string{"key": key})
+	WriteJSON(w, http.StatusOK, issueRefResolved{Key: key})
 }
 
 // resolveIssueRef resolves an existing native key or external GitHub link.
