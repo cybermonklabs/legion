@@ -62,6 +62,23 @@ func putWorkerTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, generati
 	}
 }
 
+// markStartRun records issue's newest start row against token as the outbox's start records it
+// before it brings a worker back (supervise's StartedBy, from the outbox's start): the claim's
+// last_start_row becomes that row's id. That is what tells a row the claim has already run from
+// one it has not, which is the second term of the stop rule (admit's stopOutlivedStart).
+func markStartRun(t *testing.T, pool *pgxpool.Pool, issue string, token claim.Token) {
+	t.Helper()
+	var ran int64
+	if err := pool.QueryRow(context.Background(), `update claims set last_start_row =
+		(select max(id) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start')
+		where token = $2 returning last_start_row`, issue, string(token)).Scan(&ran); err != nil {
+		t.Fatalf("record the start %s owes as one already run against %s: %v", issue, token, err)
+	}
+	if ran == 0 {
+		t.Fatalf("the claim %s records start row 0 after the mark, want the id of the start %s owes", token, issue)
+	}
+}
+
 // taskedStartAssignments is the assignment each start row of issue that carries a task names, in
 // the order the rows were written. startsOf reads every other field of those rows; the assignment
 // is read here because what the repair hands back is the whole point of the row.
@@ -205,10 +222,12 @@ type owedRepairRow struct {
 	// state and suspendedBy are the claim's.
 	state       supervise.ClaimState
 	suspendedBy supervise.SuspendSource
-	// relaunched writes the owed row through workflow.StartOrOwe rather than enqueueing it
-	// directly. A start is one row now, so the two paths leave the same row; the field is kept
-	// until the repair of a start that can no longer act is rewritten onto it.
-	relaunched bool
+	// alreadyRan records the owed row against the claim as the outbox's start records it before
+	// it brings a worker back (supervise's StartedBy): the claim's last start row becomes the
+	// owed row's own id, which is what says this row has had its start and the stop came after
+	// it. A row left queued after that is one whose own later step failed, and its retry would
+	// start the stopped worker again.
+	alreadyRan bool
 	// holdsTask gives the claim the owed row's own task, of that row's generation and phase and
 	// unconfirmed, so the claim still works it.
 	holdsTask bool
@@ -231,22 +250,13 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	request := record.SuperviseRequest{Op: "start", Tree: row.root, Role: role, Generation: 1, Phase: row.stands,
 		Task: "Carry on.", Assignment: seededAssignment(row.key)}
 	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		if row.relaunched {
-			if err := workflow.StartOrOwe(ctx, tx, record.NewStore(), row.key, request, true, fixedNow); err != nil {
-				t.Fatalf("owe %s its start through the workflow's own writer: %v", row.key, err)
-			}
-			return
-		}
-		request.NeedsSlot = true
-		outbox, err := record.NewOutboxRow(row.key, request, fixedNow)
-		if err != nil {
-			t.Fatalf("build the start %s is owed: %v", row.key, err)
-		}
-		if err := record.NewStore().Enqueue(ctx, tx, outbox); err != nil {
-			t.Fatalf("enqueue the start %s is owed: %v", row.key, err)
+		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, request, true, fixedNow); err != nil {
+			t.Fatalf("owe %s its start through the workflow's own writer: %v", row.key, err)
 		}
 	})
+	if row.alreadyRan {
+		markStartRun(t, pool, row.key, token)
+	}
 	if owed := owedStarts(t, pool, row.key); len(owed) != 1 {
 		t.Fatalf("the starts %s owes before the pass = %+v, want the one its fixture wrote: the row's own premise", row.key, owed)
 	}
@@ -284,11 +294,14 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // two rows lock is the pass's answer rather than the guard.
 //
 // The repair of a start that can no longer act (finishFencedStarts) ends an owed start row whose
-// worker was stopped, because the row would otherwise start that worker again the moment
-// a slot came. It is held to exactly that: the second group varies the stop rule's first term,
-// the claim's state, over a worker at work and the two suspends, and reads that every row the
-// fences keep is still owed after the pass; and the third reads the three terms of the rule
-// itself — the claim is retired, no other start of it is queued, and it works no task of the row.
+// worker was stopped and that had already started it, because the row's retry would start that
+// worker again the moment a slot came. It is held to exactly that: the second group varies the
+// stop rule's first term, the claim's state, over a worker at work and the two suspends, and
+// reads that every row the fences keep is still owed after the pass; and the third reads the
+// three terms of the rule itself — the claim is retired, the owed row has already started it,
+// and the claim works no task of that row — with, beside them, the row the repair must never
+// end: one the claim has never run, which is the workflow's next start of this worker and keeps
+// its issue in the waiting line.
 //
 // Each group is one pool, one table of rows of one fixture shape, and one pass, the controller
 // tick. A row that is passed over is the same fixture as a row that is repaired but for the one
@@ -391,13 +404,13 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 	t.Run("a claim that is not retired keeps its owed start", func(t *testing.T) {
 		rows := []owedRepairRow{
 			{name: "a live claim", root: "LEGION-610", key: "LEGION-611", stands: phase.Implementing,
-				state: supervise.StateWorking, kept: true,
+				state: supervise.StateWorking, alreadyRan: true, kept: true,
 				why: "the claim's state alone tells this row from one the stop rule ends: a worker that runs was stopped by nobody, and its start acts the moment its slot comes"},
 			{name: "a claim the daemon suspended", root: "LEGION-620", key: "LEGION-621", stands: phase.Implementing,
-				state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon, kept: true,
+				state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon, alreadyRan: true, kept: true,
 				why: "the claim's state alone tells this row from one the stop rule ends: the daemon's suspend is undone by the start itself, which resumes the session it kept"},
 			{name: "a claim an operator suspended", root: "LEGION-630", key: "LEGION-631", stands: phase.Implementing,
-				state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByOperator, kept: true,
+				state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByOperator, alreadyRan: true, kept: true,
 				why: "the claim's state alone tells this row from one the stop rule ends: a suspend is not a stop, and the operator's resume puts the worker back on the work this row carries"},
 		}
 		pool := migratedPool(t)
@@ -418,15 +431,15 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 
 	t.Run("the stop that ends a start owed a worker the operator stopped", func(t *testing.T) {
 		rows := []owedRepairRow{
-			{name: "a retired claim whose relaunch row is still queued", root: "LEGION-710", key: "LEGION-711",
-				stands: phase.Implementing, state: supervise.StateRetired, relaunched: true, kept: true,
-				why: "this row changes the queued rows alone, adding the relaunch the start was written with: a second queued start says the workflow is starting this worker again, and the stop is over for a worker the workflow starts"},
+			{name: "a retired claim whose owed row has never run", root: "LEGION-710", key: "LEGION-711",
+				stands: phase.Implementing, state: supervise.StateRetired, kept: true,
+				why: "this row changes the claim's record of the starts run against it alone, leaving this row unrun: a row the claim has never run is the workflow's next start of this worker — the re-admission's, the held phase's retry — and ending it would take the issue out of the waiting line with nothing left to start its phase"},
 			{name: "a retired claim holding an unconfirmed task of the row's own run", root: "LEGION-720", key: "LEGION-721",
-				stands: phase.Implementing, state: supervise.StateRetired, holdsTask: true, kept: true,
+				stands: phase.Implementing, state: supervise.StateRetired, alreadyRan: true, holdsTask: true, kept: true,
 				why: "this row changes the task the claim holds alone, giving it this row's own generation and phase unconfirmed: the claim kept the work of this very row, so the row is not a start the stop outlived"},
-			{name: "a retired claim with neither", root: "LEGION-730", key: "LEGION-731",
-				stands: phase.Implementing, state: supervise.StateRetired,
-				why: "all three terms hold: the operator stopped the worker, no later start of it is queued and it works no task of this row, so the row would start the stopped worker again the moment a slot came"},
+			{name: "a retired claim whose owed row has already run", root: "LEGION-730", key: "LEGION-731",
+				stands: phase.Implementing, state: supervise.StateRetired, alreadyRan: true,
+				why: "all three terms hold: the operator stopped the worker, the row had already started it, and it works no task of this row, so the row's retry would start the stopped worker again the moment a slot came"},
 		}
 		pool := migratedPool(t)
 		capFiller(t, pool, "LEGION-700", "LEGION-701")
@@ -444,17 +457,28 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 }
 
 // assertOwedAfterThePass reads whether row's issue still owes its worker the start its fixture
-// wrote, which is the whole of what the repair of a start that can no longer act writes.
+// wrote, which is the whole of what the repair of a start that can no longer act writes, and
+// with it the place in the waiting line that row is what gives the issue: the line's first part
+// is the unslotted issues that owe their worker a start (record.Waiting), so a row the repair
+// ends takes its issue out of the line and a row it keeps leaves the issue standing in it,
+// waiting for the slot that will run the row.
 func assertOwedAfterThePass(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	t.Helper()
 	owed := owedStarts(t, pool, row.key)
+	line := waitingLine(t, pool, testProject, nil)
 	if row.kept {
 		if len(owed) != 1 {
 			t.Fatalf("the starts %s owes after the pass = %+v, want the one its fixture wrote: %s", row.key, owed, row.why)
+		}
+		if !slices.Contains(line, row.key) {
+			t.Fatalf("the waiting line after the pass = %v, want %s in it: it holds no slot and owes its worker a start: %s", line, row.key, row.why)
 		}
 		return
 	}
 	if len(owed) != 0 {
 		t.Fatalf("the starts %s owes after the pass = %+v, want none: %s", row.key, owed, row.why)
+	}
+	if slices.Contains(line, row.key) {
+		t.Fatalf("the waiting line after the pass = %v, want %s out of it: the repair ended the row that put it there: %s", line, row.key, row.why)
 	}
 }

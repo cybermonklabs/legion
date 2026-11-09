@@ -2134,10 +2134,10 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // issue stood in the line's first part with the old row's place and took a slot ahead of its
 // own root.
 //
-// A row the fences keep is weighed once more, against the claim it would start: a stop of that
-// worker ends the row too, since the row would otherwise start the stopped worker
-// again the moment a slot came (stopOutlivedStart). That second read is one batched RoleRuns
-// call over the rows the fences kept, and no read at all when they kept none.
+// A row the fences keep is weighed once more, against the claim it would start: a stop that
+// outlived the row's own start ends the row too, since the row's retry would otherwise start
+// the stopped worker again the moment a slot came (stopOutlivedStart). That second read is one
+// batched RoleRuns call over the rows the fences kept, and no read at all when they kept none.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -2218,28 +2218,45 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 
 // stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
 // that would only ever start a stopped worker. Its three terms together say the stop is the whole
-// of this row's story, and run carries all three: it is one record.Store.RoleRuns read, which
-// reads the queued rows before the claim exactly so that none of the three is read across a
-// relaunch of that claim (record's RoleRuns).
+// of this row's story, and the claim carries all three: its state, the newest start run against
+// it, and the task it holds, read in one record.Store.RoleRuns call after the rows the fences
+// kept (record's RoleRuns reads its claims last). That order is what keeps the second term
+// honest: the mark it weighs owed's id against is never older than the read that said owed was
+// still owed, so a row run in between reads as run rather than as a start still to come.
 func stopOutlivedStart(run record.RoleRun, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if run.Claim == nil || run.Claim.State != supervise.StateRetired {
 		return false
 	}
-	// A second queued start would say a later start of the workflow is already on its way —
-	// a re-admitted tree's promotion and the held phase's retry both write one — and the stop
-	// is over for a worker the workflow is starting again. The rule therefore does not reach
-	// a relaunch row outstanding at the stop, which is that second queued start, nor an owed
-	// row a lane has already leased, which is not in this read at all
-	// (record.Store.OwedStarts).
-	if slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
-		return queued.ID != owed.ID && queued.Request.Op == "start"
-	}) {
+	// A row that has never run against this claim is the workflow's next start of this worker,
+	// not a start the stop outlived: a re-admitted tree's promotion and the held phase's retry
+	// write such a row for a claim the operator has already stopped, and the row is the whole of
+	// that start. Ending it would end the way back — the issue would leave the waiting line, since
+	// the line's first part is the issues that owe a start (record.Waiting), and nothing would
+	// start that phase again, the slot repair being no backstop: it skips a retired claim on
+	// purpose (resumeSlottedWorkers).
+	//
+	// A row the claim has already run is the start the stop then ended. The outbox records the row
+	// against the claim before it brings the worker back (supervise's StartedBy, from the outbox's
+	// start), so a row at or below that mark has had its start, and what left it queued is a
+	// failure of its own after that point — a delivery the listener refused, a crash before the
+	// row was finished — which its retry would answer by starting the stopped worker again. The
+	// mark is the newest start run, so an older row still queued beside a newer one that ran reads
+	// the same way, and rightly: the workflow's next start of this worker is not behind it.
+	//
+	// This is where the rule read a second queued start before INFRA-1573. A phase worker's start
+	// was two rows then — a task-less relaunch beside the row that carried the task — so the
+	// sibling was there to be read, and reading it said the workflow was starting this worker
+	// again. A start is one row now (workflow.StartOrOwe), so there is no sibling to find, and
+	// that term would have read every start the workflow writes after a stop as a start the stop
+	// outlived. What the rule still does not reach is an owed row a lane has already leased, which
+	// is not in this read at all (record.Store.OwedStarts).
+	if run.Claim.LastStartRow < owed.ID {
 		return false
 	}
-	// A task the claim still works would say the claim kept the work of this very row, which
-	// the outbox's relaunch leaves for the row behind it, so the row is not simply a start
-	// the stop outlived.
+	// A task the claim still works would say the claim kept the work of this very row — the row
+	// gave it that task on the run above and the stop came before the claim was done with it — so
+	// the row is not simply a start the stop outlived.
 	if p := run.Claim.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, run.Claim.State) {
 		return false
 	}
