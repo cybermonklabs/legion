@@ -159,8 +159,8 @@ jobs:
     needs: targets
     runs-on: ubuntu-24.04
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_curl`
-    # ladders, 1482 s, above the Go module download and the workspace install at
+    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
+    # calls, 1482 s, above the Go module download and the workspace install at
     # 5 x 180 + 150 = 1050 s each. 600 + 1482 = 2082 s -> 35 min.
     timeout-minutes: 35
     # Checks out and uploads; nothing here writes to the repository or a registry.
@@ -174,7 +174,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Its own retry arithmetic, which is the action's: two `ci_tools_curl` ladders,
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
       # 2 x 741 = 1482 s (the Budgets note in .github/workflows/ci.yaml's header) -> 25 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
@@ -250,8 +250,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 4800 s, the 80 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_curl`
-    # ladders, 1482 s, above the Go module download and the workspace install at
+    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
+    # calls, 1482 s, above the Go module download and the workspace install at
     # 5 x 180 + 150 = 1050 s each. 4800 + 1482 = 6282 s -> 105 min.
     timeout-minutes: 105
     # Builds and pushes images to ghcr.io; nothing here writes to the repository.
@@ -287,7 +287,7 @@ jobs:
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
           cache: ${{ matrix.arch == 'amd64' }}
-      # Its own retry arithmetic, which is the action's: two `ci_tools_curl` ladders,
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
       # 2 x 741 = 1482 s (the Budgets note in .github/workflows/ci.yaml's header) -> 25 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
@@ -540,8 +540,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 600 s, the 10 minutes
     # this job carried, plus its slowest retried step alone — packages/envoy's
-    # `go mod download`, 5 x 180 + 150 = 1050 s, above install-changie's one `ci_tools_curl`
-    # ladder of 741 s. 600 + 1050 = 1650 s -> 28 min.
+    # `go mod download`, 5 x 180 + 150 = 1050 s, above install-changie's one `ci_tools_fetch`
+    # of 741 s. 600 + 1050 = 1650 s -> 28 min.
     timeout-minutes: 28
     permissions:
       contents: read
@@ -566,7 +566,7 @@ jobs:
           .github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_curl` ladder, 741 s (the
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s (the
         # Budgets note in .github/workflows/ci.yaml's header) -> 13 min.
         timeout-minutes: 13
       # This release's own changelog entries, which release_publish writes into the GitHub

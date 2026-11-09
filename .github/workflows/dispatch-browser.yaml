@@ -369,7 +369,8 @@ jobs:
       # Its own retry arithmetic, which is the action's: .github/scripts/ci-tools.sh is sourced
       # in two of that action's steps - the second source's fetch of Bun and the digest check
       # after it - and rule 8 of .github/scripts/check-download-retry.sh credits that file's
-      # declared 741 s ladder to each of them, 2 x 741 = 1482 s -> 25 min. The declaration is
+      # declared 741 s `ci_tools_fetch` to each of them, 2 x 741 = 1482 s -> 25 min. The
+      # declaration is
       # in that check's DECLARED_LOOPS, which writes the sum out: a step sourcing the file
       # twice is charged twice, which over-prices this step rather than under-pricing it.
       - uses: ./.github/actions/setup-bun

@@ -56,7 +56,7 @@ jobs:
     # carry one each now, each for the retries it holds (the Budgets note in
     # .github/workflows/ci.yaml's header). The job's own two terms are that 77 s measured
     # maximum and its slowest retried step alone — the record step, whose two `crane manifest`
-    # reads are 2 x (5 x 60 + 150) = 900 s, above install-crane's one `ci_tools_curl` ladder
+    # reads are 2 x (5 x 60 + 150) = 900 s, above install-crane's one `ci_tools_fetch`
     # of 741 s, the ci-ok report's 600 s and the decide step's one `crane config` read of
     # 450 s. 77 + 900 = 977 s -> 17 min. A run whose row already names a served digest skips
     # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
@@ -107,7 +107,7 @@ jobs:
 
       # crane reads the published image's label for the publish decision below and writes the
       # pushed image's tag.
-      # install-crane's own retry arithmetic: one `ci_tools_curl` ladder, 741 s (the Budgets
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s (the Budgets
       # note in .github/workflows/ci.yaml's header) -> 13 min.
       - uses: ./.github/actions/install-crane
         timeout-minutes: 13

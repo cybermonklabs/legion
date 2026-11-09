@@ -362,12 +362,11 @@ ci_tools__tempfile() {
 # 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
 # .github/workflows/ci.yaml carry `timeout-minutes: 10`.
 #
-# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound. Sixty-three
-# budget comments across six workflows write the resulting figure beside the step it sizes,
-# because a reader checking one step's ceiling needs the term in front of them; each names
-# this block as where it comes from, and none of them derives it again. What is written once
-# is the derivation, not the number — the count moves whenever a retried step is added or
-# removed, and no check holds it. The worst case is not the host that stalls throughout and not the host that
+# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound. The budget
+# comments of the workflows write the sum a `ci_tools_fetch` comes to and cite it through the
+# Budgets note of .github/workflows/ci.yaml's header, which points here; none of them derives
+# the per-ladder term again. The worst case is not the host that stalls throughout and not the
+# host that
 # fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
 # attempt, so the timer passes two minutes inside the second attempt and curl starts none
 # after it — measured at a 60 s bound against a host that accepts and never answers: attempts
@@ -388,7 +387,8 @@ ci_tools__tempfile() {
 # the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
 # bound, exit 28 at 213 s; refusing every connection instead gives the waits alone, eight
 # requests and exit 7 at 127 s. The retry after the seventh is made because the timer stood
-# at 119 s when that attempt began, which is what "just under two minutes" above means.
+# at 119 s when that attempt ended and the next retry was decided, which is what "just under
+# two minutes" above means.
 #
 # A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull token, the
 # blob — which .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this file

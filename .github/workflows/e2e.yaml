@@ -185,7 +185,7 @@ jobs:
 
       # dispatch-claimant-delivery.sh runs its driver and the fake Envoy listener with bun, and
       # both import this repository's packages.
-      # Its own retry arithmetic, which is the action's: two `ci_tools_curl` ladders,
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
       # 2 x 741 = 1482 s (the Budgets note in .github/workflows/ci.yaml's header) -> 25 min.
       - if: matrix.bun
         timeout-minutes: 25
@@ -207,7 +207,7 @@ jobs:
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the
       # worker image ships, which is the one the daemon is written for.
       - if: matrix.jj
-        # install-jj's own retry arithmetic: two `ci_tools_curl` ladders and its `mise install`
+        # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
         # of the jj release, 1482 + 450 = 1932 s (the Budgets note in
         # .github/workflows/ci.yaml's header) -> 33 min.
         timeout-minutes: 33
