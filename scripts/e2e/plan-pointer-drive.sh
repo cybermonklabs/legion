@@ -121,9 +121,10 @@
 # PLAN_POINTER_DRIVE_ATTEMPTS (3) how many attempts one run makes before an unscorable run fails.
 #
 # The run refuses to start - no database, no server, no session - when LEGION_TEST_PG_DSN is
-# unset, is no postgres URL, names a host that is not loopback, names more than one host, holds
-# a percent sign in its authority, names its host in a parameter or writes a parameter key with
-# a percent sign, when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, when
+# unset, is no postgres URL, or names a host libpq does not read as one loopback name
+# (scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own parser, and refuses a host
+# that is not loopback, a host list of more than one, a `hostaddr`, a `service` and a control
+# character), when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, when
 # --mid-approval is neither word, when --base-commit is missing or names no commit of this
 # checkout, when either arm's daemon module is missing, or when the two arms compose the same
 # prompt byte for byte, which is a base arm that is no control.
@@ -311,63 +312,31 @@ compose_prompt() {
 begin prerequisites
 [ -n "$pg_dsn" ] ||
   fail "LEGION_TEST_PG_DSN is required: it names the loopback PostgreSQL server this run creates a database of its own on (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
-# The host of postgres://[user[:password]@]host[:port]/database[?params]: this run creates and
-# force-drops databases there, so it must be this machine's. The guard reads the authority, the
-# text between `://` and the first `/` or `?`, and refuses a comma in it: libpq takes a list of
-# hosts there and connects to the second when the first does not answer, so the one host this
-# guard reads is not the only one a `drop database` can reach. It refuses a percent sign in the
-# authority for the same reason, since libpq decodes one and `%2C` is a comma. It then refuses a
-# parameter named `host` or `hostaddr`, and any parameter key that holds a percent sign, because
-# libpq decodes a key too and `%68ost=` reaches it as `host=`. The sibling proofs refuse a DSN
-# they cannot read the same way (dispatch-two-builds.sh, verification-results.sh).
+# python3 and openssl are the Dispatch server's own: packages/dispatch/e2e/run-server.sh holds
+# the port with scripts/e2e/lib/held-port.py and mints a throwaway App key with `openssl genrsa`.
+# python3 reads the DSN below as well.
+for tool in bun go git jj psql curl dispatch python3 openssl; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
+# Which host the DSN names, read by libpq itself: this run creates and force-drops databases
+# there, so it must be this machine's. A shell pattern and libpq disagree about which text is
+# the host, because libpq ends the user name at the first `@` and a `?` does not end it, so the
+# host of `postgres://localhost?sslmode=disable@evil.example/db` is evil.example. The guard is
+# scripts/e2e/lib/loopback-dsn.py, which asks libpq's own parser (PQconninfoParse) and refuses a
+# host that is not loopback, a host list of more than one, a `hostaddr`, a `service` and a
+# control character. Its refusal prints the host it read and no other part of the DSN, since the
+# user name and the password are in it. The sibling proofs dispatch-two-builds.sh,
+# verification-results.sh and dispatch-claimant-delivery.sh call the same helper.
 case "$pg_dsn" in
   postgres://* | postgresql://*) ;;
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${pg_dsn#*://}
-authority=${authority%%[/?]*}
-case "$authority" in
-  *,*)
-    fail "LEGION_TEST_PG_DSN must name one host: '$authority' names several, and libpq connects to the next when the first does not answer, so a database this run drops could be on a server this check never read"
-    ;;
-  *%*)
-    fail "LEGION_TEST_PG_DSN must write its host as itself: '$authority' holds a percent sign, which libpq decodes, so the host it connects to is not the host this check reads"
-    ;;
-esac
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
-fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "LEGION_TEST_PG_DSN must name 127.0.0.1, localhost or ::1, not '$db_host': this run creates and drops databases there" ;;
-esac
-dsn_query=''
-case "$pg_dsn" in *\?*) dsn_query=${pg_dsn#*\?} ;; esac
-if [ -n "$dsn_query" ]; then
-  IFS='&' read -r -a dsn_parameters <<<"$dsn_query"
-  for dsn_parameter in ${dsn_parameters[@]+"${dsn_parameters[@]}"}; do
-    dsn_key=${dsn_parameter%%=*}
-    case "$dsn_key" in
-      *%*)
-        fail "LEGION_TEST_PG_DSN must write its parameter keys as themselves: the key '$dsn_key' holds a percent sign, which libpq decodes, so such a key can spell host"
-        ;;
-      host | hostaddr)
-        fail "LEGION_TEST_PG_DSN must not name its host in a parameter: it carries '$dsn_key='"
-        ;;
-    esac
-  done
+if ! db_host=$(LEGION_TEST_PG_DSN=$pg_dsn python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+  LEGION_TEST_PG_DSN "this run creates and force-drops databases there" 2>&1); then
+  fail "$db_host"
 fi
 [ -n "$omp" ] || fail "LEGION_OMP_PATH is required: it names the Oh My Pi binary each session runs"
 [ -x "$omp" ] || fail "LEGION_OMP_PATH=$omp is not an executable file"
-# python3 and openssl are the Dispatch server's own: packages/dispatch/e2e/run-server.sh holds
-# the port with scripts/e2e/lib/held-port.py and mints a throwaway App key with `openssl genrsa`.
-for tool in bun go git jj psql curl dispatch python3 openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
 [ -n "$gh_path" ] || gh_path=$(command -v gh) ||
   fail "no gh on PATH and no LEGION_GH_PATH: the pane composer is told the real gh"
 [ -x "$gh_path" ] || fail "the gh the composer is told, $gh_path, is not an executable file"

@@ -264,7 +264,7 @@ Each item below names a script, then what it proves.
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
   the head arm's is composed from this checkout's `packages/daemon`, the control's from the daemon module of the commit `--base-commit` names, taken with `git archive`, and both are composed by the daemon's own composer.
-  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions carrying three designs, approved at version 1 and again at version 6, so versions 7 and 8 are a revision no plan review approved, and six `plan` handoff records whose first cites version 1 — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes a ninth version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, and whether that design was the approved one, a stale one or an unapproved one.
+  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions carrying three of the four designs (`early` at versions 1 to 3, `standing` at 4 to 6, `unapproved` at 7 and 8), approved at version 1 and again at version 6, so versions 7 and 8 are a revision no plan review approved, and six `plan` handoff records whose first cites version 1 — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes the fourth design, `mid`, as a ninth version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, and the verdict on it: `approved`, `pointer`, `stale`, `unapproved` or `other`.
   `--mid-approval approved`, the default, has the watcher approve that ninth version, so the correct build becomes its design; `--mid-approval unapproved` leaves it unapproved, so the correct build stays the version 6 design.
   `--tasks 1` stages a plan of one task, which begins after that ninth version lands, so a worker that reads the plan once cannot reach it and the new text's effect is visible.
   `--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the ninth version: this staging measures how often a worker reads the plan again when no text tells it to.
@@ -3794,7 +3794,7 @@ DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh     # → "dispatch claimant delivery e2e: PASS in <n>s", exit 0
 ```
 
-Runs on any Linux host with `go`, `bun`, `curl`, `psql` and `openssl` — no Docker.
+Runs on any Linux host with `go`, `bun`, `curl`, `psql`, `openssl` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker.
 It proves `addClaimantRoute` (`packages/envoy/internal/dispatch/outbox/publisher.go`) on the wire:
 the real `envoy-dispatch` publishes each event, and the run reads which `notifications.agent.*` topics carried its envelope, `dispatch-<event id>`.
 
@@ -3899,7 +3899,7 @@ DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
-Runs on any Linux host with `go`, `bun`, `curl`, `psql` and `openssl` — no Docker.
+Runs on any Linux host with `go`, `bun`, `curl`, `psql`, `openssl` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker.
 It proves `currencyReader` (`packages/envoy/internal/dispatch/api/results.go`) and `recordPullRequestHead` (`packages/envoy/internal/dispatch/delivery/pull_request_heads.go`) on the wire:
 the real `envoy-dispatch` records each result and judges whether it still speaks for the work as it stands, and the head a `before_merge` result is measured against moves only because a pull-request event reached the bus.
 
@@ -4234,7 +4234,7 @@ Its inputs:
 
 | input | what it is |
 | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, a DSN is refused whose host is not loopback, whose authority names more than one host (libpq connects to the next when the first does not answer) or holds a percent sign (libpq decodes one, and `%2C` is a comma), which carries a `host=` or `hostaddr=` parameter, or whose parameter key holds a percent sign (libpq decodes a key too, so `%68ost=` reaches it as `host=`), and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, libpq's own parser reads which host the DSN names ([`lib/loopback-dsn.py`](#libloopback-dsnpy)), the run refuses a DSN whose host libpq does not read as `127.0.0.1`, `localhost` or `::1`, a DSN that carries a `hostaddr` or a `service` parameter, a host list of more than one (libpq connects to the next host when the first does not answer) and a DSN that holds a control character, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
 | `LEGION_GH_PATH` | optional: the real `gh` the composer is told, the first `gh` on `PATH` otherwise, where the run refuses to start when there is neither and when the one it found is not an executable file |
 | `--base-commit <rev>` | required: the control's commit |
@@ -4282,7 +4282,7 @@ An unscorable attempt is neither a pass nor a failure, since the session wrote t
 The shell prints one line for it, with the two times, and makes the run again, up to `PLAN_POINTER_DRIVE_ATTEMPTS` attempts.
 A run whose every attempt is unscorable fails.
 One `summary` line per arm names the staging (`tasks=`) and the watcher's shape (`mid-approval=`), and counts the kept rows, one per run (`runs=`), beside the sessions that arm ran, the discarded attempts included (`attempts=`).
-It counts those rows by the design each wrote (`wrote-mid=`, `wrote-unapproved=`, `wrote-standing=`, `wrote-early=`, `wrote-other=`) and by the verdict each carries (`verdict-approved=`, `verdict-pointer=`, `verdict-stale=`, `verdict-unapproved=`, `verdict-other=`).
+It counts those rows by the design each wrote, one field per design in the order the plan writes them (`wrote-early=`, `wrote-standing=`, `wrote-unapproved=`, `wrote-mid=`, and `wrote-other=` for a file that names no design's call or more than one), and by the verdict each carries, one field per verdict word (`verdict-approved=`, `verdict-pointer=`, `verdict-stale=`, `verdict-unapproved=`, `verdict-other=`).
 Three counts end the line: `designs-differ=`, the rows whose two files name different designs, `read-after-change=`, the rows whose session read the plan after the watcher moved it, and `trigger-at-bound=`, the rows whose watcher reached its bound with no plan read to fire it.
 The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
 only the extracted base tree is removed.
@@ -4444,6 +4444,38 @@ On any exit the run stops everything it started by the pid it was started as (a 
 Exit status: 0 pass, or the negative control holds;
 1 a wrong count, an order break or a failed step (`FAIL <step>: …`); 2 refused (an input or tool is missing).
 Do not edit the script while a run is going: bash reads it as it runs.
+
+## lib/loopback-dsn.py
+
+Prints the loopback host libpq reads from a PostgreSQL DSN, or refuses the DSN in one line.
+Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
+Four proofs call it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names:
+[`plan-pointer-drive.sh`](#plan-pointer-drivesh), `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh).
+
+```sh
+if ! db_host=$(DATABASE_URL=$database_url python3 scripts/e2e/lib/loopback-dsn.py \
+  DATABASE_URL "this run resets the database" 2>&1); then
+  fail "$db_host"
+fi
+```
+
+`loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
+WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
+The helper prints the host and exits 0 when libpq reads one loopback host from the DSN: `127.0.0.1`, `localhost` or `::1`.
+Every other answer is a refusal: one line on stderr and exit 1.
+
+libpq's own parser reads the DSN (`PQconninfoParse`), because a shell pattern and libpq disagree about which text is the host.
+libpq ends the user name at the first `@`, and a `?` does not end it, so the host of `postgres://localhost?sslmode=disable@evil.example/db` is `evil.example`, while a pattern that ends the authority at the first `?` reads `localhost`.
+libpq decodes a percent sign in a parameter key too, so `%68ost=` reaches it as `host=`, and it reads the whole DSN, while a reader that takes the parameters one line at a time reads the first line alone.
+
+The refusals are a control character in the DSN, a DSN libpq cannot parse, a DSN with no host, a host list of more than one (libpq connects to the next host when the first does not answer), a `hostaddr` parameter, a `service` parameter (whose entry in `~/.pg_service.conf` can name any host), and a host that is none of the three loopback names.
+Each refusal names what libpq read — the host, the hostaddr or the service — and prints no other part of the DSN, because the user name and the password are in it.
+Where `ctypes.util.find_library("pq")` finds no libpq, every DSN is refused and the refusal names libpq.
+There is no second, weaker check to fall back on.
+
+`loopback-dsn.test.ts` drives the helper with this host's own libpq and asserts the answer it gave, never a pattern of the DSN:
+the DSN a run is given, `localhost` and `::1`, the `?`-before-`@` and `?@` forms, a `%68ost=` key, a newline before an `&host=`, two hosts, a `hostaddr`, a `service`, a remote host, a DSN with no host, a DSN libpq cannot parse, and an unset variable.
+Eight of its cases carry a password in the DSN's userinfo and read the refusal back for it.
 
 ## lib/held-port.py
 

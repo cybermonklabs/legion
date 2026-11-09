@@ -184,28 +184,23 @@ begin prerequisites
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
 [ -n "$base_commit" ] ||
   fail "--base-commit is required: it names the commit the base build is built from (the merge base with the default branch)"
+for tool in go bun curl psql git openssl python3; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
+# Which host the DSN names, read by libpq itself (scripts/e2e/lib/loopback-dsn.py): the run
+# drops and recreates the database's public schema and both builds migrate it, so it must be
+# this machine's. libpq ends the user name at the first `@`, and a `?` does not end it, so a
+# shell pattern and libpq disagree about which text is the host. The helper asks libpq's own
+# parser, and refuses a host that is not loopback, a host list of more than one, a `hostaddr`,
+# a `service` and a control character. Its refusal prints no part of the DSN's userinfo.
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${database_url#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
+if ! db_host=$(DATABASE_URL=$database_url python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+  DATABASE_URL "this run resets the database" 2>&1); then
+  fail "$db_host"
 fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-esac
-[[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-  fail "DATABASE_URL must not name its host in a parameter"
-for tool in go bun curl psql git openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
 base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
   fail "--base-commit '$base_commit' names no commit of this repository"
 for port in "$base_port" "$head_port" "$envoy_port"; do
