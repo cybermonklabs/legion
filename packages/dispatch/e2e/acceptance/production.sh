@@ -49,9 +49,17 @@
 #
 # The waiting verdict states the time of the next look itself, because the daemon refuses a
 # `pending` on any look but the last unless it carries one, and that refusal leaves the look open.
-# The time is 30 minutes ahead, or NEXT_LOOK_SECONDS ahead where the caller gives it, and never
+# The time is 6 hours ahead, or NEXT_LOOK_SECONDS ahead where the caller gives it, and never
 # nearer than 60 seconds: the daemon raises anything nearer than that to 60 seconds ahead, so a
 # nearer time buys nothing and would only put a time in the record that the daemon does not keep.
+#
+# 6 hours rather than a few minutes, because that report is the ONLY thing that schedules the next
+# look: no deploy run, no Dispatch event and no daemon boot wakes this check. Each look costs a
+# pod of its own, and the check is bounded at `production_check_hours`, 336 by default, so a look
+# every half hour would be some 670 pods to learn a thing a person has not done yet, where every
+# 6 hours is 56. What it costs is latency in the record alone: at worst 6 hours between a deploy
+# landing and the look that reads it, against a 14-day bound. A role that knows a deploy is due
+# sets NEXT_LOOK_SECONDS and looks sooner.
 #
 # The check script is fetched into a file and run from that file, never `gh api … | bash`. A pipe
 # makes the fetch the left-hand command of a pipeline, whose failure the shell's status never
@@ -69,11 +77,11 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DISPATCH_URL=<the running Dispatch, which a Legion pod already exports> \
-         MERGE_SHA=<merge commit> [NEXT_LOOK_SECONDS=1800] production.sh
+         MERGE_SHA=<merge commit> [NEXT_LOOK_SECONDS=21600] production.sh
        (the bearer is this pod's own, read from DISPATCH_TOKEN or DISPATCH_TOKEN_FILE and never
        printed; there is no PROJECT, since the check script reads no project;
        NEXT_LOOK_SECONDS, read only by the waiting verdict, is how far ahead the next look is,
-       30 minutes by default and never nearer than 60 seconds)
+       6 hours by default and never nearer than 60 seconds)
 USAGE
 }
 
@@ -95,7 +103,7 @@ readonly issue="INFRA-1098"
 readonly page="/issues/$issue"
 readonly routes=("/api/v1/issues/$issue/decisions" "/api/v1/inbox")
 
-next_look_seconds="${NEXT_LOOK_SECONDS:-1800}"
+next_look_seconds="${NEXT_LOOK_SECONDS:-21600}"
 [[ "$next_look_seconds" =~ ^[0-9]+$ ]] || {
   printf 'NEXT_LOOK_SECONDS is %s, not a number of seconds\n' "$next_look_seconds" >&2
   usage
