@@ -33,8 +33,8 @@ import {
   sendAttempt,
 } from "./send-request";
 
-/** A held send's draft as its composer restores it: the text, its accepted mentions and a
- *  suggestion's replacement, and an ask's fields. */
+/** A held send's draft as its composer restores it: the text, a suggestion's replacement, and
+ *  an ask's fields. */
 export interface HeldDraft {
   readonly ask: SentRequest["ask"];
   readonly draft: SentDraft;
@@ -140,16 +140,12 @@ const keptAsk = shape.record({
   urgency: shape.oneOf(...ASK_URGENCIES),
 });
 
+/** A kept draft: its text and a suggestion's replacement. Who it addresses is in that text
+ *  (R4), so nothing of the kind is kept beside it; a record the build before this one kept
+ *  holds a `mentions` array as well, which this shape does not read, so that draft comes back
+ *  with its words and its parties are read from them. */
 const keptDraft = shape.record({
   body: shape.string,
-  mentions: shape.array(
-    shape.record({
-      end: shape.number,
-      start: shape.number,
-      target: shape.string,
-      text: shape.string,
-    })
-  ),
   replacement: shape.string,
 }) satisfies Shape<SentDraft>;
 

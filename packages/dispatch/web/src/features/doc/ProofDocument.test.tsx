@@ -615,7 +615,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "Why?", mentions: [], replacement: "" },
+      draft: { body: "Why?", replacement: "" },
       edit: undefined,
       kind,
       owner: { issueKey: "CORE-1", kind: "issue" },
@@ -793,7 +793,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "After the close", mentions: [], replacement: "" },
+        draft: { body: "After the close", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { issueKey: "CORE-1", kind: "issue" },

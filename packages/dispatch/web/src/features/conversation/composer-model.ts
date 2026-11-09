@@ -64,11 +64,3 @@ export interface ReplyTarget {
   };
   readonly to?: string;
 }
-
-/** One accepted mention: the target, and the span of the body that names it. */
-export interface AcceptedMention {
-  readonly end: number;
-  readonly start: number;
-  readonly target: string;
-  readonly text: string;
-}

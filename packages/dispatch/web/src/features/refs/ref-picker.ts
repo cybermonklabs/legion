@@ -241,11 +241,18 @@ function linkWords(label: string): string {
   return label.replace(/[[\]]/gu, (bracket) => `\\${bracket}`);
 }
 
-/** The text a pick inserts: a party as a link whose words are its name and whose address names
- *  it (R4), so the stored text reads as the person, session or role it mentions; every other
- *  kind as the bare address, which the renderer draws by its target's own title (R8). */
+/** The mention of a party: a link whose words are its name and whose address names it (R4), so
+ *  the stored text reads as the person, session or role it mentions and still names it after an
+ *  edit of the words. The one writer of that shape, read by the picker's pick below and by the
+ *  seed a channel owes its own party (`party-references.ts`). */
+export function partyLink(words: string, reference: string): string {
+  return `[${linkWords(words)}](${reference})`;
+}
+
+/** The text a pick inserts: a party as its worded link; every other kind as the bare address,
+ *  which the renderer draws by its target's own title (R8). */
 export function insertionText(row: RefPickerRow): string {
-  return isPartyKind(row.kind) ? `[${linkWords(row.label)}](${row.reference})` : row.reference;
+  return isPartyKind(row.kind) ? partyLink(row.label, row.reference) : row.reference;
 }
 
 /** The insertion a pick of `row` makes in a draft whose caret is at `caret`. */

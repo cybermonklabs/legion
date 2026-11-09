@@ -119,9 +119,8 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
     await selectMention(page, field, "/btw @", "role-x");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@role-x",
+      body: "[role-x](dispatch://role/role-x)",
       delivery: "btw",
-      mentions: [{ target: "role:role-x" }],
     });
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
 
@@ -159,9 +158,8 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toMatchObject({
-      body: "@Planner",
+      body: "[Planner](dispatch://agent/planner)",
       delivery: "aside",
-      mentions: [{ target: "session:planner" }],
     });
   } finally {
     await alice.close();

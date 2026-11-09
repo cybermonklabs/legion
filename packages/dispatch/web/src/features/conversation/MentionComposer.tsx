@@ -68,13 +68,13 @@ import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
+import { draftParties, partyMention, partyMentionSpan } from "../refs/party-references";
 import { buildReferencePath } from "../refs/routes";
 import { readTextReferences } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
 import type {
-  AcceptedMention,
   AnchorRefusal,
   ComposerAnchor,
   ComposerKind,
@@ -83,12 +83,7 @@ import type {
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
-import {
-  MentionField,
-  type MentionFieldChange,
-  type MentionFieldHandle,
-  mentionDisplay,
-} from "./MentionField";
+import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "./MentionField";
 import { ReplyQuote } from "./ReplyQuote";
 import {
   carriedIdsOf,
@@ -96,22 +91,19 @@ import {
   type DeliveryPlan,
   deliveryPlan,
   KEYED_SEND_LATE_TEXT,
-  mentionText,
   requestFor,
   type SaveCommentEdit,
   type SentRequest,
   saveCommentEdit,
-  survivingMentions,
   unedited,
 } from "./send-request";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 
-/** A draft as the composer holds it: the text, the mentions accepted in it, and, when it is a
- *  suggestion, its replacement. Mentions are offsets into that exact text. */
+/** A draft as the composer holds it: the text, and, when it is a suggestion, its replacement.
+ *  Who it addresses is in that text, written there as a reference (R4). */
 interface Draft {
   readonly body: string;
-  readonly mentions: readonly AcceptedMention[];
   readonly replacement?: string;
 }
 
@@ -157,73 +149,41 @@ function ownTarget(owner: ComposerOwner): string | null {
 }
 
 /**
- * What a draft becomes under a channel's seed: the reader's prose with the records still in step
- * with it, and the channel's own mentions seeded in front of whatever is not already there. A
- * mount applies it to no draft at all; a host that changes the seed - an Agents row's issue pick,
- * or a reply that moves the message to another channel - has it applied to the live draft in
- * place, so the draft never parts from the composer, or from a send it has in flight.
+ * What a draft's text becomes under a channel's seed: the reader's prose with the channel's own
+ * mentions written in front of whatever it does not already name. A mount applies it to no
+ * draft at all; a host that changes the seed - an Agents row's issue pick, or a reply that
+ * moves the message to another channel - has it applied to the live draft in place, so the
+ * draft never parts from the composer, or from a send it has in flight.
  *
- * Three rules keep the text and the accepted records saying the same thing, because only the
- * records reach the wire (`survivingMentions` at send) while only the text reaches the reader:
+ * Both rules read the text itself (`draftParties`), which is the whole record of who a draft
+ * names (R4):
  *
- * - A record counts only while its span is untouched (`survivingMentions`). A span the reader
- *   edited is their prose: the record goes, the text stays.
  * - The channel's own mention belongs to the channel. Entering one that seeds none - a direct
- *   message, which already reaches its session - takes the untouched record for that session out
- *   of the text with its separating space. Every other surviving record stays, so a trip back
- *   restores it.
- * - Seeding is by target, not by position: a mention this channel owes is added only when no
- *   surviving record already names it, wherever in the body that record sits.
+ *   message, which already reaches its session - takes that session's mention out of the text,
+ *   its words and its separating space with it. A trip back seeds it again.
+ * - Seeding is by party, not by position: a mention this channel owes is added only when the
+ *   text does not name that party already, wherever in it that mention sits.
  */
 function seededDraft(
   seedMentions: readonly { readonly target: string; readonly title: string }[],
-  draft: Draft | undefined,
+  draft: string,
   owner: ComposerOwner
-): { body: string; mentions: AcceptedMention[] } {
-  let body = draft?.body ?? "";
-  let records = survivingMentions(body, draft?.mentions ?? []);
+): string {
+  let body = draft;
   const own = ownTarget(owner);
-  const addressed = own === null ? undefined : records.find((record) => record.target === own);
+  const addressed = own === null ? undefined : partyMentionSpan(body, own);
   if (addressed !== undefined) {
     const cut =
       body.slice(addressed.end, addressed.end + 1) === " " ? addressed.end + 1 : addressed.end;
-    const width = cut - addressed.start;
     body = body.slice(0, addressed.start) + body.slice(cut);
-    records = records
-      .filter((record) => record !== addressed)
-      .map((record) =>
-        record.start >= cut
-          ? { ...record, end: record.end - width, start: record.start - width }
-          : record
-      );
   }
-  const owed = seedMentions.filter(
-    (mention) => !records.some((record) => record.target === mention.target)
-  );
-  let offset = 0;
-  const seeded = owed.map((mention) => {
-    const text = mentionDisplay(mention.title, mention.target);
-    const start = offset;
-    offset += mentionText(text).length;
-    const end = offset;
-    offset += 1;
-    return { end, start, target: mention.target, text };
-  });
-  const prefix = owed
-    .map((mention) => mentionText(mentionDisplay(mention.title, mention.target)))
+  const named = new Set(draftParties(body).targets);
+  const prefix = seedMentions
+    .flatMap((mention) =>
+      named.has(mention.target) ? [] : (partyMention(mention.target, mention.title) ?? [])
+    )
     .join(" ");
-  const shift = prefix === "" ? 0 : prefix.length + 1;
-  return {
-    body: [prefix, body].filter((part) => part !== "").join(" "),
-    mentions: [
-      ...seeded,
-      ...records.map((record) => ({
-        ...record,
-        end: record.end + shift,
-        start: record.start + shift,
-      })),
-    ],
-  };
+  return [prefix, body].filter((part) => part !== "").join(" ");
 }
 
 export function hasUnsavedInput(
@@ -399,18 +359,11 @@ export function MentionComposer({
   const [initial] = useState(() => {
     const held = outgoing.held?.draft;
     if (held !== undefined) {
-      return {
-        ask: held.ask,
-        body: held.draft.body,
-        mentions: [...held.draft.mentions],
-        replacement: held.draft.replacement,
-      };
+      return { ask: held.ask, body: held.draft.body, replacement: held.draft.replacement };
     }
-    const seeded = seededDraft(seedMentions, undefined, owner);
     return {
       ask: undefined,
-      body: edit?.body ?? seeded.body,
-      mentions: seeded.mentions,
+      body: edit?.body ?? seededDraft(seedMentions, "", owner),
       replacement: "",
     };
   });
@@ -429,18 +382,16 @@ export function MentionComposer({
   const mountedHeld = useRef(outgoing.held !== undefined);
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
-  const [mentions, setMentions] = useState<AcceptedMention[]>(initial.mentions);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
    *  answered them; Save carries their ids (`carriedBlocks`). */
   const followedBlocks = useRef<FollowedBlocks | undefined>(undefined);
-  /** Puts a whole draft in the field at once - its text, mentions, and replacement in step with
-   *  the request that supplied them - where the reader did not type it, so their next edit is
-   *  measured from here (`previousBody`). */
+  /** Puts a whole draft in the field at once - its text and a suggestion's replacement, in step
+   *  with the request that supplied them - where the reader did not type it, so their next edit
+   *  is measured from here (`previousBody`). */
   const replaceDraft = useCallback((draft: Draft) => {
     setBody(draft.body);
     previousBody.current = draft.body;
     followedBlocks.current = followEdit(followedBlocks.current, draft.body, undefined, undefined);
-    setMentions([...draft.mentions]);
     setReplacement(draft.replacement ?? "");
   }, []);
   const [askOptions, setAskOptions] = useState<AskOptionDraft[]>(() =>
@@ -469,15 +420,15 @@ export function MentionComposer({
   // pick offers are the picker's own read (`useRefPicker`).
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
   const compact = inline || edit !== undefined;
-  /** The whole draft, gone - the body, its accepted mentions, a suggestion's replacement and an
-   *  ask's options - on a successful send and on Discard alike, in every host, leaving what a fresh
+  /** The whole draft, gone - the body, a suggestion's replacement and an ask's options - on a
+   *  successful send and on Discard alike, in every host, leaving what a fresh
    *  mount shows: a host whose `onClose` only moves focus (`AgentsPage`'s rows) keeps the composer
    *  mounted, and it must read as a new one would. That includes the channel's own mentions: an
    *  issue comment an Agents row writes reaches its agent only by mentioning it, so every message
    *  after the first is seeded as the first was. The kind, the urgency and `Allow multiple` are
    *  the reader's settings, not the draft, and stay. */
   const clearDraft = () => {
-    replaceDraft(seededDraft(seedMentions, undefined, owner));
+    replaceDraft({ body: seededDraft(seedMentions, "", owner) });
     setAskOptions([emptyAskOption()]);
   };
   // The pills read the draft through the one reader the rendered body, the document editors and
@@ -513,7 +464,7 @@ export function MentionComposer({
   useLayoutEffect(() => {
     if (seededFor.current === seedKey) return;
     seededFor.current = seedKey;
-    replaceDraft(seededDraft(seedMentions, { body, mentions }, owner));
+    replaceDraft({ body: seededDraft(seedMentions, body, owner) });
   }, [seedKey]);
   // An edit's body is the draft when the edit opens, and again whenever the comment it edits
   // changes - never over the held draft a mount took.
@@ -521,7 +472,7 @@ export function MentionComposer({
   useEffect(() => {
     if (editBody === undefined || editedFrom.current === editBody) return;
     editedFrom.current = editBody;
-    replaceDraft({ body: editBody, mentions: [] });
+    replaceDraft({ body: editBody });
   }, [editBody, replaceDraft]);
   // The edited comment's blocks, read when the edit opens and again whenever the comment changes,
   // then followed through every edit of the field, so Save carries each block's id. A read that
@@ -588,26 +539,17 @@ export function MentionComposer({
       takeFocus();
       return;
     }
+    // The parties the parent was delivered to, each mentioned once, as the links that name
+    // them: the reply's own mentions are its words, and the reader edits them as words.
     const initial = replyTo.mentions ?? [];
     const deduplicated = initial.filter(
       (mention, index) =>
         initial.findIndex((candidate) => candidate.target === mention.target) === index
     );
-    const texts = deduplicated.map((mention) =>
-      mentionText(mentionDisplay(mention.title, mention.target))
-    );
-    const value = texts.join(" ");
-    let offset = 0;
     replaceDraft({
-      body: value,
-      mentions: deduplicated.map((mention, index) => {
-        const text = mentionDisplay(mention.title, mention.target);
-        const start = offset;
-        offset += texts[index]?.length ?? 0;
-        const end = offset;
-        offset += 1;
-        return { end, start, target: mention.target, text };
-      }),
+      body: deduplicated
+        .flatMap((mention) => partyMention(mention.target, mention.title) ?? [])
+        .join(" "),
     });
     takeFocus();
   }, [replaceDraft, replyTo, standing]);
@@ -647,14 +589,14 @@ export function MentionComposer({
   keepDraft.current = () =>
     outgoing.keep({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-      draft: { body, mentions, replacement },
+      draft: { body, replacement },
     });
   useEffect(() => () => keepDraft.current(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
   useEffect(() => {
     const write = window.setTimeout(() => keepDraft.current(), KEEP_DRAFT_MS);
     return () => window.clearTimeout(write);
-  }, [askOptions, body, mentions, multiple, replacement, urgency]);
+  }, [askOptions, body, multiple, replacement, urgency]);
   useEffect(() => {
     const keepNow = () => keepDraft.current();
     window.addEventListener("pagehide", keepNow);
@@ -730,12 +672,11 @@ export function MentionComposer({
           ? { project: owner.project }
           : { session: owner.sessionId };
 
-  /** One edit of the body field: the text and the mentions reconciled against it come together
-   *  (`MentionFieldChange`), and the edit the browser named moves the edited comment's blocks
-   *  with them. `mapSpans` takes that range only where it explains the edit of the value the
-   *  spans follow, which is the textarea's own (LF for an edited body's CR LF). */
+  /** One edit of the body field: the text, and the edit the browser named, which moves the
+   *  edited comment's blocks with it. `mapSpans` takes that range only where it explains the
+   *  edit of the value the spans follow, which is the textarea's own (LF for an edited body's
+   *  CR LF). */
   const onBodyChange = (change: MentionFieldChange) => {
-    setMentions(change.mentions);
     followedBlocks.current = followEdit(
       followedBlocks.current,
       change.body,
@@ -767,7 +708,7 @@ export function MentionComposer({
   ): Omit<SentRequest, "sendKey"> => ({
     anchor,
     ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-    draft: { body: sentBody, mentions, replacement: sentReplacement },
+    draft: { body: sentBody, replacement: sentReplacement },
     edit:
       edit === undefined
         ? undefined
@@ -797,13 +738,16 @@ export function MentionComposer({
         replacementField.current?.textarea()?.value ?? replacement
       )
     );
-  const activeMentions = useMemo(() => survivingMentions(body, mentions), [body, mentions]);
+  /** Who this draft addresses, read from its own words (`draftParties`): the delivering
+   *  parties, whose advertised modes the notices below are drawn from, and whether it names a
+   *  party at all, which is what decides that a typed `/btw` is a command. */
+  const parties = useMemo(() => draftParties(body), [body]);
   const effectiveTargets: readonly string[] =
     owner.kind === "session"
       ? [`session:${owner.sessionId}`]
       : replyTo?.parentKind === "message" && replyTo.thread !== undefined
         ? [replyTo.thread.target]
-        : activeMentions.map((mention) => mention.target);
+        : parties.targets;
   const targetOptions = effectiveTargets.flatMap((target) => {
     const option = options.find((candidate) => candidate.target === target);
     return option === undefined ? [] : [option];
@@ -827,14 +771,14 @@ export function MentionComposer({
     heldPicked === undefined &&
     (owner.kind === "session"
       ? replyTo?.thread?.delivery === undefined
-      : replyTo?.parentKind !== "message" && activeMentions.length > 0);
+      : replyTo?.parentKind !== "message" && parties.named);
   const inheritedDelivery =
     heldPicked ??
     (owner.kind === "session"
       ? (replyTo?.thread?.delivery ?? plainMode)
       : replyTo?.parentKind === "message"
         ? replyTo.thread?.delivery
-        : activeMentions.length > 0
+        : parties.named
           ? plainMode
           : undefined);
   // A picked mode sends the body as written: no `/btw` or `/aside` at its start is a command.
@@ -1065,7 +1009,6 @@ export function MentionComposer({
         issueKey={pickerIssue}
         label={bodyLabel}
         labelHidden={compact}
-        mentions={mentions}
         onChange={onBodyChange}
         onDrop={
           uploadOwner === undefined

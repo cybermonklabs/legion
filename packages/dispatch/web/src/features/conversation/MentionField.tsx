@@ -21,85 +21,22 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import { applyInsertion, type RefPickerInsertion } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
-import type { AcceptedMention } from "./composer-model";
-import { survivingMentions } from "./send-request";
-
-/** What a box that sends no mention passes: one value, so the memo over it never sees a new
- *  array. */
-const NO_MENTIONS: readonly AcceptedMention[] = [];
 
 /** The parties a pick can name - the live sessions, the roles their holders carry, and the
  *  issue's Legion roles nobody holds - are `features/refs/party-options.ts`, not this file:
  *  the picker builds its agent and role rows from them, and this field hosts that picker, so
  *  holding them here would make the two modules import each other (`noImportCycles`). */
 
-/** Reconcile accepted mentions against the actual textarea edit range. */
-export function reconcileMentions(
-  before: string,
-  after: string,
-  mentions: readonly AcceptedMention[],
-  edit?: TextEditRange
-): AcceptedMention[] {
-  if (edit !== undefined) {
-    const delta = after.length - before.length;
-    return mentions.flatMap((mention) => {
-      if (mention.end <= edit.start) return [mention];
-      if (mention.start >= edit.end) {
-        return [{ ...mention, end: mention.end + delta, start: mention.start + delta }];
-      }
-      return [];
-    });
-  }
-  const delta = after.length - before.length;
-  if (delta < 0) {
-    const deleted = -delta;
-    const possibleStarts = Array.from({ length: after.length + 1 }, (_, start) => start).filter(
-      (start) =>
-        before.slice(0, start) === after.slice(0, start) &&
-        before.slice(start + deleted) === after.slice(start)
-    );
-    return mentions.flatMap((mention) => {
-      if (possibleStarts.some((start) => mention.start < start + deleted && mention.end > start)) {
-        return [];
-      }
-      const shifts = new Set(possibleStarts.map((start) => (start < mention.start ? delta : 0)));
-      if (shifts.size !== 1) return [];
-      const shift = shifts.values().next().value;
-      if (shift === undefined) return [];
-      return [{ ...mention, end: mention.end + shift, start: mention.start + shift }];
-    });
-  }
-  let prefix = 0;
-  const common = Math.min(before.length, after.length);
-  while (prefix < common && before[prefix] === after[prefix]) prefix += 1;
-  return mentions.flatMap((mention) => {
-    if (mention.end <= prefix) return [mention];
-    if (mention.start >= prefix) {
-      return [{ ...mention, end: mention.end + delta, start: mention.start + delta }];
-    }
-    return [];
-  });
-}
-
-export function mentionDisplay(title: string, target: string): string {
-  const trimmed = title.trim();
-  if (trimmed !== "" && !/^(?:session|role):/i.test(trimmed) && !/[@\r\n]/.test(trimmed)) {
-    return trimmed;
-  }
-  return target.replace(":", " ");
-}
-
-/** One edit of the field: the text now, the accepted mentions reconciled against it, and the
- *  edit the browser named, which a host following block spans maps them through (`followEdit`).
- *  Both arrive together because a mention's offsets are into that exact text. */
+/** One edit of the field: the text now, and the edit the browser named, which a host following
+ *  block spans maps its spans through (`followEdit`). */
 export interface MentionFieldChange {
   readonly body: string;
   readonly inputType?: string;
-  readonly mentions: AcceptedMention[];
   readonly range?: TextEditRange;
 }
 
@@ -139,7 +76,6 @@ export function MentionField({
   label,
   labelClassName,
   labelHidden = false,
-  mentions = NO_MENTIONS,
   onChange,
   onDrop,
   onKeyDown,
@@ -177,9 +113,6 @@ export function MentionField({
    *  grid row, a flex form - dresses this rather than the textarea. */
   readonly labelClassName?: string;
   readonly labelHidden?: boolean;
-  /** The mentions accepted in `body`, whose offsets are into that exact text. A box that sends
-   *  none passes none. */
-  readonly mentions?: readonly AcceptedMention[];
   readonly onChange: (change: MentionFieldChange) => void;
   readonly onDrop?: (event: DragEvent<HTMLTextAreaElement>) => void;
   /** The host's own keys - a submit on Ctrl/Cmd+Enter, an ask option on Enter - which the keys
@@ -205,24 +138,17 @@ export function MentionField({
   /** Where the caret is, which is what the picker reads the open door from. It follows the
    *  box's own selection rather than the end of the text: a trigger typed in the middle of a
    *  sentence opens the picker there, and a pick replaces that stretch alone. It starts at the
-   *  front because nothing has been typed yet: a draft the host seeded (`@Planner`) is not a
-   *  trigger the reader is standing on. */
+   *  front because nothing has been typed yet: a draft the host seeded is not a trigger the
+   *  reader is standing on. */
   const [caret, setCaret] = useState(0);
   /** The reader is in this box. A picker over a box nobody is writing in has nothing to pick
    *  for, and would read the seeded text of every other box on the page as a trigger. */
   const [focused, setFocused] = useState(false);
-  // What the field last showed - its text and the records in step with it - which the next edit
-  // is measured from. It is the host's own state, which the render below brings back, plus
-  // whatever an edit in this same task has already made of it, since the host's state is a
-  // render behind that. A draft the host puts in the field (a held send's, an upload's text, a
-  // reference) arrives the same way, so the next edit is measured from that instead.
-  const previousBody = useRef(body);
-  previousBody.current = body;
-  const shownMentions = useRef(mentions);
-  shownMentions.current = mentions;
-  const pendingTextEdit = useRef<
-    { before: string; inputType: string; range: TextEditRange } | undefined
-  >(undefined);
+  /** The edit the browser named, read from its own `beforeinput`: its type and the range it
+   *  replaces, which a host following block spans maps them through (`followEdit`). */
+  const pendingTextEdit = useRef<{ inputType: string; range: TextEditRange } | undefined>(
+    undefined
+  );
   const listboxId = useId();
   const hintId = useId();
   const picker = useRefPicker({
@@ -232,9 +158,11 @@ export function MentionField({
     project,
     text: body,
   });
+  /** Who this box's write is delivered to, read from the text the reader can see
+   *  (`draftParties`): a box whose write delivers nothing names nobody, whatever it cites. */
+  const delivered = writing.delivers;
+  const parties = useMemo(() => (delivered ? draftParties(body).targets : []), [body, delivered]);
   const { open } = picker;
-  const activeMentions = useMemo(() => survivingMentions(body, mentions), [body, mentions]);
-
   // The key handler and the handle below read the picker as it stands rather than as the render
   // that bound them saw it, so neither is bound again on a keystroke.
   const pickerNow = useRef(picker);
@@ -248,45 +176,23 @@ export function MentionField({
   useEffect(() => {
     onPickerOpenChange?.(open);
   }, [onPickerOpenChange, open]);
-
   /** A row taken: the picker says what to write and which stretch of the draft it replaces, and
-   *  the field writes it. The write is one edit like any other, so an accepted mention whose
-   *  span it crosses goes with it; a party's pick adds none of its own - it writes the link
-   *  that names the party, which is what the body is read for. */
+   *  the field writes it. A party's pick writes the link that names it, which is what the body
+   *  is read for; nothing is recorded beside the words. */
   const takePick = (insertion: RefPickerInsertion) => {
     const current = element.current?.value ?? body;
     const after = applyInsertion(current, insertion);
-    const accepted = reconcileMentions(current, after.text, shownMentions.current, {
-      end: insertion.end,
-      start: insertion.start,
-    });
-    previousBody.current = after.text;
-    shownMentions.current = accepted;
     setCaret(after.caret);
-    onChange({ body: after.text, mentions: accepted });
+    onChange({ body: after.text });
     requestAnimationFrame(() => {
       element.current?.focus();
       element.current?.setSelectionRange(after.caret, after.caret);
     });
   };
   const changed = (value: string, selectionStart: number | null) => {
-    const before = previousBody.current;
     const pending = pendingTextEdit.current;
     pendingTextEdit.current = undefined;
-    const accepted = reconcileMentions(
-      before,
-      value,
-      shownMentions.current,
-      pending?.before === before ? pending.range : undefined
-    );
-    previousBody.current = value;
-    shownMentions.current = accepted;
-    onChange({
-      body: value,
-      inputType: pending?.inputType,
-      mentions: accepted,
-      range: pending?.range,
-    });
+    onChange({ body: value, inputType: pending?.inputType, range: pending?.range });
     setCaret(selectionStart ?? value.length);
   };
   /** The keys an open picker owns, on a listener of the field's own. React's handlers run when
@@ -324,11 +230,7 @@ export function MentionField({
         start = Math.max(0, start - 1);
       if (start === end && input.inputType === "deleteContentForward")
         end = Math.min(node.value.length, end + 1);
-      pendingTextEdit.current = {
-        before: node.value,
-        inputType: input.inputType,
-        range: { end, start },
-      };
+      pendingTextEdit.current = { inputType: input.inputType, range: { end, start } };
     };
     const pickerKeyDown = (event: globalThis.KeyboardEvent) => pickerKey.current(event);
     node.addEventListener("beforeinput", recordEdit);
@@ -383,14 +285,14 @@ export function MentionField({
           {...(handle === undefined ? {} : { [handle]: "" })}
         />
       </label>
-      {activeMentions.length === 0 ? null : (
+      {parties.length === 0 ? null : (
         <ul
           aria-label="Mention targets"
           className={`flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}`}
         >
-          {activeMentions.map((mention) => (
-            <li className="rounded-full border px-2 py-1" key={mention.target}>
-              {mention.text} · <code>{mention.target}</code>
+          {parties.map((target) => (
+            <li className="rounded-full border px-2 py-1" key={target}>
+              <code>{target}</code>
             </li>
           ))}
         </ul>

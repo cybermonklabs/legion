@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 type commentInput struct {
@@ -58,14 +59,85 @@ func askReplyTurn(actor model.Actor, requested *string) string {
 	return "human"
 }
 
-func validateCommentMentions(input commentInput) (string, []string, error) {
-	if len(input.Mentions) == 0 {
+// commentParties is who one comment names: the delivering parties, each once and in the order
+// the request's array and then the body name them, and whether a party was named at all. It is
+// the set every mention rule is keyed on and the set the deliveries are resolved from.
+//
+// A person is in named and never in targets: a person reads the record and is never a
+// delivering party, so nothing is sent to one, nothing is resolved for one, and one never
+// counts toward the cap.
+type commentParties struct {
+	targets []string
+	named   bool
+}
+
+// partyTarget is the delivery route a party reference names - `session:<id>` for an agent,
+// `role:<token>` for a role - and whether it names one at all. A person names none.
+func partyTarget(ref text.Ref) (string, bool) {
+	switch ref.Kind {
+	case "session":
+		return "session:" + ref.ID, true
+	case "role":
+		return "role:" + ref.ID, true
+	}
+	return "", false
+}
+
+// commentPartiesOf is the party set of one comment: the targets the request's `mentions` array
+// carries, as it wrote them, and then the parties its body names (R4), read with the shared
+// reader. A party both name, and one the body names twice, is one party: the repeat is dropped
+// here, before any rule reads the set. The array's own two rules are applied as it is read,
+// since they are about what the caller sent rather than about who is named: a target of no
+// known form, and a target the array repeats.
+func commentPartiesOf(input commentInput, body []text.Located) (commentParties, error) {
+	parties := commentParties{targets: make([]string, 0, len(input.Mentions)+len(body))}
+	seen := make(map[string]struct{}, len(input.Mentions)+len(body))
+	for _, mention := range input.Mentions {
+		if _, err := model.ParseRoute(mention.Target); err != nil {
+			return commentParties{}, errorf(http.StatusBadRequest, "MENTION_INPUT", "mention target must be role:<name> or session:<id>")
+		}
+		if _, duplicate := seen[mention.Target]; duplicate {
+			return commentParties{}, errorf(http.StatusBadRequest, "MENTION_INPUT", "mentions must not repeat a target")
+		}
+		seen[mention.Target] = struct{}{}
+		parties.targets = append(parties.targets, mention.Target)
+	}
+	for _, located := range body {
+		if located.Kind == "person" {
+			parties.named = true
+			continue
+		}
+		target, ok := partyTarget(located.Ref)
+		if !ok {
+			continue
+		}
+		if _, repeated := seen[target]; repeated {
+			continue
+		}
+		seen[target] = struct{}{}
+		parties.targets = append(parties.targets, target)
+	}
+	parties.named = parties.named || len(parties.targets) > 0
+	return parties, nil
+}
+
+// validateCommentMentions is the comment's delivery mode and its delivering targets, or the
+// refusal its party set earns. Every refusal is keyed on that set (commentPartiesOf): a
+// delivery mode with no party named anywhere, more delivering parties than the cap, a mode
+// outside the three, a target of no known form, and an array that repeats a target. Each
+// answers 400 MENTION_INPUT, as it always has.
+func validateCommentMentions(input commentInput, body []text.Located) (string, []string, error) {
+	parties, err := commentPartiesOf(input, body)
+	if err != nil {
+		return "", nil, err
+	}
+	if !parties.named {
 		if input.Delivery != nil {
 			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery requires mentions")
 		}
 		return "", nil, nil
 	}
-	if len(input.Mentions) > 10 {
+	if len(parties.targets) > 10 {
 		return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "mentions allow at most 10 targets")
 	}
 	delivery := "steer"
@@ -75,19 +147,7 @@ func validateCommentMentions(input commentInput) (string, []string, error) {
 			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery must be one of btw, aside, steer")
 		}
 	}
-	targets := make([]string, 0, len(input.Mentions))
-	seen := make(map[string]struct{}, len(input.Mentions))
-	for _, mention := range input.Mentions {
-		if _, err := model.ParseRoute(mention.Target); err != nil {
-			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "mention target must be role:<name> or session:<id>")
-		}
-		if _, duplicate := seen[mention.Target]; duplicate {
-			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "mentions must not repeat a target")
-		}
-		seen[mention.Target] = struct{}{}
-		targets = append(targets, mention.Target)
-	}
-	return delivery, targets, nil
+	return delivery, parties.targets, nil
 }
 
 type commentThreadTarget struct {
@@ -599,7 +659,18 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	delivery, mentionTargets, err := validateCommentMentions(input)
+	pool, err := s.readyPool()
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// A mention is a reference, so who this comment names is in its body (R4): the parties are
+	// read with the shared reader, beside any the request's own array carries. The reader is
+	// built over the pool and for no source of its own - the comment has no id yet, and a
+	// party reference resolves against nothing - and it reads the database only for a body
+	// that writes a bare key or a short id, which this read answers nothing about.
+	bodyParties := refs.NewReader(r.Context(), pool, "comment", "", s.deps.ServerURL).Mentions(input.Body)
+	delivery, mentionTargets, err := validateCommentMentions(input, bodyParties)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

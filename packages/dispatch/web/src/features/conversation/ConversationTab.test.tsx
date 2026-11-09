@@ -1473,7 +1473,9 @@ test("at a desktop width, another comment's Reply redirects onto the one whose r
 });
 
 // A comment's Reply prefills its mention as the mention picker names the session
-// (`useAgentText().sessionText`): by its registry title, else as `@session <id>`.
+// (`useAgentText().sessionText`): the link's words are its registry title, else the shortened
+// `session:<id>` the picker shows, and its address names the session whole whatever the words
+// read.
 test("a comment's Reply names its session author's mention as the picker does", async () => {
   const user = userEvent.setup();
   const untitled = "01234567-89ab-7def-8000-000000000001";
@@ -1510,10 +1512,12 @@ test("a comment's Reply names its session author's mention as the picker does", 
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(field.value).toBe(`@session ${untitled}`));
+    await waitFor(() =>
+      expect(field.value).toBe(`[session:01234567…](dispatch://agent/${untitled})`)
+    );
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/planner-session)"));
   } finally {
     view.unmount();
     stub.restore();

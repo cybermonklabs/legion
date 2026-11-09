@@ -1077,10 +1077,10 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("@Planner")
+      ).toBe("[Planner](dispatch://agent/planner-session)")
     );
-    // The pick put `@Planner` in the box as an accepted mention the composer follows, so the
-    // rest of the message is written after it: replacing the box would drop that mention.
+    // The pick wrote the party's link into the box, so the rest of the message is written
+    // after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
     await user.paste(" Track this under Core");
@@ -1091,9 +1091,8 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
       expect(page.createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner Track this under Core",
+          body: "[Planner](dispatch://agent/planner-session) Track this under Core",
           delivery: "aside",
-          mentions: [{ target: "session:planner-session" }],
         },
         keyedAttempt
       )

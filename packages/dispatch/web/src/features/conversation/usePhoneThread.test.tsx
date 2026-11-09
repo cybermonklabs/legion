@@ -45,7 +45,7 @@ async function refuseReply(queryClient: QueryClient, mutationKey: MutationKey): 
   const request: SentRequest = {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: "Refused reply", mentions: [], replacement: "" },
+    draft: { body: "Refused reply", replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },

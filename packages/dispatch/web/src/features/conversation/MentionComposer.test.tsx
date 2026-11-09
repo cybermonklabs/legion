@@ -21,7 +21,6 @@ import {
 } from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
 import { MentionComposer } from "./MentionComposer";
-import { reconcileMentions } from "./MentionField";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
@@ -195,7 +194,10 @@ afterEach(() => {
   searchRead.mockRestore();
 });
 
-test("a comment without a surviving mention preserves /btw and omits delivery", async () => {
+// Whether a typed `/btw` is a command is decided by the parties the shared reader finds in the
+// draft: with nobody named it is the reader's own first word, and with a person named - who is
+// delivered nothing - it is the command it looks like.
+test("a comment that names nobody preserves /btw and omits delivery", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const { view } = renderComposer();
@@ -209,6 +211,36 @@ test("a comment without a surviving mention preserves /btw and omits delivery", 
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith("CORE-1", { body: "/btw hello" }, keyedAttempt)
+    );
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+test("a draft whose only party is a person strips /btw and sends a mode nobody is told in", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("/btw [Alice](dispatch://person/alice@example.com) please look");
+    // A person is no delivery target, so the box offers no chip for one.
+    expect(screen.queryByRole("list", { name: "Mention targets" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(createComment).toHaveBeenCalledWith(
+        "CORE-1",
+        {
+          body: "[Alice](dispatch://person/alice@example.com) please look",
+          delivery: "btw",
+        },
+        keyedAttempt
+      )
     );
   } finally {
     view.unmount();
@@ -232,7 +264,7 @@ test("a seeded mention with /btw posts the canonical target and stripped body", 
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
-    await waitFor(() => expect(field.value).toBe("/btw @Planner"));
+    await waitFor(() => expect(field.value).toBe("/btw [Planner](dispatch://agent/A)"));
     expect(screen.getByRole("list", { name: "Mention targets" })).toHaveTextContent("session:A");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
@@ -240,9 +272,8 @@ test("a seeded mention with /btw posts the canonical target and stripped body", 
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner",
+          body: "[Planner](dispatch://agent/A)",
           delivery: "btw",
-          mentions: [{ target: "session:A" }],
         },
         keyedAttempt
       )
@@ -263,7 +294,7 @@ test("deleting a seeded mention restores verbatim body and omits delivery", asyn
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("/btw ");
@@ -278,7 +309,9 @@ test("deleting a seeded mention restores verbatim body and omits delivery", asyn
   }
 });
 
-test("deleting an accepted duplicate mention never delivers the indistinguishable survivor", async () => {
+// A party named twice is one party: the text is read for who it names, so the second mention
+// adds no second delivery and no second chip.
+test("a draft naming one party twice names it once and sends one mode", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const { view } = renderComposer({
@@ -288,17 +321,24 @@ test("deleting an accepted duplicate mention never delivers the indistinguishabl
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btw @Planner @Planner");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btw @Planner");
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+    await user.paste(" and [Planner](dispatch://agent/A) again");
+    expect(
+      within(screen.getByRole("list", { name: "Mention targets" })).getAllByText("session:A")
+    ).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
-      expect(createComment).toHaveBeenCalledWith("CORE-1", { body: "/btw @Planner" }, keyedAttempt)
+      expect(createComment).toHaveBeenCalledWith(
+        "CORE-1",
+        {
+          body: "[Planner](dispatch://agent/A) and [Planner](dispatch://agent/A) again",
+          delivery: "steer",
+        },
+        keyedAttempt
+      )
     );
   } finally {
     view.unmount();
@@ -306,7 +346,9 @@ test("deleting an accepted duplicate mention never delivers the indistinguishabl
   }
 });
 
-test("a session title cannot make its mention text impersonate a different session", async () => {
+// The words of a mention are the reader's; its address is what names the party. A session that
+// calls itself `session:Victim` therefore mentions nobody but itself.
+test("a mention's address names its party whatever its words say", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const { view } = renderComposer({
@@ -316,7 +358,7 @@ test("a session title cannot make its mention text impersonate a different sessi
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@session A"));
+    await waitFor(() => expect(field.value).toBe("[session:Victim](dispatch://agent/A)"));
     expect(screen.getByRole("list", { name: "Mention targets" })).toHaveTextContent("session:A");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
@@ -324,9 +366,8 @@ test("a session title cannot make its mention text impersonate a different sessi
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@session A",
+          body: "[session:Victim](dispatch://agent/A)",
           delivery: "steer",
-          mentions: [{ target: "session:A" }],
         },
         keyedAttempt
       )
@@ -345,7 +386,7 @@ test("reopening the same reply restores its canonical prefills after cancel", as
       actor: plannerAuthor,
       excerpt: "Question",
       id: "comment-1",
-      mentions: [{ target: "role:Planner", title: "Planner" }],
+      mentions: [{ target: "role:planner", title: "Planner" }],
       parentKind: "comment",
     };
     return (
@@ -381,7 +422,7 @@ test("reopening the same reply restores its canonical prefills after cancel", as
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://role/planner)"));
     await user.click(screen.getByRole("button", { name: "Cancel reply" }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Cancel reply" })).not.toBeInTheDocument()
@@ -390,7 +431,7 @@ test("reopening the same reply restores its canonical prefills after cancel", as
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("Draft after cancellation");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://role/planner)"));
   } finally {
     view.unmount();
   }
@@ -630,23 +671,11 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
   }
 });
 
-test("a programmatic reference append reuses its current body as the next edit baseline", () => {
-  expect(
-    reconcileMentions(
-      "/btw @Planner x @Worker dispatch://CORE-1",
-      "/btw @Planner @Worker dispatch://CORE-1",
-      [
-        { end: 13, start: 5, target: "session:A", text: "Planner" },
-        { end: 23, start: 16, target: "session:B", text: "Worker" },
-      ]
-    )
-  ).toEqual([
-    { end: 13, start: 5, target: "session:A", text: "Planner" },
-    { end: 21, start: 14, target: "session:B", text: "Worker" },
-  ]);
-});
-
-test("a reference append retains every visible accepted mention through the next edit", async () => {
+// A mention is a reference, so it survives an edit of the words around it: the reader types in
+// front of it, between the two, and after them, and both parties are still named.
+test("every mention in the draft survives the edits around it", async () => {
+  const planners = "[Planner](dispatch://agent/A)";
+  const workers = "[Worker](dispatch://agent/B)";
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const { view } = renderComposer({
@@ -659,32 +688,33 @@ test("a reference append retains every visible accepted mention through the next
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner @Worker"));
+    await waitFor(() => expect(field.value).toBe(`${planners} ${workers}`));
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
-    await waitFor(() => expect(field.value).toBe("/btw @Planner @Worker"));
-    field.setSelectionRange("/btw @Planner".length, "/btw @Planner".length);
+    await waitFor(() => expect(field.value).toBe(`/btw ${planners} ${workers}`));
+    field.setSelectionRange(`/btw ${planners}`.length, `/btw ${planners}`.length);
     await user.paste(" x");
-    await waitFor(() => expect(field.value).toBe("/btw @Planner x @Worker"));
+    await waitFor(() => expect(field.value).toBe(`/btw ${planners} x ${workers}`));
     // An address written into the draft is an edit like any other.
     field.setSelectionRange(field.value.length, field.value.length);
     await user.paste(" dispatch://CORE-1");
-    await waitFor(() => expect(field.value).toBe("/btw @Planner x @Worker dispatch://CORE-1"));
-    // The ` x` goes, and both accepted mentions stay where the edit leaves them.
+    await waitFor(() =>
+      expect(field.value).toBe(`/btw ${planners} x ${workers} dispatch://CORE-1`)
+    );
+    // The ` x` goes, and both mentions are still the text's own.
     await user.click(field);
-    field.setSelectionRange("/btw @Planner".length, "/btw @Planner x".length);
+    field.setSelectionRange(`/btw ${planners}`.length, `/btw ${planners} x`.length);
     await user.keyboard("{Backspace}");
-    await waitFor(() => expect(field.value).toBe("/btw @Planner @Worker dispatch://CORE-1"));
+    await waitFor(() => expect(field.value).toBe(`/btw ${planners} ${workers} dispatch://CORE-1`));
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner @Worker dispatch://CORE-1",
+          body: `${planners} ${workers} dispatch://CORE-1`,
           delivery: "btw",
-          mentions: [{ target: "session:A" }, { target: "session:B" }],
         },
         keyedAttempt
       )
@@ -730,7 +760,7 @@ test("opening the picker refetches the live agents", async () => {
   }
 });
 
-test("an accepted mention survives its target going offline before Send", async () => {
+test("a mention survives its target going offline before Send", async () => {
   const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
@@ -754,16 +784,15 @@ test("an accepted mention survives its target going offline before Send", async 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
     act(() => queryClient.setQueryData(["agents"], []));
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner",
+          body: "[Planner](dispatch://agent/A)",
           delivery: "steer",
-          mentions: [{ target: "session:A" }],
         },
         keyedAttempt
       )
@@ -913,7 +942,11 @@ test("two seeded mentions receive one comment-level delivery mode", async () => 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner @legion-planner"));
+    await waitFor(() =>
+      expect(field.value).toBe(
+        "[Planner](dispatch://agent/A) [legion-planner](dispatch://role/legion-planner)"
+      )
+    );
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("/aside ");
@@ -923,9 +956,8 @@ test("two seeded mentions receive one comment-level delivery mode", async () => 
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner @legion-planner",
+          body: "[Planner](dispatch://agent/A) [legion-planner](dispatch://role/legion-planner)",
           delivery: "aside",
-          mentions: [{ target: "session:A" }, { target: "role:legion-planner" }],
         },
         keyedAttempt
       )
@@ -944,7 +976,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[Planner](dispatch://agent/A)"));
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("hello /btw ");
@@ -953,9 +985,8 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
       expect(createComment).toHaveBeenLastCalledWith(
         "CORE-1",
         {
-          body: "hello /btw @Planner",
+          body: "hello /btw [Planner](dispatch://agent/A)",
           delivery: "steer",
-          mentions: [{ target: "session:A" }],
         },
         keyedAttempt
       )
@@ -964,7 +995,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
 
     const second = renderComposer({ agents: [planner], seedMentions });
     const secondField = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(secondField.value).toBe("@Planner"));
+    await waitFor(() => expect(secondField.value).toBe("[Planner](dispatch://agent/A)"));
     secondField.focus();
     secondField.setSelectionRange(0, 0);
     await user.paste("/btwx ");
@@ -973,9 +1004,8 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
       expect(createComment).toHaveBeenLastCalledWith(
         "CORE-1",
         {
-          body: "/btwx @Planner",
+          body: "/btwx [Planner](dispatch://agent/A)",
           delivery: "steer",
-          mentions: [{ target: "session:A" }],
         },
         keyedAttempt
       )
@@ -1404,7 +1434,7 @@ test("a mention of a session that takes only Aside goes as an Aside", async () =
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
-        expect.objectContaining({ delivery: "aside", mentions: [{ target: "session:A" }] }),
+        expect.objectContaining({ delivery: "aside" }),
         keyedAttempt
       )
     );
@@ -1435,7 +1465,7 @@ test("a comment's Retry goes in the mode the composer shows now, not the refused
     await user.click(screen.getByRole("button", { name: "Send" }));
     await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
     expect(createComment.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ delivery: "steer", mentions: [{ target: "session:A" }] })
+      expect.objectContaining({ delivery: "steer" })
     );
 
     rerender({ agents: [asides], seedMentions });
@@ -1443,7 +1473,7 @@ test("a comment's Retry goes in the mode the composer shows now, not the refused
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
     expect(createComment.mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({ delivery: "aside", mentions: [{ target: "session:A" }] })
+      expect.objectContaining({ delivery: "aside" })
     );
   } finally {
     view.unmount();
@@ -1486,7 +1516,9 @@ test("mentioning two targets that both lack the outbound mode names both in the 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner @Worker"));
+    await waitFor(() =>
+      expect(field.value).toBe("[Planner](dispatch://agent/A) [Worker](dispatch://agent/B)")
+    );
     expect(screen.getByText(/Planner and Worker do not advertise Send/)).toBeTruthy();
   } finally {
     view.unmount();
@@ -1495,6 +1527,9 @@ test("mentioning two targets that both lack the outbound mode names both in the 
 
 const plannerMention = { target: "session:A", title: "Planner" };
 const workerMention = { target: "session:B", title: "Worker" };
+/** What each of those two seeds writes into a draft: the link that names the party. */
+const plannerLink = "[Planner](dispatch://agent/A)";
+const workerLink = "[Worker](dispatch://agent/B)";
 const createdMessage: Message = {
   author: { id: "alice", kind: "user" },
   body: "sent",
@@ -1506,11 +1541,10 @@ const createdMessage: Message = {
   target: null,
 };
 
-// The seed is the one branch these seven call sites share, so its cases live here rather than in
-// one host's e2e: what a mount seeds, what a draft entering a seeded channel gets, what a draft
-// that already holds the channel's mention gets, where a mention accepted afterwards lands, and
-// what leaves with a channel. Each asserts the wire as well as the field: the body and the
-// accepted records disagreeing is exactly the defect these cover.
+// The seed is the one branch these seven call sites share, so its cases live here rather than
+// in one host's e2e: what a mount seeds, what a draft entering a seeded channel gets, what a
+// draft that already holds the channel's mention gets, where a mention seeded afterwards
+// lands, and what leaves with a channel. Each asserts the wire as well as the field.
 test("a mount seeds the owner's mention and sends it", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
@@ -1518,7 +1552,7 @@ test("a mount seeds the owner's mention and sends it", async () => {
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    expect(field.value).toBe("@Planner");
+    expect(field.value).toBe(plannerLink);
     await user.click(field);
     await user.paste(" hello");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -1527,9 +1561,8 @@ test("a mount seeds the owner's mention and sends it", async () => {
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner hello",
+          body: `${plannerLink} hello`,
           delivery: "steer",
-          mentions: [{ target: "session:A" }],
         },
         keyedAttempt
       )
@@ -1541,10 +1574,8 @@ test("a mount seeds the owner's mention and sends it", async () => {
 });
 
 // An Agents row changes the composer's owner and seed when the reader picks an issue, and the
-// live draft takes the new seed in place, by the rules a mount applies. The records these start
-// from are the last channel's own seed, which is where a record comes from now that a pick in
-// the picker writes a link and none.
-test("a draft entering a channel that owes a mention is seeded in front of it, records and all", async () => {
+// live draft takes the new seed in place, by the rules a mount applies.
+test("a draft entering a channel that owes a mention is seeded in front of it", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
   const { rerender, view } = renderComposer({
@@ -1554,22 +1585,21 @@ test("a draft entering a channel that owes a mention is seeded in front of it, r
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Worker"));
+    await waitFor(() => expect(field.value).toBe(workerLink));
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("hello ");
-    await waitFor(() => expect(field.value).toBe("hello @Worker"));
+    await waitFor(() => expect(field.value).toBe(`hello ${workerLink}`));
     rerender({ agents: [planner, worker], seedMentions: [plannerMention] });
-    await waitFor(() => expect(field.value).toBe("@Planner hello @Worker"));
+    await waitFor(() => expect(field.value).toBe(`${plannerLink} hello ${workerLink}`));
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner hello @Worker",
+          body: `${plannerLink} hello ${workerLink}`,
           delivery: "steer",
-          mentions: [{ target: "session:A" }, { target: "session:B" }],
         },
         keyedAttempt
       )
@@ -1590,25 +1620,24 @@ test("a draft that already holds the channel's mention is not seeded twice, wher
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe(plannerLink));
     field.focus();
     field.setSelectionRange(0, 0);
     await user.paste("y");
     field.setSelectionRange(field.value.length, field.value.length);
     await user.paste(" x");
-    await waitFor(() => expect(field.value).toBe("y@Planner x"));
+    await waitFor(() => expect(field.value).toBe(`y${plannerLink} x`));
     // The channel now owes the worker as well; the planner it already holds is left where it is.
     rerender({ agents: [planner, worker], seedMentions: [plannerMention, workerMention] });
-    await waitFor(() => expect(field.value).toBe("@Worker y@Planner x"));
+    await waitFor(() => expect(field.value).toBe(`${workerLink} y${plannerLink} x`));
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Worker y@Planner x",
+          body: `${workerLink} y${plannerLink} x`,
           delivery: "steer",
-          mentions: [{ target: "session:B" }, { target: "session:A" }],
         },
         keyedAttempt
       )
@@ -1619,7 +1648,7 @@ test("a draft that already holds the channel's mention is not seeded twice, wher
   }
 });
 
-test("a mention seeded after a reseed lands at its own offset", async () => {
+test("a mention seeded after a reseed lands in front of the one before it", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const direct = { kind: "session" as const, sessionId: "A" };
   const user = userEvent.setup();
@@ -1631,18 +1660,17 @@ test("a mention seeded after a reseed lands at its own offset", async () => {
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("hello");
     rerender({ agents: [planner, worker], seedMentions: [plannerMention] });
-    await waitFor(() => expect(field.value).toBe("@Planner hello"));
+    await waitFor(() => expect(field.value).toBe(`${plannerLink} hello`));
     rerender({ agents: [planner, worker], seedMentions: [plannerMention, workerMention] });
-    await waitFor(() => expect(field.value).toBe("@Worker @Planner hello"));
+    await waitFor(() => expect(field.value).toBe(`${workerLink} ${plannerLink} hello`));
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Worker @Planner hello",
+          body: `${workerLink} ${plannerLink} hello`,
           delivery: "steer",
-          mentions: [{ target: "session:B" }, { target: "session:A" }],
         },
         keyedAttempt
       )
@@ -1653,8 +1681,8 @@ test("a mention seeded after a reseed lands at its own offset", async () => {
   }
 });
 
-// A message this channel already addresses needs no mention of its own recipient: the record
-// proves the reader never touched the text the last channel seeded, so it goes with the channel.
+// A message this channel already addresses needs no mention of its own recipient: the text
+// still names it as the last channel seeded it, so the mention goes with that channel.
 test("the owner's own untouched mention leaves with the channel that seeded it", async () => {
   const createAgentMessage = spyOn(api, "createAgentMessage").mockResolvedValue(createdMessage);
   const user = userEvent.setup();
@@ -1687,7 +1715,7 @@ test("an owner mention the reader edited is their prose and stays", async () => 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    // The span no longer reads `@Planner`, so it is no longer a record: it is what they typed.
+    // The text names no party now, so there is no mention of this session to take away.
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("@Plannr hello");
@@ -1710,12 +1738,12 @@ test("Discard clears the draft to what a mount shows, wherever the host takes fo
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@Planner discard me");
+    await user.paste("Discard me");
     field.focus();
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Discard" }));
 
-    expect(field.value).toBe("@Planner");
+    expect(field.value).toBe(plannerLink);
   } finally {
     view.unmount();
   }
@@ -1749,7 +1777,7 @@ test("a refused send's Retry asks what Send asks, and Discard takes the notice w
     field.focus();
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Discard" }));
-    expect(field.value).toBe("@Planner");
+    expect(field.value).toBe(plannerLink);
     expect(screen.queryByText(`Couldn't send — ${COMMENT_REFUSED}`)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(createComment).toHaveBeenCalledTimes(1);

@@ -38,7 +38,7 @@ import { useSessionSends } from "./useSessionSends";
 const request: SentRequest = {
   anchor: undefined,
   ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Held", mentions: [], replacement: "" },
+  draft: { body: "Held", replacement: "" },
   edit: undefined,
   kind: "comment",
   owner: { issueKey: "CORE-1", kind: "issue" },
@@ -50,7 +50,7 @@ const request: SentRequest = {
 /** A message to one session, Send's own: the request the Agents page's composer holds. */
 const agentSend: SentRequest = {
   ...request,
-  draft: { body: "Status please", mentions: [], replacement: "" },
+  draft: { body: "Status please", replacement: "" },
   owner: { kind: "session", sessionId: "planner-session" },
   sendKey: "send-1",
 };
@@ -68,7 +68,7 @@ const sentMessage = {
  *  default save. */
 const editSend: SentRequest = {
   ...request,
-  draft: { body: "Alpha\n\nBeta", mentions: [], replacement: "" },
+  draft: { body: "Alpha\n\nBeta", replacement: "" },
   edit: {
     carried: carriedIdsOf(
       {
@@ -379,6 +379,55 @@ test("a send kept with its edit as a bare comment id still restores", async () =
   }
 });
 
+// A record the build before this one wrote keeps a `mentions` array beside the draft's text.
+// Nothing reads one now - a mention is a reference, so the draft's parties are in its words -
+// and the shape this build reads by does not name the field, so such a record still loads and
+// still holds the words the reader wrote.
+test("a send kept with the old build's mentions array still restores its draft", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const key: MutationKey = ["conversation", "CORE-1"];
+  const seeded: SentRequest = {
+    ...request,
+    draft: { body: "[Planner](dispatch://agent/planner-session) please look.", replacement: "" },
+    sendKey: "send-old",
+  };
+  try {
+    heldOf(tab).held.send(key, seeded);
+    await settle();
+    const kept = tab.kept("send-old") as {
+      detail: { draft: { draft: object }; request: { draft: object } };
+    };
+    const withMentions = (draft: object) => ({
+      ...draft,
+      mentions: [{ end: 8, start: 0, target: "session:planner-session", text: "Planner" }],
+    });
+    tab.storage.setItem(
+      "dispatch.write:send-old",
+      JSON.stringify({
+        ...kept,
+        detail: {
+          ...kept.detail,
+          draft: { ...kept.detail.draft, draft: withMentions(kept.detail.draft.draft) },
+          request: { ...kept.detail.request, draft: withMentions(kept.detail.request.draft) },
+        },
+      })
+    );
+    pressedLongAgo(tab, "send-old");
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(key)?.request.draft.body).toBe(seeded.draft.body);
+    expect(after.get(key)?.draft.draft.body).toBe(seeded.draft.body);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A closed tab loses what sessionStorage keeps, so while a send has no verdict the page asks to
 // confirm leaving, and only then.
 test("leaving asks for confirmation only while a send is unconfirmed", async () => {
@@ -669,7 +718,7 @@ test("a send re-pressed under its key sends nothing under it after a reload", as
       await settle();
       first.held.send(aheadKey, {
         ...agentSend,
-        draft: { body: "Ahead", mentions: [], replacement: "" },
+        draft: { body: "Ahead", replacement: "" },
         sendKey: "send-ahead",
       });
       await settle();

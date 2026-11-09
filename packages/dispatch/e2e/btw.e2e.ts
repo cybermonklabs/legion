@@ -54,13 +54,14 @@ test("/btw with a surviving mention strips its token and sends one comment-level
     await page.goto(`/issues/${issue.key}/conversation`);
     await selectMention(page, "/btw @");
     expect(await post(page)).toEqual({
-      body: "@planner",
+      body: "[planner](dispatch://agent/s1)",
       delivery: "btw",
-      mentions: [{ target: "session:s1" }],
     });
     await expect
       .poll(() => listComments(issue.key))
-      .toMatchObject([{ body: "@planner", mentions: [{ target: "session:s1" }] }]);
+      .toMatchObject([
+        { body: "[planner](dispatch://agent/s1)", mentions: [{ target: "session:s1" }] },
+      ]);
   } finally {
     await alice.close();
   }
