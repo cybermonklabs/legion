@@ -155,6 +155,10 @@ func TestARefusalOfTheResentTaskIsJudgedAgainstItsOwnAcknowledgement(t *testing.
 // it was, confirmed. Were it left taken back in memory only, the next death would find nothing to
 // take back and relaunch with the store still holding the confirmed delivery, and a restart before
 // the re-send's acknowledgement would retire it as served: the stranded phase this exists to stop.
+//
+// The death is the next report's to charge, since the report that could not write the take-back
+// charged nothing (died): one dead process is one death, and this one costs the claim a death
+// and a launch failure rather than nothing at all.
 func TestAnInterruptedTaskWhoseWriteFailedIsTakenBackAtTheNextDeath(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -171,6 +175,7 @@ func TestAnInterruptedTaskWhoseWriteFailedIsTakenBackAtTheNextDeath(t *testing.T
 	}
 	h.store.fail("PutDelivery", nil)
 	h.observe(runtime.Gone)
+	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
 	h.restart()
 
 	stored := h.store.load(testToken)
