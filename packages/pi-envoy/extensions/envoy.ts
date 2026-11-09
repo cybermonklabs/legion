@@ -1366,7 +1366,8 @@ export default function envoyExtension(pi: PiApi): void {
   };
 
   // Runs a person's `!command` for them (`../src/typed-shell`). The host is handed nothing: the
-  // session runs the rest of the line under `/bin/sh -c` in its own working directory, and what it
+  // session runs the rest of the line as the CLI's own bang command runs it, in its own working
+  // directory, and what it
   // printed goes three ways - the live view's conversation, as the person's own user message, since
   // they ran it and the host wrote nothing; their message on Dispatch, as its reply, which every
   // such message gets; and the agent's transcript, which it reads at its next turn with no turn

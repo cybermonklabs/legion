@@ -32,18 +32,23 @@ async function untilTrue(ready: () => boolean): Promise<boolean> {
 }
 
 describe("the command a person's message says to run", () => {
-  test("is the rest of a line whose first character is the mark, whatever it starts with", () => {
+  test("is the rest of a line whose first character is the mark, trimmed as the CLI trims it", () => {
     expect(shellCommandFrom("!printf hi")).toBe("printf hi");
     expect(shellCommandFrom("!!printf hi")).toBe("!printf hi");
-    expect(shellCommandFrom("!")).toBe("");
+    expect(shellCommandFrom("!   printf hi  ")).toBe("printf hi");
     expect(shellCommandFrom("!cd /tmp\nls")).toBe("cd /tmp\nls");
   });
 
-  test("is nothing for a message that does not start with the mark", () => {
+  test("is nothing for a message that is no command, a bare mark included", () => {
     expect(shellCommandFrom("printf hi")).toBeUndefined();
     expect(shellCommandFrom(" !printf hi")).toBeUndefined();
     expect(shellCommandFrom("Where is the dashboard?")).toBeUndefined();
     expect(shellCommandFrom("")).toBeUndefined();
+    // A mark with nothing after it leaves no command at all, so it is the person's prompt and
+    // starts no empty shell.
+    expect(shellCommandFrom("!")).toBeUndefined();
+    expect(shellCommandFrom("!   ")).toBeUndefined();
+    expect(shellCommandFrom("!\n")).toBeUndefined();
   });
 });
 
@@ -79,6 +84,105 @@ describe("running a person's command", () => {
       expect(result.output).toBe("from the session");
     } finally {
       delete process.env.TYPED_SHELL_TEST_VARIABLE;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // The CLI's bang command runs under the shell the host resolves, which is `SHELL` when it names
+  // a bash or a zsh this machine can run, and not the `/bin/sh` this module used to start. The
+  // shell the command really ran under is the one it reads back out of its own `SHELL`, which the
+  // host sets to it.
+  test("starts the shell `SHELL` names, as the host's own resolution does", async () => {
+    const directory = scratch();
+    const named = Bun.which("bash") ?? Bun.which("zsh");
+    if (named === null) throw new Error("this machine has neither a bash nor a zsh to name");
+    const before = process.env.SHELL;
+    process.env.SHELL = named;
+    try {
+      const result = await runShellCommand('printf %s "$SHELL"', {
+        cwd: directory,
+        limitMs: 10_000,
+      });
+      expect(result.output).toBe(named);
+    } finally {
+      if (before === undefined) delete process.env.SHELL;
+      else process.env.SHELL = before;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // A login shell, as the CLI starts one: it reads the profile of the HOME it runs with, and a
+  // shell started without `-l` reads none of them. bash falls back to `.profile` with no
+  // `.bash_profile` beside it, dash reads `.profile`, and zsh reads `.zprofile`.
+  test("starts a login shell, as the CLI's bang command does", async () => {
+    const directory = scratch();
+    const before = process.env.HOME;
+    await Bun.write(join(directory, ".profile"), "TYPED_SHELL_TEST_PROFILE=read\n");
+    await Bun.write(join(directory, ".zprofile"), "TYPED_SHELL_TEST_PROFILE=read\n");
+    process.env.HOME = directory;
+    try {
+      const result = await runShellCommand('printf %s "$TYPED_SHELL_TEST_PROFILE"', {
+        cwd: directory,
+        limitMs: 10_000,
+      });
+      expect(result.output).toBe("read");
+    } finally {
+      if (before === undefined) delete process.env.HOME;
+      else process.env.HOME = before;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // The host's shell prefix goes before the command on the same line, which is how the host's own
+  // helper applies it.
+  test("puts `PI_SHELL_PREFIX` before the command", async () => {
+    const directory = scratch();
+    process.env.PI_SHELL_PREFIX = "printf before:;";
+    try {
+      const result = await runShellCommand("printf after", { cwd: directory, limitMs: 10_000 });
+      expect(result.output).toBe("before:after");
+    } finally {
+      delete process.env.PI_SHELL_PREFIX;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // The five the host adds over the session's environment for every shell command it runs.
+  test("adds the five variables the host adds to a shell command's environment", async () => {
+    const directory = scratch();
+    try {
+      const result = await runShellCommand(
+        'printf \'%s|%s|%s|%s|%s\' "$GIT_EDITOR" "$GPG_TTY" "$OMPCODE" "$CLAUDECODE" "$CI"',
+        { cwd: directory, limitMs: 10_000 }
+      );
+      expect(result.output).toBe("true|not a tty|1|1|true");
+      // The fifth is `SHELL`, which the host sets to the shell it started.
+      const shell = await runShellCommand('printf %s "$SHELL"', {
+        cwd: directory,
+        limitMs: 10_000,
+      });
+      expect(statSync(shell.output).isFile()).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // `CI` is the one of the five the host leaves out when it is told to; the session's own `CI`,
+  // if it has one, still reaches the command, so this row runs with none.
+  test("leaves `CI` out when `PI_BASH_NO_CI` is set", async () => {
+    const directory = scratch();
+    const before = process.env.CI;
+    process.env.PI_BASH_NO_CI = "1";
+    delete process.env.CI;
+    try {
+      const result = await runShellCommand(
+        'if [ -z "$CI" ]; then printf unset; else printf %s "$CI"; fi',
+        { cwd: directory, limitMs: 10_000 }
+      );
+      expect(result.output).toBe("unset");
+    } finally {
+      delete process.env.PI_BASH_NO_CI;
+      if (before !== undefined) process.env.CI = before;
       rmSync(directory, { recursive: true, force: true });
     }
   });

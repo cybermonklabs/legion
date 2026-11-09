@@ -7,9 +7,12 @@ body: |-
   it, or one that reports no context window, publishes no frame, so a viewer with nothing to draw
   draws nothing.
   A person's Send or Aside whose first character is `!` is no prompt: the session runs the rest
-  of the line itself, under `/bin/sh -c` in its own working directory, in a process group of its
-  own, stopped after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120000 by default) with what it printed
-  kept. One such command runs for a session at a time, and a second is answered naming the one
+  of the line itself, as typing the same bang command into Oh My Pi's own CLI runs it - the
+  shell the host resolves, as a login shell, with its shell prefix and the five variables it
+  adds, in the session's own working directory - and in a process group of its own, stopped
+  after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120000 by default) with what it printed
+  kept. A bare `!` is no command and reaches the model as the prompt it is. One such command
+  runs for a session at a time, and a second is answered naming the one
   still running. What the command printed goes three ways, each cut at 8,000 characters: to the
   live view as the person's own message, to their message on Dispatch as its reply, and to the
   agent's transcript, which it reads at its next turn with no turn started for it. A line typed

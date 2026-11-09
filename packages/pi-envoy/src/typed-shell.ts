@@ -4,9 +4,16 @@ import { messageFor } from "@legion/envoy-client/errors";
 /**
  * The `!command` a person can send one Oh My Pi session from Dispatch (R4 of dispatch://INFRA-812).
  * A Send or an Aside whose first character is `!` is no prompt: the session runs the rest of it
- * under `/bin/sh -c` in its own working directory and answers with what it printed. The mark is
- * one `!` and the rest is the command whatever it starts with, so `!!printf hi` runs `!printf hi`
- * and is answered with that shell's own failure.
+ * and answers with what it printed. It runs it as typing the same bang command into Oh My Pi's own
+ * CLI runs it: the same shell, resolved as the host resolves it, with the host's own login args,
+ * its five environment additions and its shell prefix, in the session's own working
+ * directory. The mark is one `!` and the rest is the command whatever it starts with, so
+ * `!!printf hi` runs `!printf hi` and is answered with that shell's own failure.
+ *
+ * Nothing else is added to what the CLI does. What this module keeps on top of it, it keeps
+ * because the command's answer is a Dispatch reply nobody is watching, and each of those is
+ * labelled below as that and not as a rule of its own: the output bound, the time limit, the
+ * process group and its kill, the ignored standard input and the absence of a pty.
  *
  * This module runs the command and writes the three texts it becomes; which messages reach it, and
  * where its texts go, is `extensions/envoy.ts`'s (`runTypedInput`). A line typed at the session's
@@ -14,13 +21,15 @@ import { messageFor } from "@legion/envoy-client/errors";
  */
 
 /** Characters of a command's output each of the three texts carries; past it the text is cut and
- *  says so. */
+ *  says so. The CLI shows a command's output in a terminal and bounds nothing; this is what
+ *  answering through a Dispatch reply needs, whose body is bounded. */
 export const SHELL_OUTPUT_MAX = 8_000;
 
-/** Bytes of a command's output this module keeps. Four times the character cut, so what is kept
- *  always holds more characters than the cut keeps, whatever the encoding costs. Past it every
- *  byte is read and thrown away, so a command that prints without end costs the session this
- *  much memory and nothing else at all: no file of its own, and no room on the session's disk. */
+/** Bytes of a command's output this module keeps, for the same reason the character cut has. Four
+ *  times the character cut, so what is kept always holds more characters than the cut keeps,
+ *  whatever the encoding costs. Past it every byte is read and thrown away, so a command that
+ *  prints without end costs the session this much memory and nothing else at all: no file of its
+ *  own, and no room on the session's disk. */
 const SHELL_OUTPUT_BYTES = 4 * SHELL_OUTPUT_MAX;
 
 /** How long the reads of a stopped command's two streams are given to finish after its process
@@ -48,13 +57,74 @@ export interface ShellCommandResult {
 }
 
 /** The command a person's message says to run, or undefined for a message that is no command: the
- *  body whose first character is `!`, without that one character. */
+ *  body whose first character is `!`, without that one character and trimmed, as the CLI's own
+ *  bang handler trims it. A body that is a bare `!`, or a `!` and blank space, leaves no command
+ *  at all: it is no command, and reaches the model as the prompt it is rather than starting an
+ *  empty shell. */
 export function shellCommandFrom(body: string): string | undefined {
-  return body.startsWith("!") ? body.slice(1) : undefined;
+  if (!body.startsWith("!")) return undefined;
+  const command = body.slice(1).trim();
+  return command === "" ? undefined : command;
 }
 
-/** The shell this module starts: no standard input, and a pipe of its own for each output
- *  stream, which this module reads to its end so the command is never blocked by a full one. */
+/** The directories the host looks in for a shell when `PATH` holds none, in its own order. */
+const SHELL_DIRECTORIES = ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"];
+
+/** The shell a `!command` runs under, resolved as the host resolves its own
+ *  (`packages/utils/src/procmgr.ts`): `SHELL` when it names a bash or a zsh this machine can run,
+ *  else the first `bash` or `sh` on `PATH`, else the first of those two in the directories above,
+ *  else the name `sh` for the spawn itself to resolve. The one part of the host's resolution an
+ *  extension cannot read is its `shellPath` setting, which overrides all of this and lives in the
+ *  host's own settings, which no extension is handed. */
+function userShell(): string {
+  const named = Bun.env.SHELL;
+  if (named && (named.includes("bash") || named.includes("zsh"))) {
+    const runnable = Bun.which(named);
+    if (runnable) return runnable;
+  }
+  for (const name of ["bash", "sh"]) {
+    const found = Bun.which(name);
+    if (found) return found;
+  }
+  for (const name of ["bash", "sh"]) {
+    for (const directory of SHELL_DIRECTORIES) {
+      const found = Bun.which(`${directory}/${name}`);
+      if (found) return found;
+    }
+  }
+  return "sh";
+}
+
+/** What the host spawns for a bang command, built as its own shell config builds it: the resolved
+ *  shell, a login shell unless `PI_BASH_NO_LOGIN` or `CLAUDE_BASH_NO_LOGIN` says otherwise, the
+ *  session's environment with the five the host adds over it, and `PI_SHELL_PREFIX` (or
+ *  `CLAUDE_CODE_SHELL_PREFIX`) before the command when one is set. */
+function shellInvocation(command: string): {
+  readonly argv: string[];
+  readonly env: Record<string, string | undefined>;
+} {
+  const shell = userShell();
+  const args = Bun.env.PI_BASH_NO_LOGIN || Bun.env.CLAUDE_BASH_NO_LOGIN ? ["-c"] : ["-l", "-c"];
+  const prefix = Bun.env.PI_SHELL_PREFIX || Bun.env.CLAUDE_CODE_SHELL_PREFIX;
+  const noCI = Bun.env.PI_BASH_NO_CI || Bun.env.CLAUDE_BASH_NO_CI;
+  return {
+    argv: [shell, ...args, prefix ? `${prefix} ${command}` : command],
+    env: {
+      ...process.env,
+      SHELL: shell,
+      GIT_EDITOR: "true",
+      GPG_TTY: "not a tty",
+      OMPCODE: "1",
+      CLAUDECODE: "1",
+      ...(noCI ? {} : { CI: "true" }),
+    },
+  };
+}
+
+/** The shell this module starts: no standard input and no pty, and a pipe of its own for each
+ *  output stream, which this module reads to its end so the command is never blocked by a full
+ *  one. The CLI gives its bang command a pty; these two are what answering through a Dispatch
+ *  reply needs, where the answer is text and there is no terminal and nobody at one. */
 type ShellSubprocess = Bun.Subprocess<"ignore", "pipe", "pipe">;
 
 /** Kills every process the command started, which its own process group holds. */
@@ -69,7 +139,10 @@ function killGroup(pid: number): void {
 /** The process groups of the commands running now. A command's group is its own, so nothing but
  *  a kill ends it: this process holds the only handle on it, and a group left behind when the
  *  process goes is a `!while :; do :; done` nobody stops. The kill runs as this process exits,
- *  for every way out that is not a signal it cannot handle. */
+ *  for every way out that is not a signal it cannot handle. The CLI leaves a bang command in the
+ *  session's own group, under the eye of the person who typed it; the group and this kill are
+ *  what answering through a Dispatch reply needs, where a command nobody is watching must not
+ *  outlive the session or fill the pod's disk. */
 const runningGroups = new Set<number>();
 let killsGroupsOnExit = false;
 function killGroupsOnExit(): void {
@@ -127,11 +200,16 @@ async function drained(reads: readonly Promise<void>[]): Promise<void> {
 }
 
 /**
- * Runs one `!command` under `/bin/sh -c` in `cwd` with this session's own environment, and answers
- * with what it printed and how it ended. It is stopped after `limitMs` with what it printed kept,
- * and runs in a process group of its own, so nothing it left running outlives it or holds the
- * session: the group is killed when the command ends, when `stop` is called, and as this process
- * exits, which is the only handle anything has on a detached group.
+ * Runs one `!command` as the CLI runs it - the shell `userShell` resolves, its login args, the
+ * host's five environment additions and its shell prefix (`shellInvocation`) - in `cwd`, and
+ * answers with what it printed and how it ended.
+ *
+ * It is stopped after `limitMs` with what it printed kept, which is what answering through a
+ * Dispatch reply needs: nobody watches a terminal for this command and nothing else would end
+ * one that never ends. It runs in a process group of its own for the same reason, so nothing it
+ * left running outlives it or holds the session: the group is killed when the command ends, when
+ * `stop` is called, and as this process exits, which is the only handle anything has on a
+ * detached group.
  *
  * Both streams are pipes this module reads to their end, keeping the first `SHELL_OUTPUT_BYTES`
  * and throwing the rest away, so `!yes` or `!cat /dev/urandom` costs the session those bytes of
@@ -144,6 +222,7 @@ export async function runShellCommand(
   command: string,
   options: {
     readonly cwd: string;
+    /** How long the command is given before its group is killed, in milliseconds. */
     readonly limitMs: number;
     /** Handed the kill of the command's whole process group, before this call's first await, so
      *  a session that must stop the command before its limit - one shutting down - holds it from
@@ -152,12 +231,13 @@ export async function runShellCommand(
   }
 ): Promise<ShellCommandResult> {
   let child: ShellSubprocess;
+  const invocation = shellInvocation(command);
   try {
     killGroupsOnExit();
-    child = Bun.spawn(["/bin/sh", "-c", command], {
+    child = Bun.spawn(invocation.argv, {
       cwd: options.cwd,
       detached: true,
-      env: process.env,
+      env: invocation.env,
       stderr: "pipe",
       stdin: "ignore",
       stdout: "pipe",

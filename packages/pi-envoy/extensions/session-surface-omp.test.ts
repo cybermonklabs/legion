@@ -856,6 +856,22 @@ test.skipIf(skip)(
   120_000
 );
 
+// The command runs as typing the same bang command into the binary's own CLI runs it, which on
+// the real session is read off the five variables the host adds over its environment for every
+// shell command of its own.
+test.skipIf(skip)(
+  "a Send of a command reading the host's own variables answers with them set",
+  async () => {
+    const session = await shellSession();
+    const command = `!printf '%s|%s|%s|%s' "$OMPCODE" "$CLAUDECODE" "$GIT_EDITOR" "$GPG_TTY"`;
+    const sent = await session.send(command);
+    expect(await session.reply(sent, "the reply to the command reading the host's variables")).toBe(
+      `${command}\n\n\`\`\`\n1|1|true|not a tty\n\`\`\``
+    );
+  },
+  120_000
+);
+
 // An Aside is the person's turn too, so it takes the same path and is answered the same way.
 test.skipIf(skip)(
   "an Aside of `!printf hi` behaves as the Send does",
