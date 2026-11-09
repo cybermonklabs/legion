@@ -295,10 +295,8 @@ const askBlockNodeSQL = `case when exists (select 1 from document_blocks d where
 //
 // The keyword-only body has one list, so its 'meaning' arm never fires there; the one text is
 // passed to both bodies rather than kept as two near-identical copies, as the keyword legs
-// themselves are. The related-item check passes a fused CTE of its own (relatedFusedSQL): its
-// keyword leg is ranked by a sum of idf, not by the normalised ts_rank_cd the weights below were
-// fitted against, so this weighted sum would bury every meaning-only row the check exists to
-// find.
+// themselves are. The related-item check passes a fused CTE of its own (relatedFusedSQL) in
+// place of this one; its comment says why this weighted sum cannot rank that check's two legs.
 var searchFusedSQL = fmt.Sprintf(`fused as (
   select kind, id, bool_or(own) as own_lead,
          sum(case list when 'keyword' then %[1]g * r else %[2]g * r end) / ($8 + 1)
