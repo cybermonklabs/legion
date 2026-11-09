@@ -3,7 +3,12 @@
 # not serve sends the fetch to the second source, a primary that serves other bytes than the row
 # pins stops the fetch there and the second source is never read, a second source that serves
 # other bytes is refused the same way, a refusal of both names both sources, and no refusal of any
-# kind leaves a file at the destination. A row whose second source writes an address of its own is
+# kind leaves a file at the destination. A fetch that could not write the file this run gave it
+# — curl's exit 23, which is what a runner with no room left answers with — is refused for that
+# on either side, in a sentence that names this run and no service, and no second source is read
+# after one, while a primary that merely does not answer falls through to the second source as
+# it always has.
+# A row whose second source writes an address of its own is
 # served whole or by the member it names, a zip that holds no such member and one that holds it
 # and cannot give it back are refused in different words while the tar arm, which can tell
 # those two apart no better than tar can, names no cause at all and leaves tar's own words to
@@ -20,7 +25,7 @@
 # the kernel picks, serving a directory this file builds: `github/…` for the release asset,
 # `ghcr/token` and `ghcr/v2/…/blobs/sha256:…` for the package copy, `npm/@scope/…tgz` for the npm
 # package, and `url/…` for a second source the row writes a whole address for. The case points
-# the helper's five seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE,
+# the helper's five base seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE,
 # CI_TOOLS_NPM_BASE, CI_TOOLS_URL_BASE) at that origin and at a fixture manifest of ten rows:
 # a ghcr-mirror row with a primary, a ghcr-mirror row without one (jj's shape, where mise fetches
 # the primary bytes), an npm row (Bun's shape), a row whose `primary:` the manifest leaves null,
@@ -482,21 +487,38 @@ origin() {
   base="http://127.0.0.1:$(cat "$work/origins/$name/port")"
 }
 
+# The sixth seam, CI_TOOLS_TEMPFILE, as `(CI_TOOLS_TEMPFILE=<path>)` for the one call that names
+# it and empty everywhere else, where the helper makes its own temporary files under RUNNER_TEMP
+# exactly as a CI job does. run_with_tempfile below is the one thing that sets it.
+seam_env=()
+
 # run <function> <argument…>: the helper, sourced into a shell with errexit, nounset and pipefail
 # on, as a GitHub `run:` step has. Sets `out` to the combined output and `status` to the exit
 # code. Not a subshell, so both survive the call.
 run() {
   set +e
-  out=$(CI_TOOLS_MANIFEST="$manifest" \
+  out=$(env CI_TOOLS_MANIFEST="$manifest" \
     CI_TOOLS_GITHUB_BASE="$base/github" \
     CI_TOOLS_GHCR_BASE="$base/ghcr" \
     CI_TOOLS_NPM_BASE="$base/npm" \
     CI_TOOLS_URL_BASE="$base/url" \
     PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
+    ${seam_env[@]+"${seam_env[@]}"} \
     bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
   status=$?
   set -e
+}
+
+# run_with_tempfile <path> <function> <argument…>: that same run with the CI_TOOLS_TEMPFILE seam
+# pointed at <path>, the one temporary file the helper may make in it. The seam is set for this
+# call and for no other, so every case beside it runs with the seam unset.
+run_with_tempfile() {
+  local named=$1
+  shift
+  seam_env=(CI_TOOLS_TEMPFILE="$named")
+  run "$@"
+  seam_env=()
 }
 
 # run_real <function> <argument…>: the same, against the repository's own manifest with
@@ -583,6 +605,69 @@ check "fails" "$(is "$status" 1)"
 check "names both sources and what each did" \
   "$(contains "$out" '^::error::ci-tools: tarred: no source served the bytes; github-release: curl exit 22; ghcr-mirror: the blob request failed (curl exit 22)$')"
 check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: github-release — the primary's fetch cannot write the file this run gave it"
+# curl exits 23 where it could not write the file it was handed, which is a failure of this run
+# and of nothing else: a runner with no room left is the live shape of it. So the refusal names
+# this run and the file, says nothing about what the address serves, and the fetch stops there —
+# the second source cannot serve a file this runner will not let a fetch write, and reading it
+# would cost a second full retry ladder for that answer.
+# The CI_TOOLS_TEMPFILE seam is what lets a case name that file: pointed at a symlink to a
+# directory, curl cannot write it, and the helper's own `rm -f` takes the symlink away as it
+# takes away the temporary file it would otherwise have made.
+origin primary-write-error
+mkdir -p "$work/seam"
+unwritable="$work/seam/primary-write-error"
+ln -sfn "$work/dest" "$unwritable"
+dest="$work/dest/primary-write-error"
+run_with_tempfile "$unwritable" ci_tools_fetch tarred "$dest"
+check "fails" "$(is "$status" 1)"
+check "names this run and the file, and claims nothing of what the address serves" \
+  "$(contains "$out" "^::error::ci-tools: tarred: this run could not write $unwritable, so $base/$ASSET_PATH was never read into it, and nothing here is a statement about the bytes that address serves (curl exit 23) — refusing$")"
+check "and says of no source that it did not serve the bytes" \
+  "$(is "$(contains "$out" 'did not serve the bytes')" false)"
+check "the release asset was asked for" "$(is "$(asked_for "$log" "/github/")" true)"
+check "and the second source was never read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: github-release — the second source's own fetch cannot write it either"
+# The same exit on the other side, refused in the same words: ci_tools_fetch_fallback reads the
+# second source alone, so this is that source's own fetch failing to write, and what is known is
+# again this run and not the service whose bytes were never written down.
+origin second-write-error
+unwritable="$work/seam/second-write-error"
+ln -sfn "$work/dest" "$unwritable"
+dest="$work/dest/second-write-error"
+run_with_tempfile "$unwritable" ci_tools_fetch_fallback clitool "$dest"
+check "fails" "$(is "$status" 1)"
+check "is refused in the words the primary's write error is refused in" \
+  "$(contains "$out" "^::error::ci-tools: clitool: this run could not write $unwritable, so $base/$CLITOOL_ASSET_PATH was never read into it, and nothing here is a statement about the bytes that address serves (curl exit 23) — refusing$")"
+check "and says of no source that it served nothing" \
+  "$(is "$(contains "$out" 'no source served the bytes')" false)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: github-release — a primary that does not serve the bytes still reads the second source"
+# The control for the two cases above: the fall-through is narrowed to curl's write error and
+# not removed. This primary answers 404 — curl exit 22, which says something about that address
+# and nothing about this run — so the copy is read and serves the row, exactly as before that
+# one exit was told apart.
+origin primary-404-falls-through
+rm -- "$root/$ASSET_PATH"
+dest="$work/dest/primary-404-falls-through"
+run ci_tools_fetch tarred "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "says the primary did not serve them, and goes on" \
+  "$(contains "$out" '^ci-tools: tarred: github-release did not serve the bytes (curl exit 22); trying the second source$')"
+check "the second source served them" \
+  "$(contains "$out" "^ci-tools: tarred: ghcr-mirror served the bytes, sha256 $TARRED$")"
+check "the blob the digest names was read" \
+  "$(is "$(asked_for "$log" "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED")" true)"
+check "and no write error of this run was claimed" \
+  "$(is "$(contains "$out" 'this run could not write')" false)"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: ghcr-mirror — a row whose primary bytes a third party fetches"
