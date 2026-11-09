@@ -34,6 +34,7 @@ import {
   planTaskBlockId,
   requirementBlockId,
   requirementText,
+  SPINE_ANSWERED_QUESTION,
   SPINE_CHECK_BLOCK_ID,
   SPINE_DECISION_HEADING,
   SPINE_REQUIREMENTS,
@@ -353,11 +354,7 @@ export async function seedSpineCases(): Promise<SpineSeed> {
     title: "The spine places every node",
   });
   await seedSessions(issue.key, [PLANNER]);
-  const answered = await createAsk(
-    issue.key,
-    { question: "Which node does a requirement with no parent sit under?" },
-    asPlanner
-  );
+  const answered = await createAsk(issue.key, { question: SPINE_ANSWERED_QUESTION }, asPlanner);
   await answerAsk(answered.id, {
     expected_edited_at: null,
     selected: [],

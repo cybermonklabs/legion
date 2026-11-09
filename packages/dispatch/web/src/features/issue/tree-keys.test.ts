@@ -50,10 +50,10 @@ function issue(): TreeNode {
       node("spec#b-answered", "ask"),
     ]),
     node("decisions-md#b-d1", "decision", [], {
-      chips: [{ gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1@v3" }],
+      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1@v3" }],
     }),
     node("decisions-md#b-d2", "decision", [], {
-      chips: [{ gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" }],
+      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" }],
     }),
   ]);
 }

@@ -61,12 +61,19 @@ export async function expectIssueClosed(page: Page): Promise<void> {
   await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
 }
 
-/** Fails unless the page is on `name`, whichever shape the row has at this width. */
+/** Fails unless the page is on `name`, whichever shape the row has at this width. The row of
+ *  tabs names each tab by its preset alone and draws the count beside it; the one control
+ *  below 1025 px draws the count inside itself, so its name is the preset and the count
+ *  together (WCAG 2.5.3, `web/src/features/issue/IssuePresets.tsx`). */
 export async function expectActivePreset(page: Page, name: string): Promise<void> {
   const row = page.getByTestId("issue-presets");
   await row.waitFor();
   const tab = row.getByRole("tab", { exact: true, name });
-  await expect((await tab.count()) > 0 ? tab : row.getByRole("button")).toHaveAccessibleName(name);
+  if ((await tab.count()) > 0) {
+    await expect(tab).toHaveAccessibleName(name);
+    return;
+  }
+  await expect(row.getByRole("button")).toHaveAccessibleName(new RegExp(`^${name} \\d+$`));
 }
 
 /** One of the conversation panel's four state controls, which is where a tab's `aria-selected`

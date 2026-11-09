@@ -29,12 +29,19 @@ import type { Box } from "./layout";
  *   c-nothing-lost, c-keyboard (`t h`).
  * - **The preset row** `[data-testid="issue-presets"]`. At 1280 px and above it is a row of five,
  *   each preset a `tab` in a `role="tablist"` named "Issue presets", its accessible name the
- *   preset's name alone, with its count in `[data-preset-count]` inside it. At 1024 px and below
- *   the row becomes one control: a `button` with `aria-haspopup="menu"` whose name is the active
- *   preset, opening a `role="menu"` of five `role="menuitem"`s. Each preset has its own address
- *   (`presetAddress`). c-presets, c-three-things, c-children, c-urls, c-plain-words, c-keyboard.
+ *   preset's name alone, with its count in `[data-preset-count="<preset>"]` beside it inside the
+ *   tab's own box and named as the tab's description (`aria-describedby`): a word drawn inside a
+ *   control has to be in that control's name (WCAG 2.5.3), and the tab is held to the preset's
+ *   name alone by the inventory of the page it replaced. At 1024 px and below the row becomes
+ *   one control: a `button` with `aria-haspopup="menu"` drawing the active preset and its count,
+ *   and so named by both, opening a `role="menu"` of five `role="menuitem"`s, each named by its
+ *   preset alone. Each preset has its own address (`presetAddress`). c-presets, c-three-things,
+ *   c-children, c-urls, c-plain-words, c-keyboard.
  * - **The node menu** beside the presets: a `button` named by `CONTROL_LABELS.other_nodes`,
- *   opening a `role="menu"`. c-nodes, c-urls (`/artifacts`), c-keyboard (`t a`).
+ *   opening a `role="menu"` whose items are its rows: each document no block cites is a
+ *   `role="menuitem"` holding the button that opens it and the `button` that copies its
+ *   reference, since a `menu` may own menu items alone. c-nodes, c-urls (`/artifacts`),
+ *   c-keyboard (`t a`).
  * - **The tree**: `role="tree"` named "Issue tree", rows `role="treeitem"` carrying `aria-level`
  *   and, when they hold children, `aria-expanded`. Each row is `[data-node-row]` with
  *   `data-node-type` (the model's own token, a key of `NODE_TYPE_NAMES`), `data-node-id`,
@@ -221,8 +228,13 @@ export function presetTab(page: Page, preset: Preset): Locator {
   return presetRow(page).getByRole("tab", { exact: true, name: PRESET_NAMES[preset] });
 }
 
+/** The count the row draws for one preset: beside the tab at a width that draws the row, and
+ *  inside the one control below it. It sits beside the tab rather than inside it because the
+ *  tab's accessible name has to hold every word drawn inside that tab (WCAG 2.5.3) and the tab
+ *  is named by its preset alone; the tab points at the count with `aria-describedby`, so a
+ *  reader still hears it (`web/src/features/issue/IssuePresets.tsx`). */
 export function presetCount(page: Page, preset: Preset): Locator {
-  return presetTab(page, preset).locator(SELECTORS.presetCount);
+  return presetRow(page).locator(`[data-preset-count="${preset}"]`);
 }
 
 /** The one control the row becomes at 1024 px and below, named by the active preset. */

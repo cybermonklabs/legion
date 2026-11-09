@@ -291,7 +291,7 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
 
   const task = nodeOf(root, blockNodeId("plan-md", "t1"));
   expect(task?.text).toBe("Task 1 of the redesign is one step of the build.");
-  expect(task?.chips).toEqual([{ gone: true, name: "", ref: gone }]);
+  expect(task?.chips).toEqual([{ answered: true, gone: true, name: "", ref: gone }]);
 });
 
 // R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because

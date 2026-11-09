@@ -86,6 +86,37 @@ function wideLayout(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
 }
 
+/** The spec block `e2e/review-seed.ts` points the issue's one decision at, by its own words.
+ *  Several rows below wait on it, in the two places the issue page draws it - the margin's
+ *  decision card and the decision row's chip in the tree - so the corpus's own sentence is
+ *  written once here and a change to that corpus fails those rows rather than a baseline. */
+const SHAPED_BLOCK_WORDS = "One command, a seeded corpus, a signed-in browser.";
+
+/** The words the issue tree's rows take from the one batched reference read, which answers
+ *  after the rows themselves are drawn: until it does, a chip names its target by the target's
+ *  address alone and a block of a document carries no words at all ("The names come last and
+ *  all at once", `web/src/features/issue/useIssueTree.ts`). The seeded decision's chip is where
+ *  this corpus shows it - the spec block that decision shaped, named by that block's own words
+ *  - so a row that waits on this is reading a tree whose words are in. Every address that opens
+ *  the Tree preset draws that row, which is why the four rows of those addresses share it.
+ *
+ *  It is the same answer the `issue-spec` row gets from the margin's decision card: one
+ *  reference, drawn twice over by two surfaces, each of which holds the address until the graph
+ *  answers with the words.
+ *
+ *  The shot rows of those addresses need it for a second reason. A chip that is still waiting
+ *  draws the target's raw address, and a block's address carries a uuid the corpus makes
+ *  afresh every seed; a chip that has been answered draws the target's short form instead
+ *  (`NodeRow.tsx`'s `Chip`). A uuid is a fixed count of characters and not a fixed width, so a
+ *  shot taken before that answer would hold a rectangle that moves with the glyphs - the very
+ *  difference the `issue-decisions` row was taken out of the shot set for. Waiting here is
+ *  what keeps it out of a baseline. */
+function treeNamesSettled(page: Page): Locator {
+  return page
+    .locator('[data-node-row][data-node-type="decision"] [data-node-chip]')
+    .getByRole("link", { name: SHAPED_BLOCK_WORDS });
+}
+
 export const reviewRoutes: readonly ReviewRoute[] = [
   {
     kind: "reviewed",
@@ -149,40 +180,47 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-spec",
     path: (seed) => `/issues/${seed.issue}/spec`,
     pattern: "/issues/:key/*",
-    // Two facts, each of which one run of the drift probe caught this page without.
+    // Two facts, each of which one run of the drift probe caught this page without. This
+    // address is the Spec preset over the issue's one tree now, with the spec document drawn
+    // beside it (`web/src/features/issue/IssuePresetPanels.tsx`), so each fact is read where
+    // the redesign draws it rather than off the tab panel that used to hold it.
     //
-    // The document's connection dot once its socket is up: its accessible name is its `title`
-    // (`web/src/features/doc/ConnectionDot.tsx`), which reads "connected" only in that state,
-    // so it matches nothing while the page still draws "Connecting to the document…". The dot
-    // is drawn by the spec's own toolbar (`SpecToolbar.tsx`), which is drawn with the
-    // document, so it proves the header and the editor are on the screen as well as
-    // connected. Spelled here rather than imported from `./editor`, which locates the same
-    // dot: `./editor` reaches no `./psql`, so the container rule would allow it, but it pulls
-    // `@hocuspocus/provider`, `lib0` and `web/src/api/live-socket` - and so React and
+    // The document's connection dot once its socket is up: it reads "connected" only in that
+    // state, so it matches nothing while the page still draws "Connecting to the document…".
+    // Its accessible name is its `aria-label` and no longer the `title` it used to lean on
+    // (`web/src/features/doc/ConnectionDot.tsx`), because the issue page draws no tooltip at
+    // all (dispatch://INFRA-1196 R2, R21) and the dot still has to say which state it is in:
+    // the locator is unchanged, the attribute under it is not. The dot is drawn by the preset
+    // row's toolbar (`PresetToolbar.tsx` over `SpecToolbar.tsx`), which that row draws only
+    // once the open document has reported one, so it proves the editor is on the screen as
+    // well as connected. Spelled here rather than imported from `./editor`, which locates the
+    // same dot: `./editor` reaches no `./psql`, so the container rule would allow it, but it
+    // pulls `@hocuspocus/provider`, `lib0` and `web/src/api/live-socket` - and so React and
     // @tanstack/react-query - into a module of data and locators that a bun unit test imports.
     //
     // And the margin's decision card with the block its decision shaped named by that block's
     // own words. The card arrives with the decisions view, after the document; its preview
     // then holds the reference as the reader wrote it (`dispatch://CORE-1/spec#b-<uuid>`)
     // until the reference graph answers, and the words replace it
-    // (`web/src/features/refs/MarkdownPreview.tsx`). Both states were shot. The words are the
-    // spec block `e2e/review-seed.ts` points the decision at.
+    // (`web/src/features/refs/MarkdownPreview.tsx`). Both states were shot. The card is the
+    // margin's own, drawn at the head of the page's one right-hand panel (`IssueMargin.tsx`,
+    // which hands the margin's cards through), and it is placed against the spec block it
+    // shaped - so of the issue's addresses this is the one that draws it.
     //
-    // The margin is a column beside the document at the wide layout's width and a bottom sheet
-    // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
+    // That panel is a column beside the page at the wide layout's width and the margin's own
+    // sheet below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
     // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
     // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
     // alone.
+    //
+    // The tree this preset draws needs no fact of its own here: the Spec preset keeps the
+    // issue's requirements, and the rows it leaves on the screen for this corpus - the issue
+    // and the document the requirements live in - carry words the issue read already holds.
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
       const wideEnoughForMargin = wideLayout(page);
       return wideEnoughForMargin
-        ? [
-            connected,
-            page
-              .locator("[data-margin-item]")
-              .getByText("One command, a seeded corpus, a signed-in browser."),
-          ]
+        ? [connected, page.locator("[data-margin-item]").getByText(SHAPED_BLOCK_WORDS)]
         : [connected];
     },
   },
@@ -193,15 +231,24 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // is 1280x925, carrying the `Jump to latest` pill a settled view does not - measured in
     // one container run of five of one tree (42479821620), and a size mismatch is a
     // difference no pixel bound can absorb. It is the same race the phone copy of this page
-    // was taken out of the shot set for. The binding the shots of it carried - the docked
-    // composer's `SURFACE`, in both schemes - is read off the live element by the kept row of
-    // `e2e/theme.e2e.ts` instead, which is a stronger claim than a snapshot made. A scan
-    // reads the DOM and does not care which turns have landed, so this page keeps that layer.
+    // was taken out of the shot set for, and the redesign only moved the list into the page's
+    // one right-hand panel (dispatch://INFRA-1196 R12): the turns still arrive over that
+    // socket. The binding the shots of it carried - the docked composer's `SURFACE`, in both
+    // schemes - is read off the live element by the kept row of `e2e/theme.e2e.ts` instead,
+    // which is a stronger claim than a snapshot made. A scan reads the DOM and does not care
+    // which turns have landed, so this page keeps that layer.
     layers: ["scan"],
     name: "issue-conversation",
     path: (seed) => `/issues/${seed.issue}/conversation`,
     pattern: "/issues/:key/*",
-    ready: (page) => [page.getByRole("list", { name: "Conversation turns" })],
+    // The conversation's one list, which is drawn in the page's one right-hand panel and in
+    // no column of the page any more (`web/src/features/issue/IssueMargin.tsx`), and the tree
+    // this address draws beside it: `/conversation` names no preset, so it opens the Tree
+    // preset, whose rows take their words from the batched reference read.
+    ready: (page) => [
+      page.getByRole("list", { name: "Conversation turns" }),
+      treeNamesSettled(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -209,8 +256,18 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-children",
     path: (seed) => `/issues/${seed.issue}/children`,
     pattern: "/issues/:key/*",
-    // The child's own row, not the panel: the panel is in the DOM while another tab is open.
-    ready: (page) => [page.locator("#issue-children-panel").getByRole("listitem").first()],
+    // The child's own row, not the section: `#issue-children-panel` went with the eight tab
+    // panels, and the children are a section of the page the tree sits under
+    // (`web/src/features/issue/IssueChildren.tsx`), drawn at every address and open from
+    // Tailwind's `md` for a reader who has never shut it (`useChildrenSection.ts`) - so the
+    // section's own header is on the screen whether or not its rows are. The row is
+    // `[data-child-row]`, which is how `e2e/issue-page.ts` reads one.
+    //
+    // And the tree's words, because this address opens the Tree preset beside the section.
+    ready: (page) => [
+      page.locator('[data-testid="issue-children"] [data-child-row]').first(),
+      treeNamesSettled(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -218,9 +275,22 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-artifacts",
     path: (seed) => `/issues/${seed.issue}/artifacts`,
     pattern: "/issues/:key/*",
-    // The primary document's row. An issue's spec is `spec.md` under the slug `spec`
-    // (`issue_create.go`), so the row's test id is `artifact-spec`.
-    ready: (page) => [page.getByTestId("artifact-spec")],
+    // What this address opens on the redesigned page is the node menu beside the presets,
+    // which lists every artifact no block of the tree cites (`NodeMenu.tsx`; the issue's own
+    // check records that `/artifacts` opens it). The menu's item for the issue's spec is the
+    // primary document's row here - an issue's spec is `spec.md` under the slug `spec`
+    // (`issue_create.go`) - and the menu is built out of the tree, so the item says the
+    // issue's artifacts have reached it.
+    //
+    // The list that tab drew is still the panel under the tree (`ArtifactsTab.tsx` through
+    // `ArtifactRoutePanel.tsx`) and `artifact-spec` is still that document's row in it, so
+    // the fact this row has always held is kept rather than dropped. The tree's words are the
+    // third, as on every address that opens the Tree preset.
+    ready: (page) => [
+      page.getByRole("menu").getByRole("menuitem").filter({ hasText: "spec.md" }),
+      page.getByTestId("artifact-spec"),
+      treeNamesSettled(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -228,7 +298,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-activity",
     path: (seed) => `/issues/${seed.issue}/activity`,
     pattern: "/issues/:key/*",
-    ready: (page) => [page.getByRole("list", { name: "Issue activity" })],
+    // The issue's whole event history, which this address still draws in the page's own
+    // column (`features/activity/ActivityTab.tsx`, mounted by `IssuePresetPanels.tsx`) while
+    // the panel beside it holds the conversation in its `everything` state - the state this
+    // address names (`conversation-states.tsx`). And the tree's words, as on every address
+    // that opens the Tree preset.
+    ready: (page) => [page.getByRole("list", { name: "Issue activity" }), treeNamesSettled(page)],
   },
   {
     kind: "reviewed",
@@ -239,9 +314,17 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // The Needs pointer of the second task, drawn as the block's own words once the reference
     // graph answers them and as the reference's short form ("CORE-1 plan-md block") until then
     // (`web/src/features/plan/PlanTab.tsx`'s `BlockLink`, `refs/routes.ts`'s `shortForm`). The
-    // tab's own test id is drawn before that answer, which is why the probe read the chip in
+    // list that holds it is drawn before that answer, which is why the probe read the chip in
     // one run and the title in the other. The words are the plan task `e2e/review-seed.ts`
     // writes, so a change to that corpus fails this row rather than a baseline.
+    //
+    // The redesign kept that list and moved it: this address opens the Plan preset over the
+    // tree, and the plan document is drawn beside it inside the preset's own panel, framed by
+    // the same `PlanTab` (`IssuePresetPanels.tsx` through `RoleDocumentPanel.tsx`). So the
+    // fact and its race are untouched, and the locator reads them where they are now drawn.
+    // The tree the preset leaves on the screen for this corpus - the issue and the document
+    // the plan's tasks serve - carries words the issue read already holds, so it needs no
+    // fact of its own.
     ready: (page) => [
       page.getByTestId("plan-task-needs").getByRole("link", { name: "Write the route table." }),
     ],
@@ -255,34 +338,64 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // The title the editor draws over the bare issue key its document's first line writes
     // ("How CORE-1 is proved."): the key's own characters are hidden and the issue's title is
     // drawn in their place once `issueSummaryQuery` answers (`proof-editor`'s
-    // `reference-decorations.ts`, `web/src/features/doc/document-references.tsx`). The tab's
-    // own test id is drawn with the empty document, so the probe read the bare key in one run
-    // and the title in the other; this waits for the document and that answer together.
-    ready: (page) => [page.getByTestId("verification-tab").locator("a.dispatch-reference")],
+    // `reference-decorations.ts`, `web/src/features/doc/document-references.tsx`). The panel
+    // holding the document is drawn with that document still empty, so the probe read the bare
+    // key in one run and the title in the other; this waits for the document and that answer
+    // together.
+    //
+    // `verification-tab` went with the eight tab panels. This address opens the Checks preset
+    // and keeps the Verification document beside the tree, in the preset's own panel
+    // `#issue-verification-panel` (`RoleDocumentPanel.tsx`, whose Checks half gives the
+    // document no frame because the checks themselves are rows of the tree), so the panel's
+    // own id is what scopes the reference now.
+    ready: (page) => [page.locator("#issue-verification-panel a.dispatch-reference")],
   },
   {
     kind: "reviewed",
-    // Not shot: under "Shaped in the spec:" the panel lists every block a decision shaped, and
-    // a block the reference graph answers with no text of its own is drawn as `Block <uuid>`
-    // (`DecisionsPanel.tsx`). That id is fresh in every seeded corpus and no wait resolves it,
-    // because there is nothing for it to resolve to; a mask does not hold it either, since a
-    // uuid is a fixed count of characters and not a fixed width, so the painted rectangle
-    // moves with the glyphs. Three container runs measured it at 153, 781 and 794 pixels. A
-    // scan reads the DOM and does not care, so this page is reviewed by that layer alone.
+    // Not shot, and no longer for the reason it was. A chip names its target by the target's
+    // address as well as by its words, and this decision's chip points at a block of the
+    // spec, so this row used to draw `dispatch://CORE-1/spec#b-<uuid>` as text of its own -
+    // an id fresh in every seeded corpus, which no wait resolved because it was what the
+    // reference IS, and which no mask held either, since a uuid is a fixed count of
+    // characters and not a fixed width, so the painted rectangle moved with the glyphs.
+    // Three container runs of the old page's Decisions panel, which drew the same id for the
+    // same reason, measured it at 153, 781 and 794 pixels.
+    //
+    // `NodeRow.tsx`'s `Chip` now draws the target's short form ("CORE-1 spec block") once the
+    // batched reference read has answered, and the raw address only while it has not - and
+    // that answer is what the `ready` below waits for. So the fresh uuid is out of this page,
+    // and out of every page that draws a chip, as long as the row waits for the words.
+    //
+    // What keeps the row off the shot layer now is that it has never had a baseline: this
+    // route has no file under `e2e/__screenshots__`, a route this layer gains has none until
+    // a run inside the pinned image writes one (`packages/dispatch/AGENTS.md`), and no pod of
+    // this package can run that image. Giving it `shoot` here would add a row that fails
+    // every run until CI wrote its two images. That is an architect's call, with the
+    // measurement a container run would give it; until then a scan reads the DOM and is what
+    // reviews this page.
     layers: ["scan"],
     name: "issue-decisions",
     path: (seed) => `/issues/${seed.issue}/decisions`,
     pattern: "/issues/:key/*",
-    // The panel's region, and the link to the spec block the decision shaped once the
-    // reference graph has answered. Until it does, `DecisionsPanel.tsx` draws that link as
-    // `Block <uuid>`, and a uuid is fresh in every seeded corpus - so a page read on the
-    // region alone was captured sometimes with the words and sometimes with the id. Masking
-    // the id does not settle it either: a uuid is a fixed count of characters and not a fixed
-    // width, so the painted rectangle moves with the glyphs. Waiting for the words settles it
-    // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
+    // The decision this preset opens on, in the state that put it there, and the link to the
+    // spec block it shaped once the reference graph has answered.
+    //
+    // The panel's "Waiting for your review" region is gone with the Decisions tab: how a
+    // decision stands is the node's own state now, drawn as that row's state word, and
+    // `page-words.ts` records that the three states are the sections that tab grouped by. So
+    // the row carries `data-node-state="waiting_review"`, and the preset opens that row's body
+    // without being asked (`IssueBody.tsx`'s `opensOn`), which is the same "what waits for
+    // your review" the region named.
+    //
+    // Until the batched reference read answers, the chip names the block by its address alone
+    // - so a page read on the row alone was captured sometimes with the words and sometimes
+    // without them, as the old page's was. Waiting for the words settles it, and is also what
+    // keeps the raw address out of what is read, because the short form replaces it with the
+    // same answer. The words are the spec block `e2e/review-seed.ts` names, so a change to
+    // that corpus fails this row rather than a baseline.
     ready: (page) => [
-      page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
+      page.locator('[data-node-row][data-node-type="decision"][data-node-state="waiting_review"]'),
+      treeNamesSettled(page),
     ],
   },
   {

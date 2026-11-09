@@ -274,6 +274,12 @@ export const SPINE_DECISION_HEADING = "## Link a requirement the question does n
 /** The block id of the check `seedSpineCases` writes. */
 export const SPINE_CHECK_BLOCK_ID = "c-two";
 
+/** The question `seedSpineCases` asks and answers, which the one decision names. A chip names
+ *  its target by the target's own words and by its address's short form - `LAY-1 ask` - and
+ *  never by the target's id (`web/src/features/issue/NodeRow.tsx`'s `Chip`), so a spec looking
+ *  for that edge looks for these words. */
+export const SPINE_ANSWERED_QUESTION = "Which node does a requirement with no parent sit under?";
+
 export const SPINE_SPEC = `:::requirement{#${SPINE_REQUIREMENTS.unexplained}}
 Nothing explains this requirement: it names no node it came from.
 :::

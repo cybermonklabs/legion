@@ -51,6 +51,7 @@ import {
   planTaskBlockId,
   requirementBlockId,
   requirementText,
+  SPINE_ANSWERED_QUESTION,
   SPINE_CHECK_BLOCK_ID,
   SPINE_REQUIREMENTS,
   SUMMARY_SENTENCES,
@@ -692,9 +693,13 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
     ).toBe(fromFirstParent);
 
     // Every edge that is not the spine is a chip naming its target, found exactly once: the
-    // decision's link to a requirement, and the answered question it names.
+    // decision's link to a requirement, and the answered question it names. Each is looked for
+    // by the words the page draws for it, because that is what a chip draws: the target's own
+    // words from the reference read, and its address in the short form `shortForm` writes -
+    // never the target's id, which is a uuid for an ask and which R21 keeps off the page
+    // (`web/src/features/issue/NodeRow.tsx`'s `Chip`).
     const chips = rows.flatMap((row) => row.chips);
-    for (const target of [SPINE_REQUIREMENTS.shapedElsewhere, seeded.answeredAskId]) {
+    for (const target of [SPINE_REQUIREMENTS.shapedElsewhere, SPINE_ANSWERED_QUESTION]) {
       const naming = chips.filter((chip) => chip.includes(target));
       expect(
         naming.length,

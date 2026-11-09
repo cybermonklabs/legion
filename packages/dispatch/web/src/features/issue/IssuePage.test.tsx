@@ -357,11 +357,15 @@ async function expectCreator(label: string): Promise<HTMLElement> {
 /**
  * The preset the page is on. happy-dom's window is 1024 px wide, which is the width the row of
  * five presets becomes one control named by the active preset (dispatch://INFRA-1196 R3), so
- * that one control is what these tests read and press.
+ * that one control is what these tests read and press. The control draws the preset and its
+ * count, and so is named by both - a word drawn inside a control belongs in that control's
+ * name (WCAG 2.5.3, `IssuePresets.tsx`) - so the preset is its name with the count taken out.
  */
 async function activePreset(): Promise<string> {
   const row = await screen.findByTestId("issue-presets");
-  return within(row).getByRole("button").getAttribute("aria-label") ?? "";
+  const named = within(row).getByRole("button").cloneNode(true) as HTMLElement;
+  for (const count of named.querySelectorAll("[data-preset-count]")) count.remove();
+  return (named.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
 async function expectPreset(name: string): Promise<void> {

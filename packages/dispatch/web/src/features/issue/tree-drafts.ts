@@ -114,7 +114,12 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     chipOf: (reference: string): NodeChip => {
       const target = names.get(reference);
       const gone = target?.gone ?? false;
-      return { gone, name: gone ? "" : (target?.name ?? ""), ref: reference };
+      return {
+        answered: target !== undefined,
+        gone,
+        name: gone ? "" : (target?.name ?? ""),
+        ref: reference,
+      };
     },
     key,
     nodeIdOf,
@@ -334,8 +339,11 @@ function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
   reads.issue.children.forEach((child, index) => {
     const draft = add(drafts, blank(child.key, "child_issue", ROOT_ORDER.child + index));
     draft.text = child.title;
-    draft.reference = `dispatch://${child.key}`;
+    // Named by the issue read itself rather than by the batched reference read, so there is
+    // nothing left to wait for: a blocking issue's key is both its name here and its whole
+    // address (`answered`, `NodeChip`).
     draft.chips = child.blocked_by.map((blocked) => ({
+      answered: true,
       gone: false,
       name: blocked,
       ref: `dispatch://${blocked}`,

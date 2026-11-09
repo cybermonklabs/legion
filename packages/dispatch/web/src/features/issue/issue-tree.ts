@@ -70,6 +70,12 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
 
 /** One edge of a node that is not the spine, drawn beside the node as its target's name. */
 export interface NodeChip {
+  /** Whether the batched reference read has answered for this reference. A target it answered
+   *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
+   *  still out by this and by nothing else, and the two are drawn differently: the first is
+   *  named by its address's short form, the second by the address itself (`NodeRow.tsx`'s
+   *  `Chip`). */
+  readonly answered: boolean;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;
   /** The words shown for the target, from the batched reference read; `""` until it answers. */

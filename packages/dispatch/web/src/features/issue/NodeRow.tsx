@@ -12,7 +12,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { buildReferencePath, parseNodeReference } from "../refs/routes";
+import { buildReferencePath, parseNodeReference, shortForm } from "../refs/routes";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { bringOnScreen } from "./identity-block";
@@ -142,7 +142,7 @@ export function NodeRow({
       aria-level={level}
       className={`flex min-w-0 flex-col border-l-2 py-1 pr-2 ${
         focused ? quoteAccentBorder : borderTransparent
-      } ${context ? "opacity-60" : ""} ${surfaceMutedHoverBg}`}
+      } ${surfaceMutedHoverBg}`}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -170,8 +170,18 @@ export function NodeRow({
             {node.author.id}
           </span>
         )}
+        {/* A context row - one drawn only because a match sits under it - is faint by drawing
+            its own words at the muted level the rest of the row already uses, rather than by
+            dimming the whole row. `opacity-60` was the first way, and it fades every colour of
+            the row towards the canvas: axe read the muted words at 2.25:1 in light and 3.32:1
+            in dark against AA's 4.5:1, and the node's own first line at 3.29:1, because an
+            opacity is applied to a colour the palette registered as AA and nothing re-registers
+            the blend (`theme/classes.ts`'s `CONTRAST_CHECKS`). The muted pair is registered, so
+            a faint row is as readable as any other. */}
         <span
-          className={`min-w-0 ${textSecondaryOnCanvas} ${oneLine ? "truncate" : "break-words"}`}
+          className={`min-w-0 ${context ? textMutedOnCanvas : textSecondaryOnCanvas} ${
+            oneLine ? "truncate" : "break-words"
+          }`}
           data-node-first-line=""
           {...authorText}
         >
@@ -275,9 +285,19 @@ function NodeEdges({ node }: { node: TreeNode }): ReactNode {
  * where it has one, the target's own name from the batched reference read, and the target's
  * address, which is how a reader cites it and the only thing that tells two blocks of one
  * document apart. A target nothing answers to now says so instead of naming nothing.
+ *
+ * The address is drawn in its short form - `CORE-1 spec block`, `refs/routes.ts`'s `shortForm`,
+ * the form the old Plan tab drew for the same pointer - from the moment the reference read has
+ * answered for it. The raw `dispatch://CORE-1/spec#b-<block id>` is a name nobody chose: a
+ * block id is a uuid, which R21 and c-plain-words refuse where a name belongs, and a chip whose
+ * target the graph answered with no text of its own drew nothing else. A chip still waiting for
+ * that read keeps the raw address, which is the deliberate transient `useIssueTree.ts` records
+ * ("the names come last and all at once"): until the read answers there is nothing else to say,
+ * and the reference is still the reference.
  */
 function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
-  const route = chip.gone ? undefined : parseNodeReference(chip.ref);
+  const target = parseNodeReference(chip.ref);
+  const route = chip.gone ? undefined : target;
   // The target's own words, as the link a reader follows to it: a chip names a node the page
   // may not be drawing, and the old page's decision cards reached each one by its words (R18,
   // c-nothing-lost). A target nothing answers to now, or a reference the grammar cannot read,
@@ -299,6 +319,9 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
         </Link>{" "}
       </>
     );
+  // A blocking child issue is named by its key and addressed by the same key, and a chip saying
+  // "CORE-2 CORE-2" says one of them twice.
+  const address = chip.answered && target !== undefined ? shortForm(target) : chip.ref;
   return (
     <span
       className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
@@ -307,9 +330,11 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale} </span> : null}
       {chip.gone ? <span {...pageChrome}>{CONTROL_LABELS.target_gone} </span> : named}
-      <span className="break-all" {...authorText}>
-        {chip.ref}
-      </span>
+      {address === chip.name ? null : (
+        <span className="break-all" {...authorText}>
+          {address}
+        </span>
+      )}
     </span>
   );
 }

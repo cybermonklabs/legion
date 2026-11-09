@@ -76,14 +76,31 @@ export function NodeMenu({
             // The item and the artifact's own copy control, side by side: a document the menu
             // lists is reachable here and nowhere else, so this is where it keeps the copy
             // control every other node of the page has (R18, c-nothing-lost).
-            <div className="flex min-w-0 items-center gap-1" key={artifact.slug}>
+            //
+            // The row itself is the `menuitem`, not the button inside it. A `menu` may own
+            // nothing but `menuitem`, `menuitemcheckbox`, `menuitemradio` and `group`, and axe
+            // reads a `button` owned by one - which the copy control was, whether a wrapper
+            // sat between them or not - as `aria-required-children`, critical: "Element has
+            // children which are not allowed: button[aria-label]". The copy control cannot
+            // answer it by becoming a `menuitem`, because the inventory of the page this one
+            // replaced records it as `button "Copy reference dispatch://…"`
+            // (`e2e/fixtures/issue-page-inventory.json`) and c-nothing-lost holds this page to
+            // that role. So the row carries the role, the two controls inside it stay the
+            // buttons they are, and the menu owns menu items alone. The row takes no place in
+            // the tab order of its own, as the menu around it does not: Tab reaches the two
+            // buttons inside it, which is where it reached them before.
+            <div
+              className="flex min-w-0 items-center gap-1"
+              key={artifact.slug}
+              role="menuitem"
+              tabIndex={-1}
+            >
               <button
                 className={`min-w-0 flex-1 ${MENU_ITEM_CLASS}`}
                 onClick={() => {
                   onClose();
                   navigate(buildReferencePath(documentRoute(artifact)));
                 }}
-                role="menuitem"
                 type="button"
               >
                 <span {...authorText}>{artifact.name}</span>{" "}
