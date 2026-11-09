@@ -2,8 +2,10 @@ kind: Fixed
 body: |-
   A refusal of a Dispatch write by the `dispatch` CLI is now only ever the verdict of an AskGate
   review that ran, and a write posts unreviewed only where the CLI can positively establish that
-  no verdict exists. Absence counts as a statement only when the evidence store was readable and
-  complete.
+  no verdict exists. Absence counts as a statement only when the store could answer for this
+  write: a verdict is read by name, so a store that cannot be listed but can be opened answers
+  every named read and an absence in it is certain, while one that refuses the named read makes
+  every write of that session uncertain.
   A call the gate never read — from a subagent, a script, an eval cell, `xargs`, `python3 -c` or
   any form outside the literal grammar — posts with a warning naming the call and why no review
   ran, in every mode, where it used to be refused in `block`, provided the gate recording the
