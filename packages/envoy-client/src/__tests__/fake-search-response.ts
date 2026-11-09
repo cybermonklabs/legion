@@ -45,6 +45,11 @@ export function fakeSearchResponse(
     limit: 20,
     offset: 0,
     took_ms: 0,
+    // What the route answers for a plain query: no chip narrowed it and no operator form was
+    // written in it. The two fields are required of a SearchResponse, so a fake that left them
+    // out would be a shape Dispatch never answers.
+    filters: {},
+    query: { operators: [], broadened: false },
     ...overrides,
   };
   const undefinedFields = PAGING_FIELDS.filter((field) => merged[field] === undefined);

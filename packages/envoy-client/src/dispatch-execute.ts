@@ -4965,7 +4965,9 @@ export async function executeDispatchTool(
         delivery: stringArg(args, "delivery") as MessageDeliveryMode,
         ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
       });
-      const attempt = message.deliveries.at(-1);
+      // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
+      // either way there is no attempt to read, which the `undefined` branch below already says.
+      const attempt = message.deliveries?.at(-1);
       const readBack = conversationReadBack(message.id);
       const arrival =
         attempt === undefined
