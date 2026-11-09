@@ -407,3 +407,60 @@ func TestStepCheckJudgesTheBaselineStepByWhatItDrove(t *testing.T) {
 	}
 	wantClause(t, out, "R5 baseline target", "ok", "writes 4.00/s of R5's 4.00/s")
 }
+
+// TestStepCheckCountsAFailedR8CriterionAsAFailedClause: a step the pass rule fails is not a
+// step that passed. The check renders every criterion of R8, a failed one as the text
+// "fail: …" inside a clause it counts as ok, so its verdict line and its exit status say the
+// step is clean while three criteria read fail. Measured on the load test's own
+// sensitivity-2x step at this head: `loadgen step-check` printed
+// "R8 (c) …: fail: p99 from arrival 20,681 ms", "R8 (d) …: fail: over the limit: auth-proxy"
+// and "R8 (g) …: fail: classes that lost a notification: unit", then
+// "step-check sensitivity-2x: no clause failed, 43 passed, 0 n/a", and exited 0, where
+// `loadgen curves -series loop` over that same step answers "passes no" (INFRA-988).
+//
+// A3's words are that the step records "a pass or a fail for each criterion of R8", and the
+// pull request's own evidence line is that each of its fourteen steps was "judged by
+// loadgen step-check", so the command that judges them must not answer 0 for a step that fails.
+func TestStepCheckCountsAFailedR8CriterionAsAFailedClause(t *testing.T) {
+	f := newStepFixture()
+	f.sum.Events.DeliveryMsFromArrival.P99 = 20_681
+
+	out, failed := f.check(t, "2x-delivery-past-the-bound")
+	wantClause(t, out, "R8 (c) delivery p99 from arrival ≤ 1,000 ms", "FAIL", "20,681 ms")
+	if failed != 1 {
+		t.Errorf("%d clauses failed, want criterion (c) alone:\n%s", failed, out)
+	}
+	if err := runStepCheck([]string{f.write(t, "2x-delivery-past-the-bound-again")}); err == nil {
+		t.Error("the command passed a step whose delivery p99 is past the criterion's bound")
+	}
+}
+
+// TestStepCheckReportsNoNegativeLoss: a receipt of a write on the boundary of a session's life
+// is no loss (the delivery rule D3 of the plan), and a session that received more than it was
+// expected to lost nothing. The R6 line prints events.missing, which is
+// expected - received over the whole step and so goes negative whenever boundary receipts
+// arrive, under the word "lost" - against the field's own definition, "Missing stays the step's
+// whole shortfall".
+//
+// It is not only a sign. Measured over the load test's own run at this head, the line reads a
+// negative loss in 22 of its 24 steps, and for sensitivity-2x it reads "lost -573" while the
+// classes of that step lost 170 notifications between them; criterion (g), which reads the
+// classes, fails it correctly. So R6's own notification measurement hides the loss it exists to
+// report (INFRA-988).
+func TestStepCheckReportsNoNegativeLoss(t *testing.T) {
+	f := newStepFixture()
+	e := &f.sum.Events
+	const boundary = 142
+	unit := e.ByClass[deliveryClassUnit]
+	unit.Received = unit.Expected + boundary
+	unit.Boundary = boundary
+	e.ByClass[deliveryClassUnit] = unit
+	e.IssueTopicReceipts = e.ExpectedIssueTopicReceipts + boundary
+	e.Missing = e.ExpectedIssueTopicReceipts - e.IssueTopicReceipts
+
+	out, _ := f.check(t, "2x-boundary-receipts")
+	line := clauseLine(t, out, "R6 notifications expected, received, lost and duplicate")
+	if strings.Contains(line, "lost -") {
+		t.Errorf("a step that lost nothing reports a negative loss: %q", line)
+	}
+}
