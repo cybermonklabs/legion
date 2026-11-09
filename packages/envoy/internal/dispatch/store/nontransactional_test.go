@@ -44,9 +44,9 @@ func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 }
 
 // migrationKeyRows selects the rows of pg_locks that are advisory locks on migrationLockKey in
-// the current database, with the key as $1. Both helpers below count through it, so the shape of
-// an advisory-key row - locktype, database, classid, objid, objsubid - is written once and the
-// two counts cannot drift apart over what they call a lock on this key.
+// the current database, with the key as $1. migrationKeyLocks counts them and
+// migrationKeyLockPids lists their sessions, both through it, so the shape of an advisory-key row
+// (locktype, database, classid, objid, objsubid) is written once.
 const migrationKeyRows = `from pg_locks where locktype = 'advisory'
 	and database = (select oid from pg_database where datname = current_database())
 	and classid = 0 and objid = $1::bigint and objsubid = 1`
@@ -393,8 +393,8 @@ func TestAnUnlockThatDoesNotLandLogsAtErrorAndEndsItsConnection(t *testing.T) {
 // lockMigrations, and the cancel lands there. What the path promises is what this asserts: the
 // cancellation reaches the caller, the boot leaves no lock on the key behind (the test's holder
 // keeps the only one), and the connection it may have been granted the key on serves nobody
-// else, which is its session ending. Nothing is logged about the key here: this path does not
-// reach an unlock at all.
+// else, which is its session ending. Nothing is logged at ERROR about the key here: this path
+// does not reach an unlock at all.
 func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)

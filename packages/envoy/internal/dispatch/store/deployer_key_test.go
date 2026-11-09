@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// deployerAdvisoryKey reads the key out of a pg_try_advisory_lock call written in a shell script,
-// which is how the auto-deployer and its own test write theirs: one call, one integer literal.
-// The test below reads the key the script uses rather than asserting a number of its own, so the
-// relation it states is "the deployer takes the key this package defines" rather than a fourth
+// deployerAdvisoryKey reads the key out of each pg_try_advisory_lock call written in a shell
+// script with an integer literal, which is how the auto-deployer and its own test write theirs.
+// The test below reads the keys the scripts use rather than asserting a number of its own, so the
+// relation it states is "the deployer takes the key this package defines" rather than one more
 // copy of 8150001.
 var deployerAdvisoryKey = regexp.MustCompile(`pg_try_advisory_lock\(\s*(-?[0-9]+)\s*\)`)
 
@@ -23,8 +23,9 @@ var deployerAdvisoryKey = regexp.MustCompile(`pg_try_advisory_lock\(\s*(-?[0-9]+
 // exits 3 on any other statement, and its expectation line asserts that text. That makes the
 // shell suite loud about drift between the two scripts, but only about drift between them - both
 // could move away from migrationLockKey together and every check of this package would stay
-// green. Checking all four literals in one Go test is what pins the deployer's world to the
-// runner's, and it is the cheaper half of the job: the Go test needs no database and no shell.
+// green. Checking every such literal of both scripts in one Go test is what pins the deployer's
+// world to the runner's, and it is the cheaper half of the job: the Go test needs no database and
+// no shell.
 var deployerKeyScripts = []string{
 	filepath.Join("..", "..", "..", "deploy", "scripts", "autodeploy.sh"),
 	filepath.Join("..", "..", "..", "deploy", "scripts", "autodeploy_test.sh"),
