@@ -366,13 +366,18 @@ func (h *memoryHarness) pendingSettlements(t *testing.T) []string {
 	return pending
 }
 
-// blockIndexDrainWithin is how long writeOwedBlockIndex gives the reconcile to write the whole
-// block index the harness's documents owe, and blockIndexReported how often it says where the
-// drain has got to. The drain indexes one document at a time and a drive of this file holds
-// hundreds of documents of a mebibyte, so the line it logs is what tells a reader whether a drain
-// that ran out of time had stalled or was still getting through them (INFRA-179).
+// blockIndexStallWithin is how long writeOwedBlockIndex lets the reconcile get nowhere before it
+// gives up, and blockIndexReported how often it says where the drain has got to. The wait is on
+// the drain's progress rather than on its total: the drain indexes one document at a time and a
+// drive of this file holds hundreds of documents of a mebibyte, so how long the whole of it takes
+// is the pod's load, which a test must never fail for - measured here, the same drain took 80 s
+// on an idle pod and ran past two minutes with the processors busy. A reconcile that is still
+// indexing documents, or still clearing what it is owed, is given as long as it needs; one that
+// has done neither for this long has stalled, which is the defect this bound exists to catch
+// (dispatch://INFRA-179, A3's one_after_another). The whole run is bounded by the test's own
+// timeout.
 const (
-	blockIndexDrainWithin = 120 * time.Second
+	blockIndexStallWithin = 120 * time.Second
 	blockIndexReported    = 10 * time.Second
 )
 
@@ -382,7 +387,10 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 	t.Helper()
 	ctx := context.Background()
 	started := time.Now()
-	deadline := started.Add(blockIndexDrainWithin)
+	// progressed is the last tick that indexed something or left less owed than the tick before
+	// it; owed is what that tick was owed, so a drain that keeps clearing rows is never cut off.
+	progressed := started
+	owed := -1
 	reported := started
 	var cursors docs.BlockIndexCursors
 	// liveAheadTicks counts the ticks in a row that indexed nothing and found a document live
@@ -413,10 +421,14 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 		} else {
 			liveAheadTicks = 0
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the block index was still owed %d documents, %d items, %d item blocks and %d texts %s into the drain, having written %d documents, %d items, %d item blocks and %d texts: %s",
-				tick.OwedDocuments, tick.OwedItems, tick.OwedItemBlocks, tick.OwedTexts, blockIndexDrainWithin,
-				documents, items, itemBlocks, texts, strings.Join(h.owedDocumentNames(t), "; "))
+		if left := tick.OwedDocuments + tick.OwedItems + tick.OwedItemBlocks + tick.OwedTexts; indexed > 0 || owed < 0 || left < owed {
+			progressed = time.Now()
+			owed = left
+		} else if time.Since(progressed) >= blockIndexStallWithin {
+			t.Fatalf("the block index indexed nothing and cleared nothing for %s, with %d documents, %d items, %d item blocks and %d texts owed %s into the drain, having written %d documents, %d items, %d item blocks and %d texts: %s",
+				blockIndexStallWithin, tick.OwedDocuments, tick.OwedItems, tick.OwedItemBlocks, tick.OwedTexts,
+				time.Since(started).Round(time.Second), documents, items, itemBlocks, texts,
+				strings.Join(h.owedDocumentNames(t), "; "))
 		}
 		if indexed == 0 {
 			// A document the tick could not index is logged and left owed, so a loop that indexes
@@ -1385,12 +1397,6 @@ func (d *browserDocument) size(t *testing.T) pmdoc.DocumentSize {
 // test when it fails, or whole by a test that asserts what the server logged.
 type lockedBuffer struct {
 	logtest.Buffer
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
 }
 
 func (b *lockedBuffer) tail() string {

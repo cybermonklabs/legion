@@ -1173,6 +1173,7 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 			left = append(left, leaving.room)
 			leaving.leave()
 			requireBrowserForgotten(t, server, leaving.room, 1)
+			requireRoomClosable(t, server, leaving.room)
 			opened, refused := admit(t)
 			if refused != nil {
 				t.Fatalf("the browser asking just after another left was refused (%v), want it admitted once the room that browser left was closed:\n%s", refused, server.output.tail())
@@ -4265,8 +4266,20 @@ func (p *memoryServer) roomCharges(t *testing.T) (charges map[string]int64, used
 // requireRoomAbsent fails the test unless the server says the document is not live (roomLive).
 func requireRoomAbsent(t *testing.T, server *memoryServer, artifactID, what string) {
 	t.Helper()
-	if server.roomLive(t, artifactID) {
-		t.Fatalf("%s, %s, is live in the server, want no room for it", what, artifactID)
+	// The refusal reaches the browser before the server has finished unwinding the admission it
+	// refused, so the room record can still be there for a moment after the close the browser
+	// read. What this proves is that a refused admission leaves no room behind, so it waits for
+	// the room to go rather than reading once: on a loaded pod the unwinding runs behind the
+	// close (dispatch://INFRA-179, A3's fifty_at_once, which failed this way with the pod's two
+	// processors busy), and a room that is still there when the wait runs out names what holds
+	// it, which is the difference between a room left behind and one still being let go.
+	for deadline := time.Now().Add(roomClosableWithin); ; time.Sleep(100 * time.Millisecond) {
+		if !server.roomLive(t, artifactID) {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%s, %s, is still live in the server %s after its refusal, held by %q, want no room for it",
+				what, artifactID, roomClosableWithin, server.roomHolding(t, artifactID))
+		}
 	}
 }
 
@@ -5107,4 +5120,54 @@ func logLoadSlots(t *testing.T, what string, holds []loadSlotHold) {
 	}
 	t.Logf("%s: %d holders of the pod's %d-byte load pool waited for room in it; the longest wait %s, the longest hold %s, the heaviest grant %d bytes",
 		what, len(holds), int64(worstCaseLoadSlotBytesForTest), waited.Round(time.Millisecond), held.Round(time.Millisecond), heaviest)
+}
+
+// requireRoomClosable waits for the server's own reading that nothing holds the room open any
+// more, which is the one state the budget's sweep can close it in (docs' RoomHoldingForTest,
+// unusedLocked), and names what still holds it when the wait runs out.
+//
+// The socket's end is not that state. ygo reports a browser's departure at the end of the peer's
+// teardown, the settlement the room owes runs inside that report, and the handler forgets the
+// connection only once it returns - so a drive that asks for the next admission after the
+// departure alone is refused while any of that is still in flight. On a loaded pod the window is
+// long: the settlement of a mebibyte of prose took 10 to 20 s here with the pod's rooms full and
+// two processors to share, and this drive failed exactly that way under the merge queue's
+// sharded runners twice before it waited on the reading rather than on the departure
+// (dispatch://INFRA-179). What it waits for is the event, so a loaded pod makes it slower and
+// never wrong.
+func requireRoomClosable(t *testing.T, server *memoryServer, room string) {
+	t.Helper()
+	var holding string
+	for deadline := time.Now().Add(roomClosableWithin); ; time.Sleep(100 * time.Millisecond) {
+		if holding = server.roomHolding(t, room); holding == "" || holding == "the room is gone" {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%s is still held by %s after %s, want nothing holding it so the budget's sweep can close it:\n%s",
+				room, holding, roomClosableWithin, server.output.tail())
+		}
+	}
+}
+
+// roomClosableWithin is how long requireRoomClosable waits for a room nothing holds. It is the
+// settle delay of this harness's server and the longest settlement measured here (10 to 20 s on
+// a full pod) with room to spare, because what it waits for is a departure's own work finishing
+// rather than a figure: a wait that is too short fails a drive for the pod's load, which is the
+// defect it exists to remove.
+const roomClosableWithin = 90 * time.Second
+
+// roomHolding is the server's reading of what holds the document's room open: the empty string
+// for a room nothing holds (GET /api/v1/artifacts/{id}/_test/live, "holding").
+func (p *memoryServer) roomHolding(t *testing.T, artifactID string) string {
+	t.Helper()
+	answer := p.send(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/_test/live", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+	if answer.status != http.StatusOK {
+		t.Fatalf("read what holds %s open: %d %s", artifactID, answer.status, answer.body)
+	}
+	var read struct {
+		Holding string `json:"holding"`
+	}
+	if err := json.Unmarshal(answer.body, &read); err != nil {
+		t.Fatalf("decode what holds %s open: %v: %s", artifactID, err, answer.body)
+	}
+	return read.Holding
 }
