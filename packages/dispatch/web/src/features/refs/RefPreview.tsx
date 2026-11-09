@@ -145,14 +145,26 @@ function attachTriggers(): () => void {
     if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
       return;
     }
-    // A card the reader is reading is not taken away because the page moved: where the anchor
+    // A card the reader asked for is not taken away because the page moved: where the anchor
     // has slid out from under a pointer that never moved - a card above it settling its height,
-    // a picture landing, a long body formatting - the card stays, measured where the anchor is
-    // now, until the reader themselves moves away. The reader leaving is the reader doing
-    // something, and that is what tells the two apart. A hover that has not opened yet is
-    // abandoned as before: there is nothing on screen to protect.
-    const open = previewState();
-    const anchor = open?.phase === "open" ? open.target.anchor : undefined;
+    // a picture landing, a long body formatting, the issue page's own header, tab strip and
+    // margin landing over the body they are pointing at - the card stays, measured where the
+    // anchor is now, until the reader themselves moves away. The reader leaving is the reader
+    // doing something, and that is what tells the two apart.
+    //
+    // A hover still waiting out its delay is kept on the same terms as a card already drawn,
+    // because what is kept is the reader's request rather than the pixels it has put on the
+    // screen: they pointed at the reference and held still, and the page moved it out from
+    // under them before the delay was up. Abandoning it ended the hover for good - the pointer
+    // never moved, so no crossing is coming to start a second one, and the card the reader
+    // asked for never opened at all. That is `e2e/heavy-bodies.e2e.ts`'s hover card of a
+    // comment of 8,000 list items: the page whose body is slow enough to be worth a card is the
+    // page still drawing its header, its tab strip and its margin when the pointer reaches the
+    // reference, and in CI's runner all three land inside the delay (run 42597442001, red in
+    // chromium, firefox and webkit alike). `reposition` keeps the pending target, so the delay
+    // runs on and the card opens where the anchor is now.
+    const waiting = previewState();
+    const anchor = waiting?.target.anchor;
     if (
       anchor !== undefined &&
       anchorWas?.anchor === anchor &&

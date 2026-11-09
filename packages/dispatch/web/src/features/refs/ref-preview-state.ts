@@ -102,7 +102,10 @@ export const refPreview = {
       setState(undefined);
     }
   },
-  /** The anchor moved (the page scrolled under a keyboard-opened card): measure it again. */
+  /** The anchor moved under a reader who did not - the page scrolled under a keyboard-opened
+   *  card, a late draw slid the reference out from under a resting pointer: measure it again.
+   *  The target is kept, so a pending hover's open delay and an open card's armed close both
+   *  run on rather than starting over. */
   reposition(): void {
     if (state !== undefined) {
       setState({ ...state });
