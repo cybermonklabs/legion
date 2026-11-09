@@ -292,9 +292,20 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/artifacts/${seed.issueArtifactSlug}`,
     pattern: "/issues/:key/*",
     // The document's connection dot, as the issue-spec row reads it and for the same reason:
-    // `artifact-header` is drawn while the editor still says "Connecting to the document…",
-    // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    // the header is drawn while the editor still says "Connecting to the document…", and
+    // `ArtifactHeader.tsx` draws the dot inside that header.
+    //
+    // And `artifact-header` itself, which that dot no longer proves. The chrome is held until
+    // the editor's first batch, and the space it is held in draws the same dot
+    // (`web/src/features/doc/AfterTheFirstBatch.tsx`, `ArtifactHeader.tsx`), so a page read on
+    // the dot alone can be a page read before its chrome is on it. The test id is on the
+    // chrome and on nothing else. It is also what the landing ring hangs on, so the page-wide
+    // wait for that ring to be gone (`waitForRouteSettled`) says nothing about this page until
+    // this locator is in: before the chrome there is no ring to have ended.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.getByTestId("artifact-header"),
+    ],
   },
   {
     kind: "reviewed",
@@ -331,7 +342,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // same `ArtifactHeader` over the same editor. It did not drift in the probe's two runs,
     // which says its socket was up both times, not that it must be - the race is the one the
     // other two rows lost, so the row is held to the same proof rather than to its luck.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And `artifact-header`, for the reason the issue-artifact row gives: the chrome is held
+    // behind the editor's first batch and the space it waits in draws the same dot, so the dot
+    // alone cannot say the chrome is on the page. Both of this page's baselines were taken with
+    // the chrome drawn - each shows the version picker and `Name version`, which the held space
+    // does not - so this changes no pixel of them and takes away the run where it would.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.getByTestId("artifact-header"),
+    ],
   },
   {
     kind: "reviewed",
@@ -504,6 +524,17 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  unformatted source, and it is cheap to rule out for every row at once rather than to argue
  *  per row about which bodies cross the threshold.
  *
+ *  The landing highlight is the second of that page-wide half, and the only one of these that
+ *  ends on a clock rather than on an answer: an address that names an artifact rings that
+ *  artifact's header for two seconds, to tell the reader which thing on the page they
+ *  navigated to, and then the page drops the ring by itself
+ *  (`web/src/features/artifacts/ArtifactHeader.tsx`, which marks the header
+ *  `data-landing-ring` for exactly as long as the ring is painted). So a page still carrying
+ *  that attribute is a page still changing, and both layers wait it out here rather than in a
+ *  row: it belongs to no row, it is the artifact pages' alone to carry, and it costs every
+ *  other page one locator that matches nothing. The wait is for the mark itself and never for
+ *  two seconds of wall clock - a duration would be the same race run against a stopwatch.
+ *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
  *  against it. The accessibility one would otherwise scan that same state: a scan of a
@@ -515,4 +546,5 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
 }

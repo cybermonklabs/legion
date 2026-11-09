@@ -51,6 +51,25 @@
  *    navigates and waits. A page that focuses an element of its own on load draws the same ring
  *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,
  *    `toHaveScreenshot`'s default.
+ *  - The landing highlight, which is the one state here that ends on a clock. An address that
+ *    names an artifact rings that artifact's header for two seconds, to say which thing on the
+ *    page the reader navigated to (`web/src/features/artifacts/ArtifactHeader.tsx`), and this
+ *    file shoots each page twice - light, then dark - so the ring is a state one shot can hold
+ *    and the other cannot. Both answers were seen in one run: in 42628596511 `issue-artifact`
+ *    matched in light WITH the ring, which is how `#2958` took that baseline, and failed in
+ *    dark 95 ms after the ring had gone, by 2,332 pixels in one band - a 2 px frame of
+ *    `rgb(0,188,255)`, `sky-400`, over y 211-282, x 342-873. Re-taking the baseline settles
+ *    nothing, because the next run rolls the same dice.
+ *
+ *    The ring is a real thing a reader is shown, so it is neither masked nor turned off for
+ *    the shot: the page is shot AFTER it instead, and the row waits for the mark the header
+ *    carries while it is painted - `data-landing-ring`, waited out in `waitForRouteSettled`
+ *    (e2e/review-routes.ts) with `data-markdown-pending`, the page-wide half that belongs to
+ *    no row. The wait is for the thing itself and not for a duration: two seconds of wall
+ *    clock here would be the same race timed with a stopwatch, and this layer's own clock is
+ *    a fake one. The cost is that no baseline holds the ring, so what this layer reviews of
+ *    the highlight is nothing; `web/src/features/artifacts/ArtifactHeader.test.tsx` is where
+ *    the ring and its two seconds are held to their shape.
  *  - Scrollbars. Headless Chromium is launched with `--hide-scrollbars`
  *    (`playwright-core/lib/coreBundle.js`), so no scrollbar is in any capture. The shot is
  *    `fullPage`, the whole scrollable page rather than whatever part of it the window is
