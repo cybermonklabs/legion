@@ -56,8 +56,25 @@ type firstScreenRig struct {
 	sessions  *memorySessionStore
 }
 
-func newFirstScreenRig(t *testing.T) *firstScreenRig {
+// unreachableFirstScreenBudget is what every row below but the fallback's gives the page to draw
+// a document in. Its rows read what the page CARRIES, and production's 300 ms made that verdict a
+// race against whatever else the machine was doing: four Go packages at once on two processors is
+// enough to lose it, and the server then sends the shell, which is right of the server and read
+// by the row as a failure. Two minutes is longer than any of these documents takes anywhere and
+// shorter than the go test timeout, so a row that would have hung still fails rather than
+// hanging (dispatch://INFRA-341).
+const unreachableFirstScreenBudget = 2 * time.Minute
+
+// beatenFirstScreenBudget is the fallback row's, and nothing can be drawn inside it: the
+// clause it proves is then the test's own doing rather than the machine's.
+const beatenFirstScreenBudget = time.Nanosecond
+
+func newFirstScreenRig(t *testing.T, budget ...time.Duration) *firstScreenRig {
 	t.Helper()
+	given := unreachableFirstScreenBudget
+	if len(budget) == 1 {
+		given = budget[0]
+	}
 	database := storetest.Open(t)
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte(firstScreenPage), 0o600); err != nil {
@@ -81,6 +98,8 @@ func newFirstScreenRig(t *testing.T) *firstScreenRig {
 		Events:     broker,
 		WebDistDir: webDist,
 		Lifetime:   t.Context(),
+
+		FirstScreenBudget: given,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -489,18 +508,22 @@ func TestEveryDocumentAddressCarriesItsDocument(t *testing.T) {
 // The page is what the reader is waiting for. A document the server cannot draw inside its
 // budget is one the page's own read draws for them a moment later, so the page goes without it
 // rather than holding every reader of that document for the wait.
+//
+// Two rigs, because the budget is the context's: the first proves this document draws when the
+// page waits for it, so the second's shell is the budget's doing and not an undrawable document's,
+// and the second gives the read a nanosecond, which nothing on any machine beats. Neither half
+// waits on the clock or on how busy the machine is.
 func TestADocumentReadPastItsBudgetSendsTheShell(t *testing.T) {
-	rig := newFirstScreenRig(t)
-	key, slug := rig.seedDocument(t, theDocument)
-	address := "/issues/" + key + "/artifacts/" + slug
-	if !strings.Contains(rig.call(t, http.MethodGet, address, true, nil).Body.String(), "The lease window") {
+	drawing := newFirstScreenRig(t)
+	drawnKey, drawnSlug := drawing.seedDocument(t, theDocument)
+	drawnAddress := "/issues/" + drawnKey + "/artifacts/" + drawnSlug
+	if !strings.Contains(drawing.call(t, http.MethodGet, drawnAddress, true, nil).Body.String(), "The lease window") {
 		t.Fatal("the document did not draw to begin with")
 	}
 
-	budget := firstScreenBudget
-	firstScreenBudget = time.Nanosecond
-	t.Cleanup(func() { firstScreenBudget = budget })
-
+	rig := newFirstScreenRig(t, beatenFirstScreenBudget)
+	key, slug := rig.seedDocument(t, theDocument)
+	address := "/issues/" + key + "/artifacts/" + slug
 	response := rig.call(t, http.MethodGet, address, true, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("the page past its budget: status=%d", response.Code)

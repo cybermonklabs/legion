@@ -85,6 +85,12 @@ type AppContext struct {
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
 	// event log to read (whoami then answers 503). A test sets it to answer a head of its own.
 	eventHead func(context.Context) (int64, error)
+	// firstScreenBudget overrides how long the page may wait for a document before it sends the
+	// shell (defaultFirstScreenBudget). Zero everywhere but in a test: a row that reads what the
+	// page CARRIES names a budget no load on any machine reaches, so its verdict is about the
+	// content and never about how busy the machine was, and the row that reads the FALLBACK names
+	// one no read can beat.
+	firstScreenBudget time.Duration
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -98,17 +104,20 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	SignIn         *oidc.CodeFlow
-	SignInRule     identity.SignInRule
-	Store          *store.Store
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
-	ServerURL      string
-	InsecureCookie bool
-	EnvoyURL       string
+	// FirstScreenBudget is AppContext's firstScreenBudget (above): a test's own, zero everywhere
+	// else.
+	FirstScreenBudget time.Duration
+	Sessions          auth.SessionStore
+	People            auth.PeopleStore
+	Identity          identity.Identity
+	SignIn            *oidc.CodeFlow
+	SignInRule        identity.SignInRule
+	Store             *store.Store
+	AgentTokens       *auth.SharedAgentTokens
+	DefaultProject    string
+	ServerURL         string
+	InsecureCookie    bool
+	EnvoyURL          string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -230,7 +239,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		devSignInHost:  devSignInHost,
 		apiDeps:        apiDeps,
 		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
+		// Nothing but a test ever names one, and a test that names none gets production's.
+		firstScreenBudget: opts.FirstScreenBudget,
+		lifetime:          opts.Lifetime,
 	}, nil
 }
 
@@ -838,12 +849,18 @@ func firstScreenElement(address string) string {
 		html.EscapeString(address) + `">`
 }
 
-// firstScreenBudget is the longest the page may wait for a document before it sends the shell.
-// The page is what the reader is waiting for; a document the server cannot draw in this long is
-// one the page's own read will draw for them a moment later, and holding the page for it would
-// cost every reader of that document the wait. A variable so a test can shorten it and prove
-// the fallback without waiting it out.
-var firstScreenBudget = 300 * time.Millisecond
+// defaultFirstScreenBudget is the longest the page may wait for a document before it sends the
+// shell. The page is what the reader is waiting for; a document the server cannot draw in this
+// long is one the page's own read will draw for them a moment later, and holding the page for it
+// would cost every reader of that document the wait.
+//
+// A test names its own in place of it (`AppContextOptions.FirstScreenBudget`) rather than this
+// being a variable a test reassigns: a row about what the page CARRIES asked for production's
+// 300 ms, and on a machine busy with something else - four Go packages at once on two
+// processors - the read lost that race and the server did the right thing, which the row then
+// read as a failure. A verdict that moves with the machine's load is no verdict
+// (dispatch://INFRA-341).
+const defaultFirstScreenBudget = 300 * time.Millisecond
 
 // documentPageCacheControl is what a page carrying a document may be kept as: nothing, by
 // anything. The bytes are one reader's document, so no shared cache may hold them, and a browser
@@ -861,7 +878,11 @@ func (r *router) servePageForDocument(w http.ResponseWriter, req *http.Request, 
 		servePage(w, req, path)
 		return
 	}
-	ctx, cancel := context.WithTimeout(req.Context(), firstScreenBudget)
+	budget := r.ctx.firstScreenBudget
+	if budget <= 0 {
+		budget = defaultFirstScreenBudget
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), budget)
 	defer cancel()
 	screen := r.firstScreen(ctx, req, address)
 	if !screen.Drawn {
