@@ -69,7 +69,7 @@ function card(overrides: Partial<LegionBoardCard> = {}): LegionBoardCard {
 }
 
 function board(
-  cards: Partial<Record<LegionBoardColumnID, readonly LegionBoardCard[]>> = {},
+  cards: Partial<Record<LegionBoardColumnID, LegionBoardCard[]>> = {},
   overrides: Partial<LegionBoardResponse> = {}
 ): LegionBoardResponse {
   return {

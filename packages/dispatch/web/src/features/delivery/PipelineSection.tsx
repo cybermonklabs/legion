@@ -179,34 +179,35 @@ export function PipelineView({
         ? undefined
         : {
             mergeToProduction: leadTimeSeries(
-              comparedData.merge_to_production.days,
+              comparedData.merge_to_production.days ?? [],
               comparedData.targets.merge_to_production_minutes
             ),
             openedToMerge: leadTimeSeries(
-              comparedData.opened_to_merge.days,
+              comparedData.opened_to_merge.days ?? [],
               comparedData.targets.opened_to_merge_median_minutes
             ),
-            prChecks: timingSeries(comparedData.pr_checks.run.days),
-            productionApply: timingSeries(comparedData.production_apply.days),
+            prChecks: timingSeries(comparedData.pr_checks.run.days ?? []),
+            productionApply: timingSeries(comparedData.production_apply.days ?? []),
             stagingApply:
               comparedData.staging_apply === null
                 ? null
-                : timingSeries(comparedData.staging_apply.days),
+                : timingSeries(comparedData.staging_apply.days ?? []),
             stagingE2e:
               comparedData.staging_e2e === null
                 ? null
-                : timingSeries(comparedData.staging_e2e.days),
+                : timingSeries(comparedData.staging_e2e.days ?? []),
           },
     [comparedData]
   );
-  const first = pipeline.days[0];
-  const last = pipeline.days[pipeline.days.length - 1];
+  const days = pipeline.days ?? [];
+  const first = days[0];
+  const last = days[days.length - 1];
   if (first === undefined || last === undefined) throw new Error("the pipeline has no days");
   const { pr_checks: checks } = pipeline;
   const range = daysRange(first, last);
   // The window's own day count: every "N days" the section writes names the window the reader
   // chose, never the seven days this had when it was a page of its own.
-  const dayCount = pipeline.days.length;
+  const dayCount = days.length;
   // The route answers any window, so a card offers the preceding days and a range of the
   // reader's own alike, and the page reads the one they pick.
   const cardCompare = (series: readonly ChartSeries[] | null | undefined) =>
@@ -297,7 +298,7 @@ export function PipelineView({
           Ranked by their {dayCount}-day median; a job needs 50 timed results in the {dayCount} days
           to be ranked.
         </p>
-        {checks.slowest_jobs.length === 0 ? (
+        {(checks.slowest_jobs ?? []).length === 0 ? (
           <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -316,7 +317,7 @@ export function PipelineView({
                 </tr>
               </thead>
               <tbody className={textSecondaryOnCanvas}>
-                {checks.slowest_jobs.map((job) => {
+                {(checks.slowest_jobs ?? []).map((job) => {
                   const today = lastDay(job);
                   return (
                     <tr className={`border-t ${borderDefault}`} data-job={job.name} key={job.name}>
@@ -335,7 +336,7 @@ export function PipelineView({
                       <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.total.n}</td>
                       <td className="px-2 py-1 text-right">{formatRate(job.total.success_rate)}</td>
                       <td className="px-2 py-1">
-                        <SpreadBars days={job.days} format={formatDuration} noun="results" />
+                        <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
                       </td>
                     </tr>
                   );
@@ -354,7 +355,7 @@ export function PipelineView({
           Every failed job but the roll-up job the settings name, most failures first; a failure is
           often the pull request&apos;s own change.
         </p>
-        {checks.failing_jobs.length === 0 ? (
+        {(checks.failing_jobs ?? []).length === 0 ? (
           <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job failed in the last 24 hours.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -369,7 +370,7 @@ export function PipelineView({
                 </tr>
               </thead>
               <tbody className={textSecondaryOnCanvas}>
-                {checks.failing_jobs.map((job) => (
+                {(checks.failing_jobs ?? []).map((job) => (
                   <tr
                     className={`border-t ${borderDefault}`}
                     data-failing-job={job.name}
@@ -405,8 +406,9 @@ export function PipelineView({
 }
 
 /** Today: the last shown day. */
-function lastDay<T>(timing: { readonly days: readonly T[] }): T {
-  const today = timing.days[timing.days.length - 1];
+function lastDay<T>(timing: { readonly days: readonly T[] | null }): T {
+  const days = timing.days ?? [];
+  const today = days[days.length - 1];
   if (today === undefined) throw new Error("a pipeline timing has no days");
   return today;
 }
@@ -459,7 +461,7 @@ function TimingCard(props: {
   const today: DeliveryTimingDay = lastDay(timing);
   // Built once per run of days rather than on every render of the section, since `Chart` builds
   // its table of every number from the series it is handed.
-  const series = useMemo(() => timingSeries(timing.days), [timing.days]);
+  const series = useMemo(() => timingSeries(timing.days ?? []), [timing.days]);
   return (
     <div className={CARD} data-metric={props.metric}>
       <CardTitle detail={props.detail} title={props.title} />
@@ -507,7 +509,10 @@ function LeadTimeCard(props: {
   metric: string;
   title: string;
   detail: string;
-  timing: { readonly days: readonly DeliveryLeadTimeDay[]; readonly total: DeliveryLeadTimeCell };
+  timing: {
+    readonly days: readonly DeliveryLeadTimeDay[] | null;
+    readonly total: DeliveryLeadTimeCell;
+  };
   target: number;
   judged: "longest" | "median";
   range: ChartRange;
@@ -519,7 +524,7 @@ function LeadTimeCard(props: {
   const total = timing.total;
   // Built once per run of days rather than on every render of the section, since `Chart` builds
   // its table of every number from the series it is handed.
-  const series = useMemo(() => leadTimeSeries(timing.days, target), [timing.days, target]);
+  const series = useMemo(() => leadTimeSeries(timing.days ?? [], target), [timing.days, target]);
   const judgedValue = judged === "longest" ? total.max_minutes : total.median_minutes;
   const met = judgedValue === null ? null : judgedValue < target;
   return (

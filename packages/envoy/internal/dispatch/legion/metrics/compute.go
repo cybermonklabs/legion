@@ -67,12 +67,13 @@ const (
 var classes = []string{ClassInTreeAtDesign, ClassInTreeLater, ClassOutOfTree, ClassByTheController}
 
 // Report is one answer of the Legion section: the window, the issues that finished in it, and the
-// four metrics. Mirrors packages/contracts/src/dispatch-api.ts's LegionMetricsResponse exactly.
+// four metrics. It is the body of GET /api/v1/legion/metrics, which the OpenAPI document declares
+// as LegionMetricsResponse (api/openapi_tables.go's schemaNames).
 type Report struct {
 	Project    string    `json:"project"`
 	From       time.Time `json:"from"`
 	To         time.Time `json:"to"`
-	Scope      Scope     `json:"scope"`
+	Scope      Scope     `json:"scope" enum:"all,roots,children"`
 	ComputedAt time.Time `json:"computed_at"`
 	// Finished is how many issues finished in the window under this scope: every metric's
 	// population.
@@ -112,9 +113,11 @@ type PhaseTime struct {
 	IdleShare float64 `json:"idle_share"`
 }
 
-// RoleBar is one worker type's bar.
+// RoleBar is one worker type's bar. Role is one of Legion's six worker types or `no_role`, the
+// seventh bar (bars, barNoRole); the enum is what makes the generated type carry that set rather
+// than a bare string.
 type RoleBar struct {
-	Role string `json:"role"`
+	Role string `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger,no_role"`
 	// Hours is the bar's whole time across the finished issues.
 	Hours float64 `json:"hours"`
 	// Issues is how many finished issues spent time on this bar, which is what the median is
@@ -166,21 +169,25 @@ type SplittingWeek struct {
 	Finished int            `json:"finished"`
 }
 
-// FiledIssue is one issue a Legion session created in the window.
+// FiledIssue is one issue a Legion session created in the window. Three of its fields carry a
+// closed set the server decides — the four classes, the filer (one of Legion's six worker types
+// or the controller, which works no issue) and the phase the filer's issue was in, named by the
+// bar it falls on (tablePhase) — so each states its set as an enum and the generated type carries
+// it rather than a bare string.
 type FiledIssue struct {
 	Key   string    `json:"key"`
 	Title string    `json:"title"`
 	At    time.Time `json:"at"`
-	Class string    `json:"class"`
-	// Filer is the role that filed it and the issue that role was working, or the controller:
-	// one of Legion's six worker types or `controller`, which the contract declares as
-	// `LegionFiler` (packages/contracts/src/dispatch-api.ts).
-	Filer      string `json:"filer"`
+	Class string    `json:"class" enum:"in_tree_at_design,in_tree_later,out_of_tree,by_the_controller"`
+	// Filer is the role that filed it and the issue that role was working, or the controller.
+	Filer      string `json:"filer" enum:"architect,planner,implementer,tester,reviewer,merger,controller"`
 	FilerIssue string `json:"filer_issue"`
 	// FilerPhase is the phase the filer's issue was in when it filed, named by the bar it falls
-	// on (tablePhase, whose whole answer the contract declares as `LegionTablePhase`); it is
-	// empty for a filing by the controller, which works no issue.
-	FilerPhase string `json:"filer_phase"`
+	// on (tablePhase): the seven bar words, the three a timeline holds that are on no bar
+	// (`queued`, `awaiting_person` and `held`), `done` for an issue the daemon has finished and
+	// Dispatch has not closed, and the empty string for a moment the issue's timeline does not
+	// cover, which is what every filing by the controller carries.
+	FilerPhase string `json:"filer_phase" enum:",queued,design,planning,implementing,testing,reviewing,accepting,merging,awaiting_person,held,done"`
 }
 
 // Compute is the metrics answer for a population. It reads nothing: the route and the live hub

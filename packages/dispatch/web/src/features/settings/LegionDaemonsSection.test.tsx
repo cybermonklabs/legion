@@ -70,7 +70,13 @@ async function renderSection(server: LegionServer, human = true) {
   );
   const listLegionSettings = spyOn(api, "listLegionSettings").mockImplementation(server.list);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "ACME", name: "Acme" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "ACME",
+      name: "Acme",
+      open_asks: 0,
+    },
   ]);
   spies.push(whoAmI, listLegionSettings, listProjects);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

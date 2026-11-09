@@ -54,6 +54,8 @@ export function LegionCard({
   readonly card: LegionBoardCard;
   readonly nowMs: number;
 }): ReactNode {
+  const roles = issue.roles ?? [];
+  const blockedBy = issue.blocked_by ?? [];
   return (
     <article
       aria-label={`${issue.key} ${issue.title}`}
@@ -80,7 +82,7 @@ export function LegionCard({
         <Fact
           hook="roles"
           label="In a turn"
-          value={issue.roles.length === 0 ? "nobody" : issue.roles.join(", ")}
+          value={roles.length === 0 ? "nobody" : roles.join(", ")}
         />
         <Fact
           hook="checks"
@@ -88,12 +90,12 @@ export function LegionCard({
           value={issue.checks_verdict === null ? "no verdict" : issue.checks_verdict}
         />
       </div>
-      {issue.blocked_by.length === 0 ? null : (
+      {blockedBy.length === 0 ? null : (
         <p
           className={`mt-2 border-t pt-2 text-xs ${borderDefault} ${textSecondaryOnSurface}`}
           data-legion-fact="blocked-by"
         >
-          Blocked by {issue.blocked_by.join(", ")}
+          Blocked by {blockedBy.join(", ")}
         </p>
       )}
       {issue.waiting_on === null ? null : (

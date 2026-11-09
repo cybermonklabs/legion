@@ -149,8 +149,10 @@ async function renderSection(
   answer: (query: { project: string; scope: string }) => LegionMetricsResponse
 ) {
   const list = spyOn(api, "listLegionSettings").mockResolvedValue(settings);
+  // The route's query marks every key optional (each has a server-side default); the section
+  // always names the project and the scope, which is what each case here answers by.
   const metrics = spyOn(api, "getLegionMetrics").mockImplementation((query) =>
-    Promise.resolve(answer(query))
+    Promise.resolve(answer({ project: query.project ?? "", scope: query.scope ?? "all" }))
   );
   spies.push(list, metrics);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

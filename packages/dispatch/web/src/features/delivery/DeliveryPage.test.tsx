@@ -17,7 +17,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPR,
   DeliverySettings,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   LiveServerFrame,
   LiveSubscribe,
 } from "../../api/types";
@@ -42,7 +42,7 @@ const emptyCounts = {
   deployed: {},
 };
 
-const emptyFreshness: DeliveryTimelineResponse["freshness"] = {
+const emptyFreshness: DeliveryTimelineWithMeasures["freshness"] = {
   last_error: null,
   last_event_at: null,
   last_reconcile_at: null,
@@ -112,7 +112,7 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   freshness: emptyFreshness,
 };
 
-const emptyTimeline: DeliveryTimelineResponse = {
+const emptyTimeline: DeliveryTimelineWithMeasures = {
   color_counts: { repo: {}, author: {}, priority: {}, component: {}, parent_agent: {} },
   components: {},
   facet_counts: emptyCounts,
@@ -198,7 +198,7 @@ function serve(socket: FakeLiveSocket, frame: LiveServerFrame): void {
 }
 
 /** The page subscribed its timeline, and Dispatch answered with `body`. */
-async function answered(body: DeliveryTimelineResponse): Promise<FakeLiveSocket> {
+async function answered(body: DeliveryTimelineWithMeasures): Promise<FakeLiveSocket> {
   const socket = await openSocket();
   const { sub } = await subscription(socket, "timeline");
   serve(socket, snapshotFrame(sub, body));
@@ -433,7 +433,7 @@ const listedPR: DeliveryPR = {
 
 test("the facet column offers each value with its count, subscribes a pick and keeps the view in the URL", async () => {
   const user = userEvent.setup();
-  const timeline: DeliveryTimelineResponse = {
+  const timeline: DeliveryTimelineWithMeasures = {
     ...emptyTimeline,
     components: { "ACME/api": { parent: null, title: "Public API" } },
     facet_counts: {
@@ -614,7 +614,7 @@ test("the list sorts by its headers and a row opens the PR's details", async () 
 
 test("the measures panel sits between the freshness row and the view controls and shows the timeline's own measures, subscribing no second view", async () => {
   const user = userEvent.setup();
-  const withP0 = (key: string): DeliveryTimelineResponse => ({
+  const withP0 = (key: string): DeliveryTimelineWithMeasures => ({
     ...emptyTimeline,
     facet_counts: { ...emptyCounts, repo: { "acme/widgets": 1 } },
     prs: [listedPR],

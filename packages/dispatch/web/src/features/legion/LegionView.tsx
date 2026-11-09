@@ -38,6 +38,7 @@ function LegionColumn({
   readonly column: LegionBoardColumn;
   readonly nowMs: number;
 }): ReactNode {
+  const cards = column.cards ?? [];
   return (
     <section
       aria-label={column.label}
@@ -49,10 +50,10 @@ function LegionColumn({
           className={`flex items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
         >
           <span>{column.label}</span>
-          <Pill>{column.cards.length}</Pill>
+          <Pill>{cards.length}</Pill>
         </div>
       </header>
-      {column.cards.length === 0 ? (
+      {cards.length === 0 ? (
         <p
           className={`mt-3 min-h-20 rounded-xl border border-dashed px-3 py-6 text-center text-xs ${borderStrong} ${textMutedOnCanvas}`}
         >
@@ -60,7 +61,7 @@ function LegionColumn({
         </p>
       ) : (
         <div className="mt-3 space-y-3">
-          {column.cards.map((issue) => (
+          {cards.map((issue) => (
             <LegionCard card={issue} key={issue.key} nowMs={nowMs} />
           ))}
         </div>
@@ -129,7 +130,7 @@ export function LegionBoardView({
       </header>
       <div className="mt-3 overflow-x-auto pb-3 snap-x snap-mandatory" data-legion-columns>
         <div className="flex w-max items-stretch gap-4">
-          {board.columns.map((column) => (
+          {(board.columns ?? []).map((column) => (
             <LegionColumn column={column} key={column.id} nowMs={nowMs} />
           ))}
         </div>

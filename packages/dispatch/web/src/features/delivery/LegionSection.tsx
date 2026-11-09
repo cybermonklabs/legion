@@ -116,7 +116,7 @@ export function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
  *  sat parked and the time it sat back in the queue. One row per issue, in the answer's own order
  *  (the server reads its issues by key). */
 export function workTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const issues = report.work_time.issues;
+  const issues = report.work_time.issues ?? [];
   const max = topOf(issues.map((issue) => issue.hours));
   const run = (label: string, value: (issue: LegionWorkTimeIssue) => number): ChartSeries => ({
     kind: "spark",
@@ -136,7 +136,7 @@ export function workTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
  *  per issue beside them. One row per worker type; a bar's whole time is its five segments, so
  *  the table holds every hour the card counts. */
 export function phaseTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const bars = report.phase_time.bars;
+  const bars = report.phase_time.bars ?? [];
   const max = topOf(bars.map((bar) => bar.hours));
   const points = (value: (bar: (typeof bars)[number]) => number) =>
     bars.map((bar) => ({
@@ -167,7 +167,7 @@ export function phaseTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
 /** Metric 3's chart: each finished issue's review rounds, and the implementing and testing hours
  *  it spent after its first review. One row per issue. */
 export function reworkSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const issues = report.rework.issues;
+  const issues = report.rework.issues ?? [];
   const after = topOf(
     issues.flatMap((issue) => [
       issue.implementing_hours_after_first_review,
@@ -201,8 +201,8 @@ export function reworkSeries(report: LegionMetricsResponse): ChartSeries[] {
 /** Metric 4's chart: what Legion sessions filed each week, by class, against the issues that
  *  finished that week. One row per UTC week, named by the Monday it begins on. */
 export function splittingSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const weeks = report.splitting.weeks;
-  const max = topOf(weeks.flatMap((week) => [week.finished, ...Object.values(week.filed)]));
+  const weeks = report.splitting.weeks ?? [];
+  const max = topOf(weeks.flatMap((week) => [week.finished, ...Object.values(week.filed ?? {})]));
   const run = (label: string, value: (week: (typeof weeks)[number]) => number): ChartSeries => ({
     kind: "spark",
     format: asCount,
@@ -215,7 +215,7 @@ export function splittingSeries(report: LegionMetricsResponse): ChartSeries[] {
     })),
   });
   return [
-    ...CLASSES.map((filing) => run(filing.label, (week) => week.filed[filing.key])),
+    ...CLASSES.map((filing) => run(filing.label, (week) => week.filed?.[filing.key] ?? 0)),
     run("Issues finished", (week) => week.finished),
   ];
 }
@@ -413,7 +413,7 @@ export function LegionMetrics({
         </MetricCard>
         <MetricCard
           figures={[
-            { label: "Issues filed", value: `${splitting.filed.length}` },
+            { label: "Issues filed", value: `${(splitting.filed ?? []).length}` },
             { label: "Roots finished", value: `${splitting.finished_roots}` },
             { label: "Children per root", value: splitting.children_per_root.toFixed(1) },
             {

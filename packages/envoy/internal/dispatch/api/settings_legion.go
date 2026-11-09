@@ -40,14 +40,20 @@ func (s *server) listLegionSettings(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, settings)
 }
 
+// putLegionSettingInput is PUT /api/v1/settings/legion/{project}'s body: the daemon base URL the
+// project's state is read from, and the acting session where the caller's credential proved none.
+// The handler refuses a body with no state_url (400 LEGION_SETTING_INPUT, legionStateURL), which
+// is what makes the field required.
+type putLegionSettingInput struct {
+	StateURL string       `json:"state_url" required:"true"`
+	Actor    *model.Actor `json:"actor"`
+}
+
 // putLegionSetting answers PUT /api/v1/settings/legion/{project}: name the daemon that project's
 // state is read from. An unknown project is 404 NOT_FOUND, and a state_url that is not an
 // absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		StateURL string       `json:"state_url"`
-		Actor    *model.Actor `json:"actor"`
-	}
+	var input putLegionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -105,6 +111,16 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// legionSettingsRelayInput is PUT /api/v1/legion/{project}/settings's body: the operator's
+// legion.yaml change by dotted path, whose values Dispatch models not at all and relays as the
+// bytes they arrived in, and the acting session where the caller's credential proved none. The
+// handler refuses a change naming no key (400 LEGION_SETTINGS_INPUT), which is what makes the
+// field required.
+type legionSettingsRelayInput struct {
+	Changes map[string]json.RawMessage `json:"changes" required:"true"`
+	Actor   *model.Actor               `json:"actor"`
+}
+
 // putLegionProjectSettings answers PUT /api/v1/legion/{project}/settings: relay an operator's
 // legion.yaml change to that project's daemon and answer what the daemon said.
 //
@@ -117,10 +133,7 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 // With no token file the relay sends no bearer, and whatever the daemon answers is what the
 // caller sees.
 func (s *server) putLegionProjectSettings(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Changes map[string]json.RawMessage `json:"changes"`
-		Actor   *model.Actor               `json:"actor"`
-	}
+	var input legionSettingsRelayInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

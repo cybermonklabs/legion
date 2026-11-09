@@ -132,9 +132,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them.
+// the view draws them. ID is one of the ten columns, in the order legionBoardColumnOrder draws
+// them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,merging,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }

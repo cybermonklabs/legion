@@ -23,6 +23,7 @@ import { legionBoardQuery, whoAmIQuery } from "../../api/queries";
 import type {
   LegionBoardResponse,
   LegionSettingSource,
+  LegionSettingSources,
   LegionSettingsChangeResult,
   LegionSettingVerdict,
 } from "../../api/types";
@@ -100,8 +101,8 @@ function withSettingAsItWas(
 ): LegionBoardResponse {
   return {
     ...board,
-    settings: withEntry(board.settings, key, previous?.settings[key]),
-    setting_sources: withEntry(board.setting_sources, key, previous?.setting_sources[key]),
+    settings: withEntry(board.settings ?? {}, key, previous?.settings?.[key]),
+    setting_sources: withEntry(board.setting_sources ?? {}, key, previous?.setting_sources?.[key]),
   };
 }
 
@@ -110,7 +111,13 @@ function withSettingAsItWas(
  *  `project` is whose daemon these are, and its `settings` and `setting_sources` are the two
  *  blocks an applied change writes back into through the board's cache entry. */
 export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResponse }): ReactNode {
-  const { project, settings, setting_sources: sources } = board;
+  const { project } = board;
+  // The board's two blocks as the daemon sends them. The server keeps the bytes unparsed
+  // (`map[string]json.RawMessage`), so the document says the maps hold `unknown` and may be
+  // null; `LegionSettingSources` says what a source is (`@legion/contracts`), narrowed here at
+  // the one boundary that reads them.
+  const settings = board.settings ?? {};
+  const sources = (board.setting_sources ?? {}) as LegionSettingSources;
   const headingId = useId();
   const queryClient = useQueryClient();
   const human = useIsHuman();
