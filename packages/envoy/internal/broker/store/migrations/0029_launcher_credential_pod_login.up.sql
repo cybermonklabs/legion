@@ -34,6 +34,29 @@
 -- enrollments, is written for that release: until the drop no launcher pod holds a row of its
 -- own to need it, and with it no deploy, which replaces every launcher pod at once, leaves their
 -- enrollments running to their leases with nothing able to revoke them.
+--
+-- The release-scoped fact -- that while 0015's launcher_credentials_live_subject is here, two
+-- pods of one account share one credential row, so a login of either moves it -- is written in
+-- this file alone, because this file is what the drop visits. The prose on the guards it names
+-- states only what holds on either schema, so the drop leaves none of it false. What the drop
+-- has to re-read, with what to check in each:
+--
+--   - enroll.Service.CredentialForKey's doc and api's authLauncher comment. The read by id and
+--     thumbprint stays right afterwards, because a pod's own re-login moves its own row's key
+--     under the same id; check that each still gives that re-login race as its reason.
+--   - enroll.Service.Revoke's doc and its ownPod branch. Which of the two tests refuses a
+--     sibling pod of the same account changes with the schema -- the pod uid while the row is
+--     shared, the enrolling credential once each pod holds a row of its own -- so check the
+--     worked example in that doc, not its conclusion, which holds on either.
+--   - the two paragraphs of packages/envoy/AGENTS.md on those two, which must go on saying only
+--     what holds on either schema.
+--   - enroll.Service.IssueTokenLoginTx's conflict target and legacySubjectIndex, which read at
+--     run time which of the two schemas they are on. The drop is what makes that constant, so
+--     the read, the branch it feeds and the prose on both go with it.
+--   - store/storetest.PerPodLoginSchema, the rig that applies this drop by hand today, which
+--     the drop turns into a statement the migration already ran.
+--   - api/launcher_key_race_test.go and enroll/pod_self_enroll_test.go, whose prose and whose
+--     case names still state the schema here, not the one this drop leaves.
 create unique index launcher_credentials_live_account_login on launcher_credentials (subject)
   where subject is not null and pod_uid is null and revoked_at is null;
 create unique index launcher_credentials_live_pod_login on launcher_credentials (subject, pod_uid)
