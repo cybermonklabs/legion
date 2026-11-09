@@ -1,19 +1,32 @@
 {
   "broken": [
     {
-      "lines": [":::ask{#a1}", "A heading", "Body text"],
-      "turn": "ask:72a638a2-02ef-4a6c-8fc3-87d396ca1387"
+      "lines": [
+        ":::ask{#a1}",
+        "A heading",
+        "Body text"
+      ],
+      "turn": "ask:61a6a0f1-5ce9-44fd-a470-44081de9c9c6"
     },
     {
-      "lines": ["::::ask", "Which option?", "first", ":::note", "A note line"],
-      "turn": "message:4178b6d5-f8a3-4b1d-8b54-beb4640c0f60"
+      "lines": [
+        "::::ask",
+        "Which option?",
+        "first",
+        ":::note",
+        "A note line"
+      ],
+      "turn": "message:7a31562b-38aa-413b-beff-7c82f112afe0"
     }
   ],
   "container": {
-    "ask": "cc9d7388-4478-4ed1-acfc-2754e5d738db",
-    "comment": "754613b7-f0e1-4d68-9864-825f2a9b1102",
-    "message": "37267c40-323f-4970-82bd-b4f8cd3dd25d"
+    "ask": "d0620c14-6791-4621-b55b-26fff9879b85",
+    "comment": "3785d977-f236-46fe-8f77-50f6bfd51bba",
+    "message": "e43990a2-5cf1-431f-be48-d3ceeef89ee6"
   },
   "issue": "CORE-1",
-  "stored": ["5322f23c-12cf-4592-aeee-ad0269a72498", "977674bd-0881-48db-8c51-01fbc14f4f5e"]
+  "stored": [
+    "72a8ba14-ec9e-4aba-ac35-7d5c27035612",
+    "12095efd-00ad-4b81-9aa6-5a7a140082b0"
+  ]
 }

@@ -84,7 +84,15 @@ const erasedEntryFields = [
   "timings",
 ] as const;
 
-const erasedMessageFields = ["bodySize", "headersSize"] as const;
+/** The message fields erased from a request and from a response.
+ *
+ *  `bodySize` and `headersSize` are byte counts of a transport this file replaces.
+ *
+ *  `cookies` is the parallel copy of the `Cookie` and `Set-Cookie` headers that a HAR carries
+ *  beside `headers`, and it is the one that caught this layer out: erasing the headers alone
+ *  left the `dsession` the sign-in issued in every committed recording, where the drift job
+ *  found it. The refusal below reads both shapes now. */
+const erasedMessageFields = ["bodySize", "cookies", "headersSize"] as const;
 
 /** The headers erased from every request and response, and why.
  *
@@ -188,6 +196,19 @@ export function normalise(har: Har, from: string): Har {
  *  header. Nothing downstream cleans one up, so this is where a leak is stopped. */
 export function refuseACredential(har: Har): void {
   for (const entry of har.log.entries) {
+    for (const held of [entry.request, entry.response]) {
+      // A HAR carries its cookies twice: as headers, and as this parallel array. Erasing one
+      // and not the other is exactly the mistake this refusal exists to catch.
+      const cookies = held.cookies;
+      if (Array.isArray(cookies) && cookies.length > 0) {
+        throw new Error(
+          `This recording still carries a cookies array on ${entry.request.method} ` +
+            `${entry.request.url}. A recording is committed to a public repository, so the ` +
+            "normaliser erases every credential as it writes one; this one was not written " +
+            "through e2e/stub/recording.ts's `normalise`."
+        );
+      }
+    }
     for (const headers of [entry.request.headers, entry.response.headers]) {
       for (const header of headers) {
         if (secretHeaders[header.name.toLowerCase()] === true) {

@@ -41,6 +41,8 @@ function recorded(options: {
           time: options.time ?? 12.5,
           timings: { connect: 1, receive: 2, send: 0.1, wait: 9 },
           request: {
+            // A HAR carries its cookies twice, and this is the copy the headers do not cover.
+            cookies: [{ name: "dsession", value: options.cookie ?? "2.YWxpY2U.0.1" }],
             bodySize: 0,
             headersSize: 320,
             headers: [
@@ -90,6 +92,7 @@ describe("a committed recording", () => {
   test("carries no credential, and one that slipped through is refused by name", () => {
     const written = normalise(recorded({}), from);
     expect(JSON.stringify(written)).not.toContain("dsession");
+    expect(JSON.stringify(written)).not.toContain("cookies");
     expect(() =>
       refuseACredential({
         log: {
@@ -106,6 +109,23 @@ describe("a committed recording", () => {
         },
       })
     ).toThrow(/still carries the header cookie/);
+    expect(() =>
+      refuseACredential({
+        log: {
+          entries: [
+            {
+              request: {
+                cookies: [{ name: "dsession", value: "2.YWxpY2U.0.1" }],
+                headers: [],
+                method: "GET",
+                url: `${recordedOrigin}/api/v1/inbox`,
+              },
+              response: { content: {}, headers: [], status: 200 },
+            },
+          ],
+        },
+      })
+    ).toThrow(/still carries a cookies array/);
   });
 });
 
