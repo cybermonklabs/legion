@@ -53,6 +53,13 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // its process, or runs none — a spawn, a resume, a retry — is left exactly as it was: the error
 // goes back to whoever asked for it, and this writes nothing, arms nothing and starts nothing.
 //
+// A claim that records its process is left stored working over it where a death or a
+// displacement raised the relaunch, and nothing of the claim is written to say so: this
+// refusal is one of the windows Claim.ProcessGone is read for, and what that field is and
+// what reads it is written there. It is no record this refusal makes, and none it clears —
+// the report that raised the relaunch made it, and the next report of the same process, the
+// one that raises the relaunch again, is what changes it.
+//
 // What one refused relaunch leaves behind is put right by the caller that left it, never here.
 // The one such thing is the watch a park took off the process the relaunch was to replace, and
 // it belongs to the launch the wake pacing held: that turn is where it is armed again (runWake,

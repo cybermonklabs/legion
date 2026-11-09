@@ -88,7 +88,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **TypeScript** on **Bun** runtime — the version `.bun-version` pins.
   Every job installs it through `.github/actions/setup-bun`, and `packages/daemon/docker/worker.Dockerfile`'s `ARG BUN_VERSION` default must equal it, since no build passes `--build-arg` and its notices stage fetches Bun's licence at that version.
-  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves.
+  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves, with the three `bun-*` rows of `.github/ci-tools.yaml` moving in that second commit beside `.bun-version`.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
 - **bun.lock** — `ci.yaml`'s `lint` job holds the step `Check bun.lock agrees with the workspace manifests`, which runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
@@ -115,24 +115,72 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **jj (Jujutsu)** for version control, native **Dispatch** for issue tracking
 
-- **Container images** a CI job fetches are copies in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
-  Every workflow, Dockerfile and test names its copy by digest.
-  `.github/ci-images.yaml` holds one row per image (`upstream`, `tag`, `digest`), and `.github/scripts/mirror-ci-images.sh` copies the rows the package does not hold yet with `crane copy`, which keeps the digest.
-  That copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
-  For every `library/golang` row whose upstream names a tag, that script also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
+- **Container images** a CI job fetches all live in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
+  Every workflow, Dockerfile and test names the image it runs by digest.
+  `.github/ci-images.yaml` holds one row per image, each row carrying `tag` and `digest` beside exactly one of two keys that say where its bytes came from:
+  `upstream:` is a copy of a third-party image, which `.github/scripts/mirror-ci-images.sh` makes for the rows the package does not hold yet with `crane copy`, which keeps the digest;
+  `built:` is an image this repository builds itself, from the Dockerfile of this tree that key names, which `.github/workflows/browser-image.yaml` builds and pushes and no script copies.
+  A copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
+  For every `library/golang` row whose upstream names a tag, `mirror-ci-images.sh` also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
   No read of a floating upstream tag can do that work, because it cannot tell a row labelled wrongly now from one labelled rightly long ago.
   An `oven/bun` image declares its version nowhere, so the two builds that run those bytes refuse any Bun but the one `.bun-version` pins.
-  Each row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight characters.
   `ci.yaml`'s `ci-images` job runs that copy and then the package half of the gate, in that order, and it is the one copy path:
   it runs on every event `ci.yaml` runs on — a pull request, a merge group and a dispatch — and a failed copy is re-run with `gh run rerun` where the run is a pull request's, since every job of a re-run attempt of a merge-group run skips.
-  Adding an image is one edit of that file.
-  Moving one to a new version is two commits:
+  Adding a copy is one edit of that file.
+  Adding or changing an image this repository builds is two pushes instead:
+  the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
+  The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
+  Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
   `.github/scripts/check-ci-images.sh` is the gate, and it takes one mode:
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
+
+- **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
+  Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
+  on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
+  A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
+
+- **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
+  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own;
+  under a second key, `no_second_source:`, it holds one entry per URL CI fetches that is published in one place and nowhere else.
+  `.github/scripts/ci-tools.sh` is the one fetch helper every install goes through: it tries the primary, then the second source, and leaves only bytes of the row's digest behind.
+  A transport failure of the primary sends it to the second source and a digest mismatch does not, because a checksum mismatch is a supply-chain signal rather than an outage, and every exit names the source that served the bytes.
+  Bun's second source is the npm package upstream publishes the same binary in, which needs no copy; crane, changie, mise and jj take a copy in the same package the images live in, addressed by the digest the install checks.
+  `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
+  A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
+  `ci.yaml`'s `tool-fallback` job is the live proof: it faults GitHub's release hosts for a whole job, runs the merge base's four installs as the negative control and the head's four beside them, and drives eight corrupted payloads to read every refusal.
+  Raising a tool is one commit, unlike an image: a call site names a row rather than a digest, so a second row of the same tool has no name a call site can use, and a row that disagrees with its pin installs one version and verifies another, which is what the gate refuses; Bun is the exception that takes two, and its three `bun-*` rows move in the second commit, with `.bun-version`; `tool-fallback` needs `ci-images`, so the copy is filled before `tool-fallback` reads it, and the one window left is a raise merged while the asset is down and the copy is still cold, where the tool has the single source it has today
+
+- **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
+  It holds each row to its shape — every field present and not empty, one name per row, a `second_source` of `ghcr-mirror` or `npm`, a bare 64-hex lower-case `digest`, and a `primary` and a `mirror_from` that hold the row's own `version` — and to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile).
+  It reads every file under `.github/` as text, bar the manifest itself, which declares addresses and fetches nothing, and refuses a release-asset URL it finds there whatever repository that URL names, at three addresses and no others — on `github.com` the tag's own path and the `latest` permalink, and on `api.github.com` the endpoint `/repos/<owner>/<repo>/releases/assets/<id>`, each over `http` as well as `https` —
+  unless the URL names this repository itself, whose own address `.github/scripts/repo-paths.sh` derives (read with `GITHUB_REPOSITORY` out of its environment, so the name compared against is the one the tree carries and not the one a runner was handed),
+  or the file's own name holds `.test.`,
+  or the URL text is exactly a row's `primary`, a row's `mirror_from`, the npm tarball URL a row derives, or the `url` of a `no_second_source` entry.
+  It reads a host without regard to case, since a host is not case-sensitive, and takes a trailing dot (`github.com.`), an explicit `:80` or `:443`, a `user@` before the host, a missing scheme and an upper-case one as the same address; it compares a path as text, and whether github.com reads a path element without regard to case varies by element — measured against github.com, each reading between two readings of the canonical address that answered `302`: the owner, the repository and the asset's own name each answer `302` in any case, while `/RELEASES/download/`, `/releases/DOWNLOAD/` and an upper-case tag each answer `404`.
+  So a URL differing from a row's only in the case of its owner or repository is READ and then refused, since nothing allows it but a row's exact text; where the gate compares two repositories rather than two URLs — an entry against the rows that cover it, and a URL against this repository's own name — it compares them without regard to case.
+  A URL none of those allows and whose text holds a `$` is refused as an address the job builds rather than as an unnamed one, which is how an entry can decline such a URL: by writing that text verbatim.
+  It refuses an npm URL under a scope a row's `npm_package` names, unless the URL is exactly the tarball a row derives, in a reach of its own which it claims and no more: every `*.yml` and `*.yaml` under `.github/actions` and `.github/workflows`, and nothing else, so an npm fetch written in a shell script under `.github/scripts/` is invisible to it.
+  That reach is deliberate: the class this rule closes is GitHub release assets, and this repository writes the npm registry's address outside those two directories for reasons that fetch nothing (`.github/scripts/check-bun-version.sh:137` lists `registry.npmjs.org/@oven/bun` as a string to detect).
+  It refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob anywhere under `.github/` but `.github/ci-images.yaml`, whose own rows are images.
+  It stops with no verdict at all, naming the file, when the manifest is missing, is not YAML, is not a mapping, names no `registry:`, holds no `tools:`, or holds a `no_second_source:` that is not a list, and when `.github/scripts/repo-paths.sh` does not answer with a release-asset address it can read this repository's name out of.
+
+- **What the tool gate cannot see**, which a reader of a green `lint` needs as much as what it can.
+  The gate compares text, and it guards against an install someone forgets to name, not against one written to slip past it: the change that does that could edit the gate in the same diff, so a reviewer reads both.
+  What it cannot see, then, is every spelling its patterns do not match, and the list that follows gives the ones measured, not all of them.
+  An address assembled at run time out of something the tree never writes, such as a URL read from a file a script downloads first; an install inside a file whose name holds `.test.`; spellings of those three paths that github.com or curl accepts and the patterns do not match — an extra slash before the owner, after the owner or after `releases`, a `/.` segment, `%64ownload` for `download`, `https:/` or `https:///` for `https://`, and a `user@` before a host written with no scheme; and those same bytes reached at any other host, the `release-assets.githubusercontent.com` address each redirect lands on among them, a mirror, a proxy, a copy, and `github.com` written as a path element of some other host, which the gate declines to read for the same reason.
+  A file under `.github/` that is not valid UTF-8 is read by neither rule; a passing run's summary line names each one, and a failing run prints its problems alone.
+
+- **A decline** is how the manifest records a URL whose bytes are published in one place and nowhere else.
+  A `no_second_source` entry carries `url`, `digest`, `pinned_in` and `why`, and the gate refuses one whose shape it cannot read (a missing field, a `url` that is not a release-asset address, two entries for one URL),
+  one whose `url` no file under `.github/` writes, one whose `digest` is not bare 64-hex, one whose `pinned_in` names a file that is missing, is not readable as text, is the manifest itself or is a `.test.` file — a file that fetches nothing and checks nothing cannot be what pins those bytes, and the manifest would satisfy the rule with the entry's own `digest:` line — one whose `digest` does not occur in that file, one whose repository a row already covers, and one whose `why` is a placeholder or is shorter than the minimum the refusal names.
+  Those comparisons are text too: `pinned_in` is compared as the path the entry writes, so `..` or a symlink that reaches the manifest is not recognised as the manifest, and a repository is compared without regard to case but is not percent-decoded.
+  Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where the entries are: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://INFRA-1974).
 
 ## Commands
 
@@ -199,10 +247,19 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Stop the registered daemon of the project that file names
 
-- `legion claims retry --operator-token-file <file> (--claim <token> | --failed)`
+- `legion claims retry --operator-token-file <file> (--claim <token> | --failed) [--fresh-session]`
 
   The operator's: relaunch a failed architect on its session with fresh budgets, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
-  `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused (docs/deployment.md "Moving a project onto tmux")
+  `--claim` reaches a claim an operator stopped as well as a failed one, because `legion claims stop` retires the claim it stops, and starts a phase worker on the task of the phase its issue stands in now;
+  `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session, and it reaches a claim whose agent is registered, ready or idle as well as one that is suspended, failed or retired, with no suspension held over it, a root architect included;
+  `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux")
+
+- `legion claims compact --operator-token-file <file> --claim <token>`
+
+  The recovery to try before a fresh session for a claim whose provider keeps refusing its session: the daemon has Oh My Pi write a text summary of that session and then sends the claim whatever task it owed again, so the session, its workspace and everything the worker knows of its issue stay and only the transcript gets shorter;
+  it reaches a claim whose agent is ready or idle, a root architect included, and refuses a suspended, failed or retired claim naming what starts it again, which is `--fresh-session` for a workflow role and, for the project's own controller claim, the daemon's controller keeper, whose resume an operator's own suspension holds, a claim the daemon records as working, which may be in a turn, a claim whose launch is in flight, a claim whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim a suspension is held over, which that hold may stop rather than give back, a claim left working under a relaunch the daemon's wake pacing parked, a claim left working over a process the daemon's last report of it found gone, which is in no turn at all, and a claim whose role runs on Claude Code, which has no Oh My Pi session;
+  each refusal says what the claim is doing and which operation reaches each state `legion claims list` shows, and names no moment to come back at;
+  a compaction Oh My Pi refused or skipped is printed with its reason rather than failing the command, because the claim is back and whatever task it owed has gone again all the same
 
 - `legion restart <team>`
 
@@ -396,24 +453,26 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   LEGION_E2E_MODEL_ROUTE=box-login instead, on the operator's own Oh My Pi login, where the operator allows it (the profile's agent.db a symlink to the operator's, no credential read;
   the operator's global omp build, refused without the refresh-race fix, in place of .omp-pin; one box-login proof at a time) (scripts/e2e/README.md)
 
-- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 bash scripts/e2e/stage3-devbox-workflow.sh`
+- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage3-devbox-workflow.sh`
 
   Stage 3's devbox-only live proof: real OMP panes drive a scratch Dispatch issue through the Go workflow, the design gate, review rounds, the architect's acceptance, the daemon's merge of the READY head and the close it makes, the production check after the close, restart, held worker, pending status write, and pane credentials against sjawhar/legion-smoke;
   SMOKE_UPSTREAM_NATS is the production Envoy NATS the operator's envoy.json names (`envoy.natsUrls`);
   LEGION_E2E_MODEL_ROUTE=key-file `LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>` instead, for a devbox with no Hawk gateway;
   LEGION_E2E_MODEL_ROUTE=box-login instead, on the operator's own Oh My Pi login, as for Stage 2;
   `STAGE3_PRODUCTION_ENVOY_URL=http://<host>.<tailnet>.ts.net:9020` instead of the default http://127.0.0.1:9020, for a devbox with no standing local port-forward to the production Envoy listener's API;
-  the four `LEGION_E2E_*_APP_*` inputs name another deployment's two role Apps (each App's id and the secrets broker `github-app` secret that mints its tokens), this deployment's own by default, and the live proofs that drive the real Apps (this one, stage3-4b13b-acceptance.sh, claude-backend-tmux.sh, parked-decision-devbox.sh, stage4b-sandbox-tree.sh, and stage4a-sandbox-runtime.sh for the implement App alone) prove each secret's token is its id's App (GraphQL's viewer, then GET /apps/<slug>), with the write permission its role needs, before the run's first write (scripts/e2e/README.md, "lib/github-apps.sh")
+  three of the `LEGION_E2E_*_APP_*` inputs are optional and name another deployment's two role Apps in place of this deployment's own (the two Apps' ids and the secrets broker `github-app` secret that mints the implement App's tokens), while `LEGION_E2E_REVIEW_APP_KEY_COMMAND` is required of every run of the proofs that drive the review App, this deployment's own included, and has no default;
+  it is shell text that prints the review App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment (so it may read their HOME, their own gcloud or kubectl configuration and any variable of their shell), into the run's own 0600 key file, since the daemon never runs it and the review App's `private_key_command` is a `cat` of that file (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`);
+  and the live proofs that drive the real Apps (this one, stage3-4b13b-acceptance.sh, claude-backend-tmux.sh, parked-decision-devbox.sh, stage4b-sandbox-tree.sh, and stage4a-sandbox-runtime.sh for the implement App alone) prove each App's token is its id's App (GraphQL's viewer, then GET /apps/<slug>), with the write permission its role needs, before the run's first write (scripts/e2e/README.md, "lib/github-apps.sh")
 
-- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/claude-backend-tmux.sh`
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/parked-decision-devbox.sh   # the devbox proof that a person's decision on a parked tree reaches the controller, and that its next start walks the parked roots (scripts/e2e/README.md)
+- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-tmux.sh`
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/parked-decision-devbox.sh   # the devbox proof that a person's decision on a parked tree reaches the controller, and that its next start walks the parked roots (scripts/e2e/README.md)
 
   The Claude Code backend's devbox-only live proof:
   an implementer `worker_backends` puts on claude registers its transcript, completes its phase through the `legion` MCP tool's handoff_complete with its handoff recorded on the Dispatch issue, and resumes the same Claude Code session after its pane is killed;
   LEGION_E2E_MODEL_ROUTE=key-file `LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>` instead, for a devbox with no Hawk gateway, where that one key file serves the Claude Code pane too;
   with `LEGION_E2E_MODEL_BASE_URL=<gateway base URL>` as well, the key file holds a gateway key and both the Claude Code pane and (under key-file) the Oh My Pi agents call that Anthropic-compatible gateway, so no Anthropic key is needed (scripts/e2e/README.md)
 
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_CLAUDE_MODEL=<model id> LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_SESSION_DB_PORT=<port> bash scripts/e2e/claude-backend-sandbox.sh`
+- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_CLAUDE_MODEL=<model id> LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-sandbox.sh`
 
   The same backend's devbox-only live proof under the Kubernetes runtime:
   the implementer runs `legion claude-bridge -- claude -p …` in its issue pod on the Claude Code its generation's start script installed from the worker image's pin (the image carries the pin and no Claude Code), resumes its own transcript in a replacement pod that installs its own copy, and is reminded when a turn ends with its phase open;
@@ -428,7 +487,7 @@ LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic 
   this is the aws-private-ip/gateway shape
   — LEGION_E2E_PLATFORM=gke-autopilot LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernetes-service-account LEGION_E2E_POD_REACHABILITY=bridge LEGION_E2E_MODEL_ROUTE=key-file (no LEGION_E2E_MODEL_GATEWAY_URL/AUDIENCE) proves the same runtime against a cluster whose pods cannot reach the devbox at all (scripts/e2e/README.md)
 
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> bash scripts/e2e/stage4b-sandbox-tree.sh`
+- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage4b-sandbox-tree.sh`
 
   Stage 4b's live proof, devbox only: the Go daemon drives three real issue trees on the Agent Sandbox runtime in the production cluster (namespace legion), against production Dispatch (project LEGSMOKE), Envoy and NATS, with real agents, every pod keeping its Oh My Pi session in a scratch Postgres of the run's own at `LEGION_E2E_SESSION_DB_PORT` (required, no default:
   the lane's third port) — admission under the cap, specs, the daemon bound to every interface with every pod dialing its advertise_host, issue independence (a root and two of its children at once, each pod on a disk of its own with no affinity, none able to read another's workspace) and a done child's release of its Sandbox, its pod and the disk that pod owned, while its parent runs, the repository-configuration fixture, the whole workflow to done with the review pair and a review round no review decides until the architect asks, then a changes-requested round whose approval does not wait for its thread to resolve, and a READY with every thread resolved, CI going red mid-test starting the implementer at once while the tester's turn, its background job and its session run on untouched, with the tester told on its own role topic that its phase ended, every worker's phase completion answered in the live session it keeps in its first pod until its issue closes, a finished role answering while another phase runs, token rotation, kill and fence, a daemon restart mid-tree relaunching nothing, a restart with only `envoy_url` respelled relaunching every role in its own issue pod and one with the worker stream and API moved replacing every issue pod, the operator's controller, a worker that dies with its task outstanding, a merge that leaves the root open while two children of its tree still run, told to its architect once and closing the root on the last of their parks, each park taking the child's Sandbox, pod and disk, the close suspending every role and taking each pod with its disk, node release, linger close, a re-admission that comes back on a pod and disk of its own with no lost-volume line anywhere in the daemon's log, every pod's shape and reservation, the pod watch, and an audit that the run wrote nothing outside LEGSMOKE;
@@ -533,7 +592,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - Legion OMP plugin — `packages/pi-legion/`
 
-  `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`/`set_status`), the task agents and the Legion skills;
+  `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`, `set_status`, `compact` and `fresh_session`), the task agents and the Legion skills;
   its daemon client, claim boot and phase ops are `@legion/pi-shared`'s.
   See `packages/pi-legion/AGENTS.md`
 
@@ -638,7 +697,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
-  The browser suite (`dispatch-browser`) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
+  The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its lanes run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
