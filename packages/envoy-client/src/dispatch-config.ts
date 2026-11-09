@@ -26,6 +26,7 @@ import {
   type SectionOff,
 } from "./envoy-config";
 import { messageFor } from "./errors";
+import { withoutTrailingSlashes } from "./trailing-slashes";
 
 /** Default dispatch server base URL, matching the Go server's listen address. */
 const DEFAULT_SERVER_URL = "http://localhost:8766";
@@ -61,16 +62,6 @@ export type DispatchConfigResolution = ActiveDispatchConfig | SectionOff;
 
 type ValidCheckout = Extract<CheckoutEnvoyConfig, { readonly kind: "valid" }>;
 
-/**
- * `url` without the slashes it ends in, counted from the right. A `/\/+$/` replace reads the same
- * string once per position its unanchored search starts at, which costs a URL of n slashes O(n²)
- * (CodeQL js/polynomial-redos); this reads it once.
- */
-export function withoutTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url[end - 1] === "/") end -= 1;
-  return url.slice(0, end);
-}
 
 /** A checkout's own server and the token written beside it, which only that server gets. Throws
  * when the checkout names no token. */

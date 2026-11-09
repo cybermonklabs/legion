@@ -5,7 +5,7 @@ import {
   brokerCredential,
   brokerRouteConfigured,
 } from "./broker-credential";
-import { withoutTrailingSlashes } from "./dispatch-config";
+import { withoutTrailingSlashes } from "./trailing-slashes";
 import {
   type EnvoyConfig,
   type EnvoyConfigEnvironment,

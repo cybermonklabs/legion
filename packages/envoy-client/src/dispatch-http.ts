@@ -81,7 +81,7 @@ import {
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
-import { withoutTrailingSlashes } from "./dispatch-config";
+import { withoutTrailingSlashes } from "./trailing-slashes";
 
 export type {
   CredentialPendingResponse,
