@@ -74,9 +74,10 @@
 --     TestTheNextReleasesIndexDropWaitsForALoginInFlight: it runs `drop index` without
 --     `if exists`, so once the migration has dropped the index that statement errors. The test
 --     does assert on that error, at its end, and never reaches it: the fatal on !waited fires
---     first, so what it prints is "the drop ran while the login was in flight; it must wait on
---     the login's lock". Relax that fatal and the assertion at the end reports the missing
---     index instead. Read the error, not the message.
+--     first, so what it prints is
+--     "the drop ran while the login was in flight; it must wait on the login's lock".
+--     Relax that fatal and the assertion at the end reports the missing index instead. Read
+--     the error, not the message.
 --   - in enroll/pod_self_enroll_test.go,
 --     TestThePreviousBrokersTokenLoginStillRunsOnTheMigratedSchema,
 --     which runs the previous broker's upsert against this migration's schema. That statement's
