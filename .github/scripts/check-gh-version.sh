@@ -62,3 +62,5 @@ if saved.group(1) != pinned.group(1):
     )
 print(f"the saved gh help is gh {saved.group(1)}'s, the worker image's pin")
 PY
+
+# INFRA-1413 selection probe, never merged.
