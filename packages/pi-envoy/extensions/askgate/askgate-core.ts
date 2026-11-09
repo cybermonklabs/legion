@@ -621,7 +621,7 @@ export interface DryRunResult {
   stderr: string;
   timedOut: boolean;
 }
-interface Deps {
+export interface Deps {
   env: Record<string, string | undefined>;
   home: string;
   now: () => number;

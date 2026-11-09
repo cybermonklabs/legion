@@ -1333,75 +1333,11 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(messagePosts()).toHaveLength(0);
   });
 
-  // A message is as much an artefact of this head as a test is, and it has no suite to fail.
-  // These follow each remedy rather than reading it: the advice is executed in the state that
-  // prints it, and only what works is promised.
-  test("each held write's advice is followed, and only what works is promised", async () => {
-    // What the gate mints for a literal resend: bound for the main agent, argv-only for a task
-    // subagent (`ctx.agent.kind !== "main"`), which is unchanged at the base. A gate from
-    // before capabilities binds the encoding of its own version, which is what the record then
-    // declares by saying nothing.
-    const mintAs = async (kind: "main" | "subagent", raw: boolean) => {
-      if (kind !== "main") return mint(MESSAGE, null);
-      const args = await dryArgs(MESSAGE);
-      return raw
-        ? writeFileSync(
-            join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`),
-            JSON.stringify({
-              v: 2,
-              argv: argvDigest(MESSAGE),
-              args: sha(args),
-              files: [],
-              toolCallId: "call-1",
-              outcome: "verdict",
-              createdAt: Date.now(),
-            }),
-            { mode: 0o600 }
-          )
-        : void mint(MESSAGE, args);
-    };
-    const states: Array<[string, () => Promise<void>, boolean]> = [
-      ["no verdict capability", async () => writeRecord("ses-1", undefined, "block", null), true],
-      [
-        "a foreign store",
-        async () => {
-          writeRecord();
-          const older = join(stateDir, "sessions", "ses-1", "askgate-verdicts");
-          mkdirSync(older, { recursive: true });
-          writeFileSync(join(older, "0".repeat(64)), "{}");
-        },
-        false,
-      ],
-      [
-        "a lost verdict",
-        async () => {
-          writeRecord();
-          markVerdictsLost(join(stateDir, "sessions", "ses-1"), Date.now());
-        },
-        false,
-      ],
-    ];
-    for (const [state, arrange, raw] of states) {
-      for (const who of ["main", "subagent"] as const) {
-        rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
-        rmSync(store(), { recursive: true, force: true });
-        posts.length = 0;
-        await arrange();
-        // Held with no marker at all, which is what prints the advice.
-        const held = await run(MESSAGE);
-        expect({ state, who, held: held.code }).toEqual({ state, who, held: 1 });
-        expect(held.stdout).toContain("not from a task subagent");
-        // Then the advice, followed.
-        await mintAs(who, raw);
-        const after = await run(MESSAGE);
-        expect({ state, who, posted: after.code === 0 }).toEqual({
-          state,
-          who,
-          posted: who === "main",
-        });
-      }
-    }
-  });
+  // The advice each held write prints is followed rather than read, from both agent kinds and
+  // in every state that prints a resend, by `askgate-remedies.test.ts` — a real gate, a real
+  // review and the real CLI. What lived here simulated the mint and reached three of the six,
+  // while its name claimed the coverage, which is how three remedies stayed false through a
+  // round spent fixing remedies.
 
   // The lost-verdict message names the store that would not take the verdict, not the session
   // directory, which in the only state that prints this demonstrably takes files — the mark

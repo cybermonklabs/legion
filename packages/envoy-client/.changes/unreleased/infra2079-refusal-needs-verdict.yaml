@@ -52,6 +52,13 @@ body: |-
   refused in both. Only ENOENT establishes absence anywhere on this path: a session directory
   with search permission but no read, an EIO or a path component that is no directory each read
   as unknown rather than as holding nothing, which is what let a stored rejection post.
+  A refusal that advises sending the write again now carries, automatically, the one thing that
+  makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
+  argv-only marker and an argv-only marker answers no uncertainty. Advice is a lead and an
+  optional resend clause, and the renderer appends that caveat to any advice carrying one, so a
+  refusal added later cannot describe a resend a subagent cannot make. The record-recovery
+  advice is a different case and says so: a subagent returns before the record is rewritten, so
+  only the main agent's next call repairs it.
   Three reads on the decision path still answered a fault with a permission. A cross-namespace
   owner whose marker store could not be stat'ed read as gone, which turned AskGate off for the
   session and skipped the verdict lookup entirely, so a recorded refusal posted silently; only

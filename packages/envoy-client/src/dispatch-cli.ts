@@ -91,8 +91,11 @@ function stateWriteFailed(problem: string): string {
  * reached the CLI anyway: a form the gate does not read ran it. The refusal is the review's, so
  * it stands until a review replaces it, and the way to replace it is to go back through the gate.
  */
-const REFUSAL_STANDS =
-  "This call carries no marker, so no gate read the command that ran it, and AskGate's refusal of these arguments stands for this session. Send the corrected write, or send this one again as one bash call of literal words so AskGate reviews it afresh; a review that allows it replaces the refusal.";
+const REFUSAL_STANDS: Advice = {
+  lead: "This call carries no marker, so no gate read the command that ran it, and AskGate's refusal of these arguments stands for this session.",
+  resend:
+    "Send the corrected write, or send this one again as one bash call of literal words so AskGate reviews it afresh; a review that allows it replaces the refusal.",
+};
 
 /**
  * What the agent reads when a marker of this very call, or this session's verdict store,
@@ -100,8 +103,10 @@ const REFUSAL_STANDS =
  * renamed, owner-only, so no crash, no full disk and no concurrent sweep leaves one unreadable:
  * a file in that state was changed by something else, and one thing it can hold is a refusal.
  */
-const MARKER_UNREADABLE =
-  "A marker is written whole and owner-only, so one that cannot be read was changed by something other than AskGate, and what it holds may be a refusal of this very write. The write is not sent on that. Read the file named above, remove it if you know what it was, and send the write again as one bash call of literal words so AskGate reviews it.";
+const MARKER_UNREADABLE: Advice = {
+  lead: "A marker is written whole and owner-only, so one that cannot be read was changed by something other than AskGate, and what it holds may be a refusal of this very write. The write is not sent on that. Read the file named above and remove it if you know what it was.",
+  resend: "Then send the write again as one bash call of literal words so AskGate reviews it.",
+};
 
 /**
  * What the agent reads when the session's AskGate record cannot be read. This refusal, alone
@@ -111,58 +116,90 @@ const MARKER_UNREADABLE =
  * 0600 in a 0700 directory set explicitly, so neither a crash, a full disk nor a umask leaves
  * one unreadable, and a record that is simply absent is AskGate off rather than this.
  */
-const RECORD_RECOVERY =
-  "This is AskGate's own record for this session and nothing about the call, but a record that cannot be read may say this write was refused, so it is not sent. Read the path named above: a session whose Oh My Pi process is gone may have it removed, which turns AskGate off for that session, and a live one writes it again at its next call. Tell whoever owns the session if it is live.";
+const RECORD_RECOVERY: Advice = {
+  // No resend clause, and the repair itself is the main agent's: a subagent returns at
+  // `ctx.agent.kind !== "main"` before `recordCheckMode`, so nothing it does rewrites the
+  // record. This is not a wrong instruction but a repair path a whole population cannot reach,
+  // which is why it says who can take it.
+  lead: "This is AskGate's own record for this session and nothing about the call, but a record that cannot be read may say this write was refused, so it is not sent. Read the path named above: a session whose Oh My Pi process is gone may have it removed, which turns AskGate off for that session, and a live one writes it again at its next call — at the main agent's next call, since a task subagent's is never reviewed and never rewrites the record. Tell whoever owns the session if it is live.",
+};
 
 /**
  * What the agent reads when the marker store itself could not be walked. Same standing as
  * RECORD_RECOVERY: AskGate's own state, named with its path in the reason before it, and the one
  * refusal here a permission drift on the box can bring on rather than anything about the call.
  */
-const STORE_RECOVERY =
-  "This is AskGate's own state for this session and nothing about the call, but a store that cannot be read may hold a refusal of this write, so it is not sent. The path that could not be read is named above. A session whose Oh My Pi process is gone may have its AskGate record removed, which turns AskGate off for that session; tell whoever owns the session if it is live.";
+const STORE_RECOVERY: Advice = {
+  lead: "This is AskGate's own state for this session and nothing about the call, but a store that cannot be read may hold a refusal of this write, so it is not sent. The path that could not be read is named above. A session whose Oh My Pi process is gone may have its AskGate record removed, which turns AskGate off for that session; tell whoever owns the session if it is live.",
+};
 
 /**
- * What a write held for want of a readable verdict can actually do about it, and what it cannot.
- * Measured on this head in each state that prints it, by following the advice rather than
- * rewording it from the code.
+ * What a held write is told to do about it. `resend` is the clause that tells the agent to send
+ * the write again; anything else goes in `lead`.
  *
- * A main agent's literal resend works everywhere: the gate reviews it now and mints a marker
- * bound to these arguments, which the CLI consumes and posts. A **task subagent's does not**,
- * and no wording makes it: `askgate-core` mints an argv-only marker for every call whose
- * `ctx.agent.kind` is not `main`, and an argv-only marker is not a verdict, so it is passed over
- * wherever the store cannot be read. Four literal resends in a row are four refusals. Telling a
- * subagent to resend costs it four attempts to learn what this sentence can tell it, so these
- * say so instead.
+ * The split is structural on purpose. A task subagent cannot use the resend path at all —
+ * `askgate-core` mints an argv-only marker for every call whose `ctx.agent.kind` is not `main`,
+ * and an argv-only marker answers no uncertainty — so every refusal that advises a resend must
+ * say so, and three rounds running a correct decision change left a set of instructions
+ * describing the old one while someone hunted the newly-false strings. `advise` appends the
+ * caveat to any advice carrying a `resend`, so a refusal added later cannot be wrong this way;
+ * the only remaining hole is a resend written by hand into a `lead`, which is why it is named
+ * here.
  */
-const RESEND = (ends: string) =>
-  `Send it again as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it — from the main agent, not from a task subagent, whose literal write gets a marker carrying no review and is passed over here; a subagent's write has no remedy of its own, so have the main agent send it. ${ends}`;
+interface Advice {
+  readonly lead: string;
+  readonly resend?: string;
+}
+
+/** The one caveat, attached wherever a resend is advised. */
+const SUBAGENT_CANNOT_RESEND =
+  "That is the main agent's to send: a task subagent's literal write is given a marker carrying no review, which is passed over here, so resending from one is refused however many times it is tried.";
+
+/** Renders advice, carrying the subagent caveat wherever a resend is part of it. */
+const advise = ({ lead, resend }: Advice): string =>
+  resend === undefined ? lead : `${lead} ${resend} ${SUBAGENT_CANNOT_RESEND}`;
+
+/** The resend every "cannot tell" advises, with what ends that state after it. */
+const resendThen = (ends: string): Advice => ({
+  lead: "No marker was tampered with and nothing of the call is at fault.",
+  resend: `Send it again as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it. ${ends}`,
+});
 
 /**
  * What the agent reads when the gate recording this session says nothing about recording the
  * writes its reviews refuse: a gate from before the capability, or one declaring a capability
  * this version cannot evaluate. Nothing was tampered with and nothing of the call is at fault.
  */
-const NO_VERDICT_CAPABILITY = `No marker was tampered with and nothing of the call is at fault. The AskGate recording this session does not say it records the writes its reviews refuse, so a refusal of this very write cannot be ruled out and it is not sent. ${RESEND(
-  "The session goes on reading this way until the Oh My Pi process it belongs to restarts: a new session inside the same process is written by the same gate and reads the same."
-)}`;
+const NO_VERDICT_CAPABILITY: Advice = {
+  ...resendThen(
+    "The session goes on reading this way until the Oh My Pi process it belongs to restarts: a new session inside the same process is written by the same gate and reads the same."
+  ),
+  lead: "No marker was tampered with and nothing of the call is at fault. The AskGate recording this session does not say it records the writes its reviews refuse, so a refusal of this very write cannot be ruled out and it is not sent.",
+};
 
 /**
  * What the agent reads when this session holds verdicts of a scheme this version cannot read.
  * A process restart does not end this one: the store is in the session's own directory and
  * outlives the gate, so it stays until that directory is pruned or someone removes it.
  */
-const FOREIGN_VERDICTS = `No marker was tampered with and nothing of the call is at fault. This session holds AskGate verdicts of a scheme this version of the dispatch CLI does not read, so a refusal of this very write cannot be ruled out and it is not sent. ${RESEND(
-  "The store named above sits in the session's own directory and outlives any restart: it goes when that directory is pruned, or when someone who knows what it held removes it."
-)}`;
+const FOREIGN_VERDICTS: Advice = {
+  ...resendThen(
+    "The store named above sits in the session's own directory and outlives any restart: it goes when that directory is pruned, or when someone who knows what it held removes it."
+  ),
+  lead: "No marker was tampered with and nothing of the call is at fault. This session holds AskGate verdicts of a scheme this version of the dispatch CLI does not read, so a refusal of this very write cannot be ruled out and it is not sent.",
+};
 
 /**
  * What the agent reads when an upload's own file cannot be read here. Its bytes are what the
  * review judged and what the write is identified by, so without them AskGate's verdict on this
  * write cannot be looked up at all — and no identity is never no verdict.
  */
-const UPLOAD_UNREADABLE =
-  "An upload is identified by the bytes it sends, which are what AskGate reviews, so a file this command cannot read leaves no way to ask whether AskGate refused this write. Check the path, then send the upload again as one bash call of literal words.";
+const UPLOAD_UNREADABLE: Advice = {
+  // No caveat: the first clause repairs the real fault, and this state is reached through the
+  // upload's own bytes rather than through the marker ranking, so a subagent that fixes the
+  // path is not held by anything a resend cannot clear.
+  lead: "An upload is identified by the bytes it sends, which are what AskGate reviews, so a file this command cannot read leaves no way to ask whether AskGate refused this write. Check the path, then send the upload again as one bash call of literal words.",
+};
 
 /**
  * What the agent reads in a session whose gate reached a verdict of no and could not write it
@@ -174,10 +211,12 @@ const UPLOAD_UNREADABLE =
  * sentence sent an operator to a healthy directory. The state it did describe is the one where
  * the gate hard-stops and this never prints.
  */
-const VERDICT_LOST = (store: string) =>
-  `AskGate could not write down a verdict it reached in this session, so for the rest of it a write it has nothing recorded against is no proof that it reviewed nothing. The verdict store that would not take it is \`${store}\`; the session's own directory is writable, which is how the mark naming this got there. ${RESEND(
+const VERDICT_LOST = (store: string): Advice => ({
+  ...resendThen(
     "The mark does not clear itself, since the verdict that was lost stays lost: repair the store, and remove the mark by hand once you accept that one verdict is gone."
-  )}`;
+  ),
+  lead: `AskGate could not write down a verdict it reached in this session, so for the rest of it a write it has nothing recorded against is no proof that it reviewed nothing. The verdict store that would not take it is \`${store}\`; the session's own directory is writable, which is how the mark naming this got there.`,
+});
 
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
 const LITERAL_FORM =
@@ -497,7 +536,7 @@ export async function runDispatchCli(
           readonly mode: AskgateMode;
           readonly why: string;
           readonly reason: string;
-          readonly advice: { readonly refused: string; readonly posted: string };
+          readonly advice: { readonly refused: Advice; readonly posted: Advice };
         }
       | undefined;
     try {
@@ -642,12 +681,23 @@ export async function runDispatchCli(
               advice:
                 spent.changed === undefined
                   ? {
-                      refused: `${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`,
-                      posted: `${LITERAL_FORM} Send the next one in that form.`,
+                      refused: {
+                        lead: LITERAL_FORM,
+                        resend: "Send the write again in that form, as a bash call of its own.",
+                      },
+                      posted: { lead: LITERAL_FORM, resend: "Send the next one in that form." },
                     }
                   : {
-                      refused: `${SAME_MESSAGE} Send the call again in a later message than the one that changes the file.`,
-                      posted: `${SAME_MESSAGE} Send a write in a later message than the call that changes its file.`,
+                      refused: {
+                        lead: SAME_MESSAGE,
+                        resend:
+                          "Send the call again in a later message than the one that changes the file.",
+                      },
+                      posted: {
+                        lead: SAME_MESSAGE,
+                        resend:
+                          "Send a write in a later message than the call that changes its file.",
+                      },
                     },
             };
           else if (spent.verdict === "unknown")
@@ -679,8 +729,11 @@ export async function runDispatchCli(
                     why: spent.why,
                     reason: `AskGate is on for this session, and ${spent.why}`,
                     advice: {
-                      refused: `${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`,
-                      posted: `${LITERAL_FORM} Send the next one in that form.`,
+                      refused: {
+                        lead: LITERAL_FORM,
+                        resend: "Send the write again in that form, as a bash call of its own.",
+                      },
+                      posted: { lead: LITERAL_FORM, resend: "Send the next one in that form." },
                     },
                   };
         }
@@ -714,7 +767,7 @@ export async function runDispatchCli(
       // store read whole and holding nothing lets the write out.
       if (finding.verdict === "refused" || (finding.verdict !== "none" && finding.mode === "block"))
         return refuse(
-          `${notCalled} ${finding.reason}. ${finding.advice.refused}`,
+          `${notCalled} ${finding.reason}. ${advise(finding.advice.refused)}`,
           REFUSED,
           parsed.tool,
           {
@@ -747,8 +800,8 @@ export async function runDispatchCli(
       }
       warn(
         finding.verdict === "none"
-          ? `dispatch: warning: dispatch ${command} posted without review: ${finding.reason}. No review ran for this call, so AskGate refused nothing. ${finding.advice.posted}`
-          : `dispatch: warning: AskGate is on for this session in warn mode, and ${finding.why}, so this write posts unreviewed. ${finding.advice.posted}`
+          ? `dispatch: warning: dispatch ${command} posted without review: ${finding.reason}. No review ran for this call, so AskGate refused nothing. ${advise(finding.advice.posted)}`
+          : `dispatch: warning: AskGate is on for this session in warn mode, and ${finding.why}, so this write posts unreviewed. ${advise(finding.advice.posted)}`
       );
       if (unrecorded !== undefined) {
         // With the ledger gone, these warnings are the whole account of the write, so they have
