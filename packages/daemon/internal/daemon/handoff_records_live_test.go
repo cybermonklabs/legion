@@ -826,8 +826,8 @@ func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
 	select {
 	case prompt := <-c.prompts:
 		return prompt
-	case <-time.After(arrivalBound(t)):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
+	case <-time.After(arrivalBound(c.r.t)):
+		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, arrivalBound(c.r.t))
 		return shimwire.Prompt{}
 	}
 }
