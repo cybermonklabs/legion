@@ -73,6 +73,10 @@ export function DecisionCard({
           </Link>
         )}
       </h3>
+      {/* No `source`: this is a passage of the issue's `decisions.md`, and the decisions view
+          names that document by its address alone (`IssueDecisions.document`) - never by the
+          artifact id a `TextSource` is - so no record reaches this surface. The Decisions page
+          draws the same passages with theirs (`DecisionsPanel`). */}
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}

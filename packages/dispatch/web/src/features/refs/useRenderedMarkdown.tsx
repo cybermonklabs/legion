@@ -26,6 +26,7 @@ import {
   type ReferenceLinking,
   RefLink,
 } from "./RefLink";
+import { hostLinksReferences, type ReferenceHost, useReferenceHost } from "./reference-host";
 
 /** The anchor list of a body with no references: one shared value, so re-rendering such a body
  *  leaves the state untouched instead of committing a fresh empty array each time. */
@@ -219,16 +220,53 @@ interface PortalAnchors {
   readonly references: readonly ReferenceAnchor[];
 }
 
-/** Runs the link pass, `decorate` and the picture pass over a freshly painted element, in that
- *  order, and answers what the portals mount into. */
+/**
+ * Every link of a painted body as inert, link-styled text, for a host that is already one
+ * control - a link (a reply quote, an unfurl card, a hover card, a Broadcasts row), a search
+ * option or a margin card's toggle. A link inside one is a link in a link: a click on it would
+ * follow the inner link and the outer control at once, and it would be a second tab stop inside
+ * a tooltip. The words, their formatting and a reference's `data-dispatch-ref` (its hover card)
+ * stay; the host is the one thing a click or a key press follows. The anchors follow their words
+ * into the spans that replaced them, so each reference's portal still mounts where its words are.
+ */
+function inertLinks(
+  root: HTMLElement,
+  found: readonly ReferenceAnchor[]
+): readonly ReferenceAnchor[] {
+  const replaced = new Map<HTMLElement, HTMLElement>();
+  for (const link of root.querySelectorAll("a")) {
+    const span = document.createElement("span");
+    for (const { name, value } of link.attributes) {
+      if (name !== "href" && name !== "rel" && name !== "target") {
+        span.setAttribute(name, value);
+      }
+    }
+    span.setAttribute("data-markdown-link", "");
+    span.append(...link.childNodes);
+    link.replaceWith(span);
+    replaced.set(link, span);
+  }
+  return found.map((reference) => {
+    const host = replaced.get(reference.anchor);
+    if (host === undefined) {
+      throw new Error("A reference anchor is not a link of the body it was found in.");
+    }
+    return { ...reference, anchor: host };
+  });
+}
+
+/** Runs the link pass, the host's own pass over what it linked, `decorate` and the picture pass
+ *  over a freshly painted element, in that order, and answers what the portals mount into. */
 function portalAnchors(
   element: HTMLElement,
   decorate: DecorateMarkdown | undefined,
-  references: ReferenceLinking
+  references: ReferenceLinking,
+  host: ReferenceHost
 ): PortalAnchors {
   linkifyDispatchRefs(element, references);
   const found = collectReferenceAnchors(element);
-  const anchors = decorate === undefined ? found : decorate(element, found);
+  const live = hostLinksReferences(host) ? found : inertLinks(element, found);
+  const anchors = decorate === undefined ? live : decorate(element, live);
   const placeholders = collectPictureAnchors(element);
   return {
     pictures: placeholders.length === 0 ? NO_PICTURES : placeholders,
@@ -414,6 +452,7 @@ export function useRenderedMarkdown(
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   const Card = useContext(TextAskCard);
+  const host = useReferenceHost();
   const [referenceAnchors, setReferenceAnchors] = useState<readonly ReferenceAnchor[]>(NO_ANCHORS);
   const [pictureAnchors, setPictureAnchors] = useState<readonly PictureAnchor[]>(NO_PICTURES);
   const [askHosts, setAskHosts] = useState<readonly AskBlockHost[]>(NO_ASK_HOSTS);
@@ -488,7 +527,8 @@ export function useRenderedMarkdown(
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
-            references
+            references,
+            host
           );
           setReferenceAnchors(anchors);
           setPictureAnchors(placeholders);
@@ -532,7 +572,8 @@ export function useRenderedMarkdown(
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
-            references
+            references,
+            host
           );
           setReferenceAnchors(anchors);
           setPictureAnchors(placeholders);
@@ -622,14 +663,18 @@ export function useRenderedMarkdown(
       { keepAPostedParse: true }
     );
     return cancelRender;
-  }, [Card, decorate, markdown, paint, paintInSlices, references, root, softBreaks]);
+  }, [Card, decorate, host, markdown, paint, paintInSlices, references, root, softBreaks]);
 
   return {
     isFallback,
     isPending,
     portals: [
-      ...referenceAnchors.map(({ anchor, key, route, text }) =>
-        createPortal(<RefLink anchor={anchor} route={route} text={text} />, anchor, key)
+      ...referenceAnchors.map(({ addressed, anchor, key, route, text }) =>
+        createPortal(
+          <RefLink addressed={addressed} anchor={anchor} route={route} text={text} />,
+          anchor,
+          key
+        )
       ),
       ...pictureAnchors.map(({ anchor, caption, key, route }) =>
         createPortal(

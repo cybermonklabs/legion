@@ -47,6 +47,18 @@
     ]
   },
   {
+    "body": "See [the rollout plan](dispatch://CORE-22/spec) first.",
+    "refs": [
+      "dispatch://CORE-22/spec"
+    ]
+  },
+  {
+    "body": "See [**the rollout plan**](https://dispatch.test/issues/CORE-23) first.",
+    "refs": [
+      "dispatch://CORE-23"
+    ]
+  },
+  {
     "body": "(**https://dispatch.test/issues/CORE-4**)",
     "refs": [
       "dispatch://CORE-4"

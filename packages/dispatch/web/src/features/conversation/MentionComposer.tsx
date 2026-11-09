@@ -70,7 +70,7 @@ import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
 import { draftParties, partyMention, partyMentionSpan } from "../refs/party-references";
 import { buildReferencePath } from "../refs/routes";
-import { readTextReferences } from "../refs/text-references";
+import { readTextReferences, textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
@@ -915,6 +915,7 @@ export function MentionComposer({
             author={replyTo.actor}
             className="min-w-0 flex-1"
             excerpt={replyTo.excerpt}
+            source={textSourceOf(replyTo.parentKind, replyTo.id)}
             to={replyTo.to}
           />
           {/* The reply is part of the message's address, fixed once the send is out, so the

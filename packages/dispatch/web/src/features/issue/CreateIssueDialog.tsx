@@ -65,6 +65,8 @@ export function CreateIssueDialog({
   // The dialog shows a refusal itself, beside the draft it was refused over.
   const mutation = useKeyedWrite({
     inline: true,
+    // A write's label is one line the Writes indicator reads as text, and an issue's title is
+    // one line of text already: no markdown body to render or strip.
     label: (input: CreateIssueInput) => `New issue “${input.title}”`,
     onSettled: () => submitGuard.release(),
     write: create,

@@ -39,6 +39,7 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 import { deliveryAttempts } from "./attempts";
@@ -164,7 +165,7 @@ function BroadcastRecipientRow({
             <Timestamp at={reply.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={reply.body} />
+            <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
           </div>
         </div>
       ))}
@@ -218,6 +219,9 @@ export function BroadcastPage(): ReactNode {
             {answeredCount(recipients)} of {recipients.length} answered
           </span>
         </p>
+        {/* No `source`: a broadcast is no record of the reference graph - the graph holds the
+            copy each recipient got, never the broadcast - so a `#id` in it declares nothing and
+            names nothing. */}
         <div className={`mt-2 ${textPrimaryOnCanvas}`}>
           <MarkdownBody markdown={sent.body} />
         </div>

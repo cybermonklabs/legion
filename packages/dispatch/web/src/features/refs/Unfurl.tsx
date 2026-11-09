@@ -11,6 +11,7 @@ import {
 } from "../../theme/classes";
 
 import { MarkdownPreview } from "./MarkdownPreview";
+import { ReferenceHostIs } from "./reference-host";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
@@ -30,10 +31,30 @@ interface GitHubIssue {
 }
 
 /** The card's body: two rendered lines of what the target says, formatted, then cut. */
-function Body({ markdown }: { markdown: string }): ReactNode {
+function Body({ markdown, source }: { markdown: string; source?: TextSource }): ReactNode {
   return (
-    <MarkdownPreview className={`mt-1 ${textSecondaryOnSurface}`} lines={2} markdown={markdown} />
+    <MarkdownPreview
+      className={`mt-1 ${textSecondaryOnSurface}`}
+      lines={2}
+      markdown={markdown}
+      source={source}
+    />
   );
+}
+
+/** The record a Dispatch card's body is: the target's own text, named by the reference that
+ *  resolved it. An ask, a comment and an issue message each write their id in the reference,
+ *  whether it names an issue's or a project document's. A document's own text is named by its
+ *  artifact id, which no reference writes - a reference writes a slug - so that card's body
+ *  draws as no record's and a `#id` in it names nothing. */
+function cardRecord(route: DispatchReferenceRoute): TextSource | undefined {
+  if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
+    return { id: route.id, kind: route.kind };
+  }
+  if (route.kind === "document" && route.item !== undefined) {
+    return { id: route.item.id, kind: route.item.kind };
+  }
+  return undefined;
 }
 
 /** A card for one Dispatch reference: the route it resolved to, its `dispatch://` form (the
@@ -60,14 +81,19 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   const { title, description } = useReferenceTarget(card.route, { text: true });
   const path = useReferencePath(card.route);
 
+  // The card is the one link: everything drawn inside it reads as a link and is none.
   return (
-    <a
-      className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
-      href={path}
-    >
-      <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
-      {description === undefined ? null : <Body markdown={description} />}
-    </a>
+    <ReferenceHostIs host="control">
+      <a
+        className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
+        href={path}
+      >
+        <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
+        {description === undefined ? null : (
+          <Body markdown={description} source={cardRecord(card.route)} />
+        )}
+      </a>
+    </ReferenceHostIs>
   );
 }
 
@@ -90,19 +116,23 @@ function GitHubUnfurl({ href, path }: { href: string; path: string }): ReactNode
     queryFn: async () => (await api.githubRest(path)).json() as Promise<GitHubIssue>,
   });
   return (
-    <a
-      className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
-      href={href}
-      rel="noreferrer"
-      target="_blank"
-    >
-      <span className={`block font-medium ${linkText}`}>{issue.data?.title ?? href}</span>
-      {issue.data?.body === undefined ||
-      issue.data.body === null ||
-      issue.data.body.trim() === "" ? null : (
-        <Body markdown={issue.data.body} />
-      )}
-    </a>
+    <ReferenceHostIs host="control">
+      <a
+        className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
+        href={href}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <span className={`block font-medium ${linkText}`}>{issue.data?.title ?? href}</span>
+        {issue.data?.body === undefined ||
+        issue.data.body === null ||
+        issue.data.body.trim() === "" ? null : (
+          // No `source`: a GitHub issue's body is no record of Dispatch's reference graph -
+          // Dispatch holds no node for it - so a `#id` in it declares nothing and names nothing.
+          <Body markdown={issue.data.body} />
+        )}
+      </a>
+    </ReferenceHostIs>
   );
 }
 

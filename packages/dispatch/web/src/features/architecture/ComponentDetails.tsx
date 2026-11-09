@@ -175,6 +175,9 @@ export function ComponentDetails({
         <p className={`mt-1 text-sm ${textMutedOnSurface}`}>No description in the model.</p>
       ) : (
         <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+          {/* No `source`: a component's prose is the architecture model's, read from the
+              repository, not a record of the reference graph - so a `#id` in it declares
+              nothing and names nothing. */}
           <MarkdownBody markdown={component.prose} />
         </div>
       )}

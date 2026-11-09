@@ -728,6 +728,7 @@ export function AskCard({
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -741,6 +742,7 @@ export function AskCard({
                   if (isCompact && !otherSelected) setOwnWordsOpen(true);
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

@@ -2214,12 +2214,13 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     // The pane is the column to the right of the list: one row, the list first.
     expect(list.parentElement).toBe(pane.parentElement?.parentElement ?? null);
     expect(list.compareDocumentPosition(pane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The card is the pane's, never the row's; the row is the question's first line, its kind
-    // and its age.
+    // The card is the pane's, never the row's; the row is the question drawn by the one
+    // renderer on one line - the heading's words and the detail after them, clamped by CSS,
+    // with no syntax left and no stripper of its own - beside its kind and its age.
     expect(within(list).queryByTestId("ask-ask-a")).not.toBeInTheDocument();
     expect(within(pane).getByTestId("ask-ask-a")).toBeTruthy();
     const row = shortRow("ask-a");
-    expect(within(row).getByText("Which approach?")).toBeTruthy();
+    expect(within(row).getByText("Which approach? The detail.")).toBeTruthy();
     expect(within(row).getByRole("img", { name: "Question" })).toBeTruthy();
     expect(within(row).getByText("CORE-1")).toBeTruthy();
     expect(row.querySelector("time")?.getAttribute("datetime")).toBe(first.created_at);

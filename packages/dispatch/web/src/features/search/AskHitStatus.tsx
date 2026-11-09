@@ -12,6 +12,7 @@ import { AskResolutionLine } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { markdownHead } from "../refs/markdown-fragment";
 import { Timestamp } from "../refs/Timestamp";
+import type { TextSource } from "../refs/text-references";
 
 function askStateLabel(ask: SearchAsk): string {
   if (ask.state === "open") return "Open";
@@ -29,7 +30,17 @@ export const ANSWER_PREVIEW_CHARS = 280;
  *  and its latest answer - who gave it, when, the options chosen and the start of its text
  *  (`ANSWER_PREVIEW_CHARS`), clamped to three lines. Every part wraps inside the row, so a long
  *  label or name never widens the row it sits in. */
-export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean }): ReactNode {
+export function AskHitStatus({
+  ask,
+  muted,
+  source,
+}: {
+  ask: SearchAsk;
+  muted: boolean;
+  /** The record the hit is - the ask itself, which its answer's text is scoped to
+   *  (`refs.ScopeOf`), so a `#id` in that answer resolves as it does on the ask's own card. */
+  source?: TextSource;
+}): ReactNode {
   const answer = ask.state === "open" ? undefined : ask.answer;
   // `resolution` is on an ask the server resolved alone, so the state and the record are read
   // together: a resolved hit whose record did not come carries no line of its own.
@@ -64,6 +75,7 @@ export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean })
           className={`mt-1 ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
           lines={3}
           markdown={markdownHead(answer.text, ANSWER_PREVIEW_CHARS)}
+          source={source}
         />
       )}
     </div>

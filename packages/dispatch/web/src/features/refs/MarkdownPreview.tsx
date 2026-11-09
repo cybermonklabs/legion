@@ -1,7 +1,8 @@
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useCallback, useRef } from "react";
 
-import { markdownClassName, useMarkdownHeadline } from "./markdown-engine";
+import { markdownClassName } from "./markdown-engine";
+import { usePlainHeadline } from "./plain-text";
 import type { TextSource } from "./text-references";
 import {
   type DecorateMarkdown,
@@ -206,32 +207,6 @@ function markPhrases(root: HTMLElement, phrases: readonly Phrase[], className: s
 }
 
 /**
- * Every link in the preview as inert, link-styled text. Each surface a preview sits in is
- * already one control - a link (a reply quote, an unfurl card, a hover card, a Broadcasts row),
- * a search option or a margin card's toggle - so a link inside it is a link in a link: a click
- * on it would follow the inner link and the outer control at once, and it would be a second tab
- * stop inside a tooltip. The words, their formatting and a reference's `data-dispatch-ref` (its
- * hover card) stay; the host is the one thing a click or a key press follows. Answers each
- * replaced link's span, so a reference's portal can follow its words into it.
- */
-function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
-  const replaced = new Map<HTMLElement, HTMLElement>();
-  for (const link of root.querySelectorAll("a")) {
-    const span = document.createElement("span");
-    for (const { name, value } of link.attributes) {
-      if (name !== "href" && name !== "rel" && name !== "target") {
-        span.setAttribute(name, value);
-      }
-    }
-    span.setAttribute("data-markdown-link", "");
-    span.append(...link.childNodes);
-    link.replaceWith(span);
-    replaced.set(link, span);
-  }
-  return replaced;
-}
-
-/**
  * A line or two of Markdown someone wrote, formatted and then cut to fit: a search hit's
  * snippet, a hover card's body, a reply quote, a margin card's collapsed root. The text is
  * parsed with the same engine and schema as `MarkdownBody`, so bold, code, links and
@@ -245,12 +220,11 @@ function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
  * answer to its start. A Dispatch picture shows as its thumbnail beside its caption
  * (`DispatchPicture`'s `inline`), as `MarkdownBody`'s `inline` variant shows it.
  *
- * Every surface a preview sits in is one control already, so its links and references read as
- * links but are not ones (`inertLinks`): the host is what a click follows. A host whose own
- * control is a toggle rather than a navigation (the margin's collapsed card, which opens the
- * thread) passes `links="live"` and keeps them real: there a click on a reference is the one
- * way out of the card to its target, as it was before the preview, and its handler skips a
- * click under an `a`.
+ * Whether a reference in it is a live link is its host's property, never a prop here: a preview
+ * drawn inside a link or a button reads as links that are none (`useRenderedMarkdown`'s
+ * `inertLinks`), since the host is the one thing a click follows, and a preview a reader reads
+ * as a record keeps them real. A host says which it is once, for everything under it
+ * (`ReferenceHostIs`).
  *
  * `lines` is the clamp (`1` is `truncate`-like but keeps the inline markup; `2` and `3` wrap
  * then clamp). `className` styles the element, whose `display` is the clamp's own, so a parent
@@ -273,7 +247,6 @@ export function MarkdownPreview({
   highlightClassName = "",
   lead,
   lines,
-  links = "inert",
   markdown,
   source,
 }: {
@@ -287,9 +260,6 @@ export function MarkdownPreview({
    *  `Replying to Planner — `. Clamped with the text as one line. */
   lead?: string;
   lines: 1 | 2 | 3;
-  /** `inert` (the default) renders every link as link-styled text; `live` keeps them links, for
-   *  a host whose own control is a toggle. */
-  links?: "inert" | "live";
   markdown: string;
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
@@ -301,32 +271,27 @@ export function MarkdownPreview({
   const highlightKey = highlight?.join("\u0000");
   const decorate = useCallback<DecorateMarkdown>(
     (element, anchors) => {
-      const replaced = links === "inert" ? inertLinks(element) : undefined;
       const phrases = highlightKey === undefined ? [] : phrasesOf(highlightKey.split("\u0000"));
       if (phrases.length > 0) {
         markPhrases(element, phrases, highlightClassName);
       }
       const decorated = anchors.map((reference) => {
-        const host = replaced === undefined ? reference.anchor : replaced.get(reference.anchor);
-        if (host === undefined) {
-          throw new Error("A reference anchor is not a link of the preview it was found in.");
-        }
         // The reference's words (`dispatch://CORE-1`, or a link's own text) are gone by now,
         // replaced by its title once that resolves; a hit the server found in them marks the
         // whole reference.
         if (phrases.length > 0 && nextPhrase(reference.text, phrases, 0) !== undefined) {
           const mark = markElement(highlightClassName);
-          host.replaceWith(mark);
-          mark.appendChild(host);
+          reference.anchor.replaceWith(mark);
+          mark.appendChild(reference.anchor);
         }
-        return { ...reference, anchor: host };
+        return reference;
       });
       if (lead !== undefined && lead !== "") {
         element.prepend(document.createTextNode(lead));
       }
       return decorated;
     },
-    [highlightClassName, highlightKey, lead, links]
+    [highlightClassName, highlightKey, lead]
   );
   const references = useTextReferences(markdown, source);
   const { isFallback, isPending, portals } = useRenderedMarkdown(root, markdown, paintOneLine, {
@@ -334,7 +299,9 @@ export function MarkdownPreview({
     decorate,
     references,
   });
-  const title = useMarkdownHeadline(fullTitle ? markdown : undefined, Number.POSITIVE_INFINITY);
+  // The whole text for a pointer reader is the one plain-text projection, where a reference
+  // reads as its target's own name rather than as its short form (`PlainText`).
+  const { reads, text: title } = usePlainHeadline(fullTitle ? markdown : undefined);
 
   return (
     <span
@@ -345,6 +312,7 @@ export function MarkdownPreview({
       ref={root}
       title={title?.text}
     >
+      {reads}
       {portals}
     </span>
   );

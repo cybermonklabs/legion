@@ -59,6 +59,7 @@ import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
@@ -72,6 +73,9 @@ interface ThreadTurn {
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** Which record the turn is, so its body is drawn as that record's own text: the comment or
+   *  the issue message the route it was read from answered with. */
+  readonly kind: "comment" | "message";
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
@@ -123,7 +127,7 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} />
+        <MarkdownBody markdown={turn.body} source={textSourceOf(turn.kind, turn.id)} />
       </div>
       {turn.note}
     </div>
@@ -355,6 +359,7 @@ function commentTurn(comment: Comment): ThreadTurn {
     body: comment.body,
     created_at: comment.created_at,
     id: comment.id,
+    kind: "comment",
   };
 }
 
@@ -364,6 +369,7 @@ function messageTurn(message: Message, note?: ReactNode): ThreadTurn {
     body: message.body,
     created_at: message.created_at,
     id: message.id,
+    kind: "message",
     ...(note === undefined ? {} : { note }),
   };
 }

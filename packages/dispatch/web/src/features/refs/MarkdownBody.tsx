@@ -2,8 +2,10 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useRef } from "react";
 
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
+import { hostDrawsMarkup, hostLinksReferences, useReferenceHost } from "./reference-host";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
+import { Unfurl } from "./Unfurl";
 import { type PaintMarkdown, type SliceYield, useRenderedMarkdown } from "./useRenderedMarkdown";
 import { useTextReferences } from "./useTextReferences";
 
@@ -282,14 +284,15 @@ function* paintBlockInSlices(
  * references too, and link where they name something (`useTextReferences`). A caller names the
  * record this text is in `source`, and the server says which document its `#id`s resolve
  * against; text that is no record's passes nothing and gets no `#id` links, which is right.
+ *
+ * A body that is nothing but references draws a card for each of them under itself
+ * (`Unfurl`): one renderer draws the record and everything that hangs off it, so no surface
+ * pairs a body with a card of its own. Whether a reference in the body is a live link, and
+ * whether those cards are drawn at all, is the host's property (`ReferenceHostIs`): inside a
+ * link or a button nothing is a link of its own, and an element that can hold no markup - or a
+ * diff, whose point is the characters it swaps - holds this text as the characters it is.
  */
-export function MarkdownBody({
-  markdown,
-  onRendered,
-  softBreaks = "space",
-  source,
-  variant = "block",
-}: {
+export function MarkdownBody(props: {
   markdown: string;
   onRendered?: () => void;
   /** What a single newline inside a paragraph becomes: `"space"` for a document (hard-wrapped
@@ -301,6 +304,26 @@ export function MarkdownBody({
   source?: TextSource;
   variant?: "block" | "inline";
 }): ReactNode {
+  const host = useReferenceHost();
+  return hostDrawsMarkup(host) ? <PaintedBody {...props} /> : props.markdown;
+}
+
+/** The body as a host that draws markup draws it: painted, with its references linked where the
+ *  host links them, and the cards under a body that is nothing but references. */
+function PaintedBody({
+  markdown,
+  onRendered,
+  softBreaks = "space",
+  source,
+  variant = "block",
+}: {
+  markdown: string;
+  onRendered?: () => void;
+  softBreaks?: SoftBreaks;
+  source?: TextSource;
+  variant?: "block" | "inline";
+}): ReactNode {
+  const host = useReferenceHost();
   // One ref per tag, since a `<div>` and a `<span>` type their refs differently.
   const blockRoot = useRef<HTMLDivElement>(null);
   const inlineRoot = useRef<HTMLSpanElement>(null);
@@ -319,23 +342,32 @@ export function MarkdownBody({
     }
   );
 
-  return inline ? (
-    <span
-      className={markdownClassName}
-      data-markdown-fallback={isFallback || undefined}
-      data-markdown-pending={isPending || undefined}
-      ref={inlineRoot}
-    >
-      {portals}
-    </span>
-  ) : (
-    <div
-      className={`${markdownClassName} max-w-none`}
-      data-markdown-fallback={isFallback || undefined}
-      data-markdown-pending={isPending || undefined}
-      ref={blockRoot}
-    >
-      {portals}
-    </div>
+  if (inline) {
+    return (
+      <span
+        className={markdownClassName}
+        data-markdown-fallback={isFallback || undefined}
+        data-markdown-pending={isPending || undefined}
+        ref={inlineRoot}
+      >
+        {portals}
+      </span>
+    );
+  }
+  return (
+    <>
+      <div
+        className={`${markdownClassName} max-w-none`}
+        data-markdown-fallback={isFallback || undefined}
+        data-markdown-pending={isPending || undefined}
+        ref={blockRoot}
+      >
+        {portals}
+      </div>
+      {/* A card is a link, so a body inside a link or a button draws none: there is nothing for
+          the card to be. One line of a card has no room for one either, which is why the
+          `inline` variant above ends there. */}
+      {hostLinksReferences(host) ? <Unfurl body={markdown} source={source} /> : null}
+    </>
   );
 }

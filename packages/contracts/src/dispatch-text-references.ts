@@ -64,6 +64,18 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     refs: ["dispatch://CORE-7/spec"],
   },
   { body: "See [**dispatch://CORE-8**](dispatch://CORE-8).", refs: ["dispatch://CORE-8"] },
+  // A link whose words its author wrote. Both readers cite the same reference as a bare address
+  // does - nothing here changes what a text holds - and the words stay the author's wherever
+  // the link is painted: an address standing on its own, and the autolink above whose words are
+  // that same address, read as the target's current name; this one reads as what it says.
+  {
+    body: "See [the rollout plan](dispatch://CORE-22/spec) first.",
+    refs: ["dispatch://CORE-22/spec"],
+  },
+  {
+    body: "See [**the rollout plan**](https://dispatch.test/issues/CORE-23) first.",
+    refs: ["dispatch://CORE-23"],
+  },
   { body: "(**https://dispatch.test/issues/CORE-4**)", refs: ["dispatch://CORE-4"] },
   {
     body: "See [https://dispatch.test/issues/CORE-9](https://dispatch.test/issues/CORE-9).",

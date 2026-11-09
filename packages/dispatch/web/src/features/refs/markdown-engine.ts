@@ -473,61 +473,93 @@ export function renderWithEngine(
 export const markdownClassName =
   "dispatch-markdown prose prose-sm prose-slate break-words dark:prose-invert";
 
-/** Text outside code with every `dispatch://` reference written as its short form
- *  (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`), as a rendered body's link reads until its
- *  title resolves; a reference in code stays as its author wrote it, as it does in a body. */
-function shortenReferences(text: string): string {
-  let shortened = "";
+/** The name a text's `dispatch://` addresses resolve to, each under the address as its author
+ *  wrote it; an address the map does not hold has not resolved, and reads as its short form. */
+export type ReferenceNames = ReadonlyMap<string, string>;
+
+/** No address resolved yet, shared so a projection that needs none keeps one identity across
+ *  renders and the layout effect it is a dependency of never re-runs for a fresh empty map. */
+export const NO_REFERENCE_NAMES: ReferenceNames = new Map();
+
+/** What one text of a document projects to: its words, and every `dispatch://` address it wrote
+ *  outside code, each as its author wrote it. */
+interface ProjectedText {
+  readonly words: string;
+  readonly addresses: readonly string[];
+}
+
+/** Text outside code with every `dispatch://` reference written as the name `names` resolved for
+ *  it, and as its short form (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`) until it does - as a
+ *  rendered body's link reads before its title resolves. A reference in code stays as its author
+ *  wrote it, as it does in a body, and is no address to resolve. */
+function nameReferences(text: string, names: ReferenceNames, addresses: string[]): string {
+  let named = "";
   let cursor = 0;
   for (const { start, value } of referenceSpans(text, "dispatch://")) {
     const route = parseDispatchReference(value);
     if (route !== undefined) {
-      shortened += `${text.slice(cursor, start)}${shortForm(route)}`;
+      addresses.push(value);
+      named += `${text.slice(cursor, start)}${names.get(value) ?? shortForm(route)}`;
       cursor = start + value.length;
     }
   }
-  return shortened + text.slice(cursor);
+  return named + text.slice(cursor);
 }
 
-/** The words a parsed document renders, on one line: text as it reads (references shortened),
- *  raw inline HTML as the literal characters a body shows for it, and every block boundary,
- *  hard break or other leaf a space. */
-function plainWords(doc: ProseMirrorNode): string {
+/** The words a parsed document renders, on one line: text as it reads (references named), raw
+ *  inline HTML as the literal characters a body shows for it, and every block boundary, hard
+ *  break or other leaf a space. */
+function plainWords(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText {
   const parts: string[] = [];
+  const addresses: string[] = [];
   doc.descendants((node, _position, parent) => {
     if (node.isText) {
       const code =
         parent?.type.spec.code === true || node.marks.some((mark) => mark.type.spec.code === true);
-      parts.push(code ? (node.text ?? "") : shortenReferences(node.text ?? ""));
+      parts.push(code ? (node.text ?? "") : nameReferences(node.text ?? "", names, addresses));
     } else if (node.isBlock || node.isLeaf) {
       parts.push(node.type.name === "html" ? String(node.attrs.value ?? "") : " ");
     }
     return true;
   });
-  return parts.join("");
+  return { addresses, words: parts.join("") };
 }
 
-/** A headline and whether it had to be cut to fit. */
+/** A headline, whether it had to be cut to fit, and the `dispatch://` addresses it drew. */
 export interface MarkdownHeadline {
   readonly text: string;
   readonly cut: boolean;
+  /** Every address the projection wrote, as its author wrote it, in the order it wrote them: a
+   *  caller that resolves their names (`usePlainHeadline`) hands them back as `names`, and one
+   *  that does not ignores them. Empty for a source the engine could not parse. */
+  readonly addresses: readonly string[];
 }
+
+/** The addresses of a source no engine parsed, shared so the literal fallback below keeps one
+ *  identity. */
+const NO_ADDRESSES: readonly string[] = [];
 
 /**
  * Markdown projected to one line of plain text and cut to `max` characters, for a place that can
- * hold only a string: a reference link's text, a card's title, a hover tooltip. Formatting goes
- * (a link's own styling is the formatting there) but no syntax stays: `**Blocking:** the deploy`
- * reads `Blocking: the deploy`, a code span keeps its words, a `dispatch://` reference reads as
- * its short form, and the cut happens on the projected text, so it never splits a mark (nor a
- * character outside the Basic Multilingual Plane). Blocks and hard breaks become single spaces.
- * `cut` says whether the text was cut, which an ellipsis the author typed cannot fake.
- * `undefined` until the engine has answered (one pre-paint commit once it is loaded, and for a
- * body the parse worker parses, until its answer lands) and for an `undefined` source; the
- * literal source, cut the same way, when the engine cannot load.
+ * hold only a string: a reference link's text, a card's title, a hover tooltip, an `aria-label`.
+ * Formatting goes (a link's own styling is the formatting there) but no syntax stays:
+ * `**Blocking:** the deploy` reads `Blocking: the deploy`, a code span keeps its words, a
+ * `dispatch://` reference reads as the name `names` resolved for it and as its short form until
+ * it does, and the cut happens on the projected text, so it never splits a mark (nor a character
+ * outside the Basic Multilingual Plane). Blocks and hard breaks become single spaces. `cut` says
+ * whether the text was cut, which an ellipsis the author typed cannot fake. `undefined` until the
+ * engine has answered (one pre-paint commit once it is loaded, and for a body the parse worker
+ * parses, until its answer lands) and for an `undefined` source; the literal source, cut the same
+ * way, when the engine cannot load.
+ *
+ * `names` is what a caller has resolved for the addresses the last projection answered; a caller
+ * that leaves it out reads every reference as its short form, which is what a title drawn over
+ * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
  */
 export function useMarkdownHeadline(
   markdown: string | undefined,
-  max: number
+  max: number,
+  names: ReferenceNames = NO_REFERENCE_NAMES
 ): MarkdownHeadline | undefined {
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
@@ -544,15 +576,18 @@ export function useMarkdownHeadline(
         setHeadline(undefined);
         return;
       }
-      const characters = Array.from(
-        (parsed === undefined ? markdown : plainWords(parsed)).replace(/\s+/g, " ").trim()
-      );
+      const projected =
+        parsed === undefined
+          ? { addresses: NO_ADDRESSES, words: markdown }
+          : plainWords(parsed, names);
+      const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
       const cut = characters.length > max;
       setHeadline({
+        addresses: projected.addresses,
         cut,
         text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
       });
     });
-  }, [markdown, max]);
+  }, [markdown, max, names]);
   return headline;
 }

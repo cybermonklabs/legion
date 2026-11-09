@@ -40,7 +40,9 @@ import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { searchSnippetMarkdown } from "../refs/markdown-fragment";
 import { referenceTriggerProps } from "../refs/RefPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
 import { buildProjectPath, type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
@@ -98,32 +100,36 @@ function PaletteOption({
   /** A hit's target, which makes the row a `RefPreview` trigger. */
   reference?: DispatchReferenceRoute;
 }): ReactNode {
+  // A row is one button in all but its tag: a click or Enter anywhere in it opens what it
+  // found, so nothing drawn inside it is a link of its own.
   return (
-    <div
-      aria-selected={active}
-      className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
-        active ? selectedCardBorder : ""
-      }`}
-      id={id}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      role="option"
-      tabIndex={-1}
-      {...(reference === undefined ? undefined : referenceTriggerProps(reference))}
-    >
-      {active ? (
-        <div
-          aria-hidden="true"
-          className={`pointer-events-none absolute inset-0 -z-10 ${selectedCardBg}`}
-        />
-      ) : null}
-      {children}
-    </div>
+    <ReferenceHostIs host="control">
+      <div
+        aria-selected={active}
+        className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
+          active ? selectedCardBorder : ""
+        }`}
+        id={id}
+        onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
+        role="option"
+        tabIndex={-1}
+        {...(reference === undefined ? undefined : referenceTriggerProps(reference))}
+      >
+        {active ? (
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 -z-10 ${selectedCardBg}`}
+          />
+        ) : null}
+        {children}
+      </div>
+    </ReferenceHostIs>
   );
 }
 
@@ -152,6 +158,10 @@ function ResultOption({
   // The route table carries the kind as a plain string; a kind this build has no icon or label
   // for keeps its own word and draws no icon, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
+  // The hit's snippet is the record's own text, cut: the row names the record (`result.id`) and
+  // the kind it was indexed under, which is what a `#id` in it resolves against. A kind that
+  // names no reference source - a project, an agent - answers none (`textSourceKind`).
+  const record = textSourceOf(textSourceKind(result.kind), result.id);
 
   return (
     <PaletteOption
@@ -179,8 +189,11 @@ function ResultOption({
         highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
         lines={2}
         markdown={snippet}
+        source={record}
       />
-      {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
+      {result.ask === undefined ? null : (
+        <AskHitStatus ask={result.ask} muted={muted} source={record} />
+      )}
     </PaletteOption>
   );
 }

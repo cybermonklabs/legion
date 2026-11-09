@@ -18,6 +18,7 @@ import {
 import { capabilityLabel } from "../conversation/delivery";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
 import { Timestamp } from "../refs/Timestamp";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
@@ -71,26 +72,31 @@ export function BroadcastsPage(): ReactNode {
               {/* Below `xl` every link is `inline-flex` with centred items (styles.css's touch
                   rule, unlayered, so it beats `block` and `items-*`): the row stacks its two lines
                   explicitly and each stretches to the row's width. */}
-              <Link
-                className="flex w-full flex-col px-3 pt-1 pb-3"
-                to={`/agents/broadcasts/${sent.id}`}
-              >
-                <p
-                  className={`flex flex-wrap items-center gap-2 self-stretch text-xs ${textMutedOnCanvas}`}
+              <ReferenceHostIs host="control">
+                <Link
+                  className="flex w-full flex-col px-3 pt-1 pb-3"
+                  to={`/agents/broadcasts/${sent.id}`}
                 >
-                  <LabelPill>{capabilityLabel(sent.delivery)}</LabelPill>
-                  <Timestamp at={sent.created_at} />
-                  <span>
-                    {sent.replies} of {sent.recipients} answered
-                  </span>
-                </p>
-                <MarkdownPreview
-                  className={`mt-1 self-stretch text-sm ${textPrimaryOnCanvas}`}
-                  fullTitle
-                  lines={1}
-                  markdown={sent.body}
-                />
-              </Link>
+                  <p
+                    className={`flex flex-wrap items-center gap-2 self-stretch text-xs ${textMutedOnCanvas}`}
+                  >
+                    <LabelPill>{capabilityLabel(sent.delivery)}</LabelPill>
+                    <Timestamp at={sent.created_at} />
+                    <span>
+                      {sent.replies} of {sent.recipients} answered
+                    </span>
+                  </p>
+                  {/* No `source`: a broadcast is no record of the reference graph - the graph
+                      holds the copy each recipient got, never the broadcast - so a `#id` in it
+                      declares nothing and names nothing. */}
+                  <MarkdownPreview
+                    className={`mt-1 self-stretch text-sm ${textPrimaryOnCanvas}`}
+                    fullTitle
+                    lines={1}
+                    markdown={sent.body}
+                  />
+                </Link>
+              </ReferenceHostIs>
             </li>
           ))}
         </ul>

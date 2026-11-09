@@ -54,7 +54,6 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -227,12 +226,7 @@ function ConversationReply({
       actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
       at={reply.created_at}
       author={reply.author}
-      body={
-        <>
-          <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
-          <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
-        </>
-      }
+      body={<MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />}
       current={reply.id === currentReplyId}
       markRef={markRef}
       delivery={
@@ -256,6 +250,7 @@ function ConversationReply({
         author: parent?.author,
         block: reply.reply_block,
         excerpt: parent?.body ?? "",
+        source: textSourceOf("message", parent?.id),
         to:
           reply.in_reply_to === null
             ? undefined
@@ -361,7 +356,6 @@ function MessageTurn({
             {item.unread ? <UnreadMark /> : null}
           </p>
           <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
@@ -855,7 +849,6 @@ function TargetedMessageTurn({
             {item.unread ? <UnreadMark /> : null}
           </p>
           <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </>
       }
       canAside={capabilities?.includes("aside") !== false}

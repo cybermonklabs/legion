@@ -111,6 +111,9 @@ const ToolCall: ToolCallMessagePartComponent = ({ toolName, argsText, result, is
  *  animation frame (`useFrameCoalesced`) rather than once per delta: the publisher sends at most
  *  ten snapshots a second, and a frame is the most anyone can see anyway. A module constant, as
  *  `Reasoning` is: a component minted per render would remount every part. */
+// No `source` here or on the reasoning below: a session's own turn is no record of the
+// reference graph - it is the live transcript, which Dispatch stores nothing of and indexes
+// nothing from - so a `#id` in it declares nothing and names nothing.
 const MarkdownText: TextMessagePartComponent = ({ text }) => (
   <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" />
 );

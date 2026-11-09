@@ -2,11 +2,18 @@ import type { ReactNode } from "react";
 
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
-import { questionLine } from "./question-line";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 
 /**
  * What a thread row is about, in one line, bold with a dot while the thread holds a write the
  * reader has not read.
+ *
+ * The subject is the thread root's own markdown, so it is drawn by the one renderer
+ * (`MarkdownPreview`, clamped to one line): a heading, a bold word and a reference read here as
+ * they read in the thread itself. `fullTitle` gives a pointer reader the same line as plain
+ * text, from the same reader.
  *
  * Both layouts draw it: the short row beside the reading column, where it is the link `o`
  * follows (`data-inbox-owner`), and the card below that width, where **Open** is that link and
@@ -24,20 +31,30 @@ export function ThreadTitle({
   href?: string;
   thread: MyReplyRow;
 }): ReactNode {
-  const title = questionLine(thread.subject);
   const text = `${className} ${
     thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
   }`;
+  const line = (
+    <MarkdownPreview
+      className={text}
+      fullTitle
+      lines={1}
+      markdown={thread.subject}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+    />
+  );
   return (
     <>
       {href === undefined ? (
-        <span className={text} title={title}>
-          {title}
-        </span>
+        line
       ) : (
-        <a className={text} data-inbox-owner="" href={href} title={title}>
-          {title}
-        </a>
+        // The title is the link the row's `o` follows, so a reference in the subject reads as a
+        // link inside it and is none.
+        <ReferenceHostIs host="control">
+          <a className="min-w-0" data-inbox-owner="" href={href}>
+            {line}
+          </a>
+        </ReferenceHostIs>
       )}
       {thread.unread ? (
         <span

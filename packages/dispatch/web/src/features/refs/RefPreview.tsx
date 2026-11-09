@@ -21,6 +21,7 @@ import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { ReferenceHostIs } from "./reference-host";
 import {
   artifactTextQuery,
   blockText,
@@ -607,9 +608,14 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
       ref={element}
       role="tooltip"
     >
-      <Link className="block" tabIndex={-1} to={path}>
-        <PreviewContent route={target.route} />
-      </Link>
+      {/* The card is one link to the target it previews, so nothing drawn inside it is a link
+          of its own: that would be a second tab stop inside a tooltip, and a click that
+          followed two links at once. */}
+      <ReferenceHostIs host="control">
+        <Link className="block" tabIndex={-1} to={path}>
+          <PreviewContent route={target.route} />
+        </Link>
+      </ReferenceHostIs>
     </div>
   );
 }

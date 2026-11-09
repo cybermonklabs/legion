@@ -7,6 +7,7 @@ import { EventBody, isAskEvent } from "../activity/EventBody";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import type { PinnedConversationCard } from "./useMarginItems";
 
 interface PinnedTabProps {
@@ -33,7 +34,13 @@ export function PinnedTab({
         <article className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={conversation.id}>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <MarkdownBody markdown={conversation.body} />
+              {/* A handoff names no reference source (`textSourceKind`), so its card's text is
+                  drawn as no record's and its `#id`s name nothing; an ask, a comment and a
+                  message are each drawn as the record they are. */}
+              <MarkdownBody
+                markdown={conversation.body}
+                source={textSourceOf(textSourceKind(conversation.kind), conversation.recordId)}
+              />
               <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
                 <AgentName actor={conversation.author} inline /> ·{" "}
                 <Timestamp at={conversation.at} />

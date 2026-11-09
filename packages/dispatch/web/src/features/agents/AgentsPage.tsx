@@ -67,6 +67,7 @@ import {
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -223,7 +224,7 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} />
+          <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
         </div>
       }
       delivery={
@@ -250,6 +251,7 @@ function AgentExchangeReply({
               author: parent.author,
               block: reply.reply_block,
               excerpt: parent.body,
+              source: textSourceOf("message", parent.id),
               ...(parent.issue_key === null
                 ? {}
                 : {
@@ -300,7 +302,10 @@ function AgentTargetedMessage({
             <Timestamp at={read.message.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} />
+            <MarkdownBody
+              markdown={read.message.body}
+              source={textSourceOf("message", read.message.id)}
+            />
           </div>
         </>
       }

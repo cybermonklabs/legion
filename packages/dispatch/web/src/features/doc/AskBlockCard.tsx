@@ -251,6 +251,9 @@ function AttributeRecord({ facts }: { facts: AskBlockFacts }): ReactNode {
       : "";
   return (
     <div className="mt-3 space-y-2" data-dispatch-ask-record="">
+      {/* No `source`: these are the block's own attributes, read from the document's text with
+          no ask row behind them, so there is no ask for a `#id` in an option to resolve
+          against. */}
       <AskOptionList options={facts.options} rowClassName={surfaceBg} selected={facts.selected} />
       {otherText === "" ? null : (
         <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>Other</p>

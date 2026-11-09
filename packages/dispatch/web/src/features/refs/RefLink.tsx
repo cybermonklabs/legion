@@ -14,13 +14,18 @@ import { readTextReferences, type TextReferenceFacts } from "./text-references";
 
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
-   *  in its place (`MarkdownPreview` keeps no link inside the link it sits in). */
+   *  in its place (a host that is one control keeps no link inside its link). */
   readonly anchor: HTMLElement;
   readonly key: string;
   readonly route: DispatchReferenceRoute;
   /** The words the anchor showed before they were cleared for the portal: a bare reference's
    *  `dispatch://…`, or the text a Markdown link gave it. */
   readonly text: string;
+  /** Whether the anchor's words are its own address, which is what reads as the target's
+   *  current name: a reference standing on its own, and a link whose words are the address it
+   *  names - what a Markdown autolink is stored as. A link whose words its author wrote keeps
+   *  those words (`RefLink`). */
+  readonly addressed: boolean;
 }
 
 /** The 40 px square a picture shows as beside its title, wherever a line holds it: the Artifacts
@@ -38,19 +43,30 @@ export interface ReferenceLinking {
   readonly cited: ReadonlySet<string>;
 }
 
-/** Portal content for an inline reference anchor: the resolved title once
- * `useReferenceTarget` has it, the words the author wrote until then (and for a target that is
- * missing or unreadable, which never resolves), and beside it the picture's thumbnail when the
- * reference names an image artifact. It shows no document text, so it reads none. A thumbnail
- * the browser cannot draw (a pinned version the server does not serve) is dropped, leaving the
- * title alone, so a stale or hand-written reference never shows a broken-image glyph. When the
- * element it renders into is a link, its href follows `useReferencePath`, which a pinned block of
- * a spec resolves only once its issue's summary is read. */
+/** Portal content for an inline reference anchor.
+ *
+ * One rule says what it reads as, the same rule in a document, a comment, an ask, a message and
+ * every other record: an address standing on its own, and a link whose words are that same
+ * address, read as the target's current name once `useReferenceTarget` has it (`addressed`); a
+ * link whose words its author wrote keeps those words, since the author already said what the
+ * reference is there to say. A reference whose target Dispatch cannot resolve, or that the
+ * reader may not see, is the same case as the words themselves: the words the writer wrote,
+ * with no title drawn over them.
+ *
+ * Beside the words goes the picture's thumbnail when the reference names an image artifact. It
+ * shows no document text, so it reads none. A thumbnail the browser cannot draw (a pinned
+ * version the server does not serve) is dropped, leaving the title alone, so a stale or
+ * hand-written reference never shows a broken-image glyph. When the element it renders into is
+ * a link, its href follows `useReferencePath`, which a pinned block of a spec resolves only
+ * once its issue's summary is read. */
 export function RefLink({
+  addressed,
   anchor,
   route,
   text,
 }: {
+  /** Whether the words the anchor showed are its own address (`ReferenceAnchor.addressed`). */
+  addressed: boolean;
   anchor?: HTMLElement;
   route: DispatchReferenceRoute;
   /** The words the anchor showed before they were cleared for this portal: the reference as the
@@ -86,7 +102,7 @@ export function RefLink({
           beside one (`IssueList.tsx`), so the link's accessible name is `CORE-12 Fix the
           thing`. Until the title resolves, and for an issue the reader cannot read, the words
           the author wrote stand. */}
-      {title === undefined ? (
+      {!addressed || title === undefined ? (
         text
       ) : route.kind === "issue" ? (
         <>
@@ -166,6 +182,11 @@ export function linkifyDispatchRefs(root: HTMLElement, { cited, facts }: Referen
       fragment.appendChild(document.createTextNode(value.slice(lastIndex, reference.start)));
       const anchor = document.createElement("a");
       anchor.setAttribute("href", reference.reference ?? "");
+      // The reference stands on its own here, whatever it was written as: a `dispatch://`
+      // address, an issue key, or a `#` and a question block's id. Each reads as the target's
+      // current name, which `collectReferenceAnchors` cannot tell from the href alone - a key
+      // and its address are not the same characters.
+      anchor.setAttribute("data-dispatch-bare", "");
       anchor.textContent = reference.text;
       fragment.appendChild(anchor);
       lastIndex = reference.end;
@@ -223,6 +244,11 @@ export function collectReferenceAnchors(
       continue;
     }
     const text = anchor.textContent ?? "";
+    // What reads as the target's current name: an address standing on its own, which the link
+    // pass marks as it wraps one (`data-dispatch-bare`), and a link whose words are its own
+    // address (`isTextUrl`), the form a document stores an autolink in. A link whose words its
+    // author wrote keeps those words.
+    const addressed = anchor.hasAttribute("data-dispatch-bare") || isTextUrl(href, text);
     const textUrl = isTextUrl(href, text);
     const route = textUrl
       ? referenceRouteFromHref(href, appOrigin)
@@ -249,7 +275,7 @@ export function collectReferenceAnchors(
     const reference = buildDispatchReference(route);
     anchor.setAttribute("data-dispatch-ref", reference);
     anchor.replaceChildren();
-    targets.push({ anchor, key: `${reference}:${index}`, route, text });
+    targets.push({ addressed, anchor, key: `${reference}:${index}`, route, text });
     index += 1;
   }
   return targets;

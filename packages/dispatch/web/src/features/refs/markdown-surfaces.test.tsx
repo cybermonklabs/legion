@@ -179,23 +179,11 @@ function expectFormatted(element: HTMLElement): void {
   ]);
 }
 
-/** A one-line preview whose host is a toggle, not a navigation (the margin's collapsed card):
- *  the words and formatting of `expectFormatted`, with its links kept real, so a click on a
- *  reference is the way out of the card to its target. */
-function expectFormattedWithLiveLinks(element: HTMLElement): void {
-  expectNoSyntax(element);
-  expect(element.textContent ?? "").toMatch(RENDERED);
-  expect(element.querySelector("[data-markdown-link]")).toBeNull();
-  const links = Array.from(element.querySelectorAll("a"), (link) => ({
-    href: link.getAttribute("href"),
-    reference: link.getAttribute("data-dispatch-ref"),
-    text: link.textContent,
-  }));
-  expect(links).toEqual([
-    { href: "https://example.com/docs", reference: null, text: "link" },
-    { href: "/issues/CORE-1", reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
-  ]);
-}
+/** The margin's collapsed card is a `<button>` that opens the thread, which is R6's second
+ *  shape - the inside of a link or a button - so its preview holds no link of its own, exactly
+ *  as `expectFormatted` reads any other preview whose host is one control. The shape decides
+ *  it, not a prop: the thread the button opens draws every reference as a link. */
+const expectFormattedInsideAButton = expectFormatted;
 
 /** A clamped preview never nests a block inside its one line. */
 function expectOneLine(element: HTMLElement): void {
@@ -521,7 +509,7 @@ test("the margin's collapsed thread preview renders the root formatted on one li
     await waitFor(() => expect(card.textContent).toContain("Design decision"));
     const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the collapsed preview is not a MarkdownPreview");
-    expectFormattedWithLiveLinks(body);
+    expectFormattedInsideAButton(body);
     expectOneLine(body);
   } finally {
     view.unmount();
@@ -904,7 +892,9 @@ describe("a Dispatch picture on every surface", () => {
       const card = await within(view.container).findByTestId(`margin-comment-${comment.id}`);
       const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
       if (body === null) throw new Error("the collapsed preview is not a MarkdownPreview");
-      await expectThumbnail(body, "live");
+      // Shape 2: the card is a button, so the picture sits in link-styled text here and links
+      // to its page in the thread the button opens.
+      await expectThumbnail(body, "inert");
       expectOneLine(body);
     } finally {
       view.unmount();

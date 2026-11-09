@@ -40,7 +40,7 @@ function AskEventBody({
         {event.type === "ask.opened" ? "Ask opened:" : "Ask:"}
       </p>
       <MarkdownBody markdown={question} onRendered={onRendered} source={source} />
-      <AskOptionList options={options ?? []} selected={answer?.selected ?? []} />
+      <AskOptionList options={options ?? []} selected={answer?.selected ?? []} source={source} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Opened <Timestamp at={created_at} />
       </p>

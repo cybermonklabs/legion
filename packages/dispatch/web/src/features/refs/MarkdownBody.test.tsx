@@ -360,7 +360,9 @@ describe("Dispatch pictures", () => {
       const shot = await within(view.container).findByRole("img", { name: "shot" });
       expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
       expect(shot.closest("a")?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}?v=1`);
-      const link = await within(view.container).findByRole("link", { name: "design.md" });
+      // The link's words are its author's, so they stay (R8); what this row reads is which
+      // document a long name opens.
+      const link = await within(view.container).findByRole("link", { name: "design" });
       expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
     } finally {
@@ -399,7 +401,7 @@ describe("Dispatch pictures", () => {
 
     try {
       await act(() => worker.answer(0));
-      const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
+      const designs = await within(view.container).findAllByRole("link", { name: "design" });
       expect(designs).toHaveLength(2);
       for (const link of designs) {
         expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
@@ -452,7 +454,7 @@ describe("Dispatch pictures", () => {
 
     try {
       await act(() => worker.answer(0));
-      const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
+      const designs = await within(view.container).findAllByRole("link", { name: "design" });
       expect(designs).toHaveLength(1);
       expect(designs[0]?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}`);
       expect(designs[0]?.getAttribute("data-dispatch-ref")).toBe(long);
@@ -1084,7 +1086,9 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
   );
 
   try {
-    const link = await within(view.container).findByRole("link", { name: "Ship it?" });
+    // The link's words are its author's and stay so; what this row reads is that the target
+    // behind `data-dispatch-href` is the one resolved and read.
+    const link = await within(view.container).findByRole("link", { name: "the ask" });
     expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/ask/ask-1");
     expect(getAsk).toHaveBeenCalledWith("ask-1");

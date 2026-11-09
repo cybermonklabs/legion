@@ -24,7 +24,6 @@ import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
@@ -60,7 +59,6 @@ function AskReply({
       <div className={textPrimaryOnSurfaceMuted}>
         <MarkdownBody markdown={comment.body} source={textSourceOf("comment", comment.id)} />
       </div>
-      <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
       </p>
@@ -110,6 +108,8 @@ export function AskReplyComposer({
       return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
     },
     inline: true,
+    // A write's label is one line the Writes indicator reads as text, so it holds no markup:
+    // the question goes in as the characters its author wrote (`useAskAnswerForm`).
     label: () => `Reply on “${ask.question}”`,
     mutationKey,
     onSuccess: (_comment, text) => {

@@ -5,6 +5,8 @@ import type { Actor } from "../../api/types";
 import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
+import type { TextSource } from "../refs/text-references";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
@@ -39,6 +41,7 @@ export function ReplyQuote({
   block,
   className = "",
   excerpt,
+  source,
   to,
 }: {
   author: Actor | undefined;
@@ -47,6 +50,10 @@ export function ReplyQuote({
   className?: string;
   /** The quoted parent's body as its author wrote it (Markdown); `""` when none is known. */
   excerpt: string;
+  /** The record the quoted text is - the parent message or comment, whose own passage a block
+   *  quote is (`TextSource`) - so a `#id` in it resolves against that record's document, as it
+   *  does where the parent itself is drawn. */
+  source?: TextSource;
   to?: string;
 }): ReactNode {
   const passage = block !== undefined && block !== null;
@@ -66,6 +73,7 @@ export function ReplyQuote({
         lead={author === undefined ? `${unknownParent}${quotedText === "" ? "" : " — "}` : "— "}
         lines={1}
         markdown={quotedText}
+        source={source}
       />
     ) : null;
   return (
@@ -80,9 +88,13 @@ export function ReplyQuote({
       {quoted === null ? null : to === undefined ? (
         <span className="min-w-0 flex-1">{quoted}</span>
       ) : (
-        <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
-          {quoted}
-        </Link>
+        // The quote is the one link here, so the parent's own references read as links inside
+        // it and are none: the click belongs to the turn this quote opens.
+        <ReferenceHostIs host="control">
+          <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
+            {quoted}
+          </Link>
+        </ReferenceHostIs>
       )}
     </span>
   );

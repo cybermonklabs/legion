@@ -22,6 +22,7 @@ import { loadBlockSchema } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { textSourceOf } from "../refs/text-references";
 import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
@@ -216,7 +217,7 @@ function ApprovalBody({
      *  reads as it was written, and a rule tells it from the document's first paragraph. */
     const question = (
       <div className={`mb-3 border-b pb-3 ${borderDefault}`} data-testid="pane-approval-question">
-        <MarkdownBody markdown={ask.question} />
+        <MarkdownBody markdown={ask.question} source={textSourceOf("ask", ask.id)} />
       </div>
     );
     /** Whether the document below the question is still opening: every read `VersionView` needs
