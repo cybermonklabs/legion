@@ -132,6 +132,22 @@ func (r Rules) Lookup(name string) *SecretRule {
 	return nil
 }
 
+// JudgeSeconds is the longest lifetime the file lets the judge decide for this secret, and
+// whether it lets it decide at all: (0, false) when the file names no such secret, and when the
+// entry it names has no "judge". Every reader of the bound goes through it, so no caller holds
+// a *SecretRule of its own and decides for itself what a nil Judge means.
+//
+// It is no new rule: Validate refuses a file whose entry asks for more than maxJudgeSeconds, and
+// the Lean model's judgeOK and theorem T3 are that same bound proved, so what this answers for a
+// valid file is at most 900 seconds.
+func (r Rules) JudgeSeconds(name string) (uint32, bool) {
+	s := r.Lookup(name)
+	if s == nil || s.Judge == nil {
+		return 0, false
+	}
+	return *s.Judge, true
+}
+
 // Digest is the fingerprint of one secret's entry, "" when the file has none for it. It is the
 // SHA-256, in hex, of the entry's JSON as encoding/json marshals a SecretRule: no field's tag
 // carries omitempty, so every field of the entry is in the fingerprint, in the struct's own
