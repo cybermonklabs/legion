@@ -6,10 +6,10 @@ import { artifactVersionPath } from "../../api/client";
 import { pictureClassName } from "../refs/DispatchPicture";
 import { isPlainClick, openPictureLightbox } from "../refs/picture-lightbox";
 import {
+  appHref,
   buildDispatchReference,
   buildReferencePath,
   type DispatchReferenceRoute,
-  isSafeAppPath,
   pictureReference,
   shortForm,
 } from "../refs/routes";
@@ -26,11 +26,12 @@ function fallbackLink(
   placeCaretAfter: () => void
 ): HTMLAnchorElement {
   const link = document.createElement("a");
-  const path = buildReferencePath(route);
-  // Only this dashboard's own path becomes an href (`isSafeAppPath`); anything else leaves the
-  // link with none, so the words stand and a middle click goes nowhere off the site.
-  if (isSafeAppPath(path)) {
-    link.setAttribute("href", path);
+  // Only this dashboard's own path becomes an href, and only as `appHref` writes it; anything
+  // else leaves the link with none, so the words stand and a middle click goes nowhere off the
+  // site.
+  const href = appHref(buildReferencePath(route));
+  if (href !== undefined) {
+    link.setAttribute("href", href);
   }
   link.dataset.dispatchHref = buildDispatchReference(route);
   link.textContent = shortForm(route);

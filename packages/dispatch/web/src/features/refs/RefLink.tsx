@@ -3,10 +3,10 @@ import { type ReactNode, useLayoutEffect, useState } from "react";
 import { borderDefault } from "../../theme/classes";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import {
+  appHref,
   buildDispatchReference,
   buildReferencePath,
   type DispatchReferenceRoute,
-  isSafeAppPath,
   nodeRouteFromHref,
   referenceRouteFromHref,
 } from "./routes";
@@ -76,10 +76,12 @@ export function RefLink({
   const { picture, title } = useReferenceTarget(route, { text: false });
   const path = useReferencePath(route);
   useLayoutEffect(() => {
-    // A path that is not this dashboard's own is no link: the words stand instead, as they do
-    // for a reference that resolves to no page at all.
-    if (anchor instanceof HTMLAnchorElement && isSafeAppPath(path)) {
-      anchor.setAttribute("href", path);
+    // Only this dashboard's own path becomes a link, and only as `appHref` writes it: a path
+    // that is no link of this dashboard's leaves the words standing, as a reference that
+    // resolves to no page at all does.
+    const href = appHref(path);
+    if (anchor instanceof HTMLAnchorElement && href !== undefined) {
+      anchor.setAttribute("href", href);
     }
   }, [anchor, path]);
   // The address that failed, not a flag: a plain reference names the latest version, so a version
@@ -171,7 +173,8 @@ export function linkifyDispatchRefs(root: HTMLElement, { cited, facts }: Referen
         // A reference that opens no page of this dashboard - a person, whom nothing in Dispatch
         // shows - stays the words its author wrote: there would be nothing behind the link.
         // The same gate `collectReferenceAnchors` writes the href behind, so the two agree.
-        (reference.route === undefined || isSafeAppPath(buildReferencePath(reference.route)))
+        (reference.route === undefined ||
+          appHref(buildReferencePath(reference.route)) !== undefined)
     );
     if (found.length === 0) {
       continue;
@@ -263,11 +266,11 @@ export function collectReferenceAnchors(
       }
       continue;
     }
-    const path = buildReferencePath(route);
     // A reference that opens no page of this dashboard is its words, as one that cites nothing
     // is: a person, whom nothing in Dispatch shows (the empty path), and anything that does not
     // resolve to this origin, which no route writes today and none may start writing unnoticed.
-    if (!isSafeAppPath(path)) {
+    const path = appHref(buildReferencePath(route));
+    if (path === undefined) {
       anchor.replaceWith(document.createTextNode(text));
       continue;
     }
