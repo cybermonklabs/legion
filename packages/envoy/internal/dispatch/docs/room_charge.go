@@ -5,8 +5,9 @@ package docs
 // to the room's tracked state, and the re-base that replaces the tracked state with a figure
 // read from bytes already in hand.
 
-// roomCharge is one loaded room's charge against the budget: one weight, its two copies of the
-// room's tracked state at bytesOfHeapAStateByte each (roomWeight), and the room it belongs to.
+// roomCharge is one loaded room's charge against the budget: one weight, the larger of its
+// tracked state at bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct in each of its
+// two copies (roomWeight), and the room it belongs to.
 //
 // Its only writer is the room's update observer, whose drain of the room's update log adds each
 // committed update's bytes to the room's tracked state and weighs the room again from the sum
@@ -32,14 +33,14 @@ type roomCharge struct {
 	closeOnceUnused bool
 }
 
-// weigh charges the room what its tracked state of stateBytes bytes comes to (roomWeight) and
-// re-weighs its entry under the budget's lock. A nil charge, a replica no room's load charged (a
-// test's), charges nothing.
-func (c *roomCharge) weigh(stateBytes int64) {
+// weigh charges the room what its tracked state of stateBytes bytes and its structs structs come
+// to (roomWeight) and re-weighs its entry under the budget's lock. A nil charge, a replica no
+// room's load charged (a test's), charges nothing.
+func (c *roomCharge) weigh(stateBytes, structs int64) {
 	if c == nil {
 		return
 	}
 	c.budget.mu.Lock()
 	defer c.budget.unlock()
-	c.budget.reweighLocked(c, roomWeight(stateBytes))
+	c.budget.reweighLocked(c, roomWeight(stateBytes, structs))
 }

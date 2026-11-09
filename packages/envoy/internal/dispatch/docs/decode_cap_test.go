@@ -996,7 +996,7 @@ func BenchmarkDecodeCapConfirmation(b *testing.B) {
 					return nil
 				}},
 				{"copy-and-count", func() error {
-					if got := structsAfter(context.Background(), live, serverWrite{apply: typeOne}, copyWeight(int64(state))); got <= structs {
+					if got := structsAfter(context.Background(), live, serverWrite{apply: typeOne}, copyWeight(int64(state), int64(live.StructCount()))); got <= structs {
 						return fmt.Errorf("the write was counted to %d structs, want more than the document's %d", got, structs)
 					}
 					return nil

@@ -116,8 +116,18 @@ type renderedReplica struct {
 	mu sync.Mutex
 	// waiting counts the update observers waiting for mu (lockForUpdate).
 	waiting atomic.Int32
-	log     *crdt.UpdateLog
-	doc     *crdt.Doc
+	// live is the room's own document, the other of the two copies a room is charged for: the
+	// document this replica follows, which keepReplica is given. The replica holds it so that
+	// each drain can charge the room the structs the room holds as well as the bytes it is
+	// tracked at (chargeAdded, roomWeight), which is a read of ygo's own count and costs
+	// neither an encode nor a decode (crdt.Doc.StructCount). It is held strongly and not
+	// weakly: a keystroke must make no weak pointer strong (roomWeighing says what that costs),
+	// and the reference closes no cycle anything else holds - live's update observer holds this
+	// replica already, the service's listing holds the replica weakly (roomListing), and the two
+	// of them are collected together as they always were.
+	live *crdt.Doc
+	log  *crdt.UpdateLog
+	doc  *crdt.Doc
 	// fragment is doc's document fragment, the one shared type the rendering reads; nil with doc.
 	fragment *crdt.YXmlFragment
 	// rendering is the room's rendering as the replica's latest update left it, or as the log's
@@ -630,7 +640,9 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 // (crdt.UpdateLog.Reset), which the load never rendered; recover clears loaded too, so even a
 // recover before the first run leaves nothing to take. The caller holds mu.
 func (r *renderedReplica) start(room string, base []byte) {
-	release := holdFreeLoad(copyWeight(int64(len(base))))
+	// The structs the base holds are not known until it is decoded, and the decode is what this
+	// grant covers, so the state term alone weighs it (copyWeight).
+	release := holdFreeLoad(copyWeight(int64(len(base)), 0))
 	doc := newDocumentCopy()
 	err := crdt.ApplyUpdateV1(doc, base, nil)
 	release()
@@ -839,18 +851,27 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 }
 
 // chargeAdded adds the bytes of each of updates to the room's tracked state and charges the room
-// again from the sum (roomWeight), whoever wrote the update: a browser's the peer hook admitted,
-// an API write's publish, an injected update, settlement's repair, any other write of the
-// server's own. It is the budget's one writer while a room stands, and it reads nothing of the
-// document: an update's own length is in hand, where an encode of the room's state costs 18.7 ms
-// and 5,495,143 bytes allocated on a mebibyte of prose and so can sit on no keystroke's path
-// (bytesOfHeapAStateByte).
+// again from that sum and the structs the room holds (roomWeight), whoever wrote the update: a
+// browser's the peer hook admitted, an API write's publish, an injected update, settlement's
+// repair, any other write of the server's own. It is the budget's one writer while a room
+// stands, and it reads nothing of the document but ygo's own struct count, a walk of the handful
+// of client slices (crdt.Doc.StructCount): an update's own length is in hand, where an encode of
+// the room's state costs 18.7 ms and 5,495,143 bytes allocated on a mebibyte of prose and so can
+// sit on no keystroke's path (bytesOfHeapAStateByte).
 //
-// Only the update is counted, never what the commit parked (crdt.LoggedUpdate.Parked): a parked
-// struct integrates in a later transaction, whose own update carries it, and counting it here
-// would charge it twice. The bytes counted are the update's whole frame, its transaction's
-// delete set beside its structs, so the tracked state runs above the state the room holds
-// between re-bases, which is the safe side for a budget (roomWeight says what re-bases it).
+// What the commit parked is counted too (crdt.LoggedUpdate.Parked): a parked struct waits in the
+// room for a gap its sender may never fill, and while it waits the room holds it, the replica
+// holds it and the store holds it, so a room charged only for what integrated was charged nothing
+// for content a browser can park a frame at a time - 17,825,840 bytes in one update, with the
+// room's own state then passing the cap the moment a 45-byte gap filler arrived
+// (dispatch://INFRA-179, review 5820480859's finding 1). When that gap does fill, the drain's own
+// update carries those structs and they are counted again, so the tracked figure runs above the
+// state until the next re-base, which is the same safe side the frame's own delete set puts it on
+// (roomWeight says what re-bases it).
+//
+// The bytes counted are the update's whole frame, its transaction's delete set beside its
+// structs, so the tracked state runs above the state the room holds between re-bases, which is
+// the safe side for a budget.
 //
 // Each committed update is counted exactly once, by the observer whose drain of the room's
 // update log hands it over, whichever observer that is (observe, atPoint). A replica no room's
@@ -862,12 +883,21 @@ func (r *renderedReplica) chargeAdded(updates []crdt.LoggedUpdate) {
 	}
 	var added int64
 	for _, update := range updates {
-		added += int64(len(update.Update))
+		added += int64(len(update.Update)) + int64(len(update.Parked))
 	}
 	if added == 0 {
 		return
 	}
-	charge.weigh(r.state.Add(added))
+	// The struct count is read after the drain took the room's updates off its log and so holds
+	// every commit this drain is charging, and more where the room has committed since: a
+	// commit the next drain charges is one this room already holds, which is the safe side for
+	// a budget. A replica of a room no load gave a document - a test's - charges by its state
+	// alone.
+	var structs int64
+	if r.live != nil {
+		structs = int64(r.live.StructCount())
+	}
+	charge.weigh(r.state.Add(added), structs)
 }
 
 // keepReplica makes the replica live's update observer keeps, moving through log, live's update
@@ -911,7 +941,7 @@ func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *repli
 		budgets: newRoomApplies(live),
 		scans:   newRoomScans(live),
 	}
-	replica := &renderedReplica{log: log, roomWeighing: weighing, paths: &s.renderPaths}
+	replica := &renderedReplica{live: live, log: log, roomWeighing: weighing, paths: &s.renderPaths}
 	replica.epoch.Store(replicaEpochs.Add(1))
 	if decoded != nil {
 		replica.startFromLoad(decoded, loaded)

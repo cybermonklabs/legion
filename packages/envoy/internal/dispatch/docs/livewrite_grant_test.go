@@ -92,9 +92,9 @@ func TestConcurrentLiveWritesNeverHoldMoreOfThePoolThanItHas(t *testing.T) {
 		}
 	}
 	// Every room is tracked at the state storeHistory wrote and its load decoded, with nothing
-	// drained since, so each write's fork takes exactly what a copy of that state costs
-	// (warmFork, copyOfRoom).
-	each := copyWeight(int64(len(state)))
+	// drained since, so each write's fork takes exactly what a copy of that room costs
+	// (warmFork, copyOfRoom): its state and the structs that state decoded to, at copyWeight.
+	each := service.copyOfRoom(service.srv.GetDoc(rooms[0]))
 	slots, test := loadSlotsWithRoomFor(t, together, together*each)
 	var most atomic.Int64
 	var taken slotsHeld
@@ -348,8 +348,13 @@ func TestAStreamOfAPILiveWritesStarvesNeitherARoomLoadNorAServerWrite(t *testing
 	}
 	// A fork of one of these rooms costs what a copy of its state costs (copyOfRoom), and the
 	// load's room, whose whole stored history is the one row storeHistory wrote, costs the same
-	// (loadDecodedHistory). The pool is left room for two of them, so a third taker waits.
-	each := copyWeight(int64(len(state)))
+	// (loadDecodedHistory): this state's structs are far too few for the struct term to decide
+	// either, which is checked below. The pool is left room for two of them, so a third taker
+	// waits.
+	each := copyWeight(int64(len(state)), 0)
+	if forked := service.copyOfRoom(service.srv.GetDoc(serverRoom)); forked != each {
+		t.Fatalf("a fork of the room costs %d bytes and a load of its history %d: the two takers this weighs are no longer the same weight", forked, each)
+	}
 	slots, test := loadSlotsWithRoomFor(t, 2, 2*each)
 	var waits atomic.Int64
 	slots.waiting = func() { waits.Add(1) }

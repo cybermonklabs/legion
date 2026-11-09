@@ -45,7 +45,7 @@ func TestAHistoryThatDoesNotDecodeIsRefusedNamingItsReasonOnce(t *testing.T) {
 			// The admission check and the cold write each take a document of their own: the
 			// first refusal fails the room, and a failed room answers the next caller its
 			// cause rather than decoding the history again.
-			_, _, admission := service.loadTree(context.Background(), storeCut())
+			_, _, _, admission := service.loadTree(context.Background(), storeCut())
 			_, coldWrite := joinedApplyOps(service, storeCut(),
 				[]model.EditOp{{Op: "replace", Find: "first", With: "second"}},
 				model.Actor{Kind: "user", ID: "alice"}, nil)

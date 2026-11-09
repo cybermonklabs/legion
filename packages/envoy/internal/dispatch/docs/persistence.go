@@ -536,10 +536,11 @@ func (p *PgVersioned) PruneAfter(ctx context.Context, room string, target persis
 // the same history and was let through the owner row first), or an append landed: either way the
 // history the caller judged is not the one it would replace. The seed is a whole state, and its
 // validation decodes it under a grant of the pod's load concurrency, weighed on the seed it
-// decodes (copyWeight), taken before the room's lock is taken and given back once the decode is
-// done.
+// decodes (copyWeight): the seed's structs are not known until that decode counts them, so the
+// state term alone weighs the grant, which is taken before the room's lock is taken and given
+// back once the decode is done.
 func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error) {
-	release, err := holdLoad(ctx, copyWeight(int64(len(seed))))
+	release, err := holdLoad(ctx, copyWeight(int64(len(seed)), 0))
 	if err != nil {
 		return RebuildReport{}, err
 	}

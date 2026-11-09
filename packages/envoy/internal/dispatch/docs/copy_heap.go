@@ -14,13 +14,14 @@ import (
 
 // The pod's load concurrency bounds the whole-document copy heap it builds at once. It is one
 // pool of bytes - MemoryBounds.LoadSlots slots of loadSlotBytes each - and a taker takes what
-// its own copy costs: the state it is built from at bytesOfHeapAStateByte, at least a byte and
-// at most one slot's worth (copyWeight). So the copies the pool can hold side by side run side
-// by side - a fork of a mebibyte of prose costs 42,493,360 bytes, fourteen of which fit the one
-// slot the calibration has - while the heaviest whole-document decode measured, 320,762,656
+// its own copy costs: the larger of the state it is built from at bytesOfHeapAStateByte and
+// the structs it holds at bytesOfHeapAStruct, at least a byte and at most one slot's worth
+// (copyWeight). So the copies the pool can hold side by side run side by side - a fork of a
+// mebibyte of prose costs 51,599,080 bytes, eleven of which fit the one slot the calibration
+// has - while the heaviest whole-document decode measured, 320,762,656
 // bytes above what it leaves behind, still fits the slot the pool was sized from. A taker that
 // can name no state takes a whole slot, which is what every taker took before, and which is why
-// a burst of 320 live writes applied 5 of them (dispatch://INFRA-179). Three kinds of work take
+// a burst of 320 live writes applied 5 of them (dispatch://INFRA-179). Four kinds of work take
 // from the pool.
 //
 // The first is one whole-document decode, held while it decodes: a room's load (its fold of a
@@ -43,6 +44,12 @@ import (
 // (Service.weighPeerUpdate): a reconnect storm's whole-state handoffs then decode as many at a
 // time as the pool holds rather than all at once, while a keystroke, far under that size, never
 // waits for the pool.
+//
+// The fourth is the answer to one browser's first sync, held from before that answer is built
+// until its frames are in the browser's write queue (Service.weighStateAnswer): answering a
+// SyncStep1 decodes the whole of what the browser is missing into a merge store before cutting
+// it into frames (ygo's sync.EncodeSyncStep2Split), so a room many browsers join at once decodes
+// its own state once per join, and nothing in ygo bounds how many of those run together.
 //
 // Every taker takes its bytes before it takes a database connection, so no grant is held behind
 // a connection pool a holder of another grant could fill, and a wait a request's context ends is
@@ -164,16 +171,55 @@ func newLoadSlot() *loadSlot {
 
 // take makes g hold bytes of the pool, waiting within ctx: what the copy it covers costs
 // (copyWeight), or loadSlotBytes where its caller can name no state, which is one whole slot and
-// so is always admitted on its own. A holder that already holds a grant holds it and takes
-// nothing more, whatever this take asked for - one transaction's forks share the first fork's
-// grant (forkSlot), and so does every decode made under a carried one (withLoadSlot). A wait ctx
-// ends returns ctx's error and leaves g holding nothing.
+// so is always admitted on its own.
+//
+// A holder that already holds a grant keeps it and takes only the difference, where this copy
+// weighs more than the grant covers: one transaction's forks share the first fork's grant
+// (forkSlot) and every decode made under a carried one covers itself on it (withLoadSlot), so
+// without the difference a transaction that wrote a small document and then a large one was
+// charged the small one alone - measured at 32,676 bytes of the pool for a pair whose second
+// fork weighed 32,148,200, which Docs.WriteIssueAskStates does on every issue close, reopen and
+// sweep (dispatch://INFRA-179, review 5820480859's finding 10). The difference waits under the
+// same bound as a first take and is given back with the rest, so the grant always covers the
+// heaviest copy held under it.
+//
+// A wait ctx ends returns ctx's error and leaves the grant exactly as it was: a holder keeps what
+// it already held, since the copies it covers are built and a caller refused here abandons the
+// copy it was about to build, not the ones it holds.
 func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 	if g.held {
+		if bytes <= g.bytes {
+			return nil
+		}
+		more := bytes - g.bytes
+		if err := g.acquire(ctx, more); err != nil {
+			return err
+		}
+		g.bytes = bytes
+		if g.slots.taken != nil {
+			g.slots.taken(g.slots.held.Load())
+		}
 		return nil
 	}
-	slots := g.slots.semaphore()
 	started := time.Now()
+	if err := g.acquire(ctx, bytes); err != nil {
+		return err
+	}
+	g.held, g.bytes, g.since = true, bytes, time.Now()
+	g.waited = g.since.Sub(started)
+	held := g.slots.held.Load()
+	if g.slots.taken != nil {
+		g.slots.taken(held)
+	}
+	return nil
+}
+
+// acquire takes bytes of the pool for g, waiting within ctx and telling a test's hook as the wait
+// begins, and counts them as held. It is the one place the pool's semaphore is waited on, so a
+// first take and the difference a later copy needs are admitted the same way and in the same
+// order as every other waiter (semaphore.Weighted).
+func (g *loadSlot) acquire(ctx context.Context, bytes int64) error {
+	slots := g.slots.semaphore()
 	if !slots.TryAcquire(bytes) {
 		if g.slots.waiting != nil {
 			g.slots.waiting()
@@ -182,12 +228,7 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 			return err
 		}
 	}
-	g.held, g.bytes, g.since = true, bytes, time.Now()
-	g.waited = g.since.Sub(started)
-	held := g.slots.held.Add(bytes)
-	if g.slots.taken != nil {
-		g.slots.taken(held)
-	}
+	g.slots.held.Add(bytes)
 	return nil
 }
 
@@ -283,10 +324,10 @@ type loadedHistory struct {
 // admission (loadTree), a room's load (loadDecoded) and a rebuild's source (rebuildSource) - so
 // that no new way out of one of them can leave a grant held. It decodes under maxPending, the
 // pending queue the rooms of the service that reads decode under (Service.maxPendingItems).
-//
 // The grant is the history's own weight, which the read has in hand by the time the grant is
-// taken (copyWeight of the bytes it read), so a room of a mebibyte of prose loads beside
-// thirteen others rather than behind them.
+// taken (copyWeight of the bytes it read). Nothing has decoded the history yet, so no struct
+// count can be read of it and the state term alone weighs it; a room of a mebibyte of prose
+// loads beside thirteen others rather than behind them.
 //
 // refuse, where it is not nil, is read from the history before the grant is taken and before
 // anything is decoded (loadableHistory), for a history no decode should be paid for.
@@ -303,7 +344,7 @@ func loadDecodedHistory(ctx context.Context, load VersionedStore, artifactID str
 		err = refuse(loaded.Update)
 	}
 	if err == nil {
-		err = slot.take(ctx, copyWeight(int64(len(loaded.Update))))
+		err = slot.take(ctx, copyWeight(int64(len(loaded.Update)), 0))
 	}
 	if err != nil {
 		return loadedHistory{}, err
@@ -350,10 +391,12 @@ func holdFreeLoad(bytes int64) func() {
 
 // copyOfRoom is what one whole copy of the room holding live costs the pod's load concurrency: a
 // live write's fork of it, cloned or decoded (warmFork), and the decode-cap count's copy
-// (structsAfter). It is the room's tracked state bytes at copyWeight - the bytes of the stored
-// state the room's load decoded plus the updates its observer has drained (roomStateBytes),
-// which the service already holds and reads off the room's listing without a lock, an encode or
-// a read of the store.
+// (structsAfter). It is the room's tracked state bytes and the structs the room holds at
+// copyWeight - the bytes of the stored state the room's load decoded plus the updates its
+// observer has drained (roomStateBytes), which the service already holds and reads off the
+// room's listing without a lock, an encode or a read of the store, and ygo's own count of the
+// structs live holds (crdt.Doc.StructCount), which a split-dense copy is as heavy in the pool
+// by as it is in the budget.
 //
 // A document no room's load listed is tracked at nothing, and nothing here can name its size
 // without encoding it, so a copy of one takes a whole slot: the writes that reach this on such a
@@ -361,7 +404,7 @@ func holdFreeLoad(bytes int64) func() {
 // evicted, and one slot is what every taker took before this was weighed at all.
 func (s *Service) copyOfRoom(live *crdt.Doc) int64 {
 	if tracked := s.roomStateBytes(live); tracked > 0 {
-		return copyWeight(int64(tracked))
+		return copyWeight(int64(tracked), int64(live.StructCount()))
 	}
 	return loadSlotBytes
 }

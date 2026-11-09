@@ -848,8 +848,11 @@ func TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughItsMessageWillNotR
 // nothing and adds one struct with the two splits it can cause, and what answers it is what the
 // room has room for, so that no handoff and no edit takes a room PAST the cap:
 //
-//   - A room at the cap has no struct left to give, so the edit is refused DOC_TOO_LARGE and
-//     the room is left as it was.
+//   - A room at the cap has no struct left to give, so the edit is refused DOC_NEEDS_REBUILD and
+//     the room is left as it was. That close and not the document's own DOC_TOO_LARGE because a
+//     room at the cap refuses every update that adds a struct, so the person's next edit is
+//     refused too: a rebuild is the one thing that takes it, and the route accepts exactly this
+//     document - it is the document this row builds (peerRule.refusal, nearACap).
 //   - A room a keystroke short of the cap has exactly the three structs the edit adds, so the
 //     edit is taken and the room ends AT the cap, which is a room that still loads: its whole
 //     state is one update of maxUpdateItems structs, which is what ygo decodes. Nothing else
@@ -897,8 +900,8 @@ func TestAWholeStateHandoffOfADocumentAtTheDecodeCapIsAdmitted(t *testing.T) {
 				t.Fatalf("the agent's last write was refused with %v, want ErrDocumentTooLarge", refusal)
 			}
 			return state
-		}, false, contracts.DocumentTooLargeCloseReason},
-		{"a long-edited document typed on until the cap", "", longEditedAtCapState, false, contracts.DocumentTooLargeCloseReason},
+		}, false, contracts.DocumentNeedsRebuildCloseReason},
+		{"a long-edited document typed on until the cap", "", longEditedAtCapState, false, contracts.DocumentNeedsRebuildCloseReason},
 		{"a long-edited document typed on until a keystroke short of the cap", "", func(t *testing.T) []byte {
 			return longEditedTypedTo(t, maxUpdateItems-editAdds)
 		}, true, ""},

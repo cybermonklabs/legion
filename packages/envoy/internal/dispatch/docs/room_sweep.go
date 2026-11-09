@@ -10,12 +10,14 @@ import (
 
 // chargeLoadedRoom charges room's newly loaded instance, whose replica has just published its
 // load's rendering (keepReplica), at stateBytes, the bytes of the stored state that load
-// decoded, and hands the replica the charge its drains raise from then on
-// (renderedReplica.chargeAdded). The state is the bytes already in hand: the load read them,
-// decoded them into the room and decoded them again into the replica, so the budget charges the
-// room what its two copies were built from without encoding either (roomWeight).
+// decoded, and at the structs the room's document holds, and hands the replica the charge its
+// drains raise from then on (renderedReplica.chargeAdded). Both figures are in hand: the load
+// read the state, decoded it into the room and decoded it again into the replica, and the
+// struct count is ygo's own walk of the handful of client slices (crdt.Doc.StructCount), so the
+// budget charges the room what its two copies were built from without encoding either
+// (roomWeight).
 func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateBytes int64) *roomCharge {
-	charge := s.budget.load(room, stateBytes)
+	charge := s.budget.load(room, stateBytes, int64(replica.live.StructCount()))
 	replica.state.Store(stateBytes)
 	replica.charge.Store(charge)
 	return charge
@@ -41,7 +43,7 @@ func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 		return
 	}
 	weighing.state.Store(stateBytes)
-	weighing.roomCharge().weigh(stateBytes)
+	weighing.roomCharge().weigh(stateBytes, int64(live.StructCount()))
 }
 
 // sweepRooms is the budget's sweep (roomBudget.sweep): while the budget is over its limit

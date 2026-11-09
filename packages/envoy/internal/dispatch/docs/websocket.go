@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -205,11 +206,12 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	if loaded, rendered, ok := a.service.takePreload(room); ok {
 		// The admission that read this state decoded it for its own schema check and kept no
 		// copy (loadTree), so the room's copy is decoded here, under the grant this load holds
-		// for it, weighed on the state the admission read (copyWeight). A state ygo refuses the
-		// bytes of never reaches a preload - the admission's own decode refused it first - and
-		// is left to the room's decode either way, as the read's own path leaves it
-		// (loadDecoded).
-		_ = slot.take(context.Background(), copyWeight(int64(len(loaded.Update))))
+		// for it, weighed on the state the admission read (copyWeight). The grant is taken
+		// before this decode counts the state's structs, so the state term alone weighs it. A
+		// state ygo refuses the bytes of never reaches a preload - the admission's own decode
+		// refused it first - and is left to the room's decode either way, as the read's own
+		// path leaves it (loadDecoded).
+		_ = slot.take(context.Background(), copyWeight(int64(len(loaded.Update)), 0))
 		decoded, _ := decodeStoredCopy(loaded.Update, a.service.maxPendingItems)
 		load.read(loaded.Version, loaded.Update, decoded, slot, rendered)
 		return nil, nil
@@ -740,12 +742,13 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// record gave it up as it was taken (takePreload, takeLoadedState) - so the replica owns it,
 	// and the room's first transaction decodes nothing more (renderedReplica.observe). A room ygo
 	// loaded without reading the store through this service's persistence is decoded again here,
-	// from its own document's state, under a grant of its own weighed on that state
-	// (holdServerLoad, copyWeight), given back once the copy is the replica's.
+	// from its own document's state, under a grant of its own weighed on that state and on the
+	// structs the room itself holds, which that state's copy will hold too (holdServerLoad,
+	// copyWeight, crdt.Doc.StructCount), given back once the copy is the replica's.
 	stateBytes := int64(len(taken.state))
 	if record == nil {
 		encoded := crdt.EncodeStateAsUpdateV1(doc, nil)
-		release := holdServerLoad(ctx, copyWeight(int64(len(encoded))))
+		release := holdServerLoad(ctx, copyWeight(int64(len(encoded)), int64(doc.StructCount())))
 		loaded, _ = decodeStoredCopy(encoded, s.maxPendingItems)
 		release()
 		stateBytes = int64(len(encoded))
@@ -839,6 +842,70 @@ func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error
 	err := s.weighPeerUpdate(info, apply)
 	s.storeParked(info.Room)
 	return err
+}
+
+// weighStateAnswer is ygo's Server.OnStateAnswer: the room runs it immediately before it answers
+// a browser's SyncStep1 with the room's state, and runs the release it returns once that answer
+// is in that browser's write queue, by every way out including the one that sends nothing
+// (sjawhar/ygo v1.55.1-sami.8, provider/websocket/state_answer.go). It holds a grant of the pod's
+// copy heap for the answer, weighted by the state that answer carries, and refuses the answer
+// with the room's busy close where the pool has no room for it inside the server's wait bound.
+//
+// A join of a room already loaded was free here before, and it is not free. The answer does not
+// read the room's state and send it: it decodes the whole of what that browser is missing into a
+// merge store, so that it can be cut into frames each small enough for a browser to apply in one
+// task (ygo's sync.EncodeSyncStep2Split, crdt.SplitUpdateV1). That is a whole second copy of the
+// document, built on the peer's read loop, and it costs what a whole-document decode costs
+// rather than what the frame that asked for it costs: measured by the fork on a document of
+// 1,048,576 structs, one answer peaked at 360,954,408 bytes of heap against 77,362,528 for a
+// single encode of the same document (sjawhar/ygo v1.55.1-sami.8, websocket.StateAnswerHook).
+// Nothing in ygo bounds how many of those run together, so until now a reconnect storm on one
+// big room built one such copy per browser side by side, off the pod's load concurrency
+// entirely, while every other whole-document copy in the process queued for it.
+//
+// The grant is the copy's own weight, as every other taker's is (copyWeight): the room's tracked
+// state bytes, which the service holds without encoding anything (roomWeighing.roomStateBytes),
+// and the structs the answer may have to encode, which ygo counts with the room's parked structs
+// in, since the answer carries those too (websocket.StateAnswerInfo.Structs). Both are read
+// again once the grant is in hand and the grant topped up where the room grew while this answer
+// waited for it, which costs nothing where it did not grow (StateAnswerInfo.StructsNow, and
+// loadSlot.take, which takes the difference alone): the answer is built after this returns, so a
+// grant sized before a wait is otherwise a grant sized on a room that has since grown.
+//
+// A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
+// memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
+// editor comes back from and the one the room budget closes a browser it has no room for with.
+// Refusing beats waiting on past that: a browser whose answer waits has sent its SyncStep1 and
+// is shown nothing at all until it comes, where a browser closed DOC_BUSY is told why and comes
+// back to a pod that has room.
+func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), error) {
+	slot := newLoadSlot()
+	ctx, cancel := context.WithTimeout(context.Background(), WriteWaitBound)
+	defer cancel()
+	state := s.roomWeighingOf(info.Doc).roomStateBytes()
+	if err := slot.take(ctx, copyWeight(state, int64(info.Structs))); err != nil {
+		return nil, s.refusedStateAnswer(info, state, err)
+	}
+	state = s.roomWeighingOf(info.Doc).roomStateBytes()
+	if err := slot.take(ctx, copyWeight(state, int64(info.StructsNow()))); err != nil {
+		slot.release()
+		return nil, s.refusedStateAnswer(info, state, err)
+	}
+	return slot.release, nil
+}
+
+// refusedStateAnswer is the close a browser is given whose first sync the pod's copy heap had no
+// room to answer inside the server's wait bound, and the one line that says so: the room, what
+// the answer would have had to decode, and the bound it waited to (weighStateAnswer). ygo logs a
+// refused state answer at Debug alone (provider/websocket/state_answer.go, "state answer
+// refused"), which the pod's level drops, so without this line an operator sees a browser's
+// socket close before its first sync and nothing says why.
+func (s *Service) refusedStateAnswer(info websocket.StateAnswerInfo, state int64, err error) error {
+	used, limit := s.budget.figures()
+	slog.Warn("dispatch: refused to answer a browser's first sync; the pod had no room to decode this document's state",
+		"room", info.Room, "structs", info.Structs, "state_bytes", state,
+		"wait_bound", WriteWaitBound, "charged", used, "limit", limit, "error", err.Error())
+	return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
 }
 
 // observeRoomUpdates drains replica's log and arms the settlement the drained updates owe. It runs

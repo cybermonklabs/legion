@@ -60,8 +60,8 @@ func TestAFreshlyLoadedRoomIsMeasuredAndChargedWithItsUpdateLog(t *testing.T) {
 	if tracked == 0 {
 		t.Fatal("the loaded room is tracked at no state, want the bytes of the stored state its load decoded")
 	}
-	if want, used := roomWeight(tracked), budgetUsed(service); used != want {
-		t.Fatalf("the budget holds %d bytes for the loaded room, want its %d tracked bytes of state at both copies, %d", used, tracked, want)
+	if want, used := roomWeight(tracked, int64(live.StructCount())), budgetUsed(service); used != want {
+		t.Fatalf("the budget holds %d bytes for the loaded room, want its %d tracked bytes of state and its %d structs at both copies, %d", used, tracked, live.StructCount(), want)
 	}
 
 	// Every update the room commits from here on, as the room's own log records it.
@@ -93,8 +93,8 @@ func TestAFreshlyLoadedRoomIsMeasuredAndChargedWithItsUpdateLog(t *testing.T) {
 	if after := replica.roomStateBytes(); after-tracked != added {
 		t.Fatalf("the room's tracked state took %d bytes for the updates it committed, want the %d those updates hold", after-tracked, added)
 	}
-	if want, used := roomWeight(tracked+added), budgetUsed(service); used != want {
-		t.Fatalf("the budget holds %d bytes once the edit is in, want the %d its tracked state comes to", used, want)
+	if want, used := roomWeight(tracked+added, int64(live.StructCount())), budgetUsed(service); used != want {
+		t.Fatalf("the budget holds %d bytes once the edit is in, want the %d its tracked state and its %d structs come to", used, want, live.StructCount())
 	}
 }
 
@@ -181,7 +181,7 @@ func TestARoomsReplicaIsTheCopyItsLoadDecoded(t *testing.T) {
 			closeDocumentRoom(t, service, artifactID)
 			ctx := context.Background()
 			if admitted {
-				tree, loaded, err := service.loadTree(ctx, artifactID)
+				tree, loaded, _, err := service.loadTree(ctx, artifactID)
 				if err != nil || loaded == nil || len(loaded.Update) == 0 {
 					t.Fatalf("the admission read no state to offer (%v)", err)
 				}
@@ -297,7 +297,7 @@ func TestAnOfferNoLoadWillTakeIsNotKept(t *testing.T) {
 	ctx := context.Background()
 	admit := func() (*persistence.LoadResult, admissionRendering) {
 		t.Helper()
-		tree, loaded, err := service.loadTree(ctx, artifactID)
+		tree, loaded, _, err := service.loadTree(ctx, artifactID)
 		if err != nil || loaded == nil || len(loaded.Update) == 0 {
 			t.Fatalf("the admission read no state to offer (%v)", err)
 		}

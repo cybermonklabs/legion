@@ -34,6 +34,13 @@ type RebuildReport struct {
 // between them.
 const smallestReplacementAdds = 3
 
+// smallestReplacementBytes is what that same smallest replacement adds to a room's state: the one
+// character it inserts, which is one byte of content, and the structs it splits, whose own bytes
+// the state carries as the item headers ygo writes for them. It is deliberately small - a
+// document is near the state cap only when a one-character edit would pass it - so that the
+// rebuild offer answers a document a person cannot edit, and not one with room left in it.
+const smallestReplacementBytes = 64
+
 // nearACap reports whether doc, a document's decoded history or its live room, stands so near a
 // cap that it must be rebuilt, and why. Near the decode cap means a write's smallest replacement
 // would carry it past the cap: its struct total as a load decodes it (structCeiling) and
@@ -50,7 +57,7 @@ const smallestReplacementAdds = 3
 // (RebuildDocument, which weighs it at a whole copy of that room, copyOfRoom), and the caller's
 // where ctx carries one, which covers it already (rebuildSource). A wait ctx ends is its error,
 // and no answer.
-func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64) (why string, near bool, err error) {
+func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (why string, near bool, err error) {
 	release, err := holdLoad(ctx, bytes)
 	if err != nil {
 		return "", false, err
@@ -60,7 +67,24 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64) (why string, near
 		return fmt.Sprintf("the document's live state holds %d structs, and a write's smallest replacement, %d more, would carry it past the %d ygo decodes in one update",
 			structs, smallestReplacementAdds, maxUpdateItems), true, nil
 	}
-	if scans, err := rescan(crdt.EncodeStateAsUpdateV1(doc, nil)); err == nil && scans+honestHandoffScans >= roomScanTotal {
+	state := crdt.EncodeStateAsUpdateV1(doc, nil)
+	// The state cap, which is what the room's hook refuses a browser's update by (ruleStateCap,
+	// DOC_NEEDS_REBUILD) and so what the dashboard's rebuild offer answers: a document at it took
+	// that offer and was told 409 DOCUMENT_LIVE, because this check read the struct count and the
+	// scan total alone - a room may reach the cap with few structs, by map keys or by long
+	// content (dispatch://INFRA-179, review 5820480859's finding 6). The larger of the two
+	// figures decides: the state this encode holds, and the room's own tracked state where the
+	// caller knows it, which runs at or above the encode between re-bases and is what the hook
+	// compares (roomWeight's note on tracked state).
+	held := int64(len(state))
+	if tracked > held {
+		held = tracked
+	}
+	if held+smallestReplacementBytes > maxRoomStateBytes {
+		return fmt.Sprintf("the document's live state holds %d bytes, and a write's smallest replacement, %d more, would carry it past the %d one room may hold",
+			held, smallestReplacementBytes, maxRoomStateBytes), true, nil
+	}
+	if scans, err := rescan(state); err == nil && scans+honestHandoffScans >= roomScanTotal {
 		return fmt.Sprintf("a re-scan of the document's live state scans %d items, within %d of the %d a room's history may scan",
 			scans, honestHandoffScans, roomScanTotal), true, nil
 	}
@@ -164,7 +188,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		// The check decodes the room's whole state, so it waits for its grant of the copy-heap
 		// bound within this request (nearACap): a wait this request ends leaves the rebuild to
 		// the caller's retry, as a close the server could not make does below.
-		_, near, err := nearACap(ctx, live, s.copyOfRoom(live))
+		_, near, err := nearACap(ctx, live, s.copyOfRoom(live), int64(s.roomStateBytes(live)))
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 		}
@@ -373,7 +397,9 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID string) (*crdt.D
 	if history == nil {
 		history = newCappedDocumentCopy(s.maxPendingItems)
 	}
-	why, near, err := nearACap(ctx, history, copyWeight(int64(len(read.loaded.Update))))
+	// The stored history has not been decoded here, so no struct count can be read of it and
+	// the state term alone weighs the grant nearACap takes (copyWeight).
+	why, near, err := nearACap(ctx, history, copyWeight(int64(len(read.loaded.Update)), 0), int64(len(read.loaded.Update)))
 	if err != nil {
 		return nil, 0, "", nil, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 	}

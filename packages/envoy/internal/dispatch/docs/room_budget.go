@@ -22,12 +22,16 @@ import (
 // (MemoryBounds.RoomBudget), which is what its budget's limit is (New); the figures below are
 // this calibration's. Open documents are the largest thing the pod holds; the rest is the request
 // path's, the cold reads' cache's (documentReadBudget, 256 MiB, which this does not count) and
-// the collector's slack. At the measured cost of a room (bytesOfHeapAStateByte, both copies) it
-// holds twenty-five documents of a mebibyte of prose, whose 3,035,240-byte state is charged
-// 84,986,720, and a document at the state cap (maxRoomStateBytes) is charged 378,000,000, so five
-// of those fill it. No room has a ceiling: a room is charged what its state comes to, however
-// heavy, and what answers a room that heavy is the hook's refusal of every apply that integrates
-// anything while nothing can be closed (roomBudget.full), not a cap on its charge.
+// the collector's slack. At the measured cost of a room (roomWeight, both copies) it holds
+// twenty documents of a mebibyte of prose, whose 3,035,240-byte state over 77,600 structs is
+// charged 103,198,160 by its state, and three at the state cap (maxRoomStateBytes), each
+// charged 570,425,344. A room whose structs outrun its state is charged by them instead, and a
+// delete of every other character of a long run makes such a room in one update: a room of half
+// a million such structs is charged 630,000,000
+// (TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap). No room has a ceiling: a room is
+// charged what the larger of its two terms comes to, however heavy, and what answers a room
+// that heavy is the hook's refusal of every apply that integrates anything while nothing can be
+// closed (roomBudget.full), not a cap on its charge.
 //
 // Nothing is reserved before a room loads. What keeps fifty admissions at once from each reading
 // the same headroom is the pod's load concurrency, one slot at the calibration
@@ -186,9 +190,10 @@ type roomReservation struct {
 // admission starts have closed what they could before deadline or ctx ends (await).
 //
 // weight is the room the admission is about to load, which the budget does not charge yet: the
-// bytes of the stored state the admission has already read and decoded for it (ServeHTTP's
-// preload), at roomWeight. So the admission is weighed as the budget will stand once its room
-// has loaded, which is what keeps it from taking the budget past its limit at all. That matters
+// bytes of the stored state the admission has already read and decoded for it, and the structs
+// that decode counted, at roomWeight (ServeHTTP's preload). So the admission is weighed as the
+// budget will stand once its room has loaded, which is what keeps it from taking the budget
+// past its limit at all. That matters
 // beyond the arithmetic: the budget standing over its limit raises full, and full refuses every
 // insert in EVERY room of the pod with 4503 until a sweep can close something, which it cannot
 // while browsers hold those rooms - so an admission that crossed the limit made the whole pod
@@ -432,7 +437,8 @@ func (b *roomBudget) opened(room string) bool {
 }
 
 // load charges room's newly loaded instance at stateBytes, the bytes of the stored state the
-// load decoded, at both copies (roomWeight): the room's two documents hold that state, and what
+// load decoded, and structs, the structs the room's document holds, at both copies
+// (roomWeight): the room's two documents hold that state and those structs, and what
 // the room commits after it the room's update observer adds as it drains
 // (renderedReplica.chargeAdded). A room the budget's opening named is the server's own work's -
 // an API write's publish (publishLiveWrite), settlement's repair and warm-up, the mark sweep, a
@@ -440,7 +446,7 @@ func (b *roomBudget) opened(room string) bool {
 // opener of Server.Apply (openServerRoom) - and where its charge leaves the budget over its
 // limit it is marked closeOnceUnused, to be closed once that work no longer holds it
 // (Service.closeIfOpenedOverBudget) rather than staying charged until it retires a minute later.
-func (b *roomBudget) load(room string, stateBytes int64) *roomCharge {
+func (b *roomBudget) load(room string, stateBytes, structs int64) *roomCharge {
 	b.mu.Lock()
 	defer b.unlock()
 	entry := b.entry(room)
@@ -451,7 +457,7 @@ func (b *roomBudget) load(room string, stateBytes int64) *roomCharge {
 	for _, reservation := range slices.Clone(entry.reservations) {
 		b.settleLocked(reservation)
 	}
-	b.reweighLocked(charge, roomWeight(stateBytes))
+	b.reweighLocked(charge, roomWeight(stateBytes, structs))
 	if b.opening == room && b.used > b.limit {
 		charge.closeOnceUnused = true
 		b.marked.Add(1)

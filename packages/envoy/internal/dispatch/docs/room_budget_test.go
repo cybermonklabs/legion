@@ -24,38 +24,43 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A room is charged one weight: its tracked state at bytesOfHeapAStateByte in each of the two
-// copies a room keeps (roomWeight). Its load sets that state from the stored state it decoded
-// (chargeLoadedRoom); each update the room's observer drains adds the update's own bytes to it
-// (renderedReplica.chargeAdded, here driven through roomCharge.weigh, which is all that drain
-// does); a compaction that folds the room's whole stored history into one row re-bases it
-// (Service.rebaseRoomState); and the room's retirement drops the whole charge. The budget's
-// arithmetic after that is one sum: what the charges come to, against the limit.
+// A room is charged one weight: the larger of its tracked state at bytesOfHeapAStateByte and
+// its structs at bytesOfHeapAStruct, in each of the two copies a room keeps (roomWeight). Its
+// load sets that state from the stored state it decoded (chargeLoadedRoom); each update the
+// room's observer drains adds the update's own bytes to it (renderedReplica.chargeAdded, here
+// driven through roomCharge.weigh, which is all that drain does); a compaction that folds the
+// room's whole stored history into one row re-bases it (Service.rebaseRoomState); and the
+// room's retirement drops the whole charge. The budget's arithmetic after that is one sum: what
+// the charges come to, against the limit.
+//
+// The rooms here are the budget's own records and hold no document at all, so every charge
+// below passes no struct count, which leaves the state term to decide: this weighs the
+// arithmetic of the tracked state, and TestAResidentRoomsHeapPerStructItHolds the struct term.
 func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 	budget := &roomBudget{limit: roomBudgetBytes}
 	const loaded, typed = 10_000, 100
-	charge := budget.load("room", loaded)
-	requireCharged(t, budget, charge, roomWeight(loaded), "a room that has taken no update is charged its stored state at both copies")
+	charge := budget.load("room", loaded, 0)
+	requireCharged(t, budget, charge, roomWeight(loaded, 0), "a room that has taken no update is charged its stored state at both copies")
 
-	charge.weigh(loaded + typed)
-	requireCharged(t, budget, charge, roomWeight(loaded+typed), "an update's own bytes are added to the room's tracked state")
-	charge.weigh(loaded + 2*typed)
-	requireCharged(t, budget, charge, roomWeight(loaded+2*typed), "a later update adds its own bytes too")
+	charge.weigh(loaded+typed, 0)
+	requireCharged(t, budget, charge, roomWeight(loaded+typed, 0), "an update's own bytes are added to the room's tracked state")
+	charge.weigh(loaded+2*typed, 0)
+	requireCharged(t, budget, charge, roomWeight(loaded+2*typed, 0), "a later update adds its own bytes too")
 	// A compaction's re-base is the one thing that lowers a room's tracked state while it stands:
 	// the state a fold wrote, which merges a run of typed characters into one item and drops what
 	// the updates carried of what they deleted.
-	charge.weigh(loaded)
-	requireCharged(t, budget, charge, roomWeight(loaded), "a compaction's re-base lowers the room to the state its fold wrote")
+	charge.weigh(loaded, 0)
+	requireCharged(t, budget, charge, roomWeight(loaded, 0), "a compaction's re-base lowers the room to the state its fold wrote")
 
 	budget.retire("room")
-	charge.weigh(loaded + typed)
+	charge.weigh(loaded+typed, 0)
 	if budget.used != 0 || len(budget.rooms) != 0 {
 		t.Fatalf("the budget holds %d bytes over %d rooms once the room retired, want nothing", budget.used, len(budget.rooms))
 	}
 
 	// A budget no service built never sweeps, so an admission it has no room for is refused at
 	// once, and leaves nothing waiting once it has been.
-	other := budget.load("other", loaded)
+	other := budget.load("other", loaded, 0)
 	budget.limit = other.weight - 1
 	ctx := context.Background()
 	if _, err := budget.refusal(ctx, time.Now().Add(time.Hour), "room", 0); !errors.Is(err, errRoomBudgetFull) {
@@ -91,28 +96,29 @@ func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 // insert in every room until a sweep can close something (refusal, Service.weighPeerUpdate).
 //
 // A budget no service built never sweeps, so each refusal below is immediate and leaves nothing
-// waiting.
+// waiting. Every room here is the budget's own record and holds no document, so each weighing
+// passes no struct count and the state term decides (roomWeight).
 func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 	const stored = 1_000_000
-	budget := &roomBudget{limit: roomWeight(stored) + roomWeight(stored)/2}
+	budget := &roomBudget{limit: roomWeight(stored, 0) + roomWeight(stored, 0)/2}
 	ctx := context.Background()
-	first, err := budget.refusal(ctx, time.Now(), "first", roomWeight(stored))
+	first, err := budget.refusal(ctx, time.Now(), "first", roomWeight(stored, 0))
 	if err != nil {
 		t.Fatalf("the first admission was answered %v on an empty budget with room for it", err)
 	}
 	// A second socket to the same document shares that reservation rather than holding a second:
 	// one load serves both.
-	shared, err := budget.refusal(ctx, time.Now(), "first", roomWeight(stored))
-	if err != nil || shared.weight != 0 || budget.reserved != roomWeight(stored) {
+	shared, err := budget.refusal(ctx, time.Now(), "first", roomWeight(stored, 0))
+	if err != nil || shared.weight != 0 || budget.reserved != roomWeight(stored, 0) {
 		t.Fatalf("a second admission to the same document was answered %v holding %d, with %d reserved; want it to share the first's %d",
-			err, shared.weight, budget.reserved, roomWeight(stored))
+			err, shared.weight, budget.reserved, roomWeight(stored, 0))
 	}
-	charge := budget.load("first", stored)
+	charge := budget.load("first", stored, 0)
 	if budget.reserved != 0 || !first.settled || !shared.settled {
 		t.Fatalf("the room's load left %d bytes reserved, want every reservation of it settled", budget.reserved)
 	}
-	if charge == nil || budget.used != roomWeight(stored) {
-		t.Fatalf("the budget holds %d bytes once the first room loaded, want %d", budget.used, roomWeight(stored))
+	if charge == nil || budget.used != roomWeight(stored, 0) {
+		t.Fatalf("the budget holds %d bytes once the first room loaded, want %d", budget.used, roomWeight(stored, 0))
 	}
 	// Half a room is left, so an admission for a room of this size is refused although the
 	// charges themselves are still well inside the limit. Weighed the other way round - the
@@ -120,7 +126,7 @@ func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 	if budget.used > budget.limit {
 		t.Fatalf("the charges are %d of %d bytes, so an admission weighed on the charges alone would pass", budget.used, budget.limit)
 	}
-	refused, err := budget.refusal(ctx, time.Now(), "second", roomWeight(stored))
+	refused, err := budget.refusal(ctx, time.Now(), "second", roomWeight(stored, 0))
 	if refused != nil || !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission whose room would cross the limit was answered %v, want it refused", err)
 	}
@@ -129,13 +135,13 @@ func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 	}
 	// A room small enough to fit what is left is admitted, and a room already charged is joined
 	// rather than weighed at all.
-	small, err := budget.refusal(ctx, time.Now(), "small", roomWeight(stored/4))
+	small, err := budget.refusal(ctx, time.Now(), "small", roomWeight(stored/4, 0))
 	if err != nil {
 		t.Fatalf("an admission for a room that fits what is left was answered %v", err)
 	}
 	// Its reservation is weighed beside the charges: with it standing, a room of half the first
 	// one no longer fits, though the charges alone would leave room for it.
-	if _, err := budget.refusal(ctx, time.Now(), "another", roomWeight(stored/2)); !errors.Is(err, errRoomBudgetFull) {
+	if _, err := budget.refusal(ctx, time.Now(), "another", roomWeight(stored/2, 0)); !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission weighed beside a standing reservation was answered %v, want it refused", err)
 	}
 	// A reservation released by a socket that goes before its room loads leaves nothing behind.
@@ -149,13 +155,22 @@ func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 }
 
 // The budget's arithmetic at the shapes its design is stated in, each room loaded into an empty
-// budget at the bytes of state its stored document holds. A room is charged
-// bytesOfHeapAStateByte in each of roomCopies copies for each byte of its state, 28 bytes a
-// state byte, whatever its shape renders: a mebibyte of prose, whose state is 3,035,240 bytes,
-// is charged 84,986,720, so twenty-five of them fit the budget; a document at the state cap
-// (maxRoomStateBytes) is charged 469,762,048, so four of those do; and the long-edited document,
-// 5 KiB of prose carrying a million keystrokes in a 7,814,707-byte state, is charged
-// 218,811,796, so nine of those do.
+// budget at the bytes of state its stored document holds and the structs that document holds. A
+// room is charged the larger of two terms in each of roomCopies copies: bytesOfHeapAStateByte
+// for each byte of its state, 34 bytes a state byte over the two, and bytesOfHeapAStruct for
+// each struct it holds, 1,260 bytes a struct over the two.
+//
+// A mebibyte of prose is 3,035,240 bytes of state over 77,600 structs
+// (TestAResidentRoomsHeapPerStructItHolds), so its state term decides it at 103,198,160, where
+// its structs alone would charge 97,776,000: twenty of them fit the budget. The rows that
+// name no struct count are weighed by their state alone, which is what the budget charges a
+// room whose structs it cannot reach (roomWeight): a document at the state cap
+// (maxRoomStateBytes) is charged 570,425,344, so three of those fit, and the long-edited
+// document, 5 KiB of prose carrying a million keystrokes in a 7,814,707-byte state, 265,700,038,
+// so eight do. A room at the decode cap, whatever its state, is charged by its structs:
+// 1,321,205,760, so one of those fills the budget. That is the room a delete of every other
+// character of a long run makes in a single update
+// (TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap).
 //
 // Exactly what fits is admitted and the next is refused: an admission carries the weight of the
 // room it is about to load (roomBudget.refusal), so the budget is never taken past its limit by
@@ -167,16 +182,18 @@ func TestTheRoomBudgetsArithmetic(t *testing.T) {
 	for _, shape := range []struct {
 		name           string
 		stateBytes     int64
+		structs        int64
 		weight, admits int64
 	}{
-		{"a room of a mebibyte of prose", 3_035_240, 84_986_720, 25},
-		{"a document at the state cap", maxRoomStateBytes, 469_762_048, 4},
-		{"the long-edited document", 7_814_707, 218_811_796, 9},
-		{"a document twice the whole budget", roomBudgetBytes, 60_129_542_144, 0},
+		{"a room of a mebibyte of prose", 3_035_240, 77_600, 103_198_160, 20},
+		{"a document at the state cap", maxRoomStateBytes, 0, 570_425_344, 3},
+		{"the long-edited document", 7_814_707, 0, 265_700_038, 8},
+		{"a room at the decode cap tracked at 100,000 bytes of state", 100_000, maxUpdateItems, 1_321_205_760, 1},
+		{"a document twice the whole budget", roomBudgetBytes, 0, 73_014_444_032, 0},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
-			if weight := roomWeight(shape.stateBytes); weight != shape.weight {
-				t.Fatalf("a room tracked at %d bytes of state is charged %d bytes, want %d", shape.stateBytes, weight, shape.weight)
+			if weight := roomWeight(shape.stateBytes, shape.structs); weight != shape.weight {
+				t.Fatalf("a room tracked at %d bytes of state holding %d structs is charged %d bytes, want %d", shape.stateBytes, shape.structs, weight, shape.weight)
 			}
 			budget := &roomBudget{limit: roomBudgetBytes}
 			admitted := int64(0)
@@ -186,7 +203,7 @@ func TestTheRoomBudgetsArithmetic(t *testing.T) {
 				} else if err != nil {
 					t.Fatalf("admit room %d: %v", admitted+1, err)
 				}
-				charge := budget.load(fmt.Sprintf("room-%d", admitted), shape.stateBytes)
+				charge := budget.load(fmt.Sprintf("room-%d", admitted), shape.stateBytes, shape.structs)
 				if charge.weight != shape.weight {
 					t.Fatalf("room %d is charged %d bytes, want %d", admitted+1, charge.weight, shape.weight)
 				}
@@ -202,7 +219,7 @@ func TestTheRoomBudgetsArithmetic(t *testing.T) {
 			// No ceiling on one room: the heaviest shape is refused at admission by the budget,
 			// and loaded anyway where nothing weighed it, as the server's own work does.
 			if shape.admits == 0 {
-				charge := budget.load("server-opened", shape.stateBytes)
+				charge := budget.load("server-opened", shape.stateBytes, shape.structs)
 				if charge.weight != shape.weight || budget.used != shape.weight {
 					t.Fatalf("a room the server opened over the budget is charged %d of %d bytes, want %d",
 						charge.weight, budget.used, shape.weight)
@@ -240,7 +257,7 @@ func fakeSwept(limit int64) (*roomBudget, <-chan struct{}) {
 // does nothing and full stands where this leaves it.
 func fillRoomBudget(t *testing.T, budget *roomBudget) {
 	t.Helper()
-	budget.load("the room that fills the budget", 1<<20)
+	budget.load("the room that fills the budget", 1<<20, 0)
 	budget.setLimit(1)
 	budget.swept(false)
 	if !budget.full.Load() {
@@ -266,8 +283,8 @@ func waiting(budget *roomBudget) int {
 func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 	ctx := context.Background()
 	// A limit one byte under what the one charged room comes to, so the budget is over it.
-	budget, sweeps := fakeSwept(roomWeight(20) - 1)
-	budget.load("held", 20)
+	budget, sweeps := fakeSwept(roomWeight(20, 0) - 1)
+	budget.load("held", 20, 0)
 	<-sweeps
 	answered := make(chan error, 1)
 	go func() { answered <- second(budget.refusal(ctx, time.Now().Add(time.Minute), "room", 0)) }()
@@ -328,8 +345,8 @@ func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 func TestTheRoomBudgetKeepsEveryWaitingAdmissionAcrossASweep(t *testing.T) {
 	ctx := context.Background()
 	deadline := time.Now().Add(time.Minute)
-	budget, sweeps := fakeSwept(roomWeight(20) - 1)
-	budget.load("held", 20)
+	budget, sweeps := fakeSwept(roomWeight(20, 0) - 1)
+	budget.load("held", 20, 0)
 	admitted := make(chan error, 2)
 	admit := func() { admitted <- second(budget.refusal(ctx, deadline, "room", 0)) }
 	go admit()
@@ -436,13 +453,14 @@ func TestTheDocumentSocketChargesNothingUntilItsRoomLoads(t *testing.T) {
 		}
 		waitFor(t, 10*time.Second, "the room to go live", func() bool { return service.srv.GetDoc(joined) != nil })
 		watch.requireChargedAtLoad(t, joined, 0)
-		replica := service.replicaOf(service.srv.GetDoc(joined))
+		live := service.srv.GetDoc(joined)
+		replica := service.replicaOf(live)
 		if replica == nil {
 			t.Fatal("the loaded room lists no replica")
 		}
 		tracked := replica.roomStateBytes()
-		if used, want := budgetUsed(service), roomWeight(tracked); tracked == 0 || used != want {
-			t.Fatalf("the budget holds %d bytes for the open room, want its %d tracked bytes of state at both copies, %d", used, tracked, want)
+		if used, want := budgetUsed(service), roomWeight(tracked, int64(live.StructCount())); tracked == 0 || used != want {
+			t.Fatalf("the budget holds %d bytes for the open room, want its %d tracked bytes of state and its %d structs at both copies, %d", used, tracked, live.StructCount(), want)
 		}
 		leaveDocument(connection)
 		if err := service.Evict(context.Background(), joined); err != nil {
@@ -629,7 +647,7 @@ func TestTheRoomBudgetChargesEveryServerWriteAndRefusesNone(t *testing.T) {
 	if text := renderedLive(t, service, room); !strings.Contains(text, "plain prose") {
 		t.Fatalf("the room reads %q after the API write, want it to hold the write", text)
 	}
-	if used, want := budgetUsed(service), roomWeight(tracked()); used != want {
+	if used, want := budgetUsed(service), roomWeight(tracked(), int64(service.srv.GetDoc(room).StructCount())); used != want {
 		t.Fatalf("the budget holds %d bytes for the room, want the %d its %d tracked bytes of state come to", used, want, tracked())
 	}
 }
@@ -1130,8 +1148,9 @@ func TestAnOpeningIsWeighedAgainstTheRoomTheOpeningBeforeItMade(t *testing.T) {
 		t.Fatal("a second opening was booked while the first stood")
 	}
 	// What the load does inside the Apply the opening covers, before the opening is given back:
-	// a room of 40 bytes of state, charged roomWeight(40) = 1,120, past this budget's limit.
-	budget.load("opened", 40)
+	// a room of 40 bytes of state holding no struct this budget's own record knows of, charged
+	// roomWeight(40, 0) = 1,360, past this budget's limit.
+	budget.load("opened", 40, 0)
 	budget.closeServerRoom()
 	if used := budget.used; used <= budget.limit {
 		t.Fatalf("the room the opening made is charged %d of %d bytes, want this test's room to fill the limit", used, budget.limit)

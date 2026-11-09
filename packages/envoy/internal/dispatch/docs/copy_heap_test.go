@@ -225,7 +225,7 @@ func measureCopyPaths(t *testing.T, state []byte) {
 	paths := []copyPath{
 		{"the server's load and first transaction", fresh, stored, load},
 		{"a socket's admission, load and first transaction", fresh, stored, func() any {
-			tree, loaded, err := service.loadTree(ctx, artifactID)
+			tree, loaded, _, err := service.loadTree(ctx, artifactID)
 			if err != nil {
 				t.Fatalf("the admission's schema check: %v", err)
 			}
@@ -261,7 +261,7 @@ func measureCopyPaths(t *testing.T, state []byte) {
 		}},
 		{"a rebuild's decode and re-scan of the history", func() {}, stored, func() any {
 			history := decodedHistory(t, state)
-			if _, _, err := nearACap(ctx, history, copyWeight(int64(len(state)))); err != nil {
+			if _, _, err := nearACap(ctx, history, copyWeight(int64(len(state)), 0), int64(len(state))); err != nil {
 				t.Fatal(err)
 			}
 			return history
@@ -488,8 +488,9 @@ func TestConcurrentLoadsNeverHoldMoreOfThePoolThanItHas(t *testing.T) {
 		storeHistory(t, service, room, state)
 	}
 	// Each room's whole stored history is the one row storeHistory wrote, so each load takes
-	// exactly what that state's copy costs (loadDecodedHistory).
-	each := copyWeight(int64(len(state)))
+	// exactly what that state's copy costs (loadDecodedHistory), which nothing has decoded when
+	// the grant is taken, so its state term alone.
+	each := copyWeight(int64(len(state)), 0)
 	slots, test := loadSlotsWithRoomFor(t, 2, together*each)
 	var most atomic.Int64
 	slots.taken = func(held int64) {
@@ -554,7 +555,7 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	}
 	admitted := make(chan admission, 1)
 	go func() {
-		tree, loaded, err := service.loadTree(request, artifactID)
+		tree, loaded, _, err := service.loadTree(request, artifactID)
 		admitted <- admission{tree, loaded, err}
 	}()
 	select {
@@ -579,7 +580,7 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 		t.Fatalf("%d bytes are held, want the slot the test holds and nothing of the ended admission's", held)
 	}
 	holder.release()
-	tree, loaded, err := service.loadTree(ctx, artifactID)
+	tree, loaded, _, err := service.loadTree(ctx, artifactID)
 	if err != nil || loaded == nil || tree == nil {
 		t.Fatalf("the next admission answered %v with state %v and tree %v, want the history read and decoded", err, loaded, tree)
 	}

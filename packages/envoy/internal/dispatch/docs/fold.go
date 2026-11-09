@@ -75,7 +75,8 @@ func stateThrough(ctx context.Context, room string, version persistence.Version,
 // update, which the fold returns as stored, or a log that does not fold, which is served merged -
 // the state decoded into a document with the store's pending queue, maxPending, as a room decodes
 // it, under the load grant ctx carries or one of its own, weighed on the state it decodes
-// (holdLoad, copyWeight). A state
+// (holdLoad, copyWeight). The structs that state holds are not known until this decode counts
+// them, so the state term alone weighs the grant. A state
 // that does not decode is ErrDocumentUnloadable; a log holding no update is no document.
 func documentThrough(ctx context.Context, room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
 	state, readBack, misread, err := fold(ctx, updates, maxPending)
@@ -94,7 +95,7 @@ func documentThrough(ctx context.Context, room string, version persistence.Versi
 	if len(state) == 0 {
 		return nil, nil
 	}
-	release, err := holdLoad(ctx, copyWeight(int64(len(state))))
+	release, err := holdLoad(ctx, copyWeight(int64(len(state)), 0))
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +175,9 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		if rows <= 1 {
 			return nil
 		}
-		return slot.take(ctx, copyWeight(bytes))
+		// The rows are bytes of a stored history nothing has decoded, so no struct count can be
+		// read of them and the state term alone weighs the fold (copyWeight).
+		return slot.take(ctx, copyWeight(bytes, 0))
 	}
 	if bytes > p.foldBuffer() {
 		if err := cover(); err != nil {
@@ -347,7 +350,9 @@ func fold(ctx context.Context, updates updateSource, maxPending int) (state []by
 		}
 	}
 	doc = nil
-	release, err := holdLoad(ctx, copyWeight(int64(len(state))))
+	// Nothing has decoded the folded state yet, so the state term alone weighs this grant
+	// (copyWeight).
+	release, err := holdLoad(ctx, copyWeight(int64(len(state)), 0))
 	if err != nil {
 		return nil, nil, nil, err
 	}

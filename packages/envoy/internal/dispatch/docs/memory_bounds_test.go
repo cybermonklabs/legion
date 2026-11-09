@@ -99,25 +99,27 @@ func TestTheMemoryBoundsWithoutAReadableLimit(t *testing.T) {
 }
 
 // A service built at the production pod's limit admits rooms by that limit's budget, not by the
-// calibration's: where the calibration admits twenty-six documents of a mebibyte of prose and
-// refuses the twenty-seventh (TestTheRoomBudgetsArithmetic, which says why the last one is
-// admitted over the limit), the production pod admits 203. This is the budget's own arithmetic,
+// calibration's: where the calibration admits twenty-one documents of a mebibyte of prose and
+// refuses the twenty-second (TestTheRoomBudgetsArithmetic, which says why the last one is
+// admitted over the limit), the production pod admits 167. This is the budget's own arithmetic,
 // not a drive of the memory itself.
 func TestAServiceAtTheProductionLimitAdmitsFarMoreRoomsThanTheCalibration(t *testing.T) {
-	// A mebibyte of prose: a state of 3,035,240 bytes, the shape TestTheRoomBudgetsArithmetic
-	// counts rooms of, charged at both copies.
-	const stateBytes = 3_035_240
-	weight := roomWeight(stateBytes)
-	if weight != 84_986_720 {
-		t.Fatalf("a mebibyte of prose is charged %d bytes, want 84,986,720: the shape this counts rooms of has moved", weight)
+	// A mebibyte of prose: a state of 3,035,240 bytes over 77,600 structs, the shape
+	// TestTheRoomBudgetsArithmetic counts rooms of, charged at both copies. Its state term
+	// decides it: 103,198,160 against the 97,776,000 its structs alone would charge
+	// (TestAResidentRoomsHeapPerStructItHolds measured both of the room's figures).
+	const stateBytes, structs = 3_035_240, 77_600
+	weight := roomWeight(stateBytes, structs)
+	if weight != 103_198_160 {
+		t.Fatalf("a mebibyte of prose is charged %d bytes, want 103,198,160: the shape this counts rooms of has moved", weight)
 	}
 	for _, row := range []struct {
 		name   string
 		limit  int64
 		admits int64
 	}{
-		{"the calibration", calibratedGoMemoryLimitBytes, 26},
-		{"the production pod's limit", productionGoMemoryLimitBytes, 203},
+		{"the calibration", calibratedGoMemoryLimitBytes, 21},
+		{"the production pod's limit", productionGoMemoryLimitBytes, 167},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			restorePodLoadSlots(t)
@@ -141,7 +143,7 @@ func TestAServiceAtTheProductionLimitAdmitsFarMoreRoomsThanTheCalibration(t *tes
 				if _, err := service.budget.refusal(context.Background(), time.Now(), "room", 0); err != nil {
 					break
 				}
-				service.budget.load(fmt.Sprintf("room-%d", admitted), stateBytes)
+				service.budget.load(fmt.Sprintf("room-%d", admitted), stateBytes, structs)
 				admitted++
 			}
 			t.Logf("a budget of %d bytes admits %d rooms of a mebibyte of prose at %d bytes each",

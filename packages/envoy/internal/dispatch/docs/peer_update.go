@@ -61,6 +61,17 @@ import (
 // is left of the cap above what the room already holds, and an apply that would integrate more is
 // refused with DocumentTooLargeCloseCode and taken back out whole.
 //
+// It can get there without integrating a struct at all. A delete inside a run cuts the item it
+// falls in, and the halves are structs the room keeps until the items between them are gone:
+// measured by the fork on a one-run text of "hello world", a delete of five characters inside
+// the run cuts that one item into three (sjawhar/ygo v1.55.1-sami.8, crdt.ApplyBudget.Split,
+// TestUnit_ApplyBudget_RefusesADeleteWhoseSplitsPassWhatItAllows). Those splits are not the
+// update's own and Structs does not count them, so a room at the cap took a 17-byte delete and
+// its stored state then answered `crdt: invalid update` on its next load - a document a person
+// broke by deleting one character inside a word. Split is the second half of the same rule and
+// carries the same figure: Structs is what an apply may add by carrying, Split what it may add
+// by cutting, and the cap bounds the two together.
+//
 // The document has a third bound, which neither bytes nor structs see: what a room holds that is
 // not text, a value of any size in one clock and one struct. The server's own writes bound the
 // margin's records at maxMarginBytes and the anchor marks' ids at maxAnchorBytes (growth.go), and
@@ -73,13 +84,32 @@ import (
 //
 // The hook has a third state, which is the room budget's rather than the document's: while the
 // open rooms are past their budget and nothing can be closed (roomBudget.full), an apply may
-// integrate no struct and no byte of content in any room, so an update that only deletes is
-// admitted and every other is refused with the transient DocumentBusyCloseCode. Bytes cannot be
-// that test: an update can leave a document as long as it was, or shorter, and still multiply
-// what its room holds. What an update integrates is what can grow the room, and an update that
-// integrates nothing of its own is the one update that cannot. That refusal is not the document's
-// own bound and is not folded into it: 4413 is permanent and the editor drops the refused edit,
-// where 4503 is transient and the editor keeps it, to send once the pressure passes.
+// integrate no struct, cut no item the room holds and add no byte of content in any room, so the
+// one update admitted is one that grows the room in no measure and every other is refused with
+// the transient DocumentBusyCloseCode. Bytes cannot be that test: an update can leave a document
+// as long as it was, or shorter, and still multiply what its room holds - a delete of every
+// other character of a run splits one item into a struct for each character, and one 2.2 MB
+// frame took a room from 4 structs to 1,100,002 and its two copies by 336.6 MB (roomWeight,
+// room_prices.go). What an update integrates and what it cuts are what can grow the room, and an
+// update that does neither is the one update that cannot. That refusal is not the document's own
+// bound and is not folded into it: 4413 is permanent and the editor drops the refused edit, where
+// 4503 is transient and the editor keeps it, to send once the pressure passes.
+//
+// The document has a fourth bound, which no count can see: the kinds of content it takes. One
+// embed is one struct of a few bytes, inside every allowance above, and the Proof editor sends
+// neither an embed nor binary content - pmdoc reads neither back as a document of the schema
+// (pmdoc.ErrSchema, pmdoc/update.go) - so one crafted embed puts every browser of the document
+// into the repair state until a person repairs it. Every room's document therefore names those
+// two kinds as content a browser's apply may not carry (peerRefusedContent,
+// crdt.WithRefusedContent): ygo refuses the whole apply where it reads one, the browser is closed
+// with the document's own refusal, DOC_UPDATE_REFUSED, and the room is left as it was.
+//
+// The last of them is no bound at all but a room that has stopped converging. A drain of the
+// room's pending queue whose splits pass Split is refused and taken back while the apply that
+// filled the gap stands, deliberately: the parked content is another sender's and the sender
+// that filled the gap can neither see it nor send less of it. So a room can hold a backlog no
+// update will drain, and no error says so; what answers it is the room's own reading of its
+// queue (refusedStuckBacklog).
 
 // maxPeerInsertAtTheBound is the most new content one update may carry into a document already at
 // or over the bound: enough for the editor's own derived writes - heading ids, list labels, anchor
@@ -102,7 +132,7 @@ const maxPeerByteCreep = 64 << 10
 // take no byte from any browser and could not hand its state back either, which is a person's
 // document that stops working. At 16,777,216 it has 2,349,931 bytes to spare
 // (TestTheHeaviestStateAtTheDecodeCapFitsTheRoomsStateCapAndTheFloor). A room at the cap is
-// charged 16,777,216 x 28 = 469,762,048 bytes of the budget, so four such rooms fit the
+// charged 16,777,216 x 34 = 570,425,344 bytes of the budget, so three such rooms fit the
 // calibration's 2 GiB.
 const maxRoomStateBytes = maxMessageBytes / 4
 
@@ -140,11 +170,18 @@ const (
 )
 
 // refusal is the close a browser is given for an update this rule refused: the document's own
-// permanent close for every rule but two - the state cap, which only a rebuild clears, and the
-// pressure, which passes by itself.
+// permanent close for the rules a rebuild cannot clear, the rebuild offer for the two caps only a
+// rebuild clears - the state cap and the decode cap - and the busy close for the pressure, which
+// passes by itself.
+//
+// The decode cap offers the rebuild because nothing else helps: a room at it refuses every update
+// that adds a struct, so the person's next edit is refused too, and the route accepts exactly
+// such a document (nearACap reads the struct count first). Closing it DOC_TOO_LARGE told the
+// person their document "is larger than a Dispatch document may be" and offered no remedy where
+// the one remedy was a click away (dispatch://INFRA-179, review 5820480859's finding 6).
 func (r peerRule) refusal() *websocket.PeerClose {
 	switch r {
-	case ruleStateCap:
+	case ruleStateCap, ruleDecodeCap:
 		return documentNeedsRebuild()
 	case rulePressure:
 		return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
@@ -172,12 +209,15 @@ func (r peerRule) why() string {
 }
 
 // peerAllowance is what one browser's update applies under: the budget ygo holds its apply to
-// (crdt.ApplyBudget) and, for each of the two fields a rule can close the browser for, the rule
-// that set it and that rule's own figure, so a refusal names the rule rather than the arithmetic.
+// (crdt.ApplyBudget) and, for each of the fields a rule can close the browser for, the rule that
+// set it and that rule's own figure, so a refusal names the rule rather than the arithmetic.
 type peerAllowance struct {
 	budget crdt.ApplyBudget
-	// structs and bytes name the rule each of budget's two bounded fields came from, and
+	// structs and bytes name the rule each of budget's bounded fields came from, and
 	// structsLimit and bytesLimit that rule's own figure, which the refusal's line carries.
+	// Split has no pair of its own: it carries the figure Structs carries and comes from the
+	// same rule, since the two are one bound on what an apply adds to the room's struct count
+	// (peerApplyAllowance).
 	structs, bytes           peerRule
 	structsLimit, bytesLimit int64
 }
@@ -192,12 +232,15 @@ type peerAllowance struct {
 //
 //   - Decoded is maxDecodedValuesPerApply always: no origin decodes more.
 //   - Structs is what is left of the decode cap above what the room holds (the decode cap rule).
+//   - Split is that same figure: a split is a struct the room keeps and the next load must
+//     decode, so what bounds what an update carries in bounds what it cuts (the decode cap rule
+//     again, crdt.ApplyBudget.Split).
 //   - Bytes is no limit below the byte bound; maxPeerInsertAtTheBound at or over it (the bound);
 //     nothing past the creep cap (the creep cap); and never more than what is left of
 //     maxRoomStateBytes above the room's tracked state (the state cap).
-//   - With the budget full, Structs and Bytes are both nothing (the pressure), so the one update
-//     admitted is one that integrates nothing of its own: a delete, or a frame of structs the
-//     room already holds.
+//   - With the budget full, Structs, Split and Bytes are all nothing (the pressure), so the one
+//     update admitted is one that integrates nothing of its own, cuts nothing the room holds and
+//     adds no content: a delete of whole items, or a frame of structs the room already holds.
 //
 // A negative figure is clamped to nothing: a room already past a bound takes no more, and ygo
 // reads a field below zero as no limit at all. A room with no rendering to measure is weighed on
@@ -215,6 +258,7 @@ func peerApplyAllowance(update, rendering, stateBytes int64, structs int, measur
 		bytesLimit:   maxRoomStateBytes,
 	}
 	allowance.budget.Structs = clampedStructs(int64(maxUpdateItems) - int64(structs))
+	allowance.budget.Split = allowance.budget.Structs
 	switch {
 	case measured && rendering >= pmdoc.MaxDocumentBytes+maxPeerByteCreep:
 		allowance.budget.Bytes, allowance.bytes, allowance.bytesLimit = 0, ruleCreepCap, maxPeerByteCreep
@@ -225,7 +269,8 @@ func peerApplyAllowance(update, rendering, stateBytes int64, structs int, measur
 		allowance.budget.Bytes, allowance.bytes, allowance.bytesLimit = state, ruleStateCap, maxRoomStateBytes
 	}
 	if full {
-		allowance.budget.Structs, allowance.structs, allowance.structsLimit = 0, rulePressure, 0
+		allowance.budget.Structs, allowance.budget.Split = 0, 0
+		allowance.structs, allowance.structsLimit = rulePressure, 0
 		allowance.budget.Bytes, allowance.bytes, allowance.bytesLimit = 0, rulePressure, 0
 	}
 	return allowance
@@ -262,42 +307,64 @@ func clampedBytes(left int64) int {
 // list, and nothing the editor runs writes or deletes an entry of it.
 var peerAllowedRoots = []string{fragmentName, marksMapName}
 
+// peerRefusedContent is the kinds of content a browser's update may not carry: an embed and raw
+// binary. The Proof editor writes neither - pmdoc reads a text embed back as a document outside
+// the schema and has no node for binary content at all (pmdoc/update.go, pmdoc.ErrSchema) - and
+// no count can keep one out, since one embed is one struct of a few bytes, inside every
+// allowance the hook can build. What it costs is every reader of the document: a document
+// holding one is shown to each of them as content their editor cannot render, which is the
+// repair state, until a person repairs it. ygo refuses the whole apply where it reads one and
+// rolls it back, so the room is left as it was and the browser is closed DOC_UPDATE_REFUSED
+// (crdt.WithRefusedContent, refusedByApply).
+var peerRefusedContent = []crdt.ContentKind{crdt.ContentKindEmbed, crdt.ContentKindBinary}
+
 // roomApplies is the allowance of each of the hook's applies in flight in one room, by the origin
 // ygo applies it with (provider/websocket/peer_update.go:84-98), and the room's answer to ygo's
-// two per-apply questions: what this apply may decode, integrate and add (crdt.WithApplyBudget)
-// and which roots it may name (crdt.WithAllowedRoots). ygo asks both under the document's lock as
-// each remote apply begins, so neither may call the document; both take nothing but mu, which
+// three per-apply questions: what this apply may decode, integrate, cut and add
+// (crdt.WithApplyBudget), which roots it may name (crdt.WithAllowedRoots) and which kinds of
+// content it may not carry (crdt.WithRefusedContent). ygo asks all three under the document's
+// lock as each remote apply begins, so none may call the document; all take nothing but mu, which
 // nothing holds across a call into the document.
 //
 // An apply of any other origin is the server's own - an API write's publish, an injected update,
-// settlement's repair - and is bounded by nothing here and allowed every root: each of those
-// weighs what it leaves by its own rules (growth.go), and a repair that could not write the
-// margin would leave the document broken.
+// settlement's repair - and is bounded by nothing here, allowed every root and refused no kind of
+// content: each of those weighs what it leaves by its own rules (growth.go), a repair that could
+// not write the margin would leave the document broken, and a room whose stored history already
+// holds an embed must still load, so that a rebuild can take it out.
 type roomApplies struct {
 	mu        sync.Mutex
 	allowance map[any]crdt.ApplyBudget
+	// parkedFloor is the fewest items and delete ranges the room's pending queue has held at one
+	// of the hook's readings since that queue was last empty, and parkedSeen whether there has
+	// been such a reading: what tells a queue that has stopped falling from one that is still
+	// draining (backlogStalled, refusedStuckBacklog).
+	parkedFloor int
+	parkedSeen  bool
 }
 
 // newRoomApplies sets live, a room's document, to apply every browser's update under the
-// allowance the hook reserved for it and to refuse one naming any root but the fragment and the
-// margin, as newRoomScans sets its scan budget. From here live applies every remote update whole
-// or not at all.
+// allowance the hook reserved for it, to refuse one naming any root but the fragment and the
+// margin, and to refuse one carrying a kind of content the editor never sends, as newRoomScans
+// sets its scan budget. From here live applies every remote update whole or not at all.
 func newRoomApplies(live *crdt.Doc) *roomApplies {
 	applies := &roomApplies{}
 	live.SetApplyBudget(applies.budget)
 	live.SetAllowedRoots(applies.roots)
+	live.SetRefusedContent(applies.refusedContent)
 	return applies
 }
 
 // budget is ygo's per-apply allowance: the one reserved for the hook's apply with this origin,
-// and no limit for every other origin.
+// and no limit for every other origin. Every field is named: a field left out is zero, which ygo
+// reads as "this apply may do none of that", so an unset Split would refuse every server write
+// that deletes inside a run (crdt.ApplyBudget).
 func (a *roomApplies) budget(origin any) crdt.ApplyBudget {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if budget, reserved := a.allowance[origin]; reserved {
 		return budget
 	}
-	return crdt.ApplyBudget{Decoded: -1, Structs: -1, Bytes: -1}
+	return crdt.ApplyBudget{Decoded: -1, Structs: -1, Bytes: -1, Split: -1}
 }
 
 // roots is ygo's per-apply root list: the browser's two for the hook's applies, and nil - every
@@ -311,8 +378,20 @@ func (a *roomApplies) roots(origin any) []string {
 	return nil
 }
 
+// refusedContent is ygo's per-apply list of content kinds the update may not carry: the browser's
+// two for the hook's applies (peerRefusedContent), and nil - every kind taken - for every other
+// origin.
+func (a *roomApplies) refusedContent(origin any) []crdt.ContentKind {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, reserved := a.allowance[origin]; reserved {
+		return peerRefusedContent
+	}
+	return nil
+}
+
 // applying runs apply, one of the hook's own applies with origin, under budget: reserved before
-// the apply and dropped as it returns, so ygo's two questions are answered from it for exactly
+// the apply and dropped as it returns, so ygo's three questions are answered from it for exactly
 // this apply and every other origin's apply is unbounded. Nil, a room no load listed, runs the
 // apply under whatever the document itself was built with.
 func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func() error) error {
@@ -333,6 +412,29 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 	return apply()
 }
 
+// backlogStalled records parked, the items and delete ranges the room's pending queue holds as
+// this update arrives, and reports whether that queue has stopped falling: it holds something and
+// holds no fewer than the fewest this room has read since the queue was last empty. An empty
+// queue forgets the floor, so a room that drains and parks again is read afresh, and the first
+// reading of a new backlog sets the floor and reports nothing - the room has not yet had a
+// chance to see it fall (refusedStuckBacklog).
+func (a *roomApplies) backlogStalled(parked int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case parked == 0:
+		a.parkedSeen, a.parkedFloor = false, 0
+		return false
+	case !a.parkedSeen:
+		a.parkedSeen, a.parkedFloor = true, parked
+		return false
+	case parked < a.parkedFloor:
+		a.parkedFloor = parked
+		return false
+	}
+	return true
+}
+
 // weighPeerUpdate is ygo's Server.OnPeerUpdate: the room hands it every update and whole-state
 // message a read-write browser sends, with the apply that would put it in the room, and a
 // read-only browser never reaches it (sjawhar/ygo v1.55.1-sami.1,
@@ -340,8 +442,8 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 // An update it does not apply is neither stored nor relayed to the room's other browsers, and the
 // *websocket.PeerClose it refuses with closes that one browser with that code and reason.
 //
-// It refuses one update before the apply, and every other refusal is the apply's own. The one is
-// an update carrying a client group of the history a rebuild replaced - a group of a client the
+// It refuses two updates before the apply, and every other refusal is the apply's own. The first
+// is an update carrying a client group of the history a rebuild replaced - a group of a client the
 // rebuilt history lists as retired, starting below the clock it had reached (retiredMapName),
 // read from the update's own header (crdt.ParseUpdateMeta, which decodes no content). It comes
 // from a browser that held the document before the rebuild and still holds that history:
@@ -354,6 +456,11 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 // document (connection.ts refusedEditNotice, pending-sync.ts addsParking). An update whose
 // header does not read at all is refused DocumentUpdateRefusedCloseReason there and then: ygo
 // would refuse the same bytes.
+//
+// The second is no judgement of the update at all but of the room it arrives in: a room whose
+// pending queue has stopped falling and whose decode cap leaves less than the drain that would
+// clear it can need is a room no update will make converge, and the browser is closed
+// DOC_NEEDS_REBUILD (refusedStuckBacklog).
 //
 // Everything else is the apply's. The hook builds the allowance this update applies under
 // (peerApplyAllowance) and the roots it may name (peerAllowedRoots), hands both to the room's
@@ -411,18 +518,27 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	if refusal := s.refusedBeforeApply(info, weighing); refusal != nil {
 		return refusal
 	}
+	// The room's own count of structs, read once: what is left of the decode cap above it is both
+	// the apply's allowance of structs and splits and the headroom a drain of the room's backlog
+	// would have to come out of.
+	structs := info.Doc.StructCount()
+	if refusal := s.refusedStuckBacklog(info, weighing, structs); refusal != nil {
+		return refusal
+	}
 	rendering, measured := weighing.size()
 	allowance := peerApplyAllowance(int64(len(info.Update)), rendering, weighing.roomStateBytes(),
-		info.Doc.StructCount(), measured, s.underPressure(info.Room))
+		structs, measured, s.underPressure(info.Room))
 	// A heavy update takes its bytes before the apply and gives them back once the apply has
 	// returned, so the whole decode runs inside one grant; a keystroke takes none. What it takes
 	// is what its own apply adds, the update's bytes at copyWeight, rather than a whole slot, so
 	// a reconnect storm's handoffs decode as many at a time as the pool holds. The wait has no
 	// deadline, since the peer's read loop carries none and every holder gives its bytes back
-	// (loadSlots), so it cannot fail.
+	// (loadSlots), so it cannot fail. The structs the update would add are what the apply's own
+	// allowance bounds and are not counted until the apply decodes them, so the state term
+	// alone weighs the grant (copyWeight).
 	if len(info.Update) > unslottedApplyBytes {
 		slot := newLoadSlot()
-		_ = slot.take(context.Background(), copyWeight(int64(len(info.Update))))
+		_ = slot.take(context.Background(), copyWeight(int64(len(info.Update)), 0))
 		defer slot.release()
 	}
 	// The scan allowance is reserved last, so no refusal above leaves one in flight, and settled
@@ -505,6 +621,61 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 	return nil
 }
 
+// refusedStuckBacklog is the second refusal the hook makes without applying: a browser's update
+// into a room whose pending queue has stopped falling and which the room can no longer drain.
+//
+// ygo parks a struct that arrives before the struct it is written against and drains the queue
+// inside the next apply that fills the gap. From sjawhar/ygo v1.55.1-sami.8 the splits that drain
+// makes are charged to the apply that lands them, and a drain whose splits pass Split is refused
+// and taken back while that apply stands: the parked content is another sender's, already in this
+// room's queue, and the sender that filled the gap can neither see it nor send less of it, so
+// refusing that sender would refuse every sender of that clock, for ever (crdt.ApplyBudget.Split).
+// The library therefore leaves the room holding a backlog it will not drain, tells no caller, and
+// names what an owner watches instead: a pending queue that stops falling (crdt.Doc.PendingStats).
+//
+// This is that reading, and it is of the room's own state rather than of anything the hook
+// counts: the queue holds something, it holds no fewer than the fewest this room has seen since
+// it was last empty (backlogStalled), and what is left of the decode cap is less than the splits
+// the drain that would clear it can make - one for each parked struct, which cuts the item it
+// lands inside, and two for each parked delete range, which cuts the items its two edges fall in.
+// The third test is what tells a stuck room from a room waiting for frames a browser has not sent
+// yet: with headroom above that, the drain cannot be refused for its splits at all, so a queue
+// that is not falling is one whose gap has not been filled, and the room is left alone.
+//
+// The close is DOC_NEEDS_REBUILD, the one close that offers the person the remedy that works.
+// Nothing else is one: the backlog is stored as it parks and parked again by every later load
+// (storeParked), so no reconnect, no eviction and no restart of the pod clears it, while a
+// rebuild writes a history without it. A room this reads wrongly - one whose decode cap leaves
+// that little and whose queue is waiting on a browser that will yet send - is a room whose next
+// insert is refused with the same close for the cap alone (peerRule.refusal).
+//
+// A room no load listed keeps no floor and is read for nothing, as it is bounded by nothing else
+// here. The reading itself is a read lock on the document and a handful of fields, and allocates
+// nothing at all for the room with an empty queue, which is every room that is converging
+// (crdt.Doc.PendingStats).
+func (s *Service) refusedStuckBacklog(info websocket.PeerUpdateInfo, weighing *roomWeighing, structs int) error {
+	applies := weighing.applies()
+	if applies == nil {
+		return nil
+	}
+	parked := info.Doc.PendingStats()
+	if !applies.backlogStalled(parked.Items + parked.DeleteRanges) {
+		return nil
+	}
+	splits := parked.Items + 2*parked.DeleteRanges
+	left := clampedStructs(int64(maxUpdateItems) - int64(structs))
+	if splits <= left {
+		return nil
+	}
+	refusal := documentNeedsRebuild()
+	logRefusal(info, refusal, "dispatch: refused a browser's update into a room holding a backlog no update will drain",
+		"rule", "the room's pending queue has stopped falling and the splits of its drain are past what the decode cap leaves it",
+		"parked_structs", parked.Items, "parked_ranges", parked.DeleteRanges,
+		"drain_splits", splits, "split_limit", left,
+		"structs", structs, "struct_rule_limit", maxUpdateItems)
+	return refusal
+}
+
 // refusedByApply is the close a failed apply of a browser's update becomes.
 //
 // An apply the allowance refused (crdt.ErrApplyBudget) reports what it reached of each of the
@@ -532,12 +703,17 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAl
 			"decoded", refused.Decoded, "decode_limit", allowance.budget.Decoded,
 			"structs", refused.Structs, "structs_limit", allowance.budget.Structs, "struct_rule_limit", allowance.structsLimit,
 			"content_bytes", refused.Bytes, "content_limit", allowance.budget.Bytes, "byte_rule_limit", allowance.bytesLimit,
-			"split", refused.Split)
+			"split", refused.Split, "split_limit", allowance.budget.Split)
 		return refusedWith(refusal, err)
 	case errors.Is(err, crdt.ErrRootNotAllowed):
 		refusal := documentUpdateRefused()
 		logRefusal(info, refusal, "dispatch: refused a browser's update naming a root the editor never writes",
 			"root", refused.Root)
+		return refusedWith(refusal, err)
+	case errors.Is(err, crdt.ErrContentNotAllowed):
+		refusal := documentUpdateRefused()
+		logRefusal(info, refusal, "dispatch: refused a browser's update carrying a kind of content the editor never sends",
+			"refused_kinds", fmt.Sprint(peerRefusedContent), "error", err.Error())
 		return refusedWith(refusal, err)
 	case errors.Is(err, crdt.ErrIntegrateScanBudget):
 		// The honest long session's updates scan 12 items at most, so a refusal is worth a line,
@@ -565,21 +741,37 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAl
 	return err
 }
 
-// rule is the rule a refused apply broke: the first count at or past its own field of the
-// allowance, read in the order the fields bound the apply in - the decode as the bytes are read,
-// then the structs and the bytes as they integrate. A field of no limit (below zero) bounds
-// nothing and names nothing. A refusal with no counters at all, which ygo does not make for this
-// error, falls to the decode rule, whose close is the document's own.
+// rule is the rule a refused apply broke: the first count past its own field of the allowance,
+// read in the order the fields bound the apply in - the decode as the bytes are read, then the
+// structs and the bytes as they integrate. A field of no limit (below zero) bounds nothing and
+// names nothing. A refusal with no counters at all, which ygo does not make for this error,
+// falls to the decode rule, whose close is the document's own.
+//
+// Past, not at: ygo refuses a count that passes its field and admits one that reaches it
+// exactly (fork crdt/apply_rollback.go, integratedErr's `>`), so a count equal to its field is a
+// field the apply kept. Reading it as broken named the wrong rule where two fields were tight at
+// once - a refusal of 1 struct and 50 bytes against an allowance of 1 struct and 10 bytes was
+// named the decode cap, which closes DOC_TOO_LARGE with no rebuild offered, where the bytes rule
+// meant DOC_NEEDS_REBUILD - and under pressure it turned a refusal that should pass by itself
+// into a permanent one, so the editor dropped the person's edit rather than retrying it
+// (dispatch://INFRA-179, review 5820480859's finding 7).
+//
+// The split count is read last, after the bytes: the struct and byte counts are final where the
+// apply's struct phase ends, before its delete set, while most of an update's splits are made
+// after that point (crdt.ApplyBudget.Split). It names the rule that set Structs, because Split
+// carries that rule's own figure - the decode cap's headroom, or nothing under the pressure.
 func (a peerAllowance) rule(refused *crdt.RefusedUpdateError) peerRule {
 	switch {
 	case refused == nil:
 		return ruleDecodedValues
-	case a.budget.Decoded >= 0 && refused.Decoded >= a.budget.Decoded:
+	case a.budget.Decoded >= 0 && refused.Decoded > a.budget.Decoded:
 		return ruleDecodedValues
-	case a.budget.Structs >= 0 && refused.Structs >= a.budget.Structs:
+	case a.budget.Structs >= 0 && refused.Structs > a.budget.Structs:
 		return a.structs
-	case a.budget.Bytes >= 0 && refused.Bytes >= a.budget.Bytes:
+	case a.budget.Bytes >= 0 && refused.Bytes > a.budget.Bytes:
 		return a.bytes
+	case a.budget.Split >= 0 && refused.Split > a.budget.Split:
+		return a.structs
 	}
 	return ruleDecodedValues
 }

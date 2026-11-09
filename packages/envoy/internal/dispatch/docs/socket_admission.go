@@ -245,7 +245,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	loaded, rendered, err := s.admitDocument(readSlot.carriedBy(r.Context()), room)
+	loaded, structs, rendered, err := s.admitDocument(readSlot.carriedBy(r.Context()), room)
 	readSlot.release()
 	if errors.Is(err, ErrDocOutsideSchema) {
 		refuseOutsideSchema(w, r, room, err)
@@ -259,14 +259,15 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var reservation *roomReservation
 	if !s.budget.join(room) {
 		// The weight is the room this admission is about to load, which the budget does not
-		// charge until that load ends: the stored state the read above decoded, at roomWeight.
-		// A read that loaded nothing adds no room (heldTree), and a room the budget already
-		// charges is joined above and weighed at nothing. The reservation is held until that
-		// room's load charges it or this handler returns, whichever comes first, so every other
-		// admission in flight is weighed against this room too.
+		// charge until that load ends: the stored state the read above decoded and the structs
+		// that decode counted, at roomWeight. A read that loaded nothing adds no room
+		// (heldTree), and a room the budget already charges is joined above and weighed at
+		// nothing. The reservation is held until that room's load charges it or this handler
+		// returns, whichever comes first, so every other admission in flight is weighed against
+		// this room too.
 		weight := int64(0)
 		if loaded != nil {
-			weight = roomWeight(int64(len(loaded.Update)))
+			weight = roomWeight(int64(len(loaded.Update)), structs)
 		}
 		reservation, err = s.budget.refusal(r.Context(), time.Now().Add(s.admissionWait), room, weight)
 	}
@@ -372,19 +373,20 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 // the verdict (residentVerdict), which is taken as it stands; only a room with no verdict - not
 // resident, or with a replica that lost the room's state - is read and rendered here.
 //
-// It answers the durable state a cold socket read, and what it rendered of it, rather than
-// offering them to the room's load itself: that state is also the weight of the room this socket
-// is about to make, which the budget weighs the socket against before anything is offered or any
-// room is made (ServeHTTP, offerPreload). A socket to a room this server already holds, and one
-// to a warm room, read nothing and answer none.
-func (s *Service) admitDocument(ctx context.Context, room string) (loaded *persistence.LoadResult, rendered admissionRendering, err error) {
+// It answers the durable state a cold socket read, the structs that state decoded to, and what
+// it rendered of it, rather than offering them to the room's load itself: that state and those
+// structs are also the weight of the room this socket is about to make, which the budget weighs
+// the socket against before anything is offered or any room is made (ServeHTTP, roomWeight,
+// offerPreload). A socket to a room this server already holds, and one to a warm room, read
+// nothing and answer none.
+func (s *Service) admitDocument(ctx context.Context, room string) (loaded *persistence.LoadResult, structs int64, rendered admissionRendering, err error) {
 	switch s.residentVerdict(room) {
 	case verdictInsideSchema:
-		return nil, admissionRendering{}, nil
+		return nil, 0, admissionRendering{}, nil
 	case verdictOutsideSchema:
-		return nil, admissionRendering{}, ErrDocOutsideSchema
+		return nil, 0, admissionRendering{}, ErrDocOutsideSchema
 	}
-	tree, loaded, err := s.loadTree(ctx, room)
+	tree, loaded, structs, err := s.loadTree(ctx, room)
 	rendered = admissionRendering{tree: tree}
 	if err == nil && tree != nil {
 		if s.admissionRendered != nil {
@@ -396,9 +398,9 @@ func (s *Service) admitDocument(ctx context.Context, room string) (loaded *persi
 		}
 	}
 	if err != nil {
-		return nil, admissionRendering{}, err
+		return nil, 0, admissionRendering{}, err
 	}
-	return loaded, rendered, nil
+	return loaded, structs, rendered, nil
 }
 
 // offerPreload offers loaded, the durable state a cold socket's admission read for room, and

@@ -634,7 +634,9 @@ func (s *Service) rebuildFork(ctx context.Context, write *liveWrite) (*crdt.Doc,
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 		}
-		if err := write.coverFork(ctx, copyWeight(int64(len(loaded.Update)))); err != nil {
+		// The stored history has not been decoded, so no struct count can be read of it and
+		// the state term alone weighs the fork (copyWeight).
+		if err := write.coverFork(ctx, copyWeight(int64(len(loaded.Update)), 0)); err != nil {
 			return nil, err
 		}
 		if fork, err = buildForkHeld(ctx, write.clientID, loaded.Update); err != nil {
@@ -845,7 +847,9 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 		loaded.Update = nil
 		return s.warmFork(ctx, write, live)
 	}
-	if err := write.coverFork(ctx, copyWeight(int64(len(loaded.Update)))); err != nil {
+	// The stored history has not been decoded, so no struct count can be read of it and the
+	// state term alone weighs the fork (copyWeight).
+	if err := write.coverFork(ctx, copyWeight(int64(len(loaded.Update)), 0)); err != nil {
 		loaded.Update = nil
 		return nil, err
 	}
@@ -886,9 +890,10 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 //
 // A caller whose context carries no grant - a test that forks a room directly - takes one of the
 // server's own for the decode alone, weighed on the state it decodes, as every other
-// whole-document decode is (holdServerLoad, copyWeight).
+// whole-document decode is (holdServerLoad, copyWeight). The structs that state holds are not
+// known until this decode counts them, so the state term alone weighs that grant.
 func buildForkHeld(ctx context.Context, client crdt.ClientID, state []byte) (*crdt.Doc, error) {
-	defer holdServerLoad(ctx, copyWeight(int64(len(state))))()
+	defer holdServerLoad(ctx, copyWeight(int64(len(state)), 0))()
 	return buildFork(client, state)
 }
 

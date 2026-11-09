@@ -164,14 +164,20 @@ const structHeapMeasurement = "DISPATCH_MEASURE_STRUCT_HEAP"
 const typedRoomHeapMeasurement = "DISPATCH_MEASURE_TYPED_ROOM_HEAP"
 
 // A room typed into is charged no less than the heap it holds, and no more than the factor the
-// shapes' own measurement allows. The budget charges a room its tracked state, which its drain
-// raises by the bytes of every update the room commits (renderedReplica.chargeAdded), and an
-// update's bytes carry what its transaction deleted beside what it added, where the state itself
-// merges a run of typed characters into one item: so a room typed into is tracked above the state
-// it holds, which is the safe side for a budget and is what this weighs. The shapes' measurement
-// holds the heaviest of them to leastOfThePrice of the price (TestAResidentRoomsHeapPerByteOfItsState),
-// so a priced shape may be charged up to 1/0.75 times its heap, and that is the factor here: the
-// room's charge is at least its heap and its heap at least leastHeldOfCharge of its charge.
+// shapes' own measurements allow. The budget charges a room the larger of its tracked state at
+// bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct (roomWeight). Its drain raises
+// that tracked state by the bytes of every update the room commits
+// (renderedReplica.chargeAdded), and an update's bytes carry what its transaction deleted
+// beside what it added, where the state itself merges a run of typed characters into one item:
+// so a room typed into is tracked above the state it holds, which is the safe side for a budget
+// and is what this weighs.
+//
+// The factor is what the two prices leave a room of prose. A mebibyte of prose holds 10.48
+// bytes of heap a state byte of the 17 the state term charges, and 409.76 a struct of the 630
+// the struct term charges, 0.616 and 0.650 of each price
+// (TestAResidentRoomsHeapPerStructItHolds); the larger term decides the charge, so such a room
+// may be charged up to 1/0.616 times its heap, and typing, which tracks a room above the state
+// it holds, a little more. leastHeldOfCharge is set under both.
 //
 // The room is a mebibyte of prose (residentRoomState), loaded as a room's load leaves it - the
 // live document, and the load's own decode of the stored state as the replica, its update log
@@ -194,7 +200,7 @@ const typedRoomHeapMeasurement = "DISPATCH_MEASURE_TYPED_ROOM_HEAP"
 // otherwise. The state and the updates, allocated before the first reading, are kept past the
 // last; freed between the readings they would be taken off the room's heap.
 func TestATypedAndPastedRoomIsChargedAtLeastItsHeapAndWithinTheFactor(t *testing.T) {
-	const keystrokes, runs, pastes, pasteBytes, leastHeldOfCharge = 2_000, 100, 10, 4 << 10, 0.75
+	const keystrokes, runs, pastes, pasteBytes, leastHeldOfCharge = 2_000, 100, 10, 4 << 10, 0.55
 	if os.Getenv(typedRoomHeapMeasurement) == "" {
 		t.Skip("set " + typedRoomHeapMeasurement + "=1 to run it, about thirteen minutes")
 	}
@@ -225,7 +231,9 @@ func TestATypedAndPastedRoomIsChargedAtLeastItsHeapAndWithinTheFactor(t *testing
 	after := collected()
 	weight := chargedWeight(room.charge)
 	bytes, _ := room.replica.size()
-	// The room lives through the readings of its charge and no longer, so what the collection
+	structs := int64(room.live.StructCount())
+	// The room lives through the readings of its charge, its rendering and its structs and no
+	// longer, so what the collection
 	// below frees is the room's own heap; the state and the updates outlive that collection, so
 	// neither is freed into the figure the reading is cross-checked against.
 	runtime.KeepAlive(room)
@@ -244,8 +252,8 @@ func TestATypedAndPastedRoomIsChargedAtLeastItsHeapAndWithinTheFactor(t *testing
 		t.Fatalf("the room reads %d B of heap and its drop frees %d, more than a hundredth apart: the two readings disagree, so the heap the factor is weighed against is not trustworthy",
 			held, freed)
 	}
-	if weight != roomWeight(tracked) {
-		t.Fatalf("the room is charged %d B, want the %d its %d tracked bytes of state come to", weight, roomWeight(tracked), tracked)
+	if weight != roomWeight(tracked, structs) {
+		t.Fatalf("the room is charged %d B, want the %d its %d tracked bytes of state and its %d structs come to", weight, roomWeight(tracked, structs), tracked, structs)
 	}
 	if weight < held {
 		t.Errorf("the room is charged %d B for the %d B of heap it holds, under it", weight, held)

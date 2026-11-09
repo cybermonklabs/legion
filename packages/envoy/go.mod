@@ -193,11 +193,33 @@ require (
 // room is that room's replica cloned (warmFork, forkPoint). Server.OnPeerUpdate, upstream ygo
 // #304, is in upstream v1.55.0; the document service sets it to weigh each browser's update
 // (weighPeerUpdate).
-// v1.55.1-sami.7 adds what this branch's memory work is built on: Doc.StructCount, the per-apply
+// v1.55.1-sami.7 added what this branch's memory work is built on: Doc.StructCount, the per-apply
 // ApplyBudget (Decoded, Structs, Bytes) with its rollback, WithAllowedRoots as a containment rule
 // over everything an apply adds or deletes, RefusedUpdateError's counts, ParseUpdateMeta and
 // ErrPendingCap, which together replaced 899 lines of update decoder in this package
 // (dispatch://INFRA-179), and the linear state handover split this branch's write path needs. It
 // also brings sami.2's and sami.3's breaking changes with it: Content.Len answers uint64 and
 // Content.Splice takes one.
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.7
+// v1.55.1-sami.8 closes six holes in that work a browser's update went through, each of which
+// this package now uses. ApplyBudget gains Split, the structs an apply makes by splitting items
+// the room already holds, which Structs never counted: a 17-byte delete inside a word took a
+// room at the decode cap past it and its stored state then answered `crdt: invalid update`, so
+// every allowance the hook builds names Split (peerApplyAllowance). A struct that parks and the
+// bytes it carries are charged to the apply that parked them, so the room's own rules reach
+// content waiting behind a gap: an update parked 17,825,840 bytes under an allowance of
+// Structs: 0, Bytes: 0 before, and a 45-byte gap filler landed it all. Bytes counts a map key, a
+// deleted range and a root name, so an 8 MiB map key no longer passes the room's state cap.
+// WithRefusedContent and SetRefusedContent name the content kinds a remote apply may not carry,
+// which every room sets to the embed and the binary the Proof editor never sends, since one
+// crafted embed puts every browser of a document into the repair state (newRoomApplies).
+// Server.OnStateAnswer runs before a SyncStep1 is answered and its release after, so the service
+// can weigh the whole-state decode that answer costs - 360,954,408 bytes of peak heap on a
+// document of 1,048,576 structs - against the pod's copy heap (weighStateAnswer). And a drain's
+// splits are charged to the apply that lands them, with the drain refused and taken back while
+// the gap filler's own apply stands, so a room can hold a backlog that never drains and the room
+// answers that from its own pending queue (refusedStuckBacklog, crdt.Doc.PendingStats). It also
+// carries the allowed-roots check to where a struct parks and travels the list with it, so a
+// sender can no longer write under a root it may not name by parking behind a clock it never
+// sends, which needed nothing here. Breaking: ApplyBudget's zero value for Split allows no
+// split, so a budget literal that leaves it unset refuses every delete that cuts an item.
+replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.8

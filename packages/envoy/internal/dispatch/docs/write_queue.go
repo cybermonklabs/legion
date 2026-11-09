@@ -79,9 +79,9 @@ const maxMessageBytes = 64 << 20
 //     those twenty hold are bounded by the same room budget: a room is charged its tracked state
 //     at bytesOfHeapAStateByte in each of roomCopies copies (roomWeight), and a room's
 //     whole-state frame is about its state, so the rooms under a full budget can send
-//     2,147,483,648 / 28 = 76,695,844 bytes of frames between them. So the twenty hold
-//     20 x 73,400,320 + 76,695,844 = 1,544,702,244 bytes, which beside the full room budget is
-//     3,692,185,892, inside the limit with 173,284,674 bytes left. Measured on 2026-10-31 with
+//     2,147,483,648 / 34 = 63,161,283 bytes of frames between them. So the twenty hold
+//     20 x 73,400,320 + 63,161,283 = 1,531,167,683 bytes, which beside the full room budget is
+//     3,678,651,331, inside the limit with 186,819,235 bytes left. Measured on 2026-10-31 with
 //     twenty such sockets on twenty mebibyte documents
 //     (TestTwentySocketsThatNeverReadStayUnderThePodsMemory), at the 60 MiB this budget stood at
 //     before the floor moved, they held 1,258,425,600 bytes between them over four runs,

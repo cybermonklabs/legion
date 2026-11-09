@@ -972,10 +972,18 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 }
 
 // loadTree is the tree of the document a socket's admission check reads (heldTree, else the stored
-// document decoded), with the durable state it read (loadDecodedHistory), which the room's load
-// takes in place of reading the store again (offerPreload, takePreload). The state is nil when
-// this server holds the document. A durable history that does not decode is ErrDocumentUnloadable
-// and fails the room, as ygo's own load of it would.
+// document decoded), with the durable state it read (loadDecodedHistory) and the structs that
+// state decoded to, which the room's load takes in place of reading the store again
+// (offerPreload, takePreload) and which the budget weighs the admission by (ServeHTTP,
+// roomWeight). The state is nil when this server holds the document, and the structs are then
+// nothing: a room the budget already charges is joined rather than weighed.
+//
+// The structs are this decode's own count, free where a count of its own would cost a second
+// decode (crdt.Doc.StructCount): the copy decoded here holds what the room's own load will hold,
+// since both decode the same bytes under the same pending cap.
+//
+// A durable history that does not decode is ErrDocumentUnloadable and fails the room, as ygo's
+// own load of it would.
 //
 // The read's fold, when the history holds several updates, and the decode run under one grant of
 // the pod's load concurrency (loadSlots), whose wait ends with ctx, the socket's request: one
@@ -983,30 +991,30 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 // is the admission's own: it answers the schema check and is dropped here, and the room's load
 // decodes the same state once more for its replica and its scan total (LoadDoc,
 // decodeStoredCopy). The grant is given back before the room fails, whose eviction can wait.
-func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, error) {
+func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, int64, error) {
 	tree, held, err := s.heldTree(ctx, artifactID)
 	if err != nil || held {
-		return tree, nil, err
+		return tree, nil, 0, err
 	}
 	history, err := loadDecodedHistory(ctx, s.persistence, artifactID, s.maxPendingItems, nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		s.failRoom(artifactID, err)
-		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+		return nil, nil, 0, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if history.refused != nil {
 		// The room carries the decode failure as its cause, which a reader that meets the
 		// failed room answers as DOC_SERVICE_UNAVAILABLE; this read met the history itself.
 		s.failRoom(artifactID, fmt.Errorf("decode live document: %w", history.refused))
-		return nil, nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, history.refused)
+		return nil, nil, 0, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, history.refused)
 	}
 	if len(history.loaded.Update) == 0 {
-		return nil, &history.loaded, nil
+		return nil, &history.loaded, 0, nil
 	}
 	tree, err = treeOf(history.decoded.doc)
-	return tree, &history.loaded, err
+	return tree, &history.loaded, int64(history.decoded.doc.StructCount()), err
 }
 
 func renderTokenTree(tree *pmdoc.Node) (string, string, error) {

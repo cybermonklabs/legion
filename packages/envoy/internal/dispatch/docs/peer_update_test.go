@@ -128,12 +128,27 @@ func TestAPeerUpdateIsWeighedAgainstTheRoomsLastMeasurement(t *testing.T) {
 			refused:  contracts.DocumentBusyCloseCode,
 		},
 		{
-			name:     "a delete while the room budget is full applies",
+			// A delete of a whole item cuts nothing, so it adds to the room in no measure and
+			// the pressure takes it.
+			name:     "a delete of a whole item while the room budget is full applies",
+			markdown: ordinary,
+			busy:     true,
+			update:   func(t *testing.T, room *crdt.Doc) []byte { return peerDeletingAll(t, room) },
+			applied:  true,
+			changes:  true,
+		},
+		{
+			// A delete inside an item is a different update: it cuts the item it falls in and
+			// leaves the room holding the halves, which is how an update that inserts nothing
+			// multiplies what a room holds - one 2.2 MB frame took a room from 4 structs to
+			// 1,100,002 (roomWeight, room_prices.go). Under the pressure the allowance's Split
+			// is nothing as its Structs is, so the cut is refused with the transient close and
+			// the editor keeps the edit to send once the pressure passes (peerApplyAllowance).
+			name:     "a delete that cuts an item while the room budget is full is refused as transient",
 			markdown: ordinary,
 			busy:     true,
 			update:   func(t *testing.T, room *crdt.Doc) []byte { return peerDeleting(t, room, 3) },
-			applied:  true,
-			changes:  true,
+			refused:  contracts.DocumentBusyCloseCode,
 		},
 		{
 			name:     "the whole live state the room already holds applies while the room budget is full",
@@ -162,11 +177,11 @@ func TestAPeerUpdateIsWeighedAgainstTheRoomsLastMeasurement(t *testing.T) {
 			refused: contracts.DocumentBusyCloseCode,
 		},
 		{
-			name:       "a delete at the byte bound while the room budget is full applies",
+			name:       "a delete of a whole item at the byte bound while the room budget is full applies",
 			markdown:   atTheBound,
 			leastBytes: pmdoc.MaxDocumentBytes,
 			busy:       true,
-			update:     func(t *testing.T, room *crdt.Doc) []byte { return peerDeleting(t, room, 64) },
+			update:     func(t *testing.T, room *crdt.Doc) []byte { return peerDeletingAll(t, room) },
 			applied:    true,
 			changes:    true,
 		},
@@ -297,6 +312,16 @@ func peerDeletingAt(t *testing.T, room *crdt.Doc, at, characters int) []byte {
 	t.Helper()
 	browser, from := peerDocument(t, room)
 	browser.Transact(func(txn *crdt.Transaction) { from.Delete(txn, at, characters) })
+	return crdt.EncodeStateAsUpdateV1(browser, room.StateVector())
+}
+
+// peerDeletingAll is the update a browser sends that deletes the whole of the room's first text,
+// which inserts nothing and, unlike a delete of part of a run, cuts no item in two: the delete
+// covers the item exactly, so the apply makes no split (crdt.ApplyBudget.Split).
+func peerDeletingAll(t *testing.T, room *crdt.Doc) []byte {
+	t.Helper()
+	browser, from := peerDocument(t, room)
+	browser.Transact(func(txn *crdt.Transaction) { from.Delete(txn, 0, from.Len()) })
 	return crdt.EncodeStateAsUpdateV1(browser, room.StateVector())
 }
 
@@ -494,7 +519,7 @@ func TestTheHeaviestStateAtTheDecodeCapIsStillTheFigureBelow(t *testing.T) {
 // roomFramesUnderTheBudget is the most bytes of whole-state frames the rooms of a room budget of
 // budget bytes can send when the budget is charged to its limit: a room is charged its tracked
 // state at bytesOfHeapAStateByte in each of roomCopies copies (roomWeight), and a room's
-// whole-state frame is about the size of its state, so the rooms share budget / 28 bytes of state
+// whole-state frame is about the size of its state, so the rooms share budget / 34 bytes of state
 // between them whatever their shapes.
 func roomFramesUnderTheBudget(budget int64) int64 {
 	return budget / (bytesOfHeapAStateByte * roomCopies)
@@ -541,8 +566,8 @@ func TestTheWriteQueueBudgetsArithmetic(t *testing.T) {
 	calibrated := BoundsForLimit(calibratedGoMemoryLimitBytes)
 	frames := roomFramesUnderTheBudget(calibrated.RoomBudget)
 	held := sockets*calibrated.PeerWriteQueue + frames + calibrated.RoomBudget
-	if frames != 76_695_844 || held != 3_692_185_892 || calibrated.Limit-held != 173_284_674 {
-		t.Errorf("at the calibration the rooms can send %d bytes of frames and the twenty sockets hold %d, leaving %d: the figures peerWriteQueueBytes quotes are 76,695,844, 3,692,185,892 and 173,284,674",
+	if frames != 63_161_283 || held != 3_678_651_331 || calibrated.Limit-held != 186_819_235 {
+		t.Errorf("at the calibration the rooms can send %d bytes of frames and the twenty sockets hold %d, leaving %d: the figures peerWriteQueueBytes quotes are 63,161,283, 3,678,651,331 and 186,819,235",
 			frames, held, calibrated.Limit-held)
 	}
 	// The budget is the message floor plus the lag it allows beyond one frame at the floor, so
@@ -776,6 +801,19 @@ func requireRefusedTooLarge(t *testing.T, err error, room *crdt.Doc, before []by
 	}
 }
 
+// requireRefusedNeedsRebuild requires err to be the refusal of an update the document cannot take
+// until it is rebuilt, 4413 DOC_NEEDS_REBUILD, and room to hold before, byte for byte.
+func requireRefusedNeedsRebuild(t *testing.T, err error, room *crdt.Doc, before []byte) {
+	t.Helper()
+	var refusal *websocket.PeerClose
+	if !errors.As(err, &refusal) || refusal.Code != contracts.DocumentTooLargeCloseCode || refusal.Reason != contracts.DocumentNeedsRebuildCloseReason {
+		t.Fatalf("the hook answered %v, want %d %q", err, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
+	}
+	if !bytes.Equal(crdt.EncodeStateAsUpdateV1(room, nil), before) {
+		t.Fatal("the room's document changed for an update the hook refused")
+	}
+}
+
 // gcFrameFrom is one client's frame of n GC structs of one clock each, from clock 0.
 func gcFrameFrom(client uint64, n int) []byte {
 	f := newV1Frame(1).group(n, client, 0)
@@ -783,6 +821,41 @@ func gcFrameFrom(client uint64, n int) []byte {
 		f.gc(1)
 	}
 	return f.noDeletes()
+}
+
+// gcFillClient is the first client the fill below writes GC structs as, far from the clients a
+// document of this package's fixtures holds and from the 7 a row's own frame uses, and
+// gcFillFrameStructs how many structs one of its frames carries: 262,144, whose frame is about
+// 524 KB, under the megabyte at which the hook reads an update as a paste at the byte bound
+// (pmdoc.MaxDocumentBytes, maxPeerInsertAtTheBound). The size matters since sjawhar/ygo
+// v1.55.1-sami.8, which charges a deleted item's clocks to the bytes an apply adds
+// (crdt.ApplyBudget.Bytes): a GC struct carries no content and a million of them in one 2 MB
+// frame now add a million bytes, which the byte bound refuses at 8 KiB, so a room is taken to
+// the cap a frame at a time.
+const (
+	gcFillClient       = 9_000_001
+	gcFillFrameStructs = 1 << 18
+	// nearTheCap is how many structs short of the decode cap a fill leaves a room whose next
+	// frame is the one under test, so that frame is a few kilobytes and meets the rule the test
+	// is about.
+	nearTheCap = 1 << 10
+)
+
+// fillToStructs takes room to count structs with frames of GC structs the hook admits, each a
+// client of its own so that none leaves a clock gap behind it (gcFillClient). It is how a test
+// reaches the decode cap without its fixture meeting the byte bound on the way.
+func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
+	t.Helper()
+	for client := uint64(gcFillClient); room.StructCount() < count; client++ {
+		n := min(count-room.StructCount(), gcFillFrameStructs)
+		if err, called := weighInto(service, room, gcFrameFrom(client, n)); err != nil || !called {
+			t.Fatalf("a frame of %d GC structs into a room of %d structs was answered %v (applied %t), want it admitted",
+				n, room.StructCount(), err, called)
+		}
+	}
+	if held := room.StructCount(); held != count {
+		t.Fatalf("the fill left the room holding %d structs, want %d", held, count)
+	}
 }
 
 // deleteRangesFrom is a frame of no structs whose delete set holds n ranges of one clock each of
@@ -1020,7 +1093,11 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			},
 		},
 		{
-			name: "an update past the decode cap", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooLargeCloseReason, applies: true,
+			// The decode cap offers the rebuild rather than the document's own close: a room at
+			// the cap refuses every update that adds a struct, so the person's next edit is
+			// refused too and a rebuild is the one thing that takes it, which the rebuild route
+			// accepts exactly such a document for (peerRule.refusal, nearACap).
+			name: "an update past the decode cap", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentNeedsRebuildCloseReason, applies: true,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := peerUpdateRoom(t, ordinary, 0)
 				return service, room, gcFrameFrom(7, maxUpdateItems-room.StructCount()+1), replica
@@ -1047,6 +1124,20 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 				service, room, replica := peerUpdateRoom(t, ordinary, 0)
 				fillRoomBudget(t, &service.budget)
 				return service, room, peerTyping(t, room, "y"), replica
+			},
+		},
+		{
+			// Under the pressure an apply may cut nothing either: a delete of every other
+			// character of a run splits one item into a struct for each character, so an update
+			// that inserts nothing can still multiply what the room holds (peerApplyAllowance,
+			// roomWeight). 4503 is transient, so the editor keeps the edit and sends it once the
+			// pressure passes.
+			name: "a delete inside a word while the room budget is full", code: contracts.DocumentBusyCloseCode, reason: contracts.DocumentBusyCloseReason, applies: true,
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				service, room, replica := peerUpdateRoom(t, ordinary, 0)
+				cut := peerDeletingAt(t, room, 4, 5)
+				fillRoomBudget(t, &service.budget)
+				return service, room, cut, replica
 			},
 		},
 		{
@@ -1166,8 +1257,10 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 			},
 		},
 		{
+			// The rebuild offer, as the row above it: a room at the decode cap takes no edit
+			// until it has been rebuilt (peerRule.refusal).
 			name: "an update past the room's decode cap",
-			code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooLargeCloseReason,
+			code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentNeedsRebuildCloseReason,
 			message: "dispatch: refused a browser's update its apply may not take",
 			figures: []string{
 				`rule="its apply would take the document past the items ygo decodes in one update"`,
@@ -1242,10 +1335,17 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 // maxUpdateItems structs in one update, and a room's whole state is one update to the next load
 // that reads it, so a room whose state held more could never be loaded again. The apply's
 // allowance of structs is what is left of the cap above what the room already holds
-// (crdt.Doc.StructCount), so a frame that would take the room one struct past it is refused with
-// the document's own close, 4413 DOC_TOO_LARGE, and taken back out whole, while the frame that
-// takes the room to the cap exactly is admitted. A delete-only frame, which integrates nothing, is
-// admitted at the cap.
+// (crdt.Doc.StructCount), so a frame that would take the room one struct past it is refused and
+// taken back out whole, while the frame that takes the room to the cap exactly is admitted. A
+// delete-only frame that cuts no item the room holds integrates nothing and splits nothing, and
+// is admitted at the cap.
+//
+// The close is 4413 DOC_NEEDS_REBUILD and not the document's own DOC_TOO_LARGE: a room at the
+// cap refuses every update that adds a struct, so the person's next edit is refused as well and
+// a rebuild is the only thing that will take it. Told their document "is larger than a Dispatch
+// document may be", the person was offered no remedy where the one remedy was a click away, and
+// the rebuild route accepts exactly such a document (peerRule.refusal, nearACap,
+// dispatch://INFRA-179, review 5820480859's finding 6).
 func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -1269,6 +1369,11 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
+			// The room is taken to within nearTheCap structs of the cap first, so that each
+			// row's own frame is a few hundred bytes and the rule it meets is the decode cap
+			// rather than the byte bound, which a frame carrying the whole cap's worth of GC
+			// structs now meets on its way (fillToStructs).
+			fillToStructs(t, service, room, maxUpdateItems-nearTheCap)
 			held := room.StructCount()
 			update := row.update(held)
 			before := crdt.EncodeStateAsUpdateV1(room, nil)
@@ -1278,7 +1383,7 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 				if !called {
 					t.Fatal("the hook refused the frame before the apply, want the allowance's refusal inside it")
 				}
-				requireRefusedTooLarge(t, err, room, before)
+				requireRefusedNeedsRebuild(t, err, room, before)
 				return
 			}
 			if err != nil || !called {
@@ -1727,3 +1832,173 @@ func (f v1Frame) raw(b ...byte) v1Frame {
 func (f v1Frame) noDeletes() []byte { return f.uint(0).done() }
 
 func (f v1Frame) done() []byte { return slices.Clone(f.Bytes()) }
+
+// A delete cuts the items it falls inside, and the halves are structs the room keeps until the
+// items between them are gone. They are nobody's insert: ygo reports them as the apply's splits
+// and no count of what an update integrates sees them (crdt.ApplyBudget.Split, .Structs). So a
+// room at the decode cap - which refuses every update that adds a struct of its own - took a
+// delete of five characters inside a word all the same and ended holding more structs than one
+// update may decode, which is a stored document no load reads again: `crdt: invalid update` on
+// its next load, and nothing refused the update that caused it. A person broke a document by
+// deleting one character inside a word.
+//
+// The allowance now bounds an apply's splits by the figure it bounds its structs by, the decode
+// cap's own headroom (peerApplyAllowance), so the delete is refused with the close that offers
+// the rebuild and the room is left at the cap, byte for byte as it was. A delete of whole items,
+// which cuts nothing, is still admitted at the cap, so a document that has reached it can still
+// be trimmed.
+func TestADeleteWhoseSplitsWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
+	defer runtime.KeepAlive(replica)
+	// Built before the room is filled, so the browser's copy is of the small document: the frame
+	// carries delete ranges over the paragraph's own clocks and nothing else, and it deletes the
+	// same characters whatever the room has taken since.
+	cut := peerDeletingAt(t, room, 4, 5)
+	fillToStructs(t, service, room, maxUpdateItems)
+	atTheCap := room.StructCount()
+	if atTheCap != maxUpdateItems {
+		t.Fatalf("the room holds %d structs, want the %d of the cap exactly", atTheCap, maxUpdateItems)
+	}
+	before := crdt.EncodeStateAsUpdateV1(room, nil)
+	err, called := weighInto(service, room, cut)
+	if !called {
+		t.Fatal("the hook refused the delete before the apply, want the allowance's refusal inside it")
+	}
+	requireRefusedNeedsRebuild(t, err, room, before)
+	var refused *crdt.RefusedUpdateError
+	if !errors.As(err, &refused) || refused.Split == 0 || refused.Structs != 0 {
+		t.Fatalf("the apply reported %+v, want splits of items the room already held and no struct of the update's own", refused)
+	}
+	if after := room.StructCount(); after != atTheCap {
+		t.Fatalf("the room holds %d structs after the refused delete, want the %d it held", after, atTheCap)
+	}
+	t.Logf("a %d-byte delete inside a word reached %d splits with no struct of its own, against a room at the %d-struct cap",
+		len(cut), refused.Split, maxUpdateItems)
+	if err, called := weighInto(service, room, deleteRangesFrom(gcFillClient, 64)); err != nil || !called {
+		t.Fatalf("a frame of 64 whole-item delete ranges was answered %v (applied %t), want it admitted at the cap", err, called)
+	}
+}
+
+// The editor sends neither an embed nor binary content, and the document tree has no node for
+// either: pmdoc reads a text embed back as a document outside the schema (pmdoc.ErrSchema,
+// deltaTextNode), which is a document every browser of it is shown the repair state for until a
+// person repairs it. No count keeps one out - one embed is one struct of a few bytes, inside
+// every allowance the hook can build - so the room names the two kinds its schema cannot hold
+// and ygo refuses the whole apply where it reads one (peerRefusedContent,
+// crdt.WithRefusedContent). The browser is closed with the document's own refusal,
+// DOC_UPDATE_REFUSED, which the editor drops the edit for, the line says why once, and the room
+// is left byte for byte as it was.
+func TestABrowsersUpdateCarryingAnEmbedIsRefused(t *testing.T) {
+	const message = "dispatch: refused a browser's update carrying a kind of content the editor never sends"
+	logs := captureLogs(t)
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
+	defer runtime.KeepAlive(replica)
+	browser, text := peerDocument(t, room)
+	browser.Transact(func(txn *crdt.Transaction) {
+		text.InsertEmbed(txn, 0, map[string]any{"image": "crafted"}, nil)
+	})
+	update := crdt.EncodeStateAsUpdateV1(browser, room.StateVector())
+	// What the room is spared: a document that holds the embed no longer reads back as a
+	// document of the schema, so nothing can render it, store a version of it or settle it.
+	if tree, err := treeOf(browser); err == nil {
+		t.Fatalf("the browser's document with the embed read back as a tree of %d blocks, want the schema's refusal", len(tree.Children))
+	}
+	before := crdt.EncodeStateAsUpdateV1(room, nil)
+	err, called := weighInto(service, room, update)
+	if !called {
+		t.Fatal("the hook refused the embed before the apply, want the apply's own refusal inside it")
+	}
+	var refusal *websocket.PeerClose
+	if !errors.As(err, &refusal) || refusal.Code != contracts.DocumentTooLargeCloseCode || refusal.Reason != contracts.DocumentUpdateRefusedCloseReason {
+		t.Fatalf("the hook answered %v, want the browser closed %d %q", err, contracts.DocumentTooLargeCloseCode, contracts.DocumentUpdateRefusedCloseReason)
+	}
+	if !errors.Is(err, crdt.ErrContentNotAllowed) {
+		t.Fatalf("the hook answered %v, want ygo's refusal of the content kind behind the close", err)
+	}
+	if !bytes.Equal(crdt.EncodeStateAsUpdateV1(room, nil), before) {
+		t.Fatal("the room's document changed for an update the hook refused")
+	}
+	line := logs.Lines(message)
+	if strings.Count(line, "\n") != 1 {
+		t.Fatalf("the refusal logged %d lines holding %q, want the one line that says why:\n%s", strings.Count(line, "\n"), message, logs)
+	}
+	for _, want := range []string{
+		"level=WARN", "room=room", fmt.Sprintf("update_bytes=%d", len(update)),
+		fmt.Sprintf("close_code=%d", contracts.DocumentTooLargeCloseCode),
+		"close_reason=" + contracts.DocumentUpdateRefusedCloseReason, "refused_kinds=",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the refusal logged\n%swant that line to hold %q", line, want)
+		}
+	}
+	t.Logf("%s", line)
+	// Ordinary typing into the same room is untouched by the rule.
+	if err, called := weighInto(service, room, peerTyping(t, room, "y")); err != nil || !called {
+		t.Fatalf("a keystroke was answered %v (applied %t), want it admitted", err, called)
+	}
+}
+
+// A room can hold a backlog no update will drain. ygo parks a struct or a delete range that
+// arrives before what it is written against and drains the queue inside the next apply that
+// fills the gap; from sjawhar/ygo v1.55.1-sami.8 the splits that drain makes are charged to the
+// apply that lands them, and a drain whose splits pass Split is taken back while that apply
+// stands, deliberately - the parked content is another sender's and the sender that filled the
+// gap can neither see it nor send less of it. No error says so, so the room reads its own state
+// instead: a queue that holds something, holds no fewer than the fewest this room has seen since
+// it was last empty, and a decode cap that leaves less than the splits the drain can make - one
+// for each parked struct and two for each parked delete range, which cuts the items its two
+// edges fall in (refusedStuckBacklog).
+//
+// The same standing queue in a room with headroom refuses nothing, which is what the third test
+// is for: there the drain cannot be refused for its splits at all, so a queue that is not
+// falling is one whose gap has not been filled yet and the browser is left alone.
+func TestABrowsersUpdateIntoARoomWhoseBacklogWillNotDrainIsRefused(t *testing.T) {
+	const message = "dispatch: refused a browser's update into a room holding a backlog no update will drain"
+	// A client the room holds nothing of, so its delete range parks whole and stays parked: no
+	// browser ever sends the structs it names (ygo's DeleteSet.allAbsent).
+	const absentClient = 4242
+	logs := captureLogs(t)
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
+	defer runtime.KeepAlive(replica)
+	if err, called := weighInto(service, room, deleteRangesFrom(absentClient, 1)); err != nil || !called {
+		t.Fatalf("the frame that parks a delete range was answered %v (applied %t), want it admitted", err, called)
+	}
+	if parked := room.PendingStats(); parked.DeleteRanges != 1 || parked.Items != 0 {
+		t.Fatalf("the room's queue holds %d items and %d delete ranges, want the one range the frame parked", parked.Items, parked.DeleteRanges)
+	}
+	// The queue stands still over two more updates and the room, far from the cap, refuses
+	// neither: its drain has room for every split it could make.
+	for i := range 2 {
+		if err, called := weighInto(service, room, peerTyping(t, room, "y")); err != nil || !called {
+			t.Fatalf("keystroke %d into a room with a standing queue and headroom was answered %v (applied %t), want it admitted", i, err, called)
+		}
+	}
+	if line := logs.Lines(message); line != "" {
+		t.Fatalf("a room with headroom refused an update for its standing queue:\n%s", line)
+	}
+	// The same queue in the same room once the room is at the decode cap: the drain of its one
+	// parked range can cut two items and the cap leaves nothing, so the next browser is closed.
+	fillToStructs(t, service, room, maxUpdateItems)
+	before := crdt.EncodeStateAsUpdateV1(room, nil)
+	update := deleteRangesFrom(gcFillClient, 1)
+	err, called := weighInto(service, room, update)
+	if called {
+		t.Fatal("the hook applied the update, want it refused on the room's own state before any apply")
+	}
+	requireRefusedNeedsRebuild(t, err, room, before)
+	line := logs.Lines(message)
+	if strings.Count(line, "\n") != 1 {
+		t.Fatalf("the refusal logged %d lines holding %q, want the one line that says why:\n%s", strings.Count(line, "\n"), message, logs)
+	}
+	for _, want := range []string{
+		"level=WARN", "room=room", fmt.Sprintf("update_bytes=%d", len(update)),
+		fmt.Sprintf("close_code=%d", contracts.DocumentTooLargeCloseCode),
+		"close_reason=" + contracts.DocumentNeedsRebuildCloseReason,
+		"parked_ranges=1", "drain_splits=2", "split_limit=0",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the refusal logged\n%swant that line to hold %q", line, want)
+		}
+	}
+	t.Logf("%s", line)
+}

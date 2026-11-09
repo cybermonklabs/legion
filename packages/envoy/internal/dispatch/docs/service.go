@@ -989,10 +989,13 @@ func New(deps Deps) *Service {
 	srv.OnLastPeer = service.settleLastPeer
 	// ygo calls it once for every room it retires, whichever way: the idle sweep, CloseRoom.
 	srv.OnUnloadDocument = service.releaseUnloadedRoom
+	srv.OnStateAnswer = service.weighStateAnswer
 	// Every update and whole-state message a read-write browser sends is weighed before the room
 	// takes it, which is what keeps a browser from growing a document past the bound every server
 	// write obeys (weighPeerUpdate), and what the apply parks is stored before ygo answers the
-	// browser (onPeerUpdate).
+	// browser (onPeerUpdate). Every answer to a browser's first sync is weighed too: it decodes
+	// the whole of what that browser is missing into a merge store, so it takes a grant of the
+	// pod's copy heap for as long as it holds one (weighStateAnswer).
 
 	if newServiceHook != nil {
 		newServiceHook(service)
