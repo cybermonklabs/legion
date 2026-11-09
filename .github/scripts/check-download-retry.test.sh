@@ -1294,10 +1294,13 @@ check "asks the step for no pass count" \
 check "prices no run of that script at nothing" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 
-# One layer deeper, which the filter above does not reach: the loop sits in a script the step
-# runs, around a call of the costless one, so the item is that inner call rather than the
-# step's own. carried() answered None there for want of a pass count whose figure would have
-# multiplied zero (dispatch://INFRA-1545, R5).
+# One layer deeper: the loop sits in a script the step runs, around a call of the costless
+# one, so the item blocked_calls lists is that inner call rather than the step's own. The one
+# reading drops it there too, because the step's list and the lists of every script and
+# action it reaches take the same filter (dispatch://INFRA-1545, R5). What leaves the step
+# with a figure rather than none is carried(), which answers 0 for a call of a script that
+# costs nothing however many passes are above it; the case below holding a priced script
+# beside such a loop is the one that pins that answer.
 echo "case: a loop around a script that calls a script that fetches nothing passes"
 root=$(fixture script-no-fetch-two-deep)
 cat > "$root/.github/scripts/zz-g.sh" <<'SH'
@@ -1326,6 +1329,124 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+
+# A script this check cannot price is not a script that retries nothing. A curl making its own
+# attempts passes rule 1 on the options it writes, and `--max-time "$bound"` is one of them:
+# the flag is there, so each attempt is bounded, and the seconds are not, so one_call reads no
+# figure off the call. Answering 0 for that made the script read as one holding no retry at
+# all, and the filter above dropped the loop around it, where the fetch is real and the step
+# waits for the whole of it once per pass (dispatch://INFRA-1545, R6).
+echo "case: a loop around a script whose curl writes its bound as a variable is refused"
+root=$(fixture script-unread-bound-in-loop)
+cat > "$root/.github/scripts/zz-i.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+bound=60
+curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" -o run.json \
+  "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+SH
+chmod +x "$root/.github/scripts/zz-i.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 1
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-i.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/zz-i.sh. at .github/workflows/case.yaml:9, inside the loop at line 9')"
+check "says the bound is written as a variable rather than as a number" \
+  "$(contains "$out" 'makes attempts whose bound is written as a variable rather than as a number')"
+check "prices no run of that script at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# The filter's question asked one layer in: the step's loop runs a script whose own work is a
+# loop this check cannot count over a script that fetches nothing. No attempt waits under
+# either loop, so neither is a loop rule 8 has a pass count to ask the step's author for.
+# Reading the question as "the script holds no uncounted item of its own" refused this with
+# the `0 s` sentence, because the inner call is an item of the script the step runs
+# (dispatch://INFRA-1545, R6).
+echo "case: a loop around a script that loops over a script that fetches nothing passes"
+root=$(fixture script-no-fetch-in-loop-two-deep)
+cat > "$root/.github/scripts/zz-j.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+cat > "$root/.github/scripts/zz-k.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while read -r id; do
+  .github/scripts/zz-j.sh "$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/zz-j.sh" "$root/.github/scripts/zz-k.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo every id the decision named
+        timeout-minutes: 30
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-k.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "prices no run of either script at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# A script this check does price, holding beside that ladder a loop it cannot count around a
+# costless script. The ladder is 450 s the step waits for and the costless loop takes nothing
+# off it, so the budget is held to the 450 s. carried()'s answer of 0 for a call of a script
+# that costs nothing is what keeps that figure readable: without it the costless call answers
+# None, the whole script's arithmetic answers None with it, and the step is compared with
+# nothing and passes in silence (dispatch://INFRA-1545, R6).
+echo "case: a priced script that also loops, uncounted, over a costless one keeps its figure"
+root=$(fixture script-priced-beside-costless-loop)
+cat > "$root/.github/scripts/zz-l.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+cat > "$root/.github/scripts/zz-m.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the run" 60 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1"
+while read -r id; do
+  .github/scripts/zz-l.sh "$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/zz-l.sh" "$root/.github/scripts/zz-m.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the run the decision named
+        timeout-minutes: 1
+        run: .github/scripts/zz-m.sh a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "holds the step to the ladder the priced script makes" \
+  "$(contains "$out" 'its own retries take 450 s to exhaust')"
 check "asks the step for no pass count" \
   "$(is "$(contains "$out" 'can put no figure on it')" false)"
 

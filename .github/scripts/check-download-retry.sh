@@ -324,6 +324,14 @@
 #        * one script that two of a step's paths reach, counted once, because the `seen` set
 #          is shared across a step's scripts. That set exists to stop a cycle, and this is the
 #          same mechanism read from the other side.
+#        * a curl making its own attempts whose `--max-time` is written as a variable rather
+#          than as a number, as in `--max-time "$T"`: the option is there, so rule 1 reads
+#          each attempt as bounded, and the seconds are not, so the call adds nothing to its
+#          step's budget. A figure this check did not compute is the defect this rule exists
+#          to refuse, so it writes none. The call is still read as a wait rather than as no
+#          wait at all — one_call answers None for it and not 0 — so a script holding one is
+#          a script whatever runs it waits for, and a loop whose passes this check cannot
+#          count around a call of that script is refused rather than dropped.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
@@ -1470,20 +1478,32 @@ class Uncounted:
         self.one = one
 
 
-def one_call(site: Site) -> int:
+def one_call(site: Site) -> int | None:
     """The wall time one call of this site takes to exhaust its attempts. Five at the helper's
     own bound with its sleeps of 10, 20, 40 and 80 s between them, or, where curl makes the
     attempts itself, one per `--retry` and one more at curl's `--max-time` with the ladder
     curl_ladder computes between them — the same ladder rule 1 holds that curl to, so the two
     rules read one figure. A curl outside that floor is read at the floor, which is the ladder
-    it will make once rule 1's refusal is answered. A call whose bound is not written as a
-    number adds nothing: there is no arithmetic to do, and rule 4 is what refuses an unbounded
-    attempt."""
-    if site.bound is None or site.silent:
+    it will make once rule 1's refusal is answered.
+
+    Three answers, not two. A number is the seconds one call takes; 0 is a call this check puts
+    no wait behind at all — a `mise x`, whose retry rule 7 refuses, and a verb whose attempts
+    neither the helper nor curl itself makes; and None is a call that does make attempts whose
+    length is written where this check cannot read it, a bound given as `"$T"` rather than as a
+    number. There is no arithmetic to do for that last one, and rule 4 is what refuses an
+    attempt with no bound at all, but it is not the same answer as 0: the body holding it waits
+    for something of unread length rather than for nothing. waits_for_nothing below is the
+    reader that needs the two apart, and reading both as 0 is the hole round 6 of
+    dispatch://INFRA-1545 found in it: a `curl -fsSL --retry 7 --retry-all-errors --max-time
+    "$T"` inside a script made that script read as one that retries nothing, and a loop whose
+    passes this check cannot read around a call of it was dropped rather than refused."""
+    if site.silent:
         return 0
     if site.retry == "retry_fetch":
-        return ATTEMPT_FLOOR * site.bound + HELPER_WAIT
+        return None if site.bound is None else ATTEMPT_FLOOR * site.bound + HELPER_WAIT
     if site.verb == "curl" and site.retry is None:
+        if site.bound is None:
+            return None
         retries, _, _, _ = curl_options(site.words)
         delay, max_time, readable = curl_waits(site.words)
         if retries is None or retries < RETRY_FLOOR or not readable:
@@ -1548,7 +1568,12 @@ def arithmetic_of(site: Site) -> int | None:
     the waits of the loops that run it. Where one of those loops makes a count this check
     cannot read, the figure is the DeclaredArithmetic entry's own seconds, and None where no
     such entry covers the site — which is a site refused below rather than a budget
-    undercounted here."""
+    undercounted here. A site one_call can put no figure on — its bound is written as a
+    variable — adds nothing to the sum rather than making it unreadable: the seconds are not
+    there to add, a number written for them would be this check stating a cost it did not
+    compute, and the step's other sites are still worth holding under its budget. What that
+    site is read for instead is waits_for_nothing's question, which is whether the body
+    holding it waits for anything at all."""
     one = one_call(site)
     if not one:
         return 0
@@ -1567,19 +1592,24 @@ def arithmetic_of(site: Site) -> int | None:
 
 def carried(call: Call, cost: int | None) -> int | None:
     """What a script costs the body that calls it: its own arithmetic once for each time that
-    body runs it, with the waits of the loops around the call where there is anything to wait
-    for.
+    body runs it, with the waits of the loops around the call.
 
     A script that costs nothing costs nothing however often it is run, so a call of it answers
-    0 even where the loops around that call are ones this check cannot count. Without that, a
-    loop around a script that calls a script that fetches nothing was refused for want of a
-    pass count nobody needs, since the figure those passes would multiply is zero either way
-    (dispatch://INFRA-1545, R5)."""
+    0 even where the loops around that call are ones this check cannot count: the figure those
+    passes would multiply is zero either way (dispatch://INFRA-1545, R5).
+
+    What that line does today is keep a priced script priced. A script holding a 450 s ladder
+    and, beside it, a loop this check cannot count around a costless script of its own keeps
+    its 450 s and is held under the budget of the step running it; without the line the
+    costless call would answer None, the whole script's arithmetic with it, and that step
+    would be compared with nothing and pass in silence. The shape R5 wrote it for — a loop
+    this check cannot count around a script that only calls a costless script — is answered by
+    waits_for_nothing below as well, which drops the item rather than pricing it (R6)."""
     if cost == 0:
         return 0
     if cost is None or call.factor is None:
         return None
-    return call.factor * cost + (call.wait if cost else 0)
+    return call.factor * cost + call.wait
 
 
 def added(total: int | None, more: int | None) -> int | None:
@@ -1654,9 +1684,9 @@ def blocked_calls(path: str, calls: dict[str, Call]) -> list[Uncounted]:
 
     Every such call is listed here, the ones that cost nothing included, because what a script
     costs cannot be asked at this point: the scripts are read after the steps that run them, so
-    script_cost and script_calls are still being filled while this runs. waits_for_nothing below
-    asks that question where the answer exists and drops the calls that turn out to wait for no
-    attempt at all."""
+    script_cost, script_calls and script_waits are still being filled while this runs.
+    waits_for_nothing below asks that question where the answer exists and drops the calls
+    that turn out to wait for no attempt at all."""
     return [Uncounted(path, call.line, target, call.loop, None)
             for target, call in sorted(calls.items()) if call.factor is None]
 
@@ -1700,11 +1730,22 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
     whose passes it cannot read, and for which no DeclaredArithmetic
     entry writes the seconds either. A step whose budget reaches one of these is refused in
     the loop's place, and a loop no budget reaches costs nobody anything and is left alone —
-    rule 2 is what reads a loop wherever it sits."""
-    return [Uncounted(site.path, site.line, site.verb, site.blocked, one_call(site))
-            for site in found
-            if site.factor is None and one_call(site) and site.path not in DOCKERFILES
-            and declared_arithmetic(site) is None]
+    rule 2 is what reads a loop wherever it sits.
+
+    A site one_call answers None for — its bound is written as a variable — is left out with
+    the ones that cost nothing. The refusal below is written around what one call of the site
+    takes and there is no such figure to write, and `one` is what tells a site's item from a
+    script call's everywhere one of these is read, which a None written here would blur. Such
+    a site is read all the same, by the question waits_for_nothing asks of the script holding
+    it."""
+    kept = []
+    for site in found:
+        if site.factor is not None or site.path in DOCKERFILES:
+            continue
+        one = one_call(site)
+        if one and declared_arithmetic(site) is None:
+            kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one))
+    return kept
 
 
 def unpacks_dropped(found: list[Site]) -> list[Site]:
@@ -2062,6 +2103,11 @@ action_files = set(actions)
 script_cost: dict[str, int | None] = {}
 script_calls: dict[str, dict[str, Call]] = {}
 script_uncounted: dict[str, list[Uncounted]] = {}
+# What one call of each of a script's own sites takes, for every site that takes anything at
+# all: the question the sum in script_cost can no longer answer. A cost of 0 is both a body
+# with no site in it and a body whose every site has a bound written as a variable, and rule
+# 8's filter below must tell a wait of no length from a wait of unread length.
+script_waits: dict[str, list[int | None]] = {}
 script_files = set(scripts)
 
 
@@ -2203,6 +2249,7 @@ for path in scripts:
     found, loops_read = sites_of(path, text, 1, "-")
     script_calls[path] = calls_of(text, 1, loops_read)
     script_uncounted[path] = uncounted_of(found) + blocked_calls(path, script_calls[path])
+    script_waits[path] = [one for one in map(one_call, found) if one != 0]
     for site in found:
         script_cost[path] = added(script_cost.get(path, 0), arithmetic_of(site))
         if path in credentialed_scripts:
@@ -2468,24 +2515,57 @@ def script_arithmetic(path: str, seen: set[str]) -> int | None:
     return total
 
 
+def retries_nothing(path: str, seen: set[str]) -> bool:
+    """Whether this script holds no call anything waits for, and neither does any script it
+    calls in turn. A script that only calls a script that fetches is a script the step waits
+    for, however bare its own body reads, which is why this walks the calls rather than
+    stopping at the one body. `seen` stops a cycle — the shell would run it until something
+    failed, and this check must not hang on it — and a path already walked answers True,
+    because whatever it holds was read where it was first walked."""
+    if path in seen:
+        return True
+    seen.add(path)
+    if script_waits.get(path):
+        return False
+    return all(retries_nothing(target, seen) for target in script_calls.get(path, {}))
+
+
+def unpriced_wait(path: str, seen: set[str]) -> bool:
+    """Whether this script, or one it calls in turn, holds a call whose attempts this check
+    cannot price: one_call answers None for it, because the bound is written as a variable.
+    The refusal below says that in place of a figure, since what one run of such a script
+    takes is a number nobody can write."""
+    if path in seen:
+        return False
+    seen.add(path)
+    if any(one is None for one in script_waits.get(path, ())):
+        return True
+    return any(unpriced_wait(target, seen) for target in script_calls.get(path, {}))
+
+
 def waits_for_nothing(item: Uncounted) -> bool:
     """Whether one of blocked_calls's items is a wait of no length: a script a body runs inside
     a loop this check cannot count, which makes no attempt the step waits for and holds no site
     anybody is owed a figure for.
 
-    Two questions, because the arithmetic answers neither alone. A script whose arithmetic is 0
-    retries nothing itself and calls nothing that does, so every pass of the loop above it waits
-    for nothing; and a script with no uncounted site of its own is a script this check is not
-    withholding a figure for. A script that holds one answers None rather than 0 here, so the
-    first question carries the second today, but a reading that put a figure on such a script
-    would make the pair disagree, and the item to keep is the one with a site still unanswered.
+    The question is asked of the sites themselves, through retries_nothing, and not of the
+    arithmetic, because the arithmetic answers 0 to two different questions. A script whose
+    every site has a bound written as a variable costs 0 as surely as a script with no site in
+    it, and the first is a wait this check cannot price while the second is a wait that is not
+    there. Reading the pair as one answer dropped the item for a step whose loop ran a script
+    holding a `curl -fsSL --retry 7 --retry-all-errors --max-time "$T"`, which is a fetch the
+    step really waits for (dispatch://INFRA-1545, R6).
+
+    It is asked of every script the item's script reaches, too, and not of that one body: a
+    loop around a script that loops, uncounted, over a costless script holds no attempt
+    either, and reading only the first body left that shape refused with the `0 s` sentence
+    R5 wrote this filter to retire (R6).
 
     Rule 8 exists to compare a step's budget with the attempts it waits for. A loop around a
     script that makes none is a loop with no attempt under it, so there is nothing to compare
     and no pass count to ask the author for: refusing it told a step holding no retry to write
     one, and the refusal priced the run it was refusing at `0 s` (dispatch://INFRA-1545, R5)."""
-    return (item.one is None and script_arithmetic(item.what, set()) == 0
-            and not script_uncounted.get(item.what))
+    return item.one is None and retries_nothing(item.what, set())
 
 
 def action_arithmetic(path: str, seen: set[str]) -> int | None:
@@ -2520,7 +2600,9 @@ for budget in budgets:
     # The scripts are read by now, so each blocked script call can be asked what it waits for,
     # which is a question blocked_calls could not ask when it listed them. The ones that wait
     # for nothing are dropped here rather than refused: a loop around a script that retries
-    # nothing holds no attempt this budget has to exceed.
+    # nothing holds no attempt this budget has to exceed. One filter answers the step's own
+    # list and the lists of the scripts and actions it reaches alike, because a call of a
+    # script that waits for nothing is the same wait of no length wherever it is written.
     blocking = [item for item in blocking if not waits_for_nothing(item)]
     carries = (f"carries `timeout-minutes: {budget.minutes}`" if budget.minutes is not None
                else "carries no `timeout-minutes`")
@@ -2544,6 +2626,13 @@ for budget in budgets:
         # 8 exists to refuse, one layer in and in its own voice. So the sentence says what is
         # true instead, that the run reaches an uncounted loop wherever it sits, and the list
         # above names the site that stopped the reading.
+        #
+        # A script can be unreadable the other way too: a call in it, or in one it calls,
+        # bounds its attempts with a variable, so one_call puts no seconds behind that call
+        # and the sum leaves it out. What comes back is a plain 0 where that call is the only
+        # one the script makes and an undercount where it is not, and neither is a figure to
+        # print, so the sentence names the unread bound instead. That is the item this filter
+        # dropped before round 6 of dispatch://INFRA-1545.
         script_call = blocking[0].one is None
         one = (script_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
@@ -2552,6 +2641,12 @@ for budget in budgets:
                          "script it calls, whose passes this check cannot read either, so what "
                          "one run of it takes is a figure this check cannot make, and the step "
                          "waits for that once per pass of the loop above it")
+        elif script_call and unpriced_wait(blocking[0].what, set()):
+            cost_read = (f"One run of `{blocking[0].what}` makes attempts whose bound is "
+                         "written as a variable rather than as a number, there or in a script "
+                         "it calls, so what one run of it takes is a figure this check cannot "
+                         "make either, and the step waits for that once per pass of the loop "
+                         "above it")
         else:
             waiting = ("One run of that script takes" if script_call
                        else "One call there takes")
