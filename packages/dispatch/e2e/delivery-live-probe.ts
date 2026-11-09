@@ -2,10 +2,11 @@
  * Delivery and Pipeline pages keep themselves current over. It subscribes one view under a bearer
  * token and writes one JSON line per frame Dispatch sends, applying each to the body it holds with
  * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does: at once after
- * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s) after Dispatch's
- * restart close (1012), with backoff after any other close, and by replacing a socket that has
- * carried no frame for three heartbeats; each new connection resumes from the last change it
- * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
+ * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s, or what
+ * `--reconnect-spread-ms` sets) after Dispatch's restart close (1012), with backoff after any
+ * other close, and by replacing a socket that has carried no frame for three heartbeats; each new
+ * connection resumes from the last change it applied. The watch ends after `--minutes`, on
+ * Ctrl-C, or when Dispatch refuses the view.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
  *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
  *  measure are equal.
@@ -20,7 +21,11 @@ import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 
-import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/live-socket";
+import {
+  LIVE_SOCKET_SILENT_MS,
+  RECONNECT_SPREAD_MS,
+  reconnectDelayMs,
+} from "../web/src/api/live-socket";
 import type {
   DeliveryLiveBody,
   DeliveryLiveCounts,
@@ -122,7 +127,7 @@ export interface ProbeHeld {
 }
 
 const USAGE =
-  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--compare] [--body-file <file>]";
+  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--compare] [--body-file <file>] [--reconnect-spread-ms <n>]";
 
 /** The probe's one subscription. */
 const SUB = "probe";
@@ -192,6 +197,8 @@ interface Options {
   readonly minutes: number;
   readonly compare: boolean;
   readonly bodyFile: string | undefined;
+  /** The window the first reconnect attempt's wait is drawn from, the page's own by default. */
+  readonly reconnectSpreadMs: number;
 }
 
 type Sections = Pick<ProbeFrameLine, "prs" | "runs" | "session_groups" | "maps" | "counts" | "set">;
@@ -231,6 +238,7 @@ function readArgs(argv: readonly string[]) {
         "body-file": { type: "string" },
         compare: { type: "boolean" },
         minutes: { type: "string" },
+        "reconnect-spread-ms": { type: "string" },
         "token-file": { type: "string" },
         url: { type: "string" },
         view: { type: "string" },
@@ -302,10 +310,18 @@ function parseOptions(argv: readonly string[]): Options {
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new UsageError(`--minutes is a number of minutes above 0, not ${rawMinutes}`);
   }
+  const rawSpread = values["reconnect-spread-ms"] ?? String(RECONNECT_SPREAD_MS);
+  const reconnectSpreadMs = Number(rawSpread);
+  if (rawSpread === "" || !Number.isFinite(reconnectSpreadMs) || reconnectSpreadMs < 0) {
+    throw new UsageError(
+      `--reconnect-spread-ms is a number of milliseconds from 0 up, not ${rawSpread}`
+    );
+  }
   return {
     bodyFile: values["body-file"],
     compare: values.compare === true,
     minutes,
+    reconnectSpreadMs,
     tokenFile: required(values["token-file"], "--token-file"),
     url,
     view: parseView(required(values.view, "--view")),
@@ -412,6 +428,11 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
+  // `reconnectDelayMs` draws the first attempt's wait as `random() × RECONNECT_SPREAD_MS`;
+  // scaling the draw makes that spread `--reconnect-spread-ms` without this file restating the
+  // backoff's arithmetic. A later attempt's jitter share is scaled in the same ratio.
+  const spreadScale = options.reconnectSpreadMs / RECONNECT_SPREAD_MS;
+  const draw = () => Math.random() * spreadScale;
 
   const subscribeFrame = (): LiveSubscribe =>
     held === null
@@ -506,9 +527,9 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
       return;
     }
     // As the page does: Dispatch's restart close starts the backoff over, so the next attempt
-    // waits within the first attempt's spread.
+    // waits within the first attempt's spread, which `--reconnect-spread-ms` sets.
     if (code === SERVICE_RESTART) attempt = 0;
-    const handle = setTimeout(open, reconnectDelayMs(attempt));
+    const handle = setTimeout(open, reconnectDelayMs(attempt, draw));
     attempt += 1;
     cancelReconnect = () => clearTimeout(handle);
   };
