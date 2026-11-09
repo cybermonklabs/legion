@@ -4004,15 +4004,21 @@ jobs:
     # the slower attempt of this change's measurement pair, takes at most half of it, so a hung
     # test prints the dump that names it well before the runner cancels the job and a test that
     # merely runs long does not (dispatch://INFRA-1075, check 6224bb0e). Measured on the slower
-    # attempt of run 42517304628 and on run 42532769012, whose shape this is: the package list's
-    # slowest package is pmdoc at 294 s, so 10 minutes; the race-impossible call's is the
-    # documents package at 95 s, so 4; routes 24 s, natslive's bus 8 s and integration 3 s each
-    # take 1 minute, the smallest whole minute there is.
+    # attempt of run 42553491297, whose shape this is: the package list's slowest package is pmdoc
+    # at 350 s, so 12 minutes; routes at 32 s takes 2; natslive's bus at 8 s and integration at 3 s
+    # take 1 minute each, the smallest there is.
+    #
+    # The race-impossible call keeps 10 minutes rather than the 6 its documents package's 158 s
+    # would give, because the rule's half is not the only floor: those tests refuse a run whose
+    # remaining deadline is under roomWaitMargin, 30 s (settlement_credit_test.go:517), so a call
+    # must leave that above its own longest run as well. At 4 minutes they said so themselves -
+    # "the test binary's deadline leaves 20.769s, not more than roomWaitMargin (30s): this looks
+    # like a misconfigured run; raise -timeout" - in both arms of run 42577832967.
     #
     # The job's own bound is its measured time on that slower attempt, 496 s, plus the largest of
-    # those limits, 10 minutes, plus 6, rounded up: 25. The six calls of the unit step run at the
+    # those limits, 12 minutes, plus 6, rounded up: 27. The six calls of the unit step run at the
     # same time, so the step's own worst case is the longest of them rather than their sum.
-    timeout-minutes: 25
+    timeout-minutes: 27
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4298,14 +4304,14 @@ jobs:
           # API package's build, with nothing running beside it (run 42307926510,
           # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
           # so running them at the same time changes no number any of them asserts on.
-          go test -json -count=1 -timeout 4m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
           # here runs against 5432. The package measured 56 s with an instance to itself on a
           # loaded two-core pod, so 10 minutes is ample.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 1m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # internal/testnats runs its server in the test process, so the package list below
           # starts no container. The two-image matrix, which proves a rendered authorization on
@@ -4349,7 +4355,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/broker"
           s=0
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 10m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
           p=0
           wait "$impossible" || p=$?
           r=0
