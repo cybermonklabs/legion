@@ -126,6 +126,12 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 		// pinned here rather than left to be rediscovered: it is a subdomain like any other, and
 		// no citation.
 		{"www.github.com is a subdomain too", "See https://www.github.com/acme/widgets/issues/77 for context.", ""},
+		// The same string standing inside another URL is no citation either, wherever it sits:
+		// another host's path, its query, its fragment, or the userinfo before its own host.
+		{"github.com in another host's path", "See https://example.test/github.com/acme/widgets/issues/77 for context.", ""},
+		{"github.com in another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/77 for context.", ""},
+		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", ""},
+		{"github.com after userinfo", "See https://user@github.com/acme/widgets/issues/77 for context.", ""},
 		{"first linked citation in body order", "Unlinked #12, then #88, then https://github.com/acme/other/issues/5.", "ATTR-113"},
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {

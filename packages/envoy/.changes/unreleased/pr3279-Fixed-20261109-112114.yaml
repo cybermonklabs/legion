@@ -1,5 +1,5 @@
 kind: Fixed
-body: 'Delivery attribution reads a GitHub issue URL only on github.com itself: a pull-request body naming a host whose name merely ends in github.com, such as evilgithub.com, is no longer credited to the real issue.'
+body: 'Delivery attribution credits a GitHub issue URL only where github.com is the host of that URL: a pull-request body naming a host whose name merely ends in github.com (evilgithub.com), a subdomain of it (www.github.com), or github.com inside another URL''s path, query, fragment or userinfo is no longer credited to the real issue of that number.'
 time: 2026-11-09T11:21:14.916410515Z
 custom:
     Issue: pr3279
