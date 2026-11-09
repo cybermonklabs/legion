@@ -385,3 +385,6 @@ func AttributePullRequests(ctx context.Context, pool *store.Pool, limit int) (in
 	}
 	return changed, nil
 }
+
+// A scratch comment, on a pull request closed without merging: it measures whether a change to a
+// file that already carries an open high-severity alert is held by the code-scanning rule.
