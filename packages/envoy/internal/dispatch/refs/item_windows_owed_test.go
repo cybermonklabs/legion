@@ -88,15 +88,20 @@ func itemsOwedWindowsAntiJoins(kind ItemKind, tables itemTables) string {
 // cleared only where the windows are written. Each state below therefore carries the marker the
 // item would really hold in it, and the equivalence test reads all three questions over the
 // same rows.
+//
+// markerOnly is a state the shapes before the marker give the wrong answer for, which is the
+// defect the marker read fixes rather than a drift from it: the equivalence test writes no
+// such state, and the listing, paging and plan tests write them all.
 type windowState struct {
-	name    string
-	block   blockRow
-	sum     *string
-	stamp   *string
-	window  bool
-	marker  bool
-	owed    bool
-	comment string
+	name       string
+	block      blockRow
+	sum        *string
+	stamp      *string
+	window     bool
+	marker     bool
+	owed       bool
+	markerOnly bool
+	comment    string
 }
 
 // blockRow is which block row the fixture writes for an item: a current one, one a revision
@@ -166,14 +171,25 @@ var windowStates = []windowState{{
 	owed:    false,
 	comment: "an older build's write marks both arms at once; the block arm owns this item",
 }, {
-	name:    "marked, and its only block was removed",
-	block:   removedBlock,
-	sum:     new(indexedSum),
-	stamp:   nil,
-	window:  false,
-	marker:  true,
-	owed:    false,
-	comment: "no current block, so the index holds no block these windows could stand for",
+	name:       "marked, and its only block was removed",
+	block:      removedBlock,
+	sum:        new(indexedSum),
+	stamp:      nil,
+	window:     false,
+	marker:     true,
+	owed:       true,
+	markerOnly: true,
+	comment:    "the index holds this item at no block, and its old windows are the arm's to delete",
+}, {
+	name:       "marked, and indexed to no block at all",
+	block:      noBlock,
+	sum:        new(indexedSum),
+	stamp:      nil,
+	window:     false,
+	marker:     true,
+	owed:       true,
+	markerOnly: true,
+	comment:    "a comment whose body is empty holds none; the sum says the index has reached it",
 }, {
 	name:    "no stamp",
 	block:   currentBlock,
@@ -230,6 +246,19 @@ var windowStates = []windowState{{
 	comment: "an item the block index has not reached is owed an index, not windows",
 }}
 
+// windowStatesTheShapesBeforeAnswer is every state of windowStates the two shapes before the
+// marker (itemsOwedWindowsTwoNotExists, itemsOwedWindowsAntiJoins) answer as the marker read
+// does.
+func windowStatesTheShapesBeforeAnswer() []windowState {
+	var states []windowState
+	for _, state := range windowStates {
+		if !state.markerOnly {
+			states = append(states, state)
+		}
+	}
+	return states
+}
+
 // windowFixtureFillers is how many items in the first state each kind carries beside the states
 // above: a population, so the planner's choice over the fixture is one it could make over a
 // deployment rather than the choice every plan is on a handful of rows.
@@ -277,13 +306,13 @@ type windowFixtureItem struct {
 }
 
 // owedWindowFixture is one database holding, for each kind ItemsOwedWindows serves, one item in
-// every state of windowStates and windowFixtureFillers more whose windows stand.
+// each state it was built from and windowFixtureFillers more whose windows stand.
 type owedWindowFixture struct {
 	database *store.Store
 	items    map[ItemKind][]windowFixtureItem
 }
 
-func newOwedWindowFixture(t *testing.T) owedWindowFixture {
+func newOwedWindowFixture(t *testing.T, states []windowState) owedWindowFixture {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -298,14 +327,14 @@ func newOwedWindowFixture(t *testing.T) owedWindowFixture {
 	fixture := owedWindowFixture{database: database, items: map[ItemKind][]windowFixtureItem{}}
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
 		writer := writerFor(t, kind)
-		for _, state := range windowStates {
+		for _, state := range states {
 			fixture.items[kind] = append(fixture.items[kind], windowFixtureItem{
 				id:    writeWindowItem(t, tx, kind, writer, state),
 				state: state,
 			})
 		}
 		for range windowFixtureFillers {
-			writeWindowItem(t, tx, kind, writer, windowStates[0])
+			writeWindowItem(t, tx, kind, writer, states[0])
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -375,12 +404,12 @@ func (f owedWindowFixture) owedIDs(kind ItemKind) []string {
 }
 
 // Every item whose windows do not stand for its blocks is listed, and every item whose windows
-// do stand for them is not: the stamp missing, the stamp standing at another state and the
-// window row gone are each owed, and an item whose only block a revision removed, one the block
-// index has not reached, and one whose null sum the stamp reads as the empty string are each
-// not.
+// do stand for them is not: the stamp missing, the stamp standing at another state, the window
+// row gone, the only block removed and the item indexed to no block at all are each owed, and
+// one the block index has not reached and one whose null sum the stamp reads as the empty
+// string are each not.
 func TestItemsOwedWindowsListsTheItemsWhoseWindowsDoNotStandForTheirBlocks(t *testing.T) {
-	fixture := newOwedWindowFixture(t)
+	fixture := newOwedWindowFixture(t, windowStates)
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
 		listed, err := ItemsOwedWindows(ctx, fixture.database.Pool, kind, "", 1000)
@@ -408,7 +437,7 @@ func (f owedWindowFixture) describe(kind ItemKind, listed []string) string {
 // reaches every owed item once and in id order, which is the walk the window arm makes
 // (docs.windowDrift).
 func TestItemsOwedWindowsPagesTheOwedItemsByID(t *testing.T) {
-	fixture := newOwedWindowFixture(t)
+	fixture := newOwedWindowFixture(t, windowStates)
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
 		for _, limit := range []int{1, 2, 3} {
@@ -435,13 +464,20 @@ func TestItemsOwedWindowsPagesTheOwedItemsByID(t *testing.T) {
 	}
 }
 
-// The marker read answers what both shapes before it answered, over every state of the fixture
-// and from every cursor the window arm can hold: each id of the fixture is taken as `after` in
-// turn, at three limits, and the three statements are read side by side. Reading a marker
-// instead of state is where such a change goes wrong, so the answers are compared against the
-// texts of the readings this replaced rather than against what this test thinks the answer is.
+// The marker read answers what both shapes before it answered, over every state those shapes
+// give the right answer for and from every cursor the window arm can hold: each id of the
+// fixture is taken as `after` in turn, at three limits, and the three statements are read side
+// by side. Reading a marker instead of state is where such a change goes wrong, so the answers
+// are compared against the texts of the readings this replaced rather than against what this
+// test thinks the answer is.
+//
+// The states those shapes give the wrong answer for are left out of this fixture (markerOnly):
+// an item the index holds at no block - its only block removed, or an empty body indexed to
+// none - is owed its windows and their semi-join drops it, which is the defect the marker read
+// fixes, so holding the two equal over it would hold the fix to the bug. The listing test
+// writes them.
 func TestItemsOwedWindowsAnswersWhatTheShapesBeforeTheMarkerAnswered(t *testing.T) {
-	fixture := newOwedWindowFixture(t)
+	fixture := newOwedWindowFixture(t, windowStatesTheShapesBeforeAnswer())
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
 		tables, err := kind.tables()
@@ -488,7 +524,7 @@ var windowPlanSettings = []string{"set local enable_seqscan = off"}
 
 // Each kind's listing of the items owed their windows, held to that kind's own partial index.
 func TestItemsOwedWindowsReadsThePartialIndex(t *testing.T) {
-	fixture := newOwedWindowFixture(t)
+	fixture := newOwedWindowFixture(t, windowStates)
 	ctx := context.Background()
 	connection, err := fixture.database.Pool.Acquire(ctx)
 	if err != nil {

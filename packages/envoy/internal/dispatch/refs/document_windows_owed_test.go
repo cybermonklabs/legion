@@ -47,14 +47,19 @@ const documentsOwedWindowsFromState = `
 // before it asked, so each state carries the marker the document would really hold in it - set
 // by the version write that moved its blocks, cleared only by the write of its windows - and
 // the equivalence test reads both questions over the same rows.
+//
+// markerOnly is a state the shape before the marker gives the wrong answer for, which is the
+// defect the marker read fixes rather than a drift from it: the equivalence test writes no
+// such state, and the listing and plan tests write them all.
 type documentWindowState struct {
-	name    string
-	block   bool
-	version *int
-	stamp   *string
-	window  bool
-	marker  bool
-	owed    bool
+	name       string
+	block      bool
+	version    *int
+	stamp      *string
+	window     bool
+	marker     bool
+	owed       bool
+	markerOnly bool
 }
 
 // documentWindowStates is every state the window arm has to tell apart.
@@ -98,14 +103,38 @@ var documentWindowStates = []documentWindowState{{
 	version: nil,
 	stamp:   new(""),
 	window:  true,
+}, {
+	// A document indexed at a version that holds no block: an issue created with no spec
+	// carries a spec.md whose markdown is empty (INFRA-988). It has no row in
+	// document_blocks, so the semi-join the read had before this round dropped it, and
+	// since the write of a document's windows is the only statement that clears the
+	// marker, its row stayed marked for ever.
+	name:       "indexed at a version holding no block, and marked",
+	block:      false,
+	version:    new(1),
+	marker:     true,
+	owed:       true,
+	markerOnly: true,
 }}
+
+// documentWindowStatesTheShapeBeforeAnswers is every state of documentWindowStates the shape
+// before the marker (documentsOwedWindowsFromState) answers as the marker read does.
+func documentWindowStatesTheShapeBeforeAnswers() []documentWindowState {
+	var states []documentWindowState
+	for _, state := range documentWindowStates {
+		if !state.markerOnly {
+			states = append(states, state)
+		}
+	}
+	return states
+}
 
 // documentWindowFillers is how many more documents whose windows stand the fixture writes, so
 // the plan test reads a table whose marked rows are the few the arm is for.
 const documentWindowFillers = 40
 
-// owedDocumentFixture is one database holding one document in every state of
-// documentWindowStates and documentWindowFillers more whose windows stand.
+// owedDocumentFixture is one database holding one document in each state it was built from and
+// documentWindowFillers more whose windows stand.
 type owedDocumentFixture struct {
 	database  *store.Store
 	documents []owedDocumentFixtureRow
@@ -116,7 +145,7 @@ type owedDocumentFixtureRow struct {
 	state documentWindowState
 }
 
-func newOwedDocumentFixture(t *testing.T) owedDocumentFixture {
+func newOwedDocumentFixture(t *testing.T, states []documentWindowState) owedDocumentFixture {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -129,14 +158,14 @@ func newOwedDocumentFixture(t *testing.T) owedDocumentFixture {
 	createReferenceIssue(t, tx, "DOCW-1", "DOCW")
 
 	fixture := owedDocumentFixture{database: database}
-	for index, state := range documentWindowStates {
+	for index, state := range states {
 		fixture.documents = append(fixture.documents, owedDocumentFixtureRow{
 			id:    writeWindowDocument(t, tx, fmt.Sprintf("state-%02d", index), state),
 			state: state,
 		})
 	}
 	for index := range documentWindowFillers {
-		writeWindowDocument(t, tx, fmt.Sprintf("filler-%02d", index), documentWindowStates[0])
+		writeWindowDocument(t, tx, fmt.Sprintf("filler-%02d", index), states[0])
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the document window fixture: %v", err)
@@ -211,7 +240,7 @@ func (f owedDocumentFixture) describe(listed []string) string {
 // Every document whose windows do not stand for its blocks is listed, and every one whose
 // windows do stand is not.
 func TestDocumentsOwedWindowsListsTheDocumentsWhoseWindowsDoNotStand(t *testing.T) {
-	fixture := newOwedDocumentFixture(t)
+	fixture := newOwedDocumentFixture(t, documentWindowStates)
 	listed, err := DocumentsOwedWindows(context.Background(), fixture.database.Pool, "", 1000)
 	if err != nil {
 		t.Fatalf("list the documents owed windows: %v", err)
@@ -221,12 +250,17 @@ func TestDocumentsOwedWindowsListsTheDocumentsWhoseWindowsDoNotStand(t *testing.
 	}
 }
 
-// The marker read answers what the shape before it answered, over every state the fixture
-// writes, at every cursor and three limits. Reading a marker instead of state is where such a
-// change goes wrong, so the answers are compared against the text of the reading this replaced
-// rather than against what this test thinks the answer is.
+// The marker read answers what the shape before it answered, over every state that shape gives
+// the right answer for, at every cursor and three limits. Reading a marker instead of state is
+// where such a change goes wrong, so the answers are compared against the text of the reading
+// this replaced rather than against what this test thinks the answer is.
+//
+// The states the shape before the marker gives the wrong answer for are left out of this
+// fixture (markerOnly): a document indexed at a version that holds no block is owed its
+// windows and that shape's semi-join drops it, which is the defect the marker read fixes, so
+// holding the two equal over it would hold the fix to the bug. The listing test writes it.
 func TestDocumentsOwedWindowsAnswersWhatTheShapeBeforeTheMarkerAnswered(t *testing.T) {
-	fixture := newOwedDocumentFixture(t)
+	fixture := newOwedDocumentFixture(t, documentWindowStatesTheShapeBeforeAnswers())
 	ctx := context.Background()
 	cursors := []string{""}
 	for _, document := range fixture.documents {
@@ -303,6 +337,74 @@ func TestAVersionWriteOwesADocumentItsWindowsAndWritingThemClearsIt(t *testing.T
 	requireDocumentOwedWindows(t, tx, artifact, false, "the window arm's second write")
 }
 
+// A document whose version holds no block keeps no marker. An issue created with no spec
+// carries a spec.md whose markdown is empty, and a version can empty a document that had
+// blocks; either way the index holds no row of document_blocks for it. The semi-join this
+// arm's listing had before this round dropped such a document while the version write went on
+// marking it, and WriteDocumentWindows, the only statement that clears the marker, runs only
+// for a document the arm listed: the row stayed marked for ever, an entry in the partial index
+// every later pass paid for and no pass could remove (INFRA-988). Both halves are read here as
+// behaviour: the arm lists it, and the write of its windows - of which it has none - deletes
+// the windows left from the version that did hold blocks and clears the marker.
+func TestADocumentWhoseVersionHoldsNoBlockIsListedAndWindowed(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	// Project documents rather than an issue's: an issue holds one primary document, and this
+	// test writes two.
+	empty, _ := createReferenceArtifact(t, tx, "", "WIND", "empty-md")
+	if _, err := IndexBlocks(ctx, tx, empty, 1, time.Now(), "", nil, nil, nil); err != nil {
+		t.Fatalf("index version 1 of the empty document: %v", err)
+	}
+	requireDocumentOwedWindows(t, tx, empty, true, "the version write of the empty document")
+	requireDocumentListed(t, tx, empty, true, "the version write of the empty document")
+
+	if err := WriteDocumentWindows(ctx, tx, empty, "", nil); err != nil {
+		t.Fatalf("window the empty document: %v", err)
+	}
+	requireDocumentOwedWindows(t, tx, empty, false, "the window arm's write over the empty document")
+	requireDocumentListed(t, tx, empty, false, "the window arm's write over the empty document")
+	if windows := windowRowsOf(t, tx, DocumentWindowKind, empty); len(windows) != 0 {
+		t.Fatalf("the empty document holds the windows %v, want none", windows)
+	}
+
+	// A document a version empties holds windows of text it no longer has, and the arm's
+	// write over it is what deletes them (writeWindows' `dropped`).
+	emptied, _ := createReferenceArtifact(t, tx, "", "WIND", "emptied-md")
+	markdown, blocks := documentOf([]part{{"b1", "paragraph", "The paragraph version 2 removes."}})
+	indexVersionAndWindow(t, tx, emptied, 1, markdown, blocks, "version 1")
+	if windows := windowRowsOf(t, tx, DocumentWindowKind, emptied); len(windows) == 0 {
+		t.Fatalf("version 1 of the emptied document left it unwindowed")
+	}
+	if _, err := IndexBlocks(ctx, tx, emptied, 2, time.Now(), "", nil, nil, nil); err != nil {
+		t.Fatalf("index version 2 of the emptied document: %v", err)
+	}
+	requireDocumentOwedWindows(t, tx, emptied, true, "the version write that emptied the document")
+	requireDocumentListed(t, tx, emptied, true, "the version write that emptied the document")
+
+	if err := WriteDocumentWindows(ctx, tx, emptied, "", nil); err != nil {
+		t.Fatalf("window the emptied document: %v", err)
+	}
+	requireDocumentOwedWindows(t, tx, emptied, false, "the window arm's write over the emptied document")
+	requireDocumentListed(t, tx, emptied, false, "the window arm's write over the emptied document")
+	if windows := windowRowsOf(t, tx, DocumentWindowKind, emptied); len(windows) != 0 {
+		t.Fatalf("the emptied document holds the windows %v of text version 2 removed, want none", windows)
+	}
+}
+
+// requireDocumentListed fails unless DocumentsOwedWindows lists the document exactly when
+// listed says.
+func requireDocumentListed(t *testing.T, tx pgx.Tx, artifactID string, listed bool, after string) {
+	t.Helper()
+	owed, err := DocumentsOwedWindows(context.Background(), tx, "", 100)
+	if err != nil {
+		t.Fatalf("list the documents owed windows: %v", err)
+	}
+	if got := slices.Contains(owed, artifactID); got != listed {
+		t.Fatalf("after %s, the documents owed windows %v list %s = %v, want %v",
+			after, owed, artifactID, got, listed)
+	}
+}
+
 // requireDocumentOwedWindows fails unless the document's marker stands as owed says.
 func requireDocumentOwedWindows(t *testing.T, tx pgx.Tx, artifactID string, owed bool, after string) {
 	t.Helper()
@@ -319,7 +421,7 @@ func requireDocumentOwedWindows(t *testing.T, tx pgx.Tx, artifactID string, owed
 
 // The documents owed their windows, held to the partial index on windows_owed_at.
 func TestDocumentsOwedWindowsReadsThePartialIndex(t *testing.T) {
-	fixture := newOwedDocumentFixture(t)
+	fixture := newOwedDocumentFixture(t, documentWindowStates)
 	ctx := context.Background()
 	connection, err := fixture.database.Pool.Acquire(ctx)
 	if err != nil {

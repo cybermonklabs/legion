@@ -407,6 +407,12 @@ func indexItemBlocks(
 // older build left behind, so that an index and the marker for the windows it did not write
 // are one statement of one transaction: a crash after it leaves the item owed its windows
 // rather than silently windowless.
+//
+// An item indexed to no block is marked like any other, and the arm lists it: a comment whose
+// body is empty holds none (api's createCommentFor takes such a comment when it carries a
+// suggestion), and so does one whose last block an edit removed, which still holds the windows
+// of the text it had. The sum written here is what the arm finds it by, since it has no
+// current block row to be found by (ItemsOwedWindows, INFRA-988).
 func recordItemIndexed(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -955,11 +961,12 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 }
 
 // ItemsOwedWindows lists the id of at most limit comments, messages or asks of kind whose
-// blocks the index holds and whose windows do not stand for those blocks, in id order past
-// after (empty: from the start), for the block-index tick's window arm. An item written before
-// meaning search moved to windows has blocks and no window, and so has one whose write failed
-// between the two. One a build without this change re-indexed during the deploy is the harder
-// case: it keeps the windows of its old text, so holding a window says nothing.
+// blocks the index holds - an item can hold none, and such a one is listed too - and whose
+// windows do not stand for those blocks, in id order past after (empty: from the start), for
+// the block-index tick's window arm. An item written before meaning search moved to windows
+// has blocks and no window, and so has one whose write failed between the two. One a build
+// without this change re-indexed during the deploy is the harder case: it keeps the windows of
+// its old text, so holding a window says nothing.
 //
 // The read is of the kind's own marker, windows_owed_at (migration 20261107194001), which is
 // the question written down rather than asked of state:
@@ -985,10 +992,23 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 // already holds, so reading it would hand this arm the block arm's backlog and leave a drifted
 // item unwindowed for ever.
 //
-// The semi-join on the blocks table stays (itemsOwedWindowsQuery): an item an older build
-// wrote is marked for both arms at once and holds no block yet, and windows under no block are
-// not this arm's to write — the block arm indexes it whole, windows included. It is one probe
-// per marked row, not one per row of the state table.
+// Which marked rows are this arm's is the question the lateral join answers, as the documents'
+// does (documentsOwedWindowsQuery): an item the block index has reached - its state row
+// carries the sum of the text it was indexed from - and an item holding a current block, which
+// an index older than that sum left behind. An item indexed to no block at all is the first
+// kind and not the second: a comment whose body is empty, which api's createCommentFor takes
+// when the comment carries a suggestion, and an item whose last block an edit removed, whose
+// block rows all read `position is null`. The arm windows such an item to no window, which
+// deletes the windows its old text left and clears the marker in the one statement
+// (WriteItemWindows, writeWindows); the semi-join this replaced dropped it, and since that
+// statement is the only one that clears the marker, it stayed marked for ever - an entry in
+// the partial index every later pass paid a probe for and no pass could ever remove
+// (INFRA-988).
+//
+// An item that is neither - one an older build wrote, marked for both arms at once, indexed by
+// no block-aware build and holding no block yet - is not this arm's: windows under no block
+// are not its to write, the block arm indexes it whole, windows included, and that index marks
+// it here again.
 func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after string, limit int) ([]string, error) {
 	tables, err := kind.tables()
 	if err != nil {
@@ -1014,6 +1034,11 @@ func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after strin
 // in the order the batch pages by, so the keyset cursor and the limit are both the index's own
 // and the read costs what the arm has to do rather than what the deployment has stored.
 //
+// The blocks are read through a lateral join rather than as `s.body_sha256 is not null or
+// exists (…)`: an EXISTS under an OR is a correlated subplan the planner runs per marked row,
+// which the plan test refuses, while the join is one probe for each marked row read, as the
+// semi-join before it was, and the inner limit stops it at the first current block row.
+//
 // The two readings this replaced both walked the whole state table to decide owedness from
 // state: the two correlated `not exists` probes under an `or`, 13.7 s a pass over the
 // load-test deployment's 511,595 comment state rows for an answer of no rows, and the same
@@ -1022,12 +1047,14 @@ func itemsOwedWindowsQuery(tables itemTables) string {
 	return `
 		select s.` + tables.item + `::text
 		from ` + tables.state + ` s
-		where s.windows_owed_at is not null
-		  and s.` + tables.item + ` > $1::uuid
-		  and exists (
+		left join lateral (
 			select 1 from ` + tables.blocks + ` b
 			where b.` + tables.item + ` = s.` + tables.item + ` and b.position is not null
-		  )
+			limit 1
+		) held (block) on true
+		where s.windows_owed_at is not null
+		  and s.` + tables.item + ` > $1::uuid
+		  and (s.body_sha256 is not null or held.block is not null)
 		order by s.` + tables.item + ` limit $2
 	`
 }

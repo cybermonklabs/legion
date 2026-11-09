@@ -141,6 +141,84 @@ func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
 	}
 }
 
+// A comment the index holds at no block keeps no marker. A comment whose body is empty holds
+// none - api's createCommentFor takes such a comment when it carries a suggestion - and so
+// does one whose last block an edit removed, whose block rows are all `position is null`.
+// Neither holds a current block row, so the semi-join this arm's listing had before this round
+// dropped it while the index went on marking it, and WriteItemWindows, the only statement that
+// clears the marker, runs only for an item the arm listed: the row stayed marked for ever, an
+// entry in the partial index every later pass paid a probe for and no pass could ever remove.
+// It is the item side of the hole INFRA-988 measured on documents.
+//
+// Both halves are read as behaviour: the arm lists the item once the index has reached it -
+// and not before, since an item no block-aware build has indexed is the block arm's - and the
+// write of its windows, of which it has none, deletes the windows its old text left and clears
+// the marker. A comment is the kind this is read over because it is the kind that can hold no
+// text: a message's body and an ask's question are required of the writer (api's messages.go,
+// validateAskQuestion).
+func TestACommentIndexedAtNoBlockIsListedAndWindowed(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the marker fixture's transaction: %v", err)
+	}
+	createReferenceProject(t, tx, "CORE")
+	createReferenceIssue(t, tx, "CORE-1", "CORE")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the marker fixture: %v", err)
+	}
+	const insertComment = `insert into comments (issue_key, author, body)
+	                       values ('CORE-1', '{"kind":"user","id":"alice"}', $1) returning id::text`
+
+	// A comment with no text of its own, which holds no block from its first indexing.
+	var empty string
+	if err := database.Pool.QueryRow(ctx, insertComment, "").Scan(&empty); err != nil {
+		t.Fatalf("insert the comment whose body is empty: %v", err)
+	}
+	requireWindowsOwed(t, database, ItemComment, empty, true, "the insert of the empty comment")
+	requireListed(t, database, ItemComment, empty, false, "the empty comment before any index reaches it")
+
+	indexOwedItem(t, database, ItemComment, empty, "the insert of the empty comment")
+	requireWindowsOwed(t, database, ItemComment, empty, true, "the index of the empty comment")
+	requireListed(t, database, ItemComment, empty, true, "the indexed empty comment")
+
+	windowItem(t, database, ItemComment, empty, "the index of the empty comment")
+	requireWindowsOwed(t, database, ItemComment, empty, false, "the window arm's write over the empty comment")
+	requireListed(t, database, ItemComment, empty, false, "the empty comment the window arm windowed")
+	if windows := windowIDsOf(t, database, ItemComment, empty); len(windows) != 0 {
+		t.Fatalf("the empty comment holds the windows %v, want none", windows)
+	}
+
+	// A comment an edit empties holds windows of text it no longer has, and the arm's write
+	// over it is what deletes them (writeWindows' `dropped`).
+	var emptied string
+	if err := database.Pool.QueryRow(ctx, insertComment, "The paragraph the edit removes.").Scan(&emptied); err != nil {
+		t.Fatalf("insert the comment the edit empties: %v", err)
+	}
+	indexOwedItem(t, database, ItemComment, emptied, "the insert of the comment the edit empties")
+	windowItem(t, database, ItemComment, emptied, "the index of the comment the edit empties")
+	if windows := windowIDsOf(t, database, ItemComment, emptied); len(windows) == 0 {
+		t.Fatalf("the comment the edit empties holds no window to be left behind")
+	}
+
+	if _, err := database.Pool.Exec(ctx,
+		`update comments set body = '', edited_at = now() where id = $1::uuid`, emptied); err != nil {
+		t.Fatalf("empty the comment: %v", err)
+	}
+	requireWindowsOwed(t, database, ItemComment, emptied, true, "the edit that emptied the comment")
+	indexOwedItem(t, database, ItemComment, emptied, "the edit that emptied the comment")
+	requireWindowsOwed(t, database, ItemComment, emptied, true, "the index of the emptied comment")
+	requireListed(t, database, ItemComment, emptied, true, "the emptied comment, whose only block the index removed")
+
+	windowItem(t, database, ItemComment, emptied, "the index of the emptied comment")
+	requireWindowsOwed(t, database, ItemComment, emptied, false, "the window arm's write over the emptied comment")
+	requireListed(t, database, ItemComment, emptied, false, "the emptied comment the window arm windowed")
+	if windows := windowIDsOf(t, database, ItemComment, emptied); len(windows) != 0 {
+		t.Fatalf("the emptied comment holds the windows %v of the text the edit removed, want none", windows)
+	}
+}
+
 // requireWindowsOwed reads the item's state row and fails unless its marker stands as owed says.
 func requireWindowsOwed(t *testing.T, database *store.Store, kind ItemKind, id string, owed bool, after string) {
 	t.Helper()

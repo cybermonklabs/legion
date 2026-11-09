@@ -178,6 +178,15 @@ func IndexBlocks(
 	// since an earlier write stays owed from then, and a crash after this statement leaves the
 	// document owed its windows rather than silently windowless.
 	//
+	// A version holding no block is marked like any other, and the arm lists it: an issue
+	// created with no spec carries a spec.md whose markdown is empty, and a document whose
+	// last block an edit removed still holds the windows of the text it had. Writing a
+	// document's windows is what deletes the window rows its blocks no longer stand for
+	// (writeWindows' `dropped`), so leaving such a version unmarked here would leave those
+	// rows standing for text the document no longer holds; the arm finds it by the version
+	// recorded below rather than by a row of document_blocks it has none of
+	// (documentsOwedWindowsQuery, INFRA-988).
+	//
 	// What a reader meets for it: a document's windows, and so its hits in meaning search,
 	// appear one reconciliation tick after the write rather than within it, as a comment's do
 	// (indexItemBlocks). The write holds the issue row for its own rows alone: this window
@@ -374,13 +383,13 @@ func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows
 // finds the stamp it has always read.
 const documentBlockState = `coalesce(v.version::text, '')`
 
-// DocumentsOwedWindows lists at most limit documents whose blocks the index holds and whose
-// windows do not stand for those blocks, in artifact id order past after (empty: from the
-// start), for the block-index tick's window arm. A document written before meaning search
-// moved to windows has blocks and no window; one whose version write failed after its blocks
-// were written has the same; and every document written since this arm last windowed it is
-// one too, because a version write records the blocks and leaves the windows here
-// (IndexBlocks, INFRA-988).
+// DocumentsOwedWindows lists at most limit documents whose blocks the index holds - a document
+// can hold none, and such a one is listed too - and whose windows do not stand for those
+// blocks, in artifact id order past after (empty: from the start), for the block-index tick's
+// window arm. A document written before meaning search moved to windows has blocks and no
+// window; one whose version write failed after its blocks were written has the same; and every
+// document written since this arm last windowed it is one too, because a version write records
+// the blocks and leaves the windows here (IndexBlocks, INFRA-988).
 //
 // The read is of the marker, windows_owed_at (migration 20261108070000), which is the
 // question written down rather than asked of state, as the items' is (ItemsOwedWindows): the
@@ -419,15 +428,39 @@ func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit in
 // index's own and the read costs what the arm has to do rather than what the deployment has
 // stored.
 //
-// The semi-join on document_blocks stays, as the items' does: a document an older build wrote
-// is marked and holds no block yet, and windows under no block are not this arm's to write -
-// the owed-document arm indexes it, and that index marks it here again. It is one probe per
-// marked row, not one per row of the table.
+// Two kinds of marked row are this arm's, and the lateral join is what tells them from the
+// rows that are not:
+//
+//   - a document the block index has reached, whose row carries the version its blocks are
+//     indexed at. A version holding no block is one of them: an issue created with no spec
+//     carries a spec.md whose markdown is empty, so the index holds no row of
+//     document_blocks for it to be found by. The arm windows such a document to no window,
+//     which deletes whatever windows a version that did hold blocks left behind and clears
+//     the marker in the one statement (WriteDocumentWindows, writeWindows). The semi-join
+//     this replaced dropped it, and since that statement is the only one that clears the
+//     marker, the row stayed marked for ever: an entry in the partial index that every later
+//     pass paid a probe for and no pass could ever remove (INFRA-988).
+//   - a document owed a block index (version null) that holds the blocks of an earlier
+//     version. Its stored version's windows are this arm's to write while the owed arm
+//     cannot index it, which is what a document whose live text stays ahead of its latest
+//     version needs (docs.windowDocument).
+//
+// A marked row with neither - a document an older build wrote, owed a block index and holding
+// no block yet - is not this arm's, as the items' is not: windows under no block are not its
+// to write, the owed-document arm indexes it, and that index marks it here again.
+//
+// The blocks are read through a lateral join rather than as `v.version is not null or exists
+// (…)`: an EXISTS under an OR is a correlated subplan the planner runs per marked row, which
+// the plan test refuses, while the join is one probe for each marked row read, as the
+// semi-join before it was, and the inner limit stops it at the first block row.
 const documentsOwedWindowsQuery = `
 	select v.artifact_id::text from document_block_versions v
+	left join lateral (
+		select 1 from document_blocks b where b.artifact_id = v.artifact_id limit 1
+	) held (block) on true
 	where v.windows_owed_at is not null
 	  and v.artifact_id > $1::uuid
-	  and exists (select 1 from document_blocks b where b.artifact_id = v.artifact_id)
+	  and (v.version is not null or held.block is not null)
 	order by v.artifact_id limit $2`
 
 // uuidAfter is a keyset cursor over uuids: the id a batch starts after, or the nil uuid, which

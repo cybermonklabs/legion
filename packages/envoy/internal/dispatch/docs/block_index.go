@@ -408,6 +408,14 @@ func (s *Service) windowOwners() []windowOwner {
 // message_block_state or ask_block_state, a document's in document_block_versions
 // (refs.WriteItemWindows, refs.WriteDocumentWindows) - so an owner this arm has served is no
 // longer listed.
+//
+// An owner the index holds at no block is served here too, and its windows are none: a
+// document whose markdown is empty, as the spec.md of an issue created with no spec is, a
+// comment carrying only a suggestion, and an owner whose last block a write removed, which
+// still holds the windows of the text it had. The write below is what deletes those
+// (refs.writeWindows' `dropped`), and it clears the marker in the same statement, so such an
+// owner is served once rather than left marked for ever
+// (refs.DocumentsOwedWindows, refs.ItemsOwedWindows, INFRA-988).
 func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, tick *BlockIndexTick) (bool, error) {
 	owners := s.windowOwners()
 	next := make(map[string]string, len(owners))
