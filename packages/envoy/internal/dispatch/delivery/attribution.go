@@ -92,10 +92,14 @@ type attributionFacts struct {
 
 // githubIssueURL matches a full GitHub issue URL; githubBareReference a bare #N of two to six
 // digits (the prototype's reference shape), which GitHub reads as an issue or pull request of the
-// same repository. A # after a word character, `&` (an HTML character reference), `/` (a URL
-// fragment) or another # (a heading) is not a reference.
+// same repository. Both are read out of running text, so both have a left boundary: github.com
+// after a word character, `.` or `-` is the tail of another host's name (`evilgithub.com`,
+// `pages.github.com`), whose owner, repository and number citedIssues would otherwise credit to
+// the real github.com, which anyone who can write a pull request body could then aim at any
+// issue. A # after a word character, `&` (an HTML character reference), `/` (a URL fragment) or
+// another # (a heading) is not a reference.
 var (
-	githubIssueURL      = regexp.MustCompile(`github\.com/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
+	githubIssueURL      = regexp.MustCompile(`(?:^|[^\w.-])github\.com/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
 	githubBareReference = regexp.MustCompile(`(?:^|[^\w&/#])#([1-9][0-9]{1,5})\b`)
 )
 

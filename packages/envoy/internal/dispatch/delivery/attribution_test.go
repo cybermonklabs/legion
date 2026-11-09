@@ -115,6 +115,12 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 	}{
 		{"bare reference in the same repository", "Fixes #77.", "ATTR-111"},
 		{"full URL to another repository", "See https://github.com/acme/other/issues/5 for context.", "ATTR-112"},
+		// The host's left boundary: a URL at the very start of the body is still a citation,
+		// scheme or none, while a host whose name merely ends in github.com is not one at all.
+		{"full URL at the start of the body", "https://github.com/acme/other/issues/5 is the context.", "ATTR-112"},
+		{"scheme-less citation at the start of the body", "github.com/acme/other/issues/5 is the context.", "ATTR-112"},
+		{"a lookalike host is not github.com", "See https://evilgithub.com/acme/widgets/issues/77 for context.", ""},
+		{"a subdomain of github.com is not github.com", "See https://pages.github.com/acme/widgets/issues/77 for context.", ""},
 		{"first linked citation in body order", "Unlinked #12, then #88, then https://github.com/acme/other/issues/5.", "ATTR-113"},
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {
