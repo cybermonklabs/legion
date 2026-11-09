@@ -1303,14 +1303,12 @@ export type VerdictRead =
  */
 export function uncertainSession(session: string): boolean {
   if (foreignVerdicts(session).kind !== "none") return true;
-  // This session's own store, which `foreignVerdicts` passes over as not foreign: a store that
-  // cannot be listed is exactly the uncertainty this answers, and skipping it said a session
-  // whose own verdicts are unreadable is certain.
-  try {
-    readdirSync(verdictDir(session));
-  } catch (error) {
-    if (!hasErrnoCode(error, "ENOENT")) return true;
-  }
+  // This session's own store, tested the way a verdict is actually read: by name. Listing it
+  // was the wrong question — a store at 0o111 cannot be listed and answers every named read,
+  // so an absence in it is certain and calling it uncertain over-stated four cells — while one
+  // at 0o000 refuses the named read, and that is a session whose every write is uncertain. A
+  // name no verdict can have, so only the permission is under test.
+  if (readVerdictFile(join(verdictDir(session), "0".repeat(64))) === "unreadable") return true;
   return readVerdictFile(join(session, VERDICTS_LOST)) !== "gone";
 }
 

@@ -1491,6 +1491,102 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(postsTo(ARTIFACTS)).toHaveLength(0);
   });
 
+  // One row per guard that survived mutation. An untested guard is how this branch reached
+  // round nineteen — four suites blind in the way that hid their own round's defect — so the
+  // ones left are given rows rather than left to the next reader.
+  describe("the guards that no row reached", () => {
+    /**
+     * A second live owner of this session, with a store of its own. Keyed to another live pid,
+     * since the fixture's owner file is named by pid and start alone: a second record for this
+     * process overwrites the first rather than joining it.
+     */
+    const second = (caps: Record<string, string> | null) => {
+      const other = join(stateDir, `store-${process.ppid}`);
+      mkdirSync(join(other, "markers"), { recursive: true });
+      const owner = { pid: process.ppid, start: startOf(process.ppid), store: other };
+      const file = ownerFile("ses-1", owner);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({ v: 2, ...owner, mode: "block", ...(caps === null ? {} : { caps }) })
+      );
+      return other;
+    };
+
+    // The conjunct is load-bearing in the direction the last round did not measure: dropping
+    // it loses the caveat while the subagent is still refused, because a mint here never
+    // reaches the other owner's store. A reader who saw "identity, not a refinement" would
+    // otherwise delete it.
+    test("an expired marker in another owner's store keeps the caveat", async () => {
+      writeRecord();
+      const other = second({ verdicts: "askgate-verdicts-v2", markers: "canonical" });
+      mint(MESSAGE, null, Date.now() - 3 * MARKER_MAX_AGE_MS, [], other);
+      const { code, stdout } = await run(MESSAGE);
+      expect(code).toBe(1);
+      expect(stdout).toContain("expired");
+      expect(stdout).toContain("That is the main agent's to send");
+      expect(messagePosts()).toHaveLength(0);
+    });
+
+    // `every`, not `some`: one owner that records no verdicts makes absence meaningless for
+    // the whole session, which is the question round nine was about.
+    test("one owner from before capabilities makes absence meaningless for the session", async () => {
+      writeRecord();
+      second(null);
+      const { code, stdout } = await run(MESSAGE);
+      expect(code).toBe(1);
+      expect(stdout).toContain("does not record the writes its reviews refuse");
+      expect(messagePosts()).toHaveLength(0);
+    });
+
+    test("a lost-verdict mark that cannot be read is not a session with none", async () => {
+      writeRecord();
+      const mark = join(stateDir, "sessions", "ses-1", "askgate-verdicts-lost");
+      writeFileSync(mark, "{not json");
+      const { code, stdout } = await run(MESSAGE);
+      expect(code).toBe(1);
+      expect(stdout).toContain(mark);
+      expect(messagePosts()).toHaveLength(0);
+    });
+
+    test("a verdict whose fields are of the wrong type is not a verdict that is absent", async () => {
+      writeRecord();
+      const dir = join(stateDir, "sessions", "ses-1", "askgate-verdicts-v2");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, writeIdentity("dispatch_message", await dryArgs(MESSAGE))),
+        JSON.stringify({ v: 1, reason: 42, at: "whenever" })
+      );
+      const { code } = await run(MESSAGE);
+      expect(code).toBe(1);
+      expect(messagePosts()).toHaveLength(0);
+    });
+
+    // A store openable by name answers every named read, so an absence in it is certain and
+    // the write posts; a verdict in it is still found. Measured rather than reasoned, and the
+    // reason the session-wide check no longer tests whether the store lists.
+    test("a verdict store that cannot be listed but can be opened by name is not uncertain", async () => {
+      writeRecord();
+      const dir = join(stateDir, "sessions", "ses-1", "askgate-verdicts-v2");
+      mkdirSync(dir, { recursive: true });
+      writeVerdict(
+        dir.replace(`/${"askgate-verdicts-v2"}`, ""),
+        writeIdentity("dispatch_message", { issue: "DSP-1", body: "another write" }),
+        "failure 7",
+        Date.now()
+      );
+      chmodSync(dir, 0o111);
+      try {
+        const { code, stdout } = await run(MESSAGE);
+        expect(code).toBe(0);
+        expect(stdout).toContain("posted without review");
+        expect(messagePosts()).toHaveLength(1);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+    });
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();
