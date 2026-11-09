@@ -30,7 +30,7 @@ import { Timestamp } from "../refs/Timestamp";
 type CheckState = "passed" | "failed" | "older" | "no-result" | "unmarked";
 
 function checkState(check: Pick<CheckBlock, "results">): CheckState {
-  const latest = check.results[0];
+  const latest = (check.results ?? [])[0];
   if (latest === undefined) {
     return "no-result";
   }
@@ -147,10 +147,10 @@ function Result({ result }: { result: CheckResult }): ReactNode {
           {String(result.excluded)}
         </Fact>
       </dl>
-      {result.screenshots.length === 0 ? null : (
+      {(result.screenshots ?? []).length === 0 ? null : (
         <div className={`flex flex-wrap items-center gap-x-2 text-sm ${textMutedOnSurface}`}>
           <span className="text-xs font-medium">Screenshots</span>
-          {result.screenshots.map((reference) => (
+          {(result.screenshots ?? []).map((reference) => (
             <Screenshot key={reference} reference={reference} />
           ))}
         </div>
@@ -191,7 +191,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         </Fact>
       </dl>
       <BlockReferences reference={check.ref} />
-      {check.results.length === 0 ? (
+      {(check.results ?? []).length === 0 ? (
         <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-no-results">
           No result recorded against this check.
         </p>
@@ -201,7 +201,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           className="space-y-3"
           data-testid="verification-check-results"
         >
-          {check.results.map((result) => (
+          {(check.results ?? []).map((result) => (
             <Result key={result.id} result={result} />
           ))}
         </ul>
@@ -227,7 +227,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
       </p>
     );
   }
-  if (results.data.checks.length === 0) {
+  if ((results.data.checks ?? []).length === 0) {
     return (
       <div data-testid="verification-no-checks">
         <EmptyState
@@ -240,7 +240,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
 
   return (
     <ul aria-label="Checks" className="space-y-3" data-testid="verification-checks">
-      {results.data.checks.map((check) => (
+      {(results.data.checks ?? []).map((check) => (
         <Check check={check} key={check.block_id} />
       ))}
     </ul>

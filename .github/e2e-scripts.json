@@ -99,6 +99,10 @@
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },
     {
+      "script": "claim-compaction.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
+    },
+    {
       "script": "claude-backend-sandbox.sh",
       "needs": "a real cluster (LEGION_E2E_RUNTIME_CONTEXT and a worker image by digest), a devbox daemon, a real Claude Code and Oh My Pi on a model route, and the smoke repository"
     },
@@ -149,6 +153,15 @@
     {
       "script": "plan-pointer-drive.sh",
       "needs": "a host that reaches a model: a real Oh My Pi on a model route (LEGION_OMP_PATH) for one headless session per arm, a loopback PostgreSQL it creates a database of its own on (LEGION_TEST_PG_DSN), and jj, git, go, bun, psql, curl, the dispatch CLI, gh, python3 and openssl, each of which it refuses to start without: jj and git read the control's commit and extract its daemon module, go and bun run the daemon's prompt composer, gh is the one the composer is told, and psql, curl, python3 and openssl make and reach the e2e Dispatch server it starts"
+    },
+    {
+      "script": "provider-error-retry.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar and bun with this repository's node_modules"
+    },
+    {
+      "script": "refusal-fallback-omp.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
+      "timeout_minutes": 25
     },
     {
       "script": "share-volumes-kind.sh",

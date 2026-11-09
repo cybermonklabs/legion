@@ -218,7 +218,34 @@ type Awaiting struct {
 	AnsweredAt     *time.Time
 	AnsweredBy     Answer
 	AnsweredDetail string
-	Since          EventMark
+	// SlotNoticeAt is when the daemon wrote this wait's architect the waiting-for-slot notice
+	// (workflow.WaitingForSlotNoticeKind), and nil until it did: an admission pass writes it for
+	// an answered wait whose root needs a slot the cap has none of, so that architect is told
+	// once that its root waits and that the daemon starts it again by itself. It records that the
+	// notice was written, never that an architect read it.
+	//
+	// The mark belongs to this wait and goes where the wait goes. The stored shape clears it
+	// for a write that leaves it unchanged while leaving the row in anything but an answered
+	// wait (the trigger issues_carried_slot_notice_cleared, migration 20261108055000), whichever
+	// release makes that write, and the shape check refuses a mark stated anew outside an
+	// answered wait. Nothing in Go clears it on its own.
+	//
+	// Nine places outside the tests write Issue.Awaiting. admit.tellWaitingForSlot writes this
+	// field itself, beside the answer, in the transaction that enqueues the notice.
+	// workflow.enterAwaiting builds a fresh Awaiting for each new wait, which is why a new wait
+	// of a root told before carries no mark of the old one. admit.promoteHolds's resume,
+	// admit.readmit, workflow.beginLinger and workflow.leaveUnderOperator clear the wait whole,
+	// so the mark goes with the struct. The last three write through the wait the record already
+	// holds and keep every field they do not name: workflow.answerWait, which is safe because
+	// each of its callers reaches it for an unanswered wait alone, and workflow.itemLeft and
+	// workflow.leaveGateOff, which rewrite the wait's subject in place and are safe for the same
+	// reason — itemLeft returns at once when root.Awaiting.AnsweredAt != nil, and
+	// leaveGateOff's caller answerOpenGates skips an answered wait before it reaches
+	// leaveGateOff. A change to any of those guards changes this invariant, and would carry one
+	// wait's mark into the next wait, whose architect would then never be told. The stored shape
+	// holds the same rule (issues_awaiting_shape): the mark stands only beside an answer.
+	SlotNoticeAt *time.Time
+	Since        EventMark
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
@@ -515,13 +542,11 @@ type PullRequest struct {
 	// settlement comes to is the required set's to say (classify.HeadVerdict).
 	CheckedHead string
 	// Failing and Cancelled are the checks the settlement names as failed and as cancelled.
-	Failing         []string
-	Cancelled       []string
-	FixAttempts     int
-	BlockedAttempts int
-	CheckRuns       []AttemptRun
-	Generation      int64
-	Snapshot        string
+	Failing    []string
+	Cancelled  []string
+	CheckRuns  []AttemptRun
+	Generation int64
+	Snapshot   string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -535,12 +560,6 @@ type PullRequest struct {
 	// and otherwise queued on the move (Move.Repeats). A push for a move not made yet - one that
 	// returns the branch to a commit it held before, say - is not spent.
 	Moves []Move
-	// HeadCounted is the head the fix-attempt count last counted, a push onto a red verdict, kept
-	// across every head pushed on top of it until one is pushed onto a green verdict, or onto a
-	// settled head whose base branch requires no check and no workflow
-	// (classify.AdvancePullRequestHead); empty when no such attempt stands. The fix-attempt cap holds
-	// a red within that attempt (classify.FixAttemptCapHolds).
-	HeadCounted string
 	// Run is the head run: the pull request's judgement as it stood before the first head still
 	// waiting for a push of its move, and every head, settlement, required read, clearing of the
 	// head the required workflows were read at, and reopen applied since, replayed at each step and
@@ -548,7 +567,7 @@ type PullRequest struct {
 	// its bound with none left waiting.
 	Run *HeadRun
 	// PlannedRed is whether the newest head was the review App's (the tester's red tests): a red on
-	// it is planned, so the next head is not a fix attempt.
+	// it is planned, so it sends no work back (workflow's decideChecks).
 	PlannedRed bool
 	// Required is the checks the pull request's base branch requires (its rulesets' required status
 	// checks and its branch protection's), as the daemon last read them from GitHub
@@ -630,13 +649,10 @@ type Named struct {
 	At     time.Time `json:"at,omitzero"`
 }
 
-// Judgement is the part of a pull request a head run replays: its head, its fix-attempt count and
-// marks, its planned mark, its CI settlement, what its base branch requires, and the moves it has
-// made. BlockedAttempts is what was reported, and is not replayed.
+// Judgement is the part of a pull request a head run replays: its head, its planned mark, its CI
+// settlement, what its base branch requires, and the moves it has made.
 type Judgement struct {
 	HeadSHA       string             `json:"headSha"`
-	FixAttempts   int                `json:"fixAttempts"`
-	HeadCounted   string             `json:"headCounted,omitempty"`
 	PlannedRed    bool               `json:"plannedRed,omitempty"`
 	CheckedHead   string             `json:"checkedHead,omitempty"`
 	Failing       []string           `json:"failing"`
@@ -1322,7 +1338,7 @@ type Store interface {
 	// (PullRequestReview.LegionSession).
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the fix-attempt counts and planned mark of a still-open one (the next generation runs on the same
+	// request, the planned mark of a still-open one (the next generation runs on the same
 	// branch and pull request), its design gate, each role's handoff, review rounds, verdict and
 	// summary, and a READY the gate refused. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again.
@@ -1422,8 +1438,11 @@ type Store interface {
 	ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error)
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
-	// identical one.
-	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error)
+	// identical one. Issue "" reads every issue of the project, which is what a wake about the
+	// project alone asks; an issue, and with it a role, narrow the read to that one claim's own
+	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
+	// nothing further, so an issue alone reads every role of that issue.
+	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
 
 	// DisarmPending says whether outbox still holds an unfinished auto_merge_disable row of issue:
 	// a finished row is deleted, so any row of the kind is one still to run or retrying.
