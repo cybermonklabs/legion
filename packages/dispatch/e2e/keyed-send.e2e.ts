@@ -19,6 +19,7 @@ import {
   watchAnswers,
   watchWrites,
 } from "./keyed-writes";
+import { pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -422,12 +423,7 @@ test("a comment whose @-mention is cut off mid-delivery by the page is delivered
     await page.goto(`/issues/${issueKey}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" }).last();
     const field = form.getByLabel("Comment");
-    await field.fill("Heads up @");
-    await page
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "Planner" })
-      .first()
-      .click();
+    await pickReference(field, "Heads up @", /^Planner\b/);
     await form.getByRole("button", { exact: true, name: "Send" }).click();
 
     // The delivery has started and has not finished: the fake listener records a send when it

@@ -404,7 +404,7 @@ test("a margin thread's replies link each reference the shared table links and n
   }
 });
 
-test("the one-line preview shows each reference the shared table links as its target's title, with no link inside it", async ({
+test("the one-line preview shows each reference the shared table links as its target's title", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);
@@ -470,9 +470,12 @@ test("the one-line preview shows each reference the shared table links as its ta
         .poll(() => referenceTargetsIn(preview, INERT_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
       await expectMadeTitles(preview, (link) => `[data-dispatch-ref="${link}"]`, titles, item);
-      // A preview is one control's text: what a reference reads as is link-styled text, never
-      // a link.
-      await expect(preview.locator("a"), rowName(item)).toHaveCount(0);
+      // The Answers row is a record a reader reads (`DISPATCH_READING_SURFACES`'s
+      // `answers-subject`), so each reference it draws is a link into its target; a preview
+      // inside a control draws the same text with no link in it.
+      await expect(preview.locator(RENDERED_REFERENCE), rowName(item)).toHaveCount(
+        item.links.length
+      );
     }
   } finally {
     await context.close();

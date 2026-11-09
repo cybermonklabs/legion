@@ -11,6 +11,7 @@ import {
   patchIssue,
   userHeaders,
 } from "./api";
+import { openRefPicker } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -18,9 +19,10 @@ import { asUser } from "./users";
 // `Retry-After` and code `refilling` (the fake's `refilling` state). Dispatch answers that as
 // ENVOY_REFILLING, and every view that reads the agent list or an owner's subscribers says the
 // list is refilling where it would otherwise say an agent is absent: no "No agents are connected",
-// no "may have ended", no "No live agents match", no subscriber or recipient count, no offline
-// dot and no no_holder route marker. A listener that could not answer at all (the fake's `down`
-// state) is unreachable wording on the same views, never the refilling notice.
+// no "may have ended", no "No reference matches" in the reference picker, no subscriber or
+// recipient count, no offline dot and no no_holder route marker. A listener that could not answer
+// at all (the fake's `down` state) is unreachable wording on the same views, never the refilling
+// notice.
 //
 // The Agents page and an agent's conversation page poll the list every 15 s, so they move from a
 // complete read to a refilling one in place, keeping the rows they had; assertions on those two
@@ -52,6 +54,10 @@ const planner: FakeSession = {
   session_id: "refill-planner-session",
   title: "Planner (refill)",
 };
+/** The picker's row for that session, told from the role row beneath it: a row's accessible
+ *  name is its words and the line under them, and a role's line names the session holding it,
+ *  so the session's name alone matches both (`e2e/ref-picker.ts`). */
+const plannerRow = new RegExp(`^${planner.title.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`);
 const watcher: FakeSession = {
   dir: "/srv/refill-watcher",
   machine_id: "box-refill",
@@ -122,8 +128,7 @@ async function agentsAnswer(): Promise<{
 async function expectNoAbsenceClaim(page: Page): Promise<void> {
   await expect(page.getByText("No agents are connected.")).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Agents empty state" })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Replied, no longer connected" })).toHaveCount(0);
-  await expect(page.getByText("No live agents match.")).toHaveCount(0);
+  await expect(page.getByText("No reference matches.")).toHaveCount(0);
   await expect(page.getByText(/may have ended/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Subscribers: \d/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Reaches \d/ })).toHaveCount(0);
@@ -151,15 +156,12 @@ async function openIssueConversation(page: Page, issueKey: string): Promise<void
   await expect(page.getByRole("form", { name: "Comment composer" })).toBeVisible();
 }
 
-/** Opens the issue composer's mention suggestions afresh. Opening them reads the agent list
- *  again (`MentionComposer`), so a list that changed since the last open is the one shown. */
-async function openMentionSuggestions(page: Page): Promise<Locator> {
+/** Opens the issue composer's reference picker afresh. Opening it reads the agent list again
+ *  (`useRefPicker`), so a list that changed since the last open is the one shown. */
+async function openReferencePicker(page: Page): Promise<Locator> {
   const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
   await field.fill("");
-  await field.fill("@");
-  const suggestions = page.getByRole("listbox", { name: "Mention suggestions" });
-  await expect(suggestions).toBeVisible();
-  return suggestions;
+  return openRefPicker(field, "@");
 }
 
 function askRecipients(page: Page, askId: string): Locator {
@@ -177,7 +179,7 @@ async function openProjectBoard(page: Page, issueKey: string): Promise<void> {
 }
 
 /** Every refilling view a fresh page shows, after a reload or a first visit: the issue header's
- *  subscribers and route, the mention suggestions, the document's subscribers, the ask card's
+ *  subscribers and route, the reference picker, the document's subscribers, the ask card's
  *  recipients, and the project list and board. */
 async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Promise<void> {
   await openIssueConversation(page, fixture.issueKey);
@@ -189,7 +191,7 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await expect(page.getByTestId("issue-route-refilling")).toHaveText(
     `Route reach unknown: ${REFILLING}`
   );
-  const suggestions = await openMentionSuggestions(page);
+  const suggestions = await openReferencePicker(page);
   await expect(refillingNotice(suggestions)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
   await expectNoAbsenceClaim(page);
   await expectNoUnreachableWording(page);
@@ -246,8 +248,8 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expect(issuePage.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
     await expect(issuePage.getByTestId("issue-route-unknown")).toHaveCount(0);
     await expect(issuePage.getByTestId("issue-route-unreachable")).toHaveCount(0);
-    const before = await openMentionSuggestions(issuePage);
-    await expect(before.getByRole("option", { name: planner.title })).toBeVisible();
+    const before = await openReferencePicker(issuePage);
+    await expect(before.getByRole("option", { name: plannerRow })).toBeVisible();
     await expectNoRefillingWording(issuePage);
 
     const page = await alice.newPage();
@@ -262,11 +264,11 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await setListsState("refilling");
 
     // The open composer reads the list again as its suggestions open: the rows it had stay, and
-    // the refilling notice stands where "No live agents match." would.
-    const during = await openMentionSuggestions(issuePage);
+    // the refilling notice stands where the agent and role rows are read from.
+    const during = await openReferencePicker(issuePage);
     await expect(refillingNotice(during)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
-    await expect(during.getByRole("option", { name: planner.title })).toBeVisible();
-    await expect(issuePage.getByText("No live agents match.")).toHaveCount(0);
+    await expect(during.getByRole("option", { name: plannerRow })).toBeVisible();
+    await expect(issuePage.getByText("No reference matches.")).toHaveCount(0);
 
     await expectFreshViewsRefilling(page, fixture);
 
@@ -300,7 +302,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expect(issuePage.getByTestId("issue-route-refilling")).toHaveCount(0);
     await expect(issuePage.getByTestId("issue-route-unknown")).toHaveCount(0);
     await expect(
-      (await openMentionSuggestions(issuePage)).getByRole("option", { name: planner.title })
+      (await openReferencePicker(issuePage)).getByRole("option", { name: plannerRow })
     ).toBeVisible();
     await expectNoRefillingWording(issuePage);
 
@@ -344,8 +346,11 @@ test("an empty list that starts refilling never says nobody is connected", async
     await expect(issuePage.getByTestId("issue-route-unreachable")).toContainText(
       "Nobody holds it right now"
     );
-    const before = await openMentionSuggestions(issuePage);
-    await expect(before.getByText("No live agents match.")).toBeVisible();
+    const before = await openReferencePicker(issuePage);
+    // A complete, empty list: the picker offers no agent and no role of its own, and says
+    // nothing about a list it could not read.
+    await expect(before.getByRole("option", { name: plannerRow })).toHaveCount(0);
+    await expect(refillingNotice(before)).toHaveCount(0);
 
     const page = await alice.newPage();
     await page.goto(documentPath);
@@ -367,9 +372,9 @@ test("an empty list that starts refilling never says nobody is connected", async
 
     await setListsState("refilling");
 
-    const during = await openMentionSuggestions(issuePage);
+    const during = await openReferencePicker(issuePage);
     await expect(refillingNotice(during)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
-    await expect(issuePage.getByText("No live agents match.")).toHaveCount(0);
+    await expect(issuePage.getByText("No reference matches.")).toHaveCount(0);
 
     await expectFreshViewsRefilling(page, fixture);
 
@@ -463,7 +468,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Subscribers", exact: true })).toBeVisible();
     await expect(page.getByTestId("issue-route-unknown")).toHaveText("Route reach unknown");
-    const suggestions = await openMentionSuggestions(page);
+    const suggestions = await openReferencePicker(page);
     await expect(suggestions.getByTestId("agent-list-unreachable")).toHaveText(
       "Could not load live agents — Envoy listener unreachable."
     );

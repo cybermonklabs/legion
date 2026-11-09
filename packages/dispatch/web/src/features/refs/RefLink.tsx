@@ -257,11 +257,14 @@ export function collectReferenceAnchors(
       ? referenceRouteFromHref(href, appOrigin)
       : nodeRouteFromHref(href, appOrigin);
     if (route === undefined) {
-      // A `dispatch://` URL left as text that cites nothing - past the bounds the index keys -
-      // is the text it is, as a bare one past them already renders (`linkifyDispatchRefs`):
-      // Proof's serializer left it `href=""` and `data-dispatch-href`, which would click to the
-      // current page and open a hover card for a reference the server never recorded.
-      if (textUrl && href.startsWith("dispatch://")) {
+      // A `dispatch://` address that cites nothing - past the bounds the index keys, or a name
+      // no kind of node is written under - is the words the writer wrote, with no link (R8),
+      // whether those words are the address itself or the author's own: a `dispatch://` href
+      // opens no page in any browser, so leaving it live is a dead link in the page. A bare one
+      // already renders that way (`linkifyDispatchRefs`), and Proof's serializer leaves a
+      // worded one `href=""` with `data-dispatch-href`, which would click to the current page
+      // and open a hover card for a reference the server never recorded.
+      if (href.startsWith("dispatch://")) {
         anchor.replaceWith(document.createTextNode(text));
       }
       continue;

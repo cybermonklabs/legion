@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
+import { pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -30,11 +31,7 @@ async function post(page: Page): Promise<Record<string, unknown>> {
 
 async function selectMention(page: Page, text: string, option = "planner"): Promise<void> {
   const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-  await field.fill(text);
-  await page
-    .getByRole("listbox", { name: "Mention suggestions" })
-    .getByRole("option", { name: option })
-    .click();
+  await pickReference(field, text, option);
 }
 
 test.beforeEach(async () => {
@@ -106,9 +103,8 @@ test("an unsupported selected mode warns but does not prevent Send", async ({ br
     ).toBeVisible();
     await setSessionSendStatus("s2", 404);
     expect(await post(page)).toEqual({
-      body: "@worker",
+      body: "[worker](dispatch://agent/s2)",
       delivery: "aside",
-      mentions: [{ target: "session:s2" }],
     });
   } finally {
     await alice.close();

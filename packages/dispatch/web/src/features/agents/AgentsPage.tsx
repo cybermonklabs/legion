@@ -1076,6 +1076,10 @@ function BroadcastComposer({
   // the message held at two rows. `min-h-16` is important because styles.css's unlayered
   // below-1280 touch floor (`min-height: 44px`) would otherwise override it and shrink the
   // message box on its first character. Elsewhere none of these classes apply.
+  // The line under the box saying what a pick does (`DISPATCH_WRITING_BOXES`) is the box's
+  // description there rather than a line of its own: this panel is held to 40% of a phone
+  // empty and 45% filled (`e2e/agents.e2e.ts`), and a hint of its own costs a line of that
+  // budget, which the recipients and the message are owed. Every wider screen shows it.
   return (
     <section
       aria-label="Broadcast"
@@ -1136,7 +1140,8 @@ function BroadcastComposer({
           in carries that placement and the box itself only its own size. */}
       <MentionField
         body={body}
-        className="text-sm narrow-or-short:max-h-32 narrow-or-short:min-h-16! narrow-or-short:field-sizing-content short:max-h-16"
+        className="text-sm narrow-or-short:mt-0 narrow-or-short:max-h-32 narrow-or-short:min-h-16! narrow-or-short:field-sizing-content short:max-h-16"
+        hintClassName={`text-xs narrow-or-short:sr-only ${textMutedOnSurface}`}
         label="Broadcast message"
         labelClassName="mt-2 block w-full narrow-or-short:order-1 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-2"
         labelHidden

@@ -81,6 +81,23 @@ test("a link whose words its author wrote keeps those words", async () => {
   }
 });
 
+// R8 for an address that names nobody: a login written in any other form than a stored one is
+// no node, so the words the writer wrote stand with no link at all. A `dispatch://` href opens
+// no page in any browser, so the worded case is dropped as the bare one already is.
+test("a worded link whose address cites nothing reads as its words, with no link", async () => {
+  const view = draw(
+    <MarkdownBody markdown="Ask [Dana](dispatch://person/Dana) about it." />,
+    new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  );
+  try {
+    await waitFor(() => expect(words(view.container)).toBe("Ask Dana about it."));
+    expect(within(view.container).queryByRole("link")).toBeNull();
+    expect(view.container.querySelector("[data-dispatch-ref]")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // The plain-text projection reads the same reference the painted line reads, and names it the
 // same way: a label and the line beside it never say two different things.
 test("the plain-text projection names a reference by its resolved name", async () => {

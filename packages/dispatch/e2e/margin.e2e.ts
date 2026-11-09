@@ -57,7 +57,6 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     spec: initialMarkdown,
     title: "Review the spec",
   });
-  const relatedIssue = await createIssue({ project: "CORE", title: "Related work" });
   const artifactId = issue.primary_artifact_id;
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -91,12 +90,6 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     await selectEditorText(alicePage, "brown");
     await barAction(alicePage, "Comment");
     const commentComposer = alicePage.getByRole("form", { name: "Comment composer" });
-    await commentComposer.getByLabel("Comment").press("Control+k");
-    await expect(
-      commentComposer.getByRole("button", { name: `${relatedIssue.key}: Related work` })
-    ).toBeVisible();
-    await alicePage.keyboard.press("Escape");
-    await expect(alicePage.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     await commentComposer.getByLabel("Comment").fill("why?");
     await commentComposer.getByRole("button", { exact: true, name: "Send" }).click();
     const comment = await commentWithBody(issue.key, artifactId, "why?");

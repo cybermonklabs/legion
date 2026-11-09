@@ -322,6 +322,12 @@ export const reviewerSession: FakeSession = {
   title: "Reviewer",
 };
 
+/** What a pick of one of those two sessions writes into a draft, and what a channel of its own
+ *  seeds there: the link that names the party (INFRA-1702 R4, `partyLink`), which is the whole
+ *  record of who the write addresses. */
+export const plannerMention = `[${plannerSession.title}](dispatch://agent/${plannerSession.session_id})`;
+export const reviewerMention = `[${reviewerSession.title}](dispatch://agent/${reviewerSession.session_id})`;
+
 /** Both sessions live, both with Dispatch activity, and two open issues for the picker to offer:
  *  a keyboard reader has to be able to pass the first to reach the second. Returns the first. */
 export async function seedAgents(): Promise<string> {

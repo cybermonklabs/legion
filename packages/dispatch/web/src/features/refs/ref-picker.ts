@@ -304,6 +304,20 @@ export const REF_PICKER_WORDS: Record<Exclude<RefPickerState, "rows">, string> =
   unreachable: "Could not load references — Dispatch unreachable.",
 };
 
+/** What the live registry read behind the agent and role rows is, while it is not a list the
+ *  picker can draw from. Every view that reads that list says which of these holds where it
+ *  would otherwise look like an absence - the Agents page, the live view, an ask's recipients -
+ *  and the picker, where the agents and the roles would be, is one of them. `listed` is a read
+ *  that answered: the rows are the list. */
+export type RefPickerParties = "listed" | "loading" | "refilling" | "unreachable";
+
+/** The words of the two party states the shared refilling notice does not own, in the shapes
+ *  the composer's own suggestion list used before the picker replaced it. */
+export const REF_PICKER_PARTY_WORDS: Record<"loading" | "unreachable", string> = {
+  loading: "Loading live agents…",
+  unreachable: "Could not load live agents — Envoy listener unreachable.",
+};
+
 /** What the instruction below calls one searched kind's rows. */
 const SEARCHED_KIND_WORDS: Record<SearchResultKind, string> = {
   ask: "asks",

@@ -71,6 +71,7 @@ export function MentionField({
   disabled = false,
   fieldRef,
   handle,
+  hintClassName,
   inline = false,
   issueKey,
   label,
@@ -100,6 +101,12 @@ export function MentionField({
    *  draft reaches the box by: the Inbox's answer keys find the selected ask's answer box by
    *  `data-ask-answer` and move the focus into it (`features/inbox/Inbox.tsx`). */
   readonly handle?: string;
+  /** What this host's layout asks of the line under the box, in place of the field's own
+   *  classes. A host whose box sits in a layout of its own places that line as it places the
+   *  label; a panel held to a share of a phone's screen (the Agents broadcast composer) makes
+   *  it the box's description there rather than a line of its own, which costs it none of that
+   *  share and still reaches a reader who cannot see the box. */
+  readonly hintClassName?: string;
   /** A one-line field that grows with what is typed, as a reply's does. */
   readonly inline?: boolean;
   /** The issue this box writes on, where it has one: the picker offers that issue's people and
@@ -300,7 +307,7 @@ export function MentionField({
       <RefPickerList id={listboxId} onTake={takePick} picker={picker} />
       {/* What this box does with a pick, in the writing list's own words, so the line under the
           box and the list that drives the browser rows cannot drift apart. */}
-      <p className={`text-xs ${textMutedOnSurface}`} id={hintId}>
+      <p className={hintClassName ?? `text-xs ${textMutedOnSurface}`} id={hintId}>
         {writing.hint}
       </p>
     </>

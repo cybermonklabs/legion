@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { expect, type Page, test } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { openAgents, seedAgents, shownAgentRows } from "./agents";
+import { openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
 import {
   createAsk,
   createIssue,
@@ -833,7 +833,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await expect(toggle).toContainText("CORE-2");
     const field = row.getByRole("textbox", { name: "Comment" });
     await expect(field).toBeFocused();
-    await expect(field).toHaveValue("@Planner");
+    await expect(field).toHaveValue(plannerMention);
   } finally {
     await context.close();
   }

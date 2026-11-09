@@ -1316,8 +1316,13 @@ async function tapsLostAcrossBand(
         const y = box.top + box.height / 2;
         const label = control.getAttribute("aria-label");
         const decides = label === "Accept suggestion" || label === "Reject suggestion";
+        // A decision is tapped where its card is clear of the foot band: inside the band the
+        // pill covers it, which is the cover the rule accepts, and the band is as tall as the
+        // composer under it - the line saying what a pick does included. Above the band's own
+        // top the pill may cover nothing.
+        const inBand = box.bottom > (pill?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY);
         if (pill?.contains(control) || box.width === 0) continue;
-        if (box.bottom > turnsTopNow && !decides) continue;
+        if (box.bottom > turnsTopNow && (!decides || inBand)) continue;
         if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight) continue;
         let clipped = false;
         for (

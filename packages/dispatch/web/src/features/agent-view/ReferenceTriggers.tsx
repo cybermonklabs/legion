@@ -19,6 +19,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
+import { RefPickerParties } from "../refs/RefPickerList";
 import {
   insertionText,
   REF_PICKER_HEADINGS,
@@ -167,6 +168,7 @@ function DoorBody({
           {picker.instruction}
         </p>
       )}
+      <RefPickerParties picker={picker} />
       {picker.state === "rows" ? null : picker.state === "unreachable" ? (
         <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="ref-picker-unreachable">
           {REF_PICKER_WORDS.unreachable}

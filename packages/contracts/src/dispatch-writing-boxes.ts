@@ -169,14 +169,21 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     reach: "Comment",
     write: "comment",
   },
+  // The phone thread composer answers a comment thread alone. `phone.beginReply` is wired to
+  // comment turns only and `phoneThread` resolves a comment card only, so a message's Reply at
+  // phone width is answered by the docked conversation composer above, and no reader can put
+  // this box in front of a message. The row stays, because `MentionComposer` would compute
+  // this write for a message reply target, and says what it is: a pair nothing can drive.
   {
     box: "phone-thread-composer",
-    covered: true,
+    covered: false,
     delivers: false,
     files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
-    hint: DISPATCH_WRITING_HINT_QUIET,
+    hint: "",
     issueRows: true,
     reach: "Comment",
+    reason:
+      "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.

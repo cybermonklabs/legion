@@ -267,15 +267,16 @@ for (const kind of KINDS) {
         );
       }
 
-      // The inert one-line preview, which the Answers page carries now that the Replies page
-      // is gone: each form reads as the title, with no link inside it.
+      // The one-line preview the Answers page carries now that the Replies page is gone. The
+      // row is a record a reader reads (`DISPATCH_READING_SURFACES`'s `answers-subject`), so
+      // its references are live links, where a preview inside a control - the collapsed card
+      // above - draws them as spans.
       await page.goto("/answers");
       for (const text of [target.address, `[${target.address}](${target.address})`]) {
         const preview = answeredQuestionPreview(page, seeded.written.get(text)?.ask ?? "");
-        await expect(preview.locator(`[data-dispatch-ref="${target.address}"]`)).toHaveText(
-          target.title
-        );
-        await expect(preview.locator("a")).toHaveCount(0);
+        const link = preview.locator(`a[data-dispatch-ref="${target.address}"]`);
+        await expect(link).toHaveText(target.title);
+        await expect(link).toHaveAttribute("href", /^\//u);
       }
     } finally {
       await context.close();
@@ -331,15 +332,14 @@ test("a link its author worded keeps its words in the document, and an address w
     await pastAnswered;
     await expectWordsAndAddresses(page.getByTestId("version-view"), seeded);
 
-    // The inert one-line preview shows each missing address as written, with no link in it.
-    // The Answers page carries it now that the Replies page is gone.
+    // The same preview for an address whose target is missing: it reads as written, since
+    // there is no title to read it as.
     const answersAnswered = missingAnswered(page, seeded);
     await page.goto("/answers");
     await answersAnswered;
     for (const { address } of seeded.missing) {
       const preview = answeredQuestionPreview(page, seeded.written.get(address)?.ask ?? "");
       await expect(preview.locator(`[data-dispatch-ref="${address}"]`)).toHaveText(address);
-      await expect(preview.locator("a")).toHaveCount(0);
     }
   } finally {
     await context.close();

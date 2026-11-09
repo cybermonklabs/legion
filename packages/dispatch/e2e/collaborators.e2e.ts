@@ -16,6 +16,7 @@ import {
   listComments,
   patchIssue,
 } from "./api";
+import { openRefPicker, pickerRows } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
@@ -254,24 +255,26 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
     await page.goto(`/issues/${issueKey}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    await field.fill("@");
+    const list = await openRefPicker(field, "@");
 
-    // The roles no live agent holds, in workflow order: the implementer, then the reviewer, each
-    // drawn by the newest session of its token. The tester is live, so it is a live option alone.
-    const listbox = page.getByRole("listbox", { name: "Mention suggestions" });
-    const notRunning = listbox.getByRole("group", { name: "Not running" });
-    await expect(notRunning.getByRole("option")).toHaveCount(2);
-    await expect(notRunning.getByRole("option").nth(0)).toHaveAccessibleName(tokens.implementer);
-    const reviewer = notRunning.getByRole("option").nth(1);
-    await expect(reviewer).toHaveAccessibleName(tokens.reviewer);
+    // Every role is one group, the live one and the two nobody holds alike, each row its own
+    // token: the live tester first, then the issue's stopped roles in workflow order, the
+    // implementer before the reviewer. The two reviewer sessions of one token are one row.
+    await expect
+      .poll(async () => (await pickerRows(list)).filter((row) => row.startsWith("Roles: ")))
+      .toEqual([
+        `Roles: ${tokens.tester}`,
+        `Roles: ${tokens.implementer}`,
+        `Roles: ${tokens.reviewer}`,
+      ]);
+    // A role no live agent holds says so under its token, beside the session that held it last.
+    const reviewer = list.getByRole("option", { name: tokens.reviewer });
     await expect(reviewer).toContainText("reviewer · not running");
-    await expect(reviewer.locator(`[data-agent-name="${newReviewer}"]`)).toHaveCount(1);
-    await expect(listbox.getByRole("option", { exact: true, name: tokens.tester })).toHaveCount(1);
-    await expect(notRunning.getByRole("option", { name: tokens.tester })).toHaveCount(0);
+    await expect(reviewer).toContainText(`Legion reviewer · ${issueKey}`);
 
     // Choosing the reviewer addresses the comment to its role, not to a session that has ended.
-    await notRunning.getByRole("option", { exact: true, name: tokens.reviewer }).click();
-    await expect(field).toHaveValue(`@${tokens.reviewer}`);
+    await reviewer.click();
+    await expect(field).toHaveValue(`[${tokens.reviewer}](dispatch://role/${tokens.reviewer})`);
     await field.press("End");
     await field.pressSequentially(" please review the fix");
     await form.getByRole("button", { exact: true, name: "Send" }).click();

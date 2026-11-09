@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, patchIssue } from "./api";
+import { pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -26,8 +27,7 @@ const worker: FakeSession = {
 
 async function selectMention(page: Page, name: string): Promise<void> {
   const composer = page.getByRole("form", { name: "Comment composer" });
-  await composer.getByLabel("Comment").fill("@");
-  await composer.getByRole("option", { name }).click();
+  await pickReference(composer.getByLabel("Comment"), "@", name);
 }
 
 async function postPayload(page: Page): Promise<Record<string, unknown>> {
@@ -61,9 +61,8 @@ test("the unified composer offers live roles and sessions and posts canonical me
     await selectMention(page, "worker");
     const payload = await postPayload(page);
     expect(payload).toEqual({
-      body: "@worker",
+      body: "[worker](dispatch://agent/B)",
       delivery: "steer",
-      mentions: [{ target: "session:B" }],
     });
   } finally {
     await alice.close();
@@ -106,7 +105,7 @@ test("an offline selected mention is posted and exposes its failed delivery", as
     await selectMention(page, "worker");
     await setSessionSendStatus("B", 404);
     const payload = await postPayload(page);
-    expect(payload.mentions).toEqual([{ target: "session:B" }]);
+    expect(payload.body).toBe("[worker](dispatch://agent/B)");
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText("failed");
     // The sender retries a "no live session" answer under the one attempt and its key for the
     // listener take-over window - half a second under the harness's

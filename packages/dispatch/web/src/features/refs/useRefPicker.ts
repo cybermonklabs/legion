@@ -24,6 +24,7 @@ import {
   type RefPickerInsertion,
   type RefPickerKeyResult,
   type RefPickerKind,
+  type RefPickerParties,
   type RefPickerRow,
   type RefPickerState,
   type RefPickerTrigger,
@@ -31,6 +32,7 @@ import {
   refPickerInstruction,
   stepRow,
 } from "./ref-picker";
+import { architectureQuery } from "./reference-target";
 import { buildDispatchReference, nodeRouteFromHref, parseNodeReference, shortForm } from "./routes";
 
 /** How long after the last keystroke the search goes out. The palette's own wait, so the two
@@ -73,6 +75,9 @@ export interface RefPicker {
   readonly activeId: string | undefined;
   /** What the list is while it holds no rows; `REF_PICKER_WORDS` has each one's words. */
   readonly state: RefPickerState;
+  /** What the live registry read behind the agent and role rows is, so the reader is never
+   *  left reading a missing Agents group as an absence. */
+  readonly parties: RefPickerParties;
   /** The one instruction row, while the query is too short for the search route to answer. */
   readonly instruction: string | undefined;
   /** The address whose blocks are listed, while the reader has a row open for its parts. */
@@ -234,6 +239,10 @@ export function useRefPicker({
   const [debounced, setDebounced] = useState("");
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const [openedParts, setOpenedParts] = useState<string | undefined>(undefined);
+  // A closed picker holds no highlight: the next open starts on its own first row, rather than
+  // on a row this open never drew - the same row, listed again, would otherwise be what Enter
+  // takes.
+  if (!open && activeId !== undefined) setActiveId(undefined);
   if (!open && openedParts !== undefined) setOpenedParts(undefined);
 
   useEffect(() => {
@@ -266,9 +275,8 @@ export function useRefPicker({
     project ?? (issueKey === undefined ? undefined : issueKey.slice(0, issueKey.lastIndexOf("-")));
   const readsComponents = open && componentProject !== undefined;
   const architecture = useQuery({
+    ...architectureQuery(componentProject),
     enabled: readsComponents,
-    queryFn: () => api.getArchitecture(componentProject ?? ""),
-    queryKey: ["architecture", componentProject],
   });
   const parts = useQuery({
     enabled: openedParts !== undefined,
@@ -352,7 +360,8 @@ export function useRefPicker({
   // is neither pending nor failed, whatever its own query says while it is disabled.
   const reads = [
     { asked: searching, failed: search.isError, pending: search.isPending },
-    // An agent list that is refilling is a list not ready yet, not a failure to report.
+    // An agent list that is refilling is a list not ready yet, not a failure to report; what
+    // it is instead is `parties` below, which the reader is told where its rows would be.
     { asked: open, failed: live.isError && !live.refilling, pending: live.isPending },
     { asked: readsCollaborators, failed: collaborators.isError, pending: collaborators.isPending },
     { asked: readsUsers, failed: users.isError, pending: users.isPending },
@@ -371,6 +380,18 @@ export function useRefPicker({
   const failed = reads.some((read) => read.asked && read.failed);
   const state: RefPickerState =
     ordered.length > 0 ? "rows" : waiting ? "loading" : failed ? "unreachable" : "empty";
+  // What the agent and role rows' own source is, which no other read can speak for: a list the
+  // picker is still waiting on, refilling, or unreachable leaves no Agents group, and a missing
+  // group with nothing said about it reads as "no agent".
+  const parties: RefPickerParties = live.current
+    ? "listed"
+    : live.refilling
+      ? "refilling"
+      : live.isPending
+        ? "loading"
+        : live.isError
+          ? "unreachable"
+          : "listed";
 
   const insertion = (row: RefPickerRow | undefined): RefPickerInsertion | undefined =>
     row === undefined || trigger === undefined ? undefined : insertionFor(row, trigger, caret);
@@ -419,6 +440,7 @@ export function useRefPicker({
       const row = ordered.find((candidate) => candidate.id === id);
       if (row?.parts !== undefined) setOpenedParts(row.parts);
     },
+    parties,
     pressKey,
     state,
     take: (id: string) => insertion(ordered.find((row) => row.id === id)),

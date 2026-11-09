@@ -1095,7 +1095,9 @@ const NOTICE_SIZES = [
 /**
  * At each compact size, with the message filled until it stops growing: the composer is within
  * 45% of the viewport, exactly one notice renders, and the notice adds no grid row on a narrow
- * screen (heading, chips, message, controls: four) and at most one on a short one (three).
+ * screen (heading, chips, message, controls: four) and at most one on a short one (three). The
+ * line under the box saying what a pick does is the box's description at these sizes, not a
+ * row of its own (`AgentsPage`'s `hintClassName`), which is why the budget is the one it was.
  *
  * Every default here points at failure. `NOTICE` crosses into the page whole rather than as a
  * source string, so a pattern that matches nothing cannot collapse the count to a passing 0;

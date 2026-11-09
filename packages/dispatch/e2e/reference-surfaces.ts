@@ -2,6 +2,7 @@ import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { Issue } from "../web/src/api/types";
+import { type FakeSession, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -10,10 +11,14 @@ import {
   createMessage,
   createProject,
   listIssueAsks,
+  putArchitectureSource,
+  syncArchitectureSource,
 } from "./api";
 import { blockId, openedThreadCard, setSheet } from "./editor";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { READING_PANE_WIDTH } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { sessionIds } from "./session-ids";
 
 /**
  * The one world every reference spec is walked across, and the surfaces it is read on.
@@ -110,6 +115,46 @@ export interface ShortenableItem {
   readonly reference: string;
 }
 
+/** The architecture CORE imports: one component, which is the only way a component exists -
+ *  the fake GitHub serves the model and the source sync reads it in (`e2e/architecture.e2e.ts`). */
+export const COMPONENT_REPO = "legion/reference-arch";
+export const COMPONENT_ID = "web";
+export const COMPONENT_TITLE = "Web";
+export const COMPONENT_REFERENCE = `dispatch://CORE/component/${COMPONENT_ID}`;
+export const COMPONENT_MODEL = { "web.md": `---\ntitle: ${COMPONENT_TITLE}\n---\nThe **SPA**.\n` };
+
+/** The live session a reference names and the role it holds. The id is a UUID because the
+ *  agent routes take no other (`agentStreamSessionID`), so a session named anything else would
+ *  list on the Agents page with no live view to open. */
+export const SESSION_ID = sessionIds.tester;
+export const SESSION_TITLE = "Reference tester";
+export const SESSION_REFERENCE = `dispatch://agent/${SESSION_ID}`;
+export const ROLE_TOKEN = "reference-reviewer";
+export const ROLE_REFERENCE = `dispatch://role/${ROLE_TOKEN}`;
+
+/** The session the world's live list holds. */
+const referenceSession: FakeSession = {
+  capabilities: ["aside", "btw", "steer"],
+  dir: "/srv/reference",
+  machine_id: "box-reference",
+  roles: [ROLE_TOKEN],
+  session_id: SESSION_ID,
+  title: SESSION_TITLE,
+};
+
+/** The person a reference names. A stored login is an email (`model.CanonicalLogin`, and
+ *  `text/refs.go`'s `personLoginPattern`), and the two logins the reset re-creates - `alice`
+ *  and `bob` - are not, so a reference naming one of them names nobody Dispatch holds. This
+ *  person posts on the host, which is what puts them among its people and so among the
+ *  picker's rows. */
+export const PERSON_LOGIN = "dana@example.test";
+export const PERSON_REFERENCE = `dispatch://person/${PERSON_LOGIN}`;
+
+/** A person reference the world answers for nobody: a login nobody has signed in as, which
+ *  every surface reads as the words it is written with, with no link (R8). */
+export const UNKNOWN_PERSON_LOGIN = "nobody@example.test";
+export const UNKNOWN_PERSON_REFERENCE = `dispatch://person/${UNKNOWN_PERSON_LOGIN}`;
+
 export interface ReferenceWorld {
   /** CORE-1, the host: its spec holds the anchor, filler that puts the questions below the
    *  fold, and one question block per `QUESTION_IDS`. The texts these specs write live on it. */
@@ -127,6 +172,8 @@ export interface ReferenceWorld {
   readonly items: Readonly<Record<"ask" | "comment" | "message" | "block", ShortenableItem>>;
   /** What each kind of target reads as, by its reference. */
   readonly targets: Readonly<Record<TargetKind, Target>>;
+  /** The comment the person wrote on the host, which is what makes them one of its people. */
+  readonly personComment: ShortenableItem;
 }
 
 /** How many filler paragraphs stand between the anchor and the first question block, so a link
@@ -138,6 +185,10 @@ const FILLER_PARAGRAPHS = 40;
  * target with a document, an ask, a comment and a message, the cross-project issue, and the
  * host's own ask, comment, message and spec block whose ids a short reference names.
  *
+ * Beside the records it seeds the parties a reference names: CORE's one architecture component,
+ * the live session and the role it holds, and the person whose login is a stored login's own
+ * shape, each of them a kind the picker offers and a page a reference opens.
+ *
  * The keys are deterministic — an issue's key is its project's next number — and the seeding
  * refuses any other, so a change in how keys are minted fails here rather than inside a row.
  */
@@ -145,6 +196,16 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "XCORE", name: "Cross core" });
   await createProject({ key: "ACME", name: "Acme" });
+  // CORE's architecture, the one component a reference names: the fake GitHub serves the model
+  // and the source sync reads it in, which is how every component of a project is made.
+  await seedFakeGithub({
+    [COMPONENT_REPO]: { contents: "read", files: COMPONENT_MODEL, installation_id: 101 },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: COMPONENT_REPO });
+  const source = await syncArchitectureSource("CORE", COMPONENT_REPO);
+  expect(source.last_error).toBeNull();
+  // The live session and the role it holds: a row of the picker, and a page a reference opens.
+  await setLiveSessions([referenceSession]);
   const filler = Array.from(
     { length: FILLER_PARAGRAPHS },
     (_, index) => `Filler paragraph ${index + 1} keeps the questions below the fold.`
@@ -208,6 +269,13 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
     referenceAgent
   );
   const hostBlock = await blockId(host.primary_artifact_id, ANCHOR);
+  // The person: their own post on the host, which is what puts them among its people. Writing
+  // it signs them in, which is the only way Dispatch holds a person at all.
+  const personComment = await createComment(
+    host.key,
+    { body: "The cache is the slow part." },
+    { login: PERSON_LOGIN }
+  );
 
   const questions = await settledQuestions(host.key, "spec", QUESTION_IDS);
   for (const id of ["q2", "q3"]) {
@@ -232,6 +300,10 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
       },
     },
     other,
+    personComment: {
+      id: personComment.id,
+      reference: `dispatch://${host.key}/comment/${personComment.id}`,
+    },
     questions,
     target,
     targets: {

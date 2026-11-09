@@ -1,5 +1,6 @@
 import { type ReactNode, useId } from "react";
 
+import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
   dangerText,
@@ -11,8 +12,35 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "./kind-icons";
-import { REF_PICKER_WORDS, type RefPickerInsertion, type RefPickerRow } from "./ref-picker";
+import {
+  REF_PICKER_PARTY_WORDS,
+  REF_PICKER_WORDS,
+  type RefPickerInsertion,
+  type RefPickerRow,
+} from "./ref-picker";
 import type { RefPicker } from "./useRefPicker";
+
+/**
+ * What the agent and role rows' own source is, where those rows would be: the shared refilling
+ * notice, the list still loading, or the listener unreachable. Every view that reads the agent
+ * list says which holds rather than letting a missing row read as an absence, and the picker
+ * lists those rows, so it says it too - in both the hosts that draw the picker's own chrome.
+ */
+export function RefPickerParties({ picker }: { picker: RefPicker }): ReactNode {
+  if (picker.parties === "listed") return null;
+  if (picker.parties === "refilling") {
+    return <AgentListRefilling className={`px-3 py-2 text-sm ${textMutedOnSurface}`} />;
+  }
+  const danger = picker.parties === "unreachable";
+  return (
+    <p
+      className={`px-3 py-2 text-sm ${danger ? dangerText : textMutedOnSurface}`}
+      data-testid={danger ? "agent-list-unreachable" : "agent-list-loading"}
+    >
+      {REF_PICKER_PARTY_WORDS[danger ? "unreachable" : "loading"]}
+    </p>
+  );
+}
 
 /**
  * The reference picker's rows, drawn for a host that has nowhere of its own to draw them: the
@@ -117,6 +145,7 @@ export function RefPickerList({
           {picker.instruction}
         </p>
       )}
+      <RefPickerParties picker={picker} />
       {picker.state === "rows" ? null : picker.state === "unreachable" ? (
         <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="ref-picker-unreachable">
           {REF_PICKER_WORDS.unreachable}

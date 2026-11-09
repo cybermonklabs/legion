@@ -346,7 +346,7 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     await expect(composer.getByRole("link", { exact: true, name: "planner" })).toBeVisible();
     await expect(composer.getByRole("link", { name: "— Can this ship?" })).toBeVisible();
     const field = composer.getByLabel("Comment");
-    await expect(field).toHaveValue("@planner");
+    await expect(field).toHaveValue("[planner](dispatch://agent/s1)");
     await field.press("End");
     await field.pressSequentially(" It is green now - ship it.");
     const response = page.waitForResponse(
@@ -356,12 +356,12 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toEqual({
-      body: "@planner It is green now - ship it.",
+      body: "[planner](dispatch://agent/s1) It is green now - ship it.",
       delivery: "steer",
-      mentions: [{ target: "session:s1" }],
       reply_to: parent.id,
     });
-    await expect(threadReply(page, card, "@planner It is green now - ship it.")).toBeVisible();
+    // The link's words are what the reader sees in the stored reply.
+    await expect(threadReply(page, card, "planner It is green now - ship it.")).toBeVisible();
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "s1" }]);
   } finally {
     await alice.close();

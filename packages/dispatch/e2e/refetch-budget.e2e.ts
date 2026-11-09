@@ -3,15 +3,21 @@ import { writeFile } from "node:fs/promises";
 import { expect, type Page, type Request, test } from "@playwright/test";
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { plannerSession, setLiveSessions } from "./agents";
 import {
   createComment,
   createIssue,
   createMessage,
   createProject,
   patchIssue,
+  putArchitectureSource,
   putIssueState,
+  syncArchitectureSource,
 } from "./api";
+import { blockId } from "./editor";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
+import { COMPONENT_ID, COMPONENT_MODEL, COMPONENT_REPO } from "./reference-surfaces";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -170,6 +176,14 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
   test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OTHER", name: "Other" });
+  // The two sources the new references read from: the live session the registry holds, and
+  // CORE's one architecture component.
+  await setLiveSessions([plannerSession]);
+  await seedFakeGithub({
+    [COMPONENT_REPO]: { contents: "read", files: COMPONENT_MODEL, installation_id: 101 },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: COMPONENT_REPO });
+  expect((await syncArchitectureSource("CORE", COMPONENT_REPO)).last_error).toBeNull();
   const pad = (index: number) => String(index + 1).padStart(2, "0");
   const targets = await createIssues(50, (index) => ({
     project: "CORE",
@@ -180,12 +194,27 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     title: `Unshown issue ${pad(index)}`,
   }));
   const links = targets.map((target) => `dispatch://${target.key}`).join("\n");
-  const source = await createIssue({ project: "CORE", spec: links, title: "Budget source" });
+  const anchor = "The budget anchor sits here.";
+  const source = await createIssue({
+    project: "CORE",
+    spec: [anchor, links].join("\n\n"),
+    title: "Budget source",
+  });
   const child = await createIssue({ parent: source.key, project: "CORE", title: "Budget child" });
   await patchIssue(child.key, { status: "todo" });
+  // One reference of each kind whose target is read from somewhere other than an issue: a
+  // party, whose name the shell's own registry poll already holds; a component, read with its
+  // project's architecture; and a block, read with the document holding it. A page that read
+  // once per party, per component or per block at the mount would be over the budget below,
+  // which a body of issue references alone would never notice.
+  const extras = [
+    `[${plannerSession.title}](dispatch://agent/${plannerSession.session_id})`,
+    `dispatch://CORE/component/${COMPONENT_ID}`,
+    `dispatch://${source.key}/spec#b-${await blockId(source.primary_artifact_id, anchor)}`,
+  ].join("\n");
   // The live spec editor renders a link with its author's text and reads nothing, so the 50
   // references that each read their target are this message's, on the Conversation tab.
-  await createMessage(source.key, { body: links }, bob);
+  await createMessage(source.key, { body: [links, extras].join("\n") }, bob);
 
   const alice = await asUser(browser, "alice");
   try {

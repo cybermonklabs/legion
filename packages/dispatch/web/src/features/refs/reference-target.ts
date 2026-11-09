@@ -14,6 +14,7 @@ import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
+  ArchitectureTreeComponent,
   Artifact,
   ArtifactText,
   ArtifactVersionContent,
@@ -139,6 +140,16 @@ export const commentQuery = (id: string | undefined) =>
     queryFn: () => api.getComment(id ?? ""),
   });
 
+/** A project's architecture, which is where a component's own title is: the one read behind a
+ *  component reference, keyed as the picker's own read of the same tree is
+ *  (`features/refs/useRefPicker.ts`), so a box that has listed a project's components and a
+ *  body that names one of them share the answer. */
+export const architectureQuery = (project: string | undefined) =>
+  queryOptions({
+    queryKey: ["architecture", project],
+    queryFn: () => api.getArchitecture(project ?? ""),
+  });
+
 /** `GET /api/v1/references?to=<reference>`: the node a reference names and the edges pointing at
  *  it, read by the Referenced by panel and, for a block, by the reference's title and card. */
 export const referencesQuery = (reference: string | undefined) =>
@@ -247,6 +258,9 @@ export interface ReferenceData {
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
   readonly block: GraphReferences | undefined;
+  /** The component a component reference names, once its project's architecture is read: the
+   *  one record behind that kind, and what gives the reference the component's own title. */
+  readonly component: ArchitectureTreeComponent | undefined;
 }
 
 export interface ReferenceReadOptions {
@@ -334,9 +348,10 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
     case "agent-session":
     case "role":
     case "person":
+      // A party is a reader, not a record: there is no read behind one to warm.
+      return;
     case "component":
-      // A party is a reader, not a record, and a component is drawn by the pane that shows it:
-      // there is no read behind either to warm.
+      void queryClient.prefetchQuery(architectureQuery(route.project));
       return;
     default: {
       const query = issueQuery(route.key);
@@ -474,6 +489,11 @@ export function useReferenceData(
   });
   const ask = useQuery({ ...askQuery(askId), enabled: askId !== undefined });
   const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
+  const componentRoute = route?.kind === "component" ? route : undefined;
+  const architecture = useQuery({
+    ...architectureQuery(componentRoute?.project),
+    enabled: componentRoute !== undefined,
+  });
   return {
     issue: issue.data,
     artifact,
@@ -481,6 +501,9 @@ export function useReferenceData(
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
+    component: (architecture.data?.components ?? []).find(
+      (candidate) => candidate.id === componentRoute?.id
+    ),
     // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
     // edit deletes its block would go on showing text its document or item no longer holds. The
     // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
@@ -549,14 +572,16 @@ export function blockText(node: GraphReferences["node"]): string | undefined {
  * to its status. An ask or comment never borrows its issue's status or its document's text, while
  * it loads or after. A block of a document resolves to the headline of its own text, as an ask or
  * comment does: the text the pinned version held for a pinned reference, its current text
- * otherwise. A reference to an image artifact, of an issue, a project or an agent's conversation,
- * also answers its picture: the bytes route of the version it pins, else of the latest.
+ * otherwise. A component resolves to its own title from its project's architecture, the one
+ * record behind that kind. A reference to an image artifact, of an issue, a project or an
+ * agent's conversation, also answers its picture: the bytes route of the version it pins, else
+ * of the latest.
  */
 export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, comment, issue, markdown, message } = useReferenceData(
+  const { artifact, ask, block, comment, component, issue, markdown, message } = useReferenceData(
     route,
     options
   );
@@ -582,6 +607,10 @@ export function useReferenceTarget(
     // A message reads as the head of what it says, the way a comment does; its own body is the
     // description, which the cards under a message reference render formatted.
     return { title: headline?.text, description: message?.message.body, picture: undefined };
+  }
+  if (kind === "component") {
+    // A component is named by its architecture row, and says what it is in its own prose.
+    return { title: component?.title, description: component?.prose, picture: undefined };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
     return {

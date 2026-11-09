@@ -110,6 +110,13 @@ function cacheOf(row: (typeof DISPATCH_TEXT_REFERENCES)[number], server: string)
   for (const key of row.issues ?? []) {
     queryClient.setQueryData(["issue-summary", key], summaryOf(key));
   }
+  // A component reference reads its project's architecture for the component's own title
+  // (`reference-target.ts`), so the cache holds one for every project a row's body names.
+  for (const project of new Set(
+    [...row.body.matchAll(/dispatch:\/\/([A-Z][A-Z0-9]*)\/component\//gu)].map((match) => match[1])
+  )) {
+    queryClient.setQueryData(["architecture", project], { components: [] });
+  }
   if (row.questions !== undefined) {
     queryClient.setQueryData(
       ["references", "questions", source.kind, source.id],
@@ -163,6 +170,11 @@ test.each(
   const restoreTitleReads = spyTitleReads();
   // The seeded reads are stale at once, so the answer behind each is the row's own: a refetch
   // of the question map must not replace the questions the row declares.
+  // A component reference reads its project's architecture for the component's own title
+  // (`reference-target.ts`); the row's cache is stale at once, so the read is answered here.
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue({
+    components: [],
+  } as never);
   const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue(
     questionsOf(row.questions ?? {})
   );
@@ -182,6 +194,7 @@ test.each(
     getIssueSummary.mockRestore();
     getReferences.mockRestore();
     getReferenceQuestions.mockRestore();
+    getArchitecture.mockRestore();
     restoreTitleReads();
   }
 });
