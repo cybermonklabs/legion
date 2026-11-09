@@ -148,7 +148,7 @@
     },
     {
       "script": "plan-pointer-drive.sh",
-      "needs": "a host that reaches a model: a real Oh My Pi on a model route (LEGION_OMP_PATH) for one headless session per arm, a loopback PostgreSQL it creates a database of its own on (LEGION_TEST_PG_DSN), and go, bun, python3 and openssl for the daemon's prompt composer and the e2e Dispatch server it starts"
+      "needs": "a host that reaches a model: a real Oh My Pi on a model route (LEGION_OMP_PATH) for one headless session per arm, a loopback PostgreSQL it creates a database of its own on (LEGION_TEST_PG_DSN), and jj, git, go, bun, psql, curl, the dispatch CLI, gh, python3 and openssl, each of which it refuses to start without: jj and git read the control's commit and extract its daemon module, go and bun run the daemon's prompt composer, gh is the one the composer is told, and psql, curl, python3 and openssl make and reach the e2e Dispatch server it starts"
     },
     {
       "script": "share-volumes-kind.sh",

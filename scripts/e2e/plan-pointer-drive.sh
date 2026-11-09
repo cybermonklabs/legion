@@ -1,16 +1,39 @@
 #!/usr/bin/env bash
 # The live proof that a Legion phase worker whose task line names a stale plan-handoff pointer
-# builds from the issue's `plan.md` as it stands (dispatch://INFRA-2038). `--tasks` chooses one
-# of two stagings, and each staging is run twice, as two arms that differ in one thing: the
-# implementer's role prompt. The head arm composes it from this checkout's own `packages/daemon`,
-# with the change's new text; the base arm
-# composes it from the daemon module of the commit `--base-commit` names, taken with `git archive`
-# into the run's own work directory, which is the control that carries no such text. Both arms
-# compose through the daemon's own composer (`workerPane`,
+# builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038).
+# `--tasks` chooses one of two stagings and `--mid-approval` one of two watcher shapes. Each
+# staging is run twice, as two arms that differ in one thing: the implementer's role prompt. The
+# head arm composes it from this checkout's own `packages/daemon`, with the change's new text. The
+# base arm composes it from the daemon module of the commit `--base-commit` names, taken with
+# `git archive` into the run's own work directory, which is the control that carries no such text.
+# Both arms compose through the daemon's own composer (`workerPane`,
 # packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), so what each session is told is what
 # the daemon would send it, and the whole `--append-system-prompt` argument is turned into the
 # prompt file by the shell rather than by a regular expression
 # (docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md).
+#
+# The staged issue carries four designs of one plan, as INFRA-1992's own history carried them.
+# Each design names one call, and each task of the plan is to write that call to a file, so the
+# score reads an artifact rather than prose about one:
+#
+#   early       plan.md versions 1 to 3, `pulumi.Import`. The task's handoff pointer cites version
+#               1, and the plan review approved version 1.
+#   standing    versions 4 to 6, `aws.s3.BucketV2`. The plan review approved version 6, so this is
+#               the approved plan when the session begins.
+#   unapproved  versions 7 and 8, `aws.s3.BucketReplicationConfig`. No plan review approves these
+#               two. Version 8 is the newest version when the session begins, and the rule under
+#               test forbids a build from it.
+#   mid         version 9, `pulumi.Alias`, written by the watcher while the session runs.
+#
+# "The version the task's pointer cites" (v1), "the newest approved version" (v6) and "the newest
+# version" (v8) are three different answers before the session starts.
+#
+# --mid-approval chooses what the watcher does with version 9, which is the rule's second case:
+#
+#   approved    the watcher records a plan review of version 9. This is the default, and the
+#               correct build is then `mid`.
+#   unapproved  the watcher records no review. The correct build stays `standing`, and a worker
+#               that writes `mid` built from an unapproved version.
 #
 # The two stagings answer two different questions:
 #
@@ -25,64 +48,71 @@
 # Oh My Pi session against it, and moves the plan under that session while it works. One attempt
 # is these steps:
 #
-#   1. a database of the run's own on the PostgreSQL LEGION_TEST_PG_DSN names, and the e2e
-#      harness's Dispatch server on it (packages/dispatch/e2e/run-server.sh), whose agent bearer
-#      is the pinned `e2e-token`;
+#   1. a database of the run's own on the PostgreSQL LEGION_TEST_PG_DSN names, made and dropped
+#      with psql, and the e2e harness's Dispatch server on it
+#      (packages/dispatch/e2e/run-server.sh), whose agent bearer is the pinned `e2e-token`;
 #   2. the staged issue, seeded through packages/dispatch/e2e/api.ts: a spec, a `plan.md` at eight
-#      versions whose design changes at version 4, six `plan` handoff records, the first citing
-#      plan.md version 1 and the sixth version 8, and the plan review's approval at version 1, so
-#      "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are
-#      different answers. Each design names one call - `pulumi.Import`, `aws.s3.BucketV2`, and
-#      `pulumi.Alias` at the version written mid-session - and each task of the plan is to write
-#      that call to a file, so the score reads an artifact rather than prose about one. With
-#      --tasks 2 the first task's file carries `note: <call>` and the second `adopt: <call>`. The
-#      second is the file the row scores, because a worker that reads the plan again between the
-#      two tasks reads it before that file is written. With --tasks 1 the plan holds that scored
-#      task alone and its file carries `adopt: <call>`, so no first task's file is written and
-#      the row's first-wrote and first-design read `none` with designs-differ `no`;
+#      versions carrying the first three designs above, six `plan` handoff records, the first
+#      citing plan.md version 1 and the sixth version 8, and the plan review's approvals of
+#      version 1 and version 6. The seed writes the session's task line too, from its own
+#      constants and its own list of the staged tasks. With --tasks 2 the first task's file
+#      carries `note: <call>` and the second `adopt: <call>`. The second is the file the row
+#      scores, because a worker that reads the plan again between the two tasks reads it before
+#      that file is written. With --tasks 1 the plan holds that scored task alone and its file
+#      carries `adopt: <call>`, so no first task's file is written and the row's first-wrote and
+#      first-design read `none` with designs-differ `no`;
 #   3. the implementer's pane prompt, composed from the arm's daemon module;
 #   4. the session: `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`,
-#      `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID`
-#      variable of this shell unset, `OMP_SESSION_STORAGE=file`, and the staged server as its own
-#      Dispatch. Its task is an ordinary implementing assignment whose `Handoff:` line is the one
-#      the daemon renders (packages/daemon/internal/workflow/effects.go), naming plan version 1
-#      and nothing else: it asks for each task of the plan, each one's line written to a file of
-#      the run's own, and for the round's `implement` handoff body, written to one more file,
-#      which a worker with no workspace can all do and which the role prompt reads the plan again
-#      before;
-#   5. the watcher, which writes plan.md version 9 - the second design change, with the plan
-#      review's approval of it - the moment the session's first read of the plan's text appears in
-#      the transcript, and at its bound when no such read appears;
-#   6. the run's row: which staging it came from (tasks=1 or tasks=2), every plan version the
+#      `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID`
+#      variable of this shell unset, `OMP_SESSION_STORAGE=file`, an empty `GH_CONFIG_DIR` of the
+#      run's own, and the staged server as its own Dispatch. Its task is an ordinary implementing
+#      assignment whose `Handoff:` line is the one the daemon renders
+#      (packages/daemon/internal/workflow/effects.go), naming plan version 1 and nothing else: it
+#      asks for each task of the plan, each one's line written to a file of the run's own, and for
+#      the round's `implement` handoff body, written to one more file, which a worker with no
+#      workspace can all do and which the role prompt reads the plan again before;
+#   5. the watcher, which writes plan.md version 9 - the last design change, with the plan
+#      review's approval of it when --mid-approval is `approved` - the moment the session's first
+#      read of the plan's text appears in a transcript, and at its bound when no such read
+#      appears;
+#   6. the run's row: which staging and which watcher shape it came from, every plan version the
 #      session read and when, the design each task's file names, read off the files, whether the
-#      two differ, the task line the session was given, the version the accepted handoff record
-#      cites, the trigger, and the times the trigger fired and the version landed. The summary
-#      line of each arm names the staging too.
+#      two differ, the version the accepted handoff record cites, the trigger, the times the
+#      trigger fired and the version landed, when the scored file was written, and this verdict on
+#      that file: `approved` when it names the newest approved design at the moment it was
+#      written, `stale` when it names an approved design that is no longer the newest, `unapproved`
+#      when it names a design only an unapproved version carries, and `other` when it names no
+#      design or more than one. The summary line of each arm names the staging and the watcher
+#      shape, and counts each verdict.
 #
-# An attempt whose mid-session version landed after the session stopped writing is unscorable: no
-# turn of the session saw the new version, so the attempt is neither a pass nor a failure. The
-# shell prints one line for each such attempt, with the two times, and makes the run again, up to
-# PLAN_POINTER_DRIVE_ATTEMPTS attempts. Only a scorable attempt's row reaches the summary. A run
-# whose every attempt is unscorable fails.
+# An attempt whose mid-session version landed after the scored file was written is unscorable: the
+# session wrote that file before the new version existed, so the attempt is neither a pass nor a
+# failure. The shell prints one line for each such attempt, with the two times, and makes the run
+# again, up to PLAN_POINTER_DRIVE_ATTEMPTS attempts. Only a scorable attempt's row reaches the
+# summary. A run whose every attempt is unscorable fails.
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-#     LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh \
-#     [--runs <n>] [--tasks <1|2>] [--base-commit <rev>]
+#     LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh --base-commit <rev> \
+#     [--runs <n>] [--tasks <1|2>] [--mid-approval <approved|unapproved>]
 #
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL server this run creates databases
 # on; its own database is never written. LEGION_OMP_PATH is required and names the Oh My Pi binary
-# the sessions run, which must reach a model. --runs is how many runs each arm makes (default 1;
-# three or more is what a reading needs). --tasks is how many tasks the staged plan holds, 1 or
-# 2 (default 2, the staging a bare run makes). --base-commit is the commit the control's daemon
-# module is taken from (default `jj log -r 'trunk()'`); `git archive` takes `packages/daemon` and
-# `packages/envoy` of it, the second because `packages/daemon/go.mod` replaces
-# `github.com/sjawhar/envoy` with `../envoy` and the composer runs `go run` in that module.
-# PLAN_POINTER_DRIVE_TRIGGER_SECONDS (120) is the watcher's bound,
-# PLAN_POINTER_DRIVE_SESSION_SECONDS (900) each session's, and PLAN_POINTER_DRIVE_ATTEMPTS (3)
-# how many attempts one run makes before an unscorable run fails. The run refuses to start - no
-# database, no server, no session - when LEGION_TEST_PG_DSN is unset or names a host that is not
-# loopback, when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, or when
-# either arm's daemon module is missing.
+# the sessions run, which must reach a model. --base-commit is required and names the commit the
+# control's daemon module is taken from: `git archive` takes `packages/daemon` and `packages/envoy`
+# of it, the second because `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy` with
+# `../envoy` and the composer runs `go run` in that module. --runs is how many runs each arm makes
+# (default 1; three or more is what a reading needs). --tasks is how many tasks the staged plan
+# holds, 1 or 2 (default 2, the staging a bare run makes). --mid-approval is the watcher's shape,
+# `approved` or `unapproved` (default `approved`). PLAN_POINTER_DRIVE_TRIGGER_SECONDS (120) is the
+# watcher's bound, PLAN_POINTER_DRIVE_SESSION_SECONDS (900) each session's, and
+# PLAN_POINTER_DRIVE_ATTEMPTS (3) how many attempts one run makes before an unscorable run fails.
+#
+# The run refuses to start - no database, no server, no session - when LEGION_TEST_PG_DSN is
+# unset, is no postgres URL, names a host that is not loopback or names its host in a parameter,
+# when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, when --mid-approval is
+# neither word, when --base-commit is missing or names no commit of this checkout, when either
+# arm's daemon module is missing, or when the two arms compose the same prompt byte for byte,
+# which is a base arm that is no control.
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
@@ -122,15 +152,17 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# createdb and dropdb read PGHOSTADDR and connect to the address it holds, while the loopback
-# check below reads the DSN's host alone: an inherited PGHOSTADDR would make and force-drop
-# databases on another server. The `compgen -e` sweep further down makes the session's
+# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name an entry that sets `hostaddr`,
+# while the loopback check below reads the DSN alone: an inherited one of the three would make and
+# force-drop databases on another server. The `compgen -e` sweep further down makes the session's
 # environment, not this shell's.
-unset PGHOSTADDR
+unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 
 runs=1
 # How many tasks the staged plan holds. 2 is what a bare run makes.
 tasks=2
+# What the watcher does with the mid-session version. `approved` is what a bare run makes.
+mid_approval=approved
 base_commit=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -152,6 +184,15 @@ while [ $# -gt 0 ]; do
       tasks=${1#--tasks=}
       shift
       ;;
+    --mid-approval)
+      [ $# -ge 2 ] || fail "--mid-approval takes the watcher's shape, approved or unapproved"
+      mid_approval=$2
+      shift 2
+      ;;
+    --mid-approval=*)
+      mid_approval=${1#--mid-approval=}
+      shift
+      ;;
     --base-commit)
       [ $# -ge 2 ] || fail "--base-commit takes the commit the control's daemon module is taken from"
       base_commit=$2
@@ -161,7 +202,7 @@ while [ $# -gt 0 ]; do
       base_commit=${1#--base-commit=}
       shift
       ;;
-    *) fail "unknown argument '$1': this script takes --runs <n>, --tasks <1|2> and --base-commit <rev>" ;;
+    *) fail "unknown argument '$1': this script takes --base-commit <rev>, --runs <n>, --tasks <1|2> and --mid-approval <approved|unapproved>" ;;
   esac
 done
 
@@ -177,6 +218,7 @@ head_module=$root/packages/daemon
 work=''
 dispatch_pid=''
 watcher_pid=''
+session_pid=''
 databases=()
 
 # The directory of the attempt run_attempt made, and of the scorable attempt run_one kept.
@@ -190,10 +232,12 @@ cleanup() {
   local rc=$1 database
   trap - EXIT INT TERM
   set +e
+  stop_tree "$session_pid"
   stop_tree "$watcher_pid"
   stop_pid "$dispatch_pid"
   for database in ${databases[@]+"${databases[@]}"}; do
-    dropdb -h "$db_host" -p "$db_port" -U "$db_user" --if-exists --force "$database" >/dev/null 2>&1
+    psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 \
+      -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1
   done
   if [ -z "$work" ]; then
     echo "plan pointer drive: FAIL at $check after $((SECONDS - started))s" >&2
@@ -214,7 +258,10 @@ trap 'cleanup 143' TERM
 # database_url NAME prints the caller's DSN with NAME as its database, keeping its user and its
 # parameters: one server, a database per run.
 database_url() {
-  printf '%s://%s%s/%s%s\n' "$db_scheme" "$db_userinfo" "$db_hostport" "$1" "$db_params"
+  local url=${pg_dsn%%\?*}
+  url=${url%/*}/$1
+  case $pg_dsn in *\?*) url="$url?${pg_dsn#*\?}" ;; esac
+  printf '%s\n' "$url"
 }
 
 # json_field FIELD FILE prints one string, number or boolean member of the JSON object FILE
@@ -224,46 +271,60 @@ json_field() {
   bun -e 'const file = process.argv[2]; const value = JSON.parse(require("node:fs").readFileSync(file, "utf8"))[process.argv[1]]; if (!["string", "number", "boolean"].includes(typeof value) || value === "") { console.error(`no ${process.argv[1]} in ${file}`); process.exit(1); } console.log(value);' "$1" "$2"
 }
 
+# compose_prompt DIR MODULE ISSUE composes the implementer's pane prompt for ISSUE from the daemon
+# module MODULE into DIR/arg.txt, and turns the whole `--append-system-prompt` argument into
+# DIR/prompt.txt. PLAYWRIGHT_BASE_URL is the address of nothing: the driver's own import of
+# packages/dispatch/e2e/api.ts reads it at import, and composing reaches no Dispatch.
+compose_prompt() {
+  local dir=$1 module=$2 issue=$3
+  local -a args
+  mkdir -p "$dir"
+  LEGION_GH_PATH=$gh_path PLAYWRIGHT_BASE_URL=http://127.0.0.1:1 E2E_AGENT_TOKEN=e2e-token \
+    bun "$root/scripts/e2e/plan-pointer-drive.ts" compose "$dir" "$module" "$issue" ||
+    fail "the implementer's pane did not compose from $module"
+  # The composer's answer is the whole `--append-system-prompt` argument as shell text, so the
+  # shell itself turns it into the prompt file: no regular expression reads it.
+  eval "args=( $(cat "$dir/arg.txt") )" ||
+    fail "the composed argument in $dir/arg.txt is no shell word list"
+  [ "${#args[@]}" -eq 2 ] ||
+    fail "the composed argument in $dir/arg.txt is ${#args[@]} shell word(s), not the two the composer answers with: --append-system-prompt and the prompt"
+  [ "${args[0]}" = "--append-system-prompt" ] ||
+    fail "the composed argument starts with '${args[0]}', not --append-system-prompt"
+  printf '%s' "${args[1]}" >"$dir/prompt.txt"
+  [ -s "$dir/prompt.txt" ] || fail "the prompt composed from $module is empty"
+}
+
 begin prerequisites
 [ -n "$pg_dsn" ] ||
   fail "LEGION_TEST_PG_DSN is required: it names the loopback PostgreSQL server this run creates a database of its own on (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
+# The host of postgres://[user[:password]@]host[:port]/database[?params]: this run creates and
+# force-drops databases there, so it must be this machine's. A host given by a parameter, or
+# several hosts, are refused rather than parsed, as the sibling proofs refuse them
+# (dispatch-two-builds.sh, verification-results.sh).
 case "$pg_dsn" in
   postgres://* | postgresql://*) ;;
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-db_scheme=${pg_dsn%%://*}
-db_rest=${pg_dsn#*://}
-db_authority=${db_rest%%/*}
-db_after=${db_rest#*/}
-db_params=''
-case "$db_after" in
-  *\?*) db_params="?${db_after#*\?}" ;;
-esac
-db_userinfo=''
-case "$db_authority" in
-  *@*) db_userinfo="${db_authority%@*}@" ;;
-esac
-db_hostport=${db_authority##*@}
-if [[ "$db_hostport" == \[* ]]; then
-  db_host=${db_hostport#\[}
+authority=${pg_dsn#*://}
+authority=${authority%%[/?]*}
+hostport=${authority##*@}
+if [[ "$hostport" == \[* ]]; then
+  db_host=${hostport#\[}
   db_host=${db_host%%\]*}
 else
-  db_host=${db_hostport%%:*}
+  db_host=${hostport%%:*}
 fi
-db_port=${db_hostport##*:}
-[ "$db_port" != "$db_hostport" ] || db_port=5432
-db_user=${db_userinfo%@}
-db_user=${db_user%%:*}
-[ -n "$db_user" ] || db_user=$(id -un)
 case "$db_host" in
   127.0.0.1 | localhost | ::1) ;;
   *) fail "LEGION_TEST_PG_DSN must name 127.0.0.1, localhost or ::1, not '$db_host': this run creates and drops databases there" ;;
 esac
+[[ "$pg_dsn" != *[?\&]host=* && "$pg_dsn" != *[?\&]hostaddr=* ]] ||
+  fail "LEGION_TEST_PG_DSN must not name its host in a parameter"
 [ -n "$omp" ] || fail "LEGION_OMP_PATH is required: it names the Oh My Pi binary each session runs"
 [ -x "$omp" ] || fail "LEGION_OMP_PATH=$omp is not an executable file"
 # python3 and openssl are the Dispatch server's own: packages/dispatch/e2e/run-server.sh holds
 # the port with scripts/e2e/lib/held-port.py and mints a throwaway App key with `openssl genrsa`.
-for tool in bun go git jj createdb dropdb curl dispatch python3 openssl; do
+for tool in bun go git jj psql curl dispatch python3 openssl; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 [ -n "$gh_path" ] || gh_path=$(command -v gh) ||
@@ -271,8 +332,8 @@ done
 [ -x "$gh_path" ] || fail "the gh the composer is told, $gh_path, is not an executable file"
 [ -d "$head_module" ] || fail "the head arm's daemon module $head_module is missing"
 [ -f "$head_module/go.mod" ] || fail "$head_module holds no go.mod"
-[ -n "$base_commit" ] || base_commit=$(jj -R "$root" log -r 'trunk()' --no-graph -T commit_id) ||
-  fail "jj could not read trunk() of $root for the base commit"
+[ -n "$base_commit" ] ||
+  fail "--base-commit is required: it names the commit the control's daemon module is taken from (the merge base with the default branch), and a default of trunk() would make the head arm its own control once this change is on trunk"
 base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
   fail "--base-commit '$base_commit' is no commit of $root"
 [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" packages/daemon)" ] ||
@@ -286,11 +347,15 @@ case "$tasks" in
   1 | 2) ;;
   *) fail "--tasks takes 1 or 2, not '$tasks': the staged plan holds one task or two" ;;
 esac
+case "$mid_approval" in
+  approved | unapproved) ;;
+  *) fail "--mid-approval takes approved or unapproved, not '$mid_approval': the watcher either records a plan review of the mid-session version or records none" ;;
+esac
 case "$attempts" in
   '' | *[!0-9]* | 0*) fail "PLAN_POINTER_DRIVE_ATTEMPTS takes a count from 1 up, not '$attempts'" ;;
 esac
-note "PostgreSQL $db_host:$db_port as $db_user, $runs run(s) per arm, up to $attempts attempt(s) each"
-note "the staged plan holds $tasks task(s)"
+note "PostgreSQL $db_host (the URL is not printed), $runs run(s) per arm, up to $attempts attempt(s) each"
+note "the staged plan holds $tasks task(s), and the watcher leaves the mid-session version $mid_approval"
 note "head arm $head_module, base arm $base_sha"
 pass
 
@@ -307,15 +372,31 @@ note "work directory $work"
 note "base daemon module $base_module"
 pass
 
-# The environment each session runs in: nothing of this pod's Legion, Dispatch, Envoy, NATS or
-# GitHub reaches it, no session file or session id of the caller's, and no SQL session store -
-# OMP_SESSION_STORAGE=file with the SQL pointer unset is what writes the transcript the watcher
-# and the score read. The run's own values are added per run, after this sweep.
+begin control
+# Two arms whose composed prompts are the same text measure nothing, so the run refuses before it
+# makes a database, a server or a session. The issue key here is the one each attempt's own seed
+# mints on its own empty database, and both arms are composed for the same key: what the
+# comparison reads is the daemon module, which is the one thing the two arms differ in.
+compose_prompt "$work/control/head" "$head_module" DRIVE-1
+compose_prompt "$work/control/base" "$base_module" DRIVE-1
+if cmp -s "$work/control/head/prompt.txt" "$work/control/base/prompt.txt"; then
+  head_commit=$(jj -R "$root" log -r @ --no-graph -T commit_id) || head_commit='unknown'
+  fail "the two arms compose the same prompt, byte for byte: this checkout's working copy ($head_commit) and --base-commit $base_sha carry the same packages/daemon text, so the base arm is no control"
+fi
+note "head prompt $(wc -c <"$work/control/head/prompt.txt") bytes, base prompt $(wc -c <"$work/control/base/prompt.txt") bytes, and they differ"
+pass
+
+# The environment each session runs in: nothing of this pod's Legion, Dispatch, Envoy, NATS,
+# GitHub or PostgreSQL reaches it, no session file or session id of the caller's, and no SQL
+# session store - OMP_SESSION_STORAGE=file with the SQL pointer unset is what writes the
+# transcript the watcher and the score read. The run's own values are added per run, after this
+# sweep: among them an empty GH_CONFIG_DIR, since the session's own bash holds a real `gh` and
+# would otherwise read the operator's login under HOME.
 session_unsets=()
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    LEGION_* | DISPATCH_* | ENVOY_* | NATS_* | GH_* | GITHUB_* | OMP_SESSION_* | PI_SESSION_* | PI_TOOL_CALL_ID)
+    LEGION_* | DISPATCH_* | ENVOY_* | NATS_* | GH_* | GITHUB_* | PG* | OMP_SESSION_* | PI_SESSION_* | PI_TOOL_CALL_ID)
       session_unsets+=(-u "$name")
       ;;
   esac
@@ -328,16 +409,17 @@ run_attempt() {
   local run="$arm-$number try $attempt" run_dir=$work/$arm-$number-try$attempt
   # The database is this attempt's own, named for this shell, and dropped when the attempt ends.
   local database=ppd_${$}_${arm}_${number}_${attempt} dispatch_port dispatch_url issue title
-  local versions status=0
+  local versions approved status=0
   local session_id=plan-pointer-drive-$arm-$number-try$attempt
-  local -a session_env args
+  local -a session_env
   attempt_dir=$run_dir
   evidence=$run_dir
-  mkdir -p "$run_dir/logs" "$run_dir/cwd" "$run_dir/tmp"
+  mkdir -p "$run_dir/logs" "$run_dir/cwd" "$run_dir/tmp" "$run_dir/gh"
 
   begin "$run database"
-  createdb -h "$db_host" -p "$db_port" -U "$db_user" "$database" >>"$run_dir/logs/postgres.log" 2>&1 ||
-    fail "createdb $database failed; see $run_dir/logs/postgres.log"
+  psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" \
+    >>"$run_dir/logs/postgres.log" 2>&1 ||
+    fail "could not create the database $database on LEGION_TEST_PG_DSN; see $run_dir/logs/postgres.log"
   databases+=("$database")
   note "database $database"
   pass
@@ -364,22 +446,13 @@ run_attempt() {
   title=$(json_field title "$run_dir/seed.json") || fail "the seed names no title"
   versions=$(json_field versionsAtStart "$run_dir/seed.json") ||
     fail "the seed does not say how many versions plan.md holds"
+  approved=$(json_field approvedPlanVersionAtStart "$run_dir/seed.json") ||
+    fail "the seed does not say which version the plan review approved"
+  note "$title, approved at v$approved of $versions"
   pass
 
   begin "$run prompt"
-  LEGION_GH_PATH=$gh_path PLAYWRIGHT_BASE_URL=$dispatch_url E2E_AGENT_TOKEN=e2e-token \
-    bun "$root/scripts/e2e/plan-pointer-drive.ts" compose "$run_dir" "$module" ||
-    fail "the implementer's pane did not compose from $module"
-  # The composer's answer is the whole `--append-system-prompt` argument as shell text, so the
-  # shell itself turns it into the prompt file: no regular expression reads it.
-  eval "args=( $(cat "$run_dir/arg.txt") )" ||
-    fail "the composed argument in $run_dir/arg.txt is no shell word list"
-  [ "${#args[@]}" -eq 2 ] ||
-    fail "the composed argument in $run_dir/arg.txt is ${#args[@]} shell word(s), not the two the composer answers with: --append-system-prompt and the prompt"
-  [ "${args[0]}" = "--append-system-prompt" ] ||
-    fail "the composed argument starts with '${args[0]}', not --append-system-prompt"
-  printf '%s' "${args[1]}" >"$run_dir/prompt.txt"
-  [ -s "$run_dir/prompt.txt" ] || fail "the composed prompt is empty"
+  compose_prompt "$run_dir" "$module" "$issue"
   note "prompt $(wc -c <"$run_dir/prompt.txt") bytes from $module"
   pass
 
@@ -387,6 +460,7 @@ run_attempt() {
   session_env=("${session_unsets[@]}"
     OMP_SESSION_STORAGE=file
     "TMPDIR=$run_dir/tmp"
+    "GH_CONFIG_DIR=$run_dir/gh"
     "DISPATCH_URL=$dispatch_url"
     "DISPATCH_TOKEN_FILE=$work/dispatch-token"
     DISPATCH_HOST=omp
@@ -399,33 +473,31 @@ run_attempt() {
     fail "dispatch read --issue $issue --artifact plan-md failed in the session's own environment; see $run_dir/logs/dispatch-cli.log"
   grep -q "^Versions: $versions\$" "$run_dir/logs/dispatch-cli.log" ||
     fail "the staged plan does not read back at $versions versions; see $run_dir/logs/dispatch-cli.log"
+  # The line the rule under test names: the one read that says which version was approved.
+  grep -q "^Approval: approved v$approved by " "$run_dir/logs/dispatch-cli.log" ||
+    fail "the staged plan does not read back as approved at v$approved; see $run_dir/logs/dispatch-cli.log"
   pass
 
   begin "$run task"
-  # The `Handoff:` line is the one the daemon renders (task, effects.go): the phase's word, the
-  # version the daemon accepted, and the command that reads that version. Nothing else in the task
-  # names a plan version, and nothing in it says the plan can have moved. The task names one file
-  # for each task the staged plan holds, and one more for the `implement` handoff body.
-  if [ "$tasks" -eq 1 ]; then
-    printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan'"'"'s one task and your own record of it: write task 1'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when the two files are written.\n' \
-      "$title" "$issue" "$issue" "$run_dir/adoption.txt" "$run_dir/implement.json" \
-      >"$run_dir/task.txt"
-  else
-    printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan'"'"'s two tasks and your own record of them: write task 1'"'"'s line to %s with the write tool, then write task 2'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when the three files are written.\n' \
-      "$title" "$issue" "$issue" "$run_dir/note.txt" "$run_dir/adoption.txt" "$run_dir/implement.json" \
-      >"$run_dir/task.txt"
-  fi
+  # The task line is the seed's own (taskText, scripts/e2e/plan-pointer-drive.ts), written from
+  # the driver's constants and its list of the staged tasks. The shell prints it and writes none
+  # of it, so one change cannot make the row print a version the session was never told.
+  [ -s "$run_dir/task.txt" ] || fail "the seed wrote no task line to $run_dir/task.txt"
   note "task: $(cat "$run_dir/task.txt")"
   pass
 
   begin "$run session"
   PLAYWRIGHT_BASE_URL=$dispatch_url E2E_AGENT_TOKEN=e2e-token \
-    start_process watcher bun "$root/scripts/e2e/plan-pointer-drive.ts" advance "$run_dir" "$trigger_seconds"
-  (
-    cd "$run_dir/cwd" &&
-      exec env "${session_env[@]}" timeout "$session_seconds" "$omp" -p --session-dir "$run_dir/sess" \
-        "$(cat "$run_dir/task.txt")" --append-system-prompt "$(cat "$run_dir/prompt.txt")"
-  ) >>"$run_dir/logs/session.log" 2>&1 || status=$?
+    start_process watcher bun "$root/scripts/e2e/plan-pointer-drive.ts" advance \
+    "$run_dir" "$trigger_seconds" "$mid_approval"
+  # The session is a process of this shell's own, in a process group of its own, and `timeout`
+  # holds its bound. A trapped signal interrupts the `wait` below at once, and the teardown stops
+  # the whole session tree.
+  start_process session env -C "$run_dir/cwd" "${session_env[@]}" \
+    timeout "$session_seconds" "$omp" -p --session-dir "$run_dir/sess" \
+    "$(cat "$run_dir/task.txt")" --append-system-prompt "$(cat "$run_dir/prompt.txt")"
+  wait "$session_pid" || status=$?
+  session_pid=''
   [ "$status" -eq 0 ] ||
     fail "the session exited $status (124 is its ${session_seconds}s bound); see $run_dir/logs/session.log"
   until_true "$((trigger_seconds + 120))" \
@@ -444,15 +516,16 @@ run_attempt() {
   begin "$run teardown"
   stop_pid "$dispatch_pid"
   dispatch_pid=''
-  dropdb -h "$db_host" -p "$db_port" -U "$db_user" --if-exists --force "$database" ||
-    fail "dropdb $database failed"
+  psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 \
+    -c "drop database if exists \"$database\" with (force)" >>"$run_dir/logs/postgres.log" 2>&1 ||
+    fail "could not drop the database $database; see $run_dir/logs/postgres.log"
   pass
 }
 
 # run_one ARM NUMBER MODULE makes one run of that arm. It makes attempts until one is scorable,
 # up to `attempts`, and sets kept_dir to that attempt's directory. An unscorable attempt is named
-# with the two times that make it one, and its row reaches no summary: the mid-session version
-# landed after the session stopped writing, so no turn of that session saw it.
+# with the two times that make it one, and its row reaches no summary: the session wrote the
+# scored file before the mid-session version landed, so no read of that file's own turn saw it.
 run_one() {
   local arm=$1 number=$2 module=$3
   local attempt row scorable
@@ -465,10 +538,10 @@ run_one() {
       kept_dir=$attempt_dir
       return 0
     fi
-    note "$arm-$number try $attempt discarded as unscorable: the mid-session version landed at $(json_field landedAt "$row"), after the session stopped writing at $(json_field sessionLastWroteAt "$row")"
+    note "$arm-$number try $attempt discarded as unscorable: the mid-session version landed at $(json_field landedAt "$row"), and the scored file's write time is $(json_field scoredWroteAt "$row") (from $(json_field scoredWroteFrom "$row"))"
   done
   begin "$arm-$number"
-  fail "all $attempts attempt(s) were unscorable: the mid-session version landed after the session stopped writing each time, so the run is neither a pass nor a failure; see $work"
+  fail "all $attempts attempt(s) were unscorable: the session wrote the scored file before the mid-session version landed each time, so the run is neither a pass nor a failure; see $work"
 }
 
 # The scorable attempt of each run, per arm: what the summary counts.
@@ -485,6 +558,8 @@ begin summary
 evidence=$work
 for arm in head base; do
   declare -n kept="${arm}_dirs"
+  # The address of nothing: the driver's own import of packages/dispatch/e2e/api.ts reads
+  # PLAYWRIGHT_BASE_URL at import, and the summary reads the rows alone.
   PLAYWRIGHT_BASE_URL=http://127.0.0.1:1 \
     bun "$root/scripts/e2e/plan-pointer-drive.ts" summarize "$arm" "${kept[@]}" ||
     fail "the $arm arm's rows did not summarize"

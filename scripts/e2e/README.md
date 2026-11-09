@@ -262,11 +262,13 @@ Each item below names a script, then what it proves.
 
 - `plan-pointer-drive.sh`
 
-  a Legion phase worker whose task line names a stale plan-handoff pointer builds from the issue's `plan.md` as it stands (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
+  a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
   the head arm's is composed from this checkout's `packages/daemon`, the control's from the daemon module of the commit `--base-commit` names, taken with `git archive`, and both are composed by the daemon's own composer.
-  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions whose design changed after the version the accepted handoff cites, six `plan` handoff records, and the plan approved at the first version — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes a ninth plan version under that session the moment it first reads the plan, and prints a row naming the staging it came from, every plan version it read and when, which design it wrote, the trigger and both plan-read times.
+  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions carrying three designs, approved at version 1 and again at version 6, so versions 7 and 8 are a revision no plan review approved, and six `plan` handoff records whose first cites version 1 — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes a ninth version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, and whether that design was the approved one, a stale one or an unapproved one.
+  `--mid-approval approved`, the default, has the watcher approve that ninth version, so the correct build becomes its design; `--mid-approval unapproved` leaves it unapproved, so the correct build stays the version 6 design.
   `--tasks 1` stages a plan of one task, which begins after that ninth version lands, so a worker that reads the plan once cannot reach it and the new text's effect is visible.
   `--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the ninth version: this staging measures how often a worker reads the plan again when no text tells it to.
+  `--base-commit` is required, and the run refuses two arms whose composed prompts are the same text.
   A reproduction and a control, never a rate.
   A model and a loopback PostgreSQL; no daemon, no cluster, no GitHub
 
@@ -4185,13 +4187,28 @@ The issues, pull requests, slots and the claims the boot relaunches are seeded t
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh \
-  [--runs <n>] [--tasks <1|2>] [--base-commit <rev>]     # → "plan pointer drive: PASS in <n>s", exit 0
+  LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh --base-commit <rev> \
+  [--runs <n>] [--tasks <1|2>] [--mid-approval <approved|unapproved>]     # → "plan pointer drive: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-2038's live proof that a Legion phase worker whose task line names a stale plan-handoff pointer builds from the issue's `plan.md` as it stands.
+dispatch://INFRA-2038's live proof that a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved.
 A grep over the prompt files says the words changed;
 only a session says what an agent reading them writes, and only a control says the change caused it ([`docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md`](../../docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md)).
+
+The staged issue carries four designs of one plan, as INFRA-1992's own history carried them, and each design names one call:
+
+| design | the plan.md versions that carry it | its call | the plan review's approval of it |
+| :--- | :--- | :--- | :--- |
+| `early` | 1 to 3 | `pulumi.Import` | version 1, which is the version the task's handoff pointer cites |
+| `standing` | 4 to 6 | `aws.s3.BucketV2` | version 6, so this is the approved plan when the session begins |
+| `unapproved` | 7 and 8 | `aws.s3.BucketReplicationConfig` | none, and version 8 is the newest version when the session begins: the rule under test forbids a build from it |
+| `mid` | 9, written by the watcher while the session runs | `pulumi.Alias` | the watcher's own, or none, as `--mid-approval` says |
+
+So "the version the task's pointer cites" (v1), "the newest approved version" (v6) and "the newest version" (v8) are three different answers before the session starts, and the row says which of them the session built from.
+
+`--mid-approval` chooses what the watcher does with version 9, which is the rule's second case.
+With `approved`, the default, the watcher records a plan review of version 9, and the correct build becomes `mid`.
+With `unapproved` it records none, the correct build stays `standing`, and a worker that writes `mid` built from a version nobody approved.
 
 `--tasks` chooses one of two stagings, and each staging is run on both arms.
 `--tasks 1` stages a plan of one task, the scored one, which begins after the mid-session version lands: a worker that reads the plan once cannot reach that version, so this staging is where the new text's effect is visible.
@@ -4202,23 +4219,28 @@ The two arms differ in one thing, the implementer's role prompt:
 
 | arm | its daemon module | what it carries |
 | :--- | :--- | :--- |
-| `head` | this checkout's `packages/daemon` | the change's text: the plan is `plan.md` at its newest version, and the task's `Handoff: plan version <n>` line is the receipt for the record the daemon accepted |
-| `base` | `packages/daemon` of the commit `--base-commit` names (default `jj log -r 'trunk()'`), taken with `git archive` into the run's own work directory | the prompt before the change, which reads the plan through its handoff record alone |
+| `head` | this checkout's `packages/daemon` | the change's text: the plan is the newest `plan.md` version the plan review approved, which the `Approval:` line of `dispatch read --issue <issue> --artifact plan-md` names, and the task's `Handoff: plan version <n>` line is the receipt for the record the daemon accepted |
+| `base` | `packages/daemon` of the commit `--base-commit` names, taken with `git archive` into the run's own work directory | the prompt before the change, which reads the plan through its handoff record alone |
+
+`--base-commit` is required and has no default.
+With a default of `trunk()` the base arm would compose the head arm's own prompt once this change is on trunk, and the run would print PASS with no control at all.
+Before it makes a database, a server or a session, the run composes both arms' prompts and refuses when they are the same text byte for byte, naming the base commit and this checkout's working copy.
 
 `packages/envoy` is taken with it, because `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy` with `../envoy` and the composer runs `go run` in that module.
-Both prompts are composed by the daemon's own composer, `workerPane` in [`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`](../../packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), with `systemPrompt: true`, the project token in lower case and `LEGION_GH_PATH` as the real `gh`;
+Both prompts are composed by the daemon's own composer, `workerPane` in [`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`](../../packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), with `systemPrompt: true`, the project token in lower case, and the real `gh` the shell itself resolved as `ghPath`;
 the whole `--append-system-prompt` argument it answers with is turned into the prompt file by the shell (`eval "args=( $(cat arg.txt) )"`), never by a regular expression.
 
 Its inputs:
 
 | input | what it is |
 | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written and every database the run made is dropped when it ends, on success and on failure |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, a DSN whose host is not loopback or which names its host in a `host=` or `hostaddr=` parameter is refused, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
-| `LEGION_GH_PATH` | optional: the real `gh` the composer is told; the first `gh` on `PATH` otherwise, which the composer refuses when it is a script |
+| `LEGION_GH_PATH` | optional: the real `gh` the composer is told, the first `gh` on `PATH` otherwise, where the run refuses to start when there is neither and when the one it found is not an executable file |
+| `--base-commit <rev>` | required: the control's commit |
 | `--runs <n>` | how many runs each arm makes, default 1; three or more is what a reading needs |
 | `--tasks <n>` | how many tasks the staged plan holds, 1 or 2, default 2: `1` is the staging whose only task begins after the mid-session version lands, `2` the staging where a worker that reads the plan again between the two tasks reaches that version |
-| `--base-commit <rev>` | the control's commit, default `jj log -r 'trunk()'` of this checkout |
+| `--mid-approval <word>` | the watcher's shape, `approved` or `unapproved`, default `approved` |
 | `PLAN_POINTER_DRIVE_TRIGGER_SECONDS` | the watcher's bound, default 120 |
 | `PLAN_POINTER_DRIVE_SESSION_SECONDS` | each session's bound, default 900 |
 | `PLAN_POINTER_DRIVE_ATTEMPTS` | how many attempts one run makes before an unscorable run fails, default 3 |
@@ -4227,26 +4249,32 @@ Each attempt of a run stages its own world and reads one row off it:
 
 | step | what it does |
 | :--- | :--- |
-| `<arm>-<n> try <k> database` | `createdb` on that server |
+| `<arm>-<n> try <k> database` | `create database`, through `psql` on that server |
 | `<arm>-<n> try <k> dispatch` | the e2e harness's Dispatch on it ([`packages/dispatch/e2e/run-server.sh`](../../packages/dispatch/e2e/run-server.sh), its fakes at port 1 and no secrets broker, as pi-legion's skill-scenario rig starts it), on the port the kernel chose, read from its own `msg="dispatch: listening"` line; its agent bearer is the pinned `e2e-token` |
-| `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of one task or two, as `--tasks` says, at eight versions whose design changes at version 4, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), and the plan review's approval at version 1, so "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are three different answers |
+| `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of one task or two, as `--tasks` says, at eight versions carrying the first three designs above, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), the plan review's approvals of version 1 and version 6, and the session's own task line, which the seed writes from its own constants and its own list of the staged tasks |
 | `<arm>-<n> try <k> prompt` | the arm's prompt, composed as above |
-| `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` |
-| `<arm>-<n> try <k> task` | the task line, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
-| `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), the staged server as its Dispatch and an Envoy address nothing listens on, the watcher beside it writing plan.md version 9 — the second design change, with the plan review's approval of it — the moment the session's first read of the plan's text reaches the transcript, or at its bound when no such read does |
-| `<arm>-<n> try <k> row` | the attempt's row, from the transcript and the file of each task the session wrote |
+| `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` and an `Approval: approved v6 by …` line |
+| `<arm>-<n> try <k> task` | the task line the seed wrote, printed, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
+| `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, started as a process of the script's own and bounded by `timeout`, so an interrupt stops it at once and the teardown stops its whole tree, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), `GH_CONFIG_DIR` an empty directory of the run's own, so the session's own `gh` reads no login of the operator's, the staged server as its Dispatch beside an Envoy address nothing listens on, and the watcher beside it writing plan.md version 9 — the last design change, with the plan review's approval of it when `--mid-approval` is `approved` — the moment the session's first read of the plan's text reaches a transcript, or at its bound when no such read does |
+| `<arm>-<n> try <k> row` | the attempt's row, from every transcript under the session directory, the session's own and each subagent's, and from the file of each task the session wrote |
+| `<arm>-<n> try <k> teardown` | that attempt's Dispatch stopped and its database dropped, before the next attempt or the next arm starts |
 
-Each design names one call — `pulumi.Import` at version 1, `aws.s3.BucketV2` from version 4, `pulumi.Alias` at the version written mid-session — and each task of the staged plan tells the implementer to write that call to a file of its own.
+Each task of the staged plan tells the implementer to write its design's call to a file of its own.
 With two tasks the first task's file carries `note: <call>` and the second `adopt: <call>`, and the second file is the one the summary counts, because a worker that reads the plan again between the two tasks reads it before that file is written.
 With one task the plan holds that scored task alone, so the session writes `adopt: <call>` and no first file: the row's `first-wrote` and `first-design` read `none` and its `designs-differ` reads `no`.
 The row says which design the session built from by reading those files, never by reading what the session said.
 Every version of `plan.md` carries a `PLANREV-<version>` marker, which is how a tool result in the transcript says which version the session read, and how the watcher tells a read of the plan from any other command.
-A row names the arm, the run, which attempt of it wrote the row, the staging it came from (`tasks=1` or `tasks=2`), the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, every plan read with its time, the trigger and the times it fired and the version landed, the call each task's file holds, and three judgements:
-`designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `start-only-read=yes` when every plan read of the session's is older than the mid-session version's landing, and `scorable=no` when that version landed after the session stopped writing.
-An unscorable attempt is neither a pass nor a failure, since no turn of its session saw the new version.
+
+The row's verdict is its answer on the scored file, read against the approvals as they stood at the moment that file was written:
+`approved` when the file names the newest approved design, `stale` when it names an approved design that is no longer the newest, `unapproved` when it names a design no plan review had approved, and `other` when it names no design or more than one.
+That moment is the transcript's own time of the write tool result for the scored file, or the file's modification time where the session wrote it by another route, and `scored-wrote-from=` says which of the two the row read.
+
+A row names the arm, the run, which attempt of it wrote the row, the staging it came from (`tasks=1` or `tasks=2`), the watcher's shape (`mid-approval=`), the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, the mid-session version, every plan read with its time, the trigger and the times it fired and the version landed, when the scored file was written, the call each task's file holds, and four judgements:
+`verdict=` as above, `designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `start-only-read=yes` when no plan read of the session's carried the mid-session version, and `scorable=no` when the scored file was written before that version landed.
+An unscorable attempt is neither a pass nor a failure, since the session wrote the scored file before the new version existed.
 The shell prints one line for it, with the two times, and makes the run again, up to `PLAN_POINTER_DRIVE_ATTEMPTS` attempts.
 A run whose every attempt is unscorable fails.
-One `summary` line per arm names the staging too and counts the kept rows, one per run, and its `attempts=` is how many sessions that arm ran, the discarded attempts included.
+One `summary` line per arm names the staging and the watcher's shape, counts the kept rows, one per run, by the design each wrote and by the verdict each carries, and its `attempts=` is how many sessions that arm ran, the discarded attempts included.
 The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
 only the extracted base tree is removed.
 
