@@ -110,6 +110,13 @@
 # killed, the run's database is dropped and its work directory removed. The run is re-runnable: it
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
 # NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_* or CLAUDE_* variable of the caller's.
+# Several runs at once out of one jj checkout leave divergent commits behind, whatever that
+# checkout's own state. The build step reads the working copy with jj to report what it built
+# from (lib/built-from.sh), and jj snapshots the working copy at every read; the plugin pack
+# before it rewrites packages/<plugin>/package.json in place and puts it back (lib/pack-plugin.sh),
+# so each run has a window in which a tracked file differs. Two runs snapshotting that window at
+# once leave the checkout with divergent working-copy commits for someone to abandon by hand.
+# Commit the tree before the runs and expect to check `jj log` after them.
 set -Eeuo pipefail
 
 # This script's own inputs are read first: the sweep below drops every variable of those families
