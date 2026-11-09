@@ -776,23 +776,26 @@ type explainedPlan struct {
 }
 
 // claimCost is what the claim costs at one backlog size: the rows Postgres read from events while
-// it ran, the ids it returned, and the plans it was explained with.
+// it ran, the blocks it fetched from the indexes of events, the ids it returned, and the plans it
+// was explained with.
 type claimCost struct {
 	backlog     int
 	rowsRead    int64
 	seqRead     int64
+	indexBlocks int64
 	kept        []int64
 	unpublished []int64
 	plans       []explainedPlan
 	fastest     float64
 }
 
-// claimReads runs the claim once on conn, inside a transaction it rolls back, and reports the rows
-// Postgres read from events while it ran: all of them, and the ones a sequential scan read, with
-// the event ids the claim returned. pg_stat_xact_user_tables counts for the whole backend and a
-// rollback keeps the count, so the figure is the difference across the claim rather than the
-// counter itself, and every call must take the same pinned connection.
-func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRead, seqRead int64, kept []int64) {
+// claimReads runs the claim once on conn, inside a transaction it rolls back, and reports what
+// Postgres read while it ran: the rows it read from events, all of them and the ones a sequential
+// scan read, the blocks it fetched from the indexes of events, and the event ids the claim
+// returned. Both counters count for the whole backend and a rollback keeps the count, so each
+// figure is the difference across the claim rather than the counter itself, and every call must
+// take the same pinned connection.
+func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRead, seqRead, indexBlocks int64, kept []int64) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := conn.Begin(ctx)
@@ -801,17 +804,20 @@ func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRe
 	}
 	defer tx.Rollback(ctx)
 	// The view holds no row for events until this transaction has read it, so sum over the rows
-	// it does hold: that answers 0 and 0 rather than no row at all.
-	counters := func() (seq, fetched int64) {
+	// it does hold: that answers 0 and 0 rather than no row at all. The blocks are counted per
+	// index, so they are summed over the indexes of events.
+	counters := func() (seq, fetched, blocks int64) {
 		if err := tx.QueryRow(ctx, `
-			select coalesce(sum(seq_tup_read), 0), coalesce(sum(idx_tup_fetch), 0)
+			select coalesce(sum(seq_tup_read), 0), coalesce(sum(idx_tup_fetch), 0),
+			       (select coalesce(sum(pg_stat_get_xact_blocks_fetched(indexrelid)), 0)
+			          from pg_index where indrelid = 'events'::regclass)
 			  from pg_stat_xact_user_tables where relname = 'events'
-		`).Scan(&seq, &fetched); err != nil {
-			t.Fatalf("read the rows read from events: %v", err)
+		`).Scan(&seq, &fetched, &blocks); err != nil {
+			t.Fatalf("read what the claim read from events: %v", err)
 		}
-		return seq, fetched
+		return seq, fetched, blocks
 	}
-	seqBefore, fetchedBefore := counters()
+	seqBefore, fetchedBefore, blocksBefore := counters()
 	rows, err := tx.Query(ctx, claim.sql, claim.args...)
 	if err != nil {
 		t.Fatalf("run the claim: %v\n%s", err, claim.sql)
@@ -828,8 +834,8 @@ func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRe
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the claimed events: %v", err)
 	}
-	seqAfter, fetchedAfter := counters()
-	return (seqAfter - seqBefore) + (fetchedAfter - fetchedBefore), seqAfter - seqBefore, kept
+	seqAfter, fetchedAfter, blocksAfter := counters()
+	return (seqAfter - seqBefore) + (fetchedAfter - fetchedBefore), seqAfter - seqBefore, blocksAfter - blocksBefore, kept
 }
 
 // measureClaim seeds a database of its own with backlog backed-off events and backlog pending
@@ -918,11 +924,17 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatalf("acquire the connection the counters are read on: %v", err)
 	}
 	defer conn.Release()
-	rowsRead, seqRead, kept := claimReads(t, conn, claim)
-	secondRowsRead, _, _ := claimReads(t, conn, claim)
+	rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
+	secondRowsRead, _, secondIndexBlocks, _ := claimReads(t, conn, claim)
 	if rowsRead != secondRowsRead {
 		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
 			rowsRead, secondRowsRead)
+	}
+	// The blocks are as steady as the rows: 37 on both runs of each size, in all 12 readings of
+	// 3 runs of the healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one.
+	if indexBlocks != secondIndexBlocks {
+		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and a second run of the same claim on the same connection fetches the same blocks",
+			indexBlocks, secondIndexBlocks)
 	}
 	if rowsRead == 0 && secondRowsRead == 0 {
 		t.Errorf("the claim read 0 rows from events on both runs: track_counts must be on for pg_stat_xact_user_tables to count a row")
@@ -932,6 +944,7 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		backlog:     backlog,
 		rowsRead:    rowsRead,
 		seqRead:     seqRead,
+		indexBlocks: indexBlocks,
 		kept:        kept,
 		unpublished: unpublished,
 		plans:       plans,
@@ -958,24 +971,42 @@ func someIDs(ids []int64) string {
 // never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
 // in the table it reads three rows of events for each event it returns and nothing else, no node
 // of its plan that reads events removes a row by filter or recheck, none scans events in full,
-// and with 20,000 of each it reads the same number of rows. Three a row is what it reads today,
-// and the row allows up to eight, so a plan that reads one more of each event still passes.
+// and with 20,000 of each it reads the same number of rows and fetches about as many blocks from
+// the indexes of events. Three a row is what it reads today, and the row allows up to eight, so a
+// plan that reads one more of each event still passes.
 //
-// The measure is Postgres's own count of the rows read from events, seq_tup_read + idx_tup_fetch
-// of pg_stat_xact_user_tables, taken inside the claim's own transaction, as
-// api/suggestion_outcomes_test.go's TestOldPendingSuggestionsOnOtherIssuesCostAPassNothing counts
-// them. A count is the same on a loaded machine as on an idle one, which no wall clock is. This
-// row asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,
+// The row counts two things, because each is blind to work the other sees.
+//
+// seq_tup_read + idx_tup_fetch of pg_stat_xact_user_tables counts the heap tuples the claim read,
+// taken inside the claim's own transaction, as api/suggestion_outcomes_test.go's
+// TestOldPendingSuggestionsOnOtherIssuesCostAPassNothing counts them. It misses a scan that walks
+// a btree and fetches no heap row, which is what an index whose leading column is not the one the
+// claim's predicate names gives: rebuild events_outbox_retry as (id, next_attempt_at) and the
+// claim's retry node becomes an index scan of it with next_attempt_at <= now() as its index
+// condition, which walks every entry of the index, returns none of them and touches no heap row.
+// On 2026-11-09 that claim read the same 30 rows at both sizes, removed no row by filter or
+// recheck and returned the right ten ids, so every other clause here passed it; of the figures
+// this row logs only the time moved, 0.43 ms to 1.08 ms at 20,000.
+//
+// The blocks the claim fetched from the indexes of events, summed over pg_index with
+// pg_stat_get_xact_blocks_fetched in the same transaction and on the same connection, see that
+// walk: on 2026-11-09 the healthy claim fetched 37 blocks at 5,000 and 37 at 20,000, and the
+// claim over the rebuilt index 56 and 113. blocks_fetched counts a hit and a read alike, so cache
+// pressure does not move it. The tuples an index returned do not separate the two cases, which
+// the review of INFRA-2065 measured: the access method skips the entries without returning them.
+//
+// A count is the same on a loaded machine as on an idle one, which no wall clock is. This row
+// asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,
 // ran in 0.434 to 0.448 ms on an idle pod and in 0.749 to 0.799 ms on the same pod under 48 busy
 // loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
-// that runs this row, so the row asserts the count and only logs the time.
+// that runs this row, so the row asserts the counts and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	small := measureClaim(t, 5000)
 	big := measureClaim(t, 20000)
 	costs := []claimCost{small, big}
 	for _, cost := range costs {
-		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
-			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, len(cost.kept), len(cost.unpublished),
+		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, fetched %d blocks from the indexes of events, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
+			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, cost.indexBlocks, len(cost.kept), len(cost.unpublished),
 			cost.fastest, len(cost.plans), cost.plans[0].body)
 	}
 	for _, cost := range costs {
@@ -995,6 +1026,17 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	if bound := 8 * int64(len(small.kept)); small.rowsRead > bound {
 		t.Errorf("the claim read %d rows of events to return %d events, want at most %d: it reads three of each event it returns, and the row allows eight",
 			small.rowsRead, len(small.kept), bound)
+	}
+	// The blocks the claim fetches in the indexes of events must not grow with the backlog: work
+	// that grows with the rows it skips is the regression this figure is here for. Measured on
+	// 2026-11-09 on an idle pod: 37 blocks at both sizes in all 12 readings of 3 runs of the
+	// healthy claim, against 56 and 113 for a claim whose retry index leads on id. The half is
+	// for a btree that gains a level as the table grows, which costs one more block for each
+	// descent the claim makes, around ten of them; half of 37 is 18, and the mutated claim is 29
+	// blocks past its own bound.
+	if bound := small.indexBlocks + small.indexBlocks/2; big.indexBlocks > bound {
+		t.Errorf("the claim fetched %d blocks from the indexes of events with a backlog of %d and %d with a backlog of %d, want at most %d at the larger size: what the claim does inside an index must not grow with the rows it skips",
+			big.indexBlocks, big.backlog, small.indexBlocks, small.backlog, bound)
 	}
 	for _, cost := range costs {
 		for _, explained := range cost.plans {
