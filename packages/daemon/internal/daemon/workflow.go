@@ -1278,17 +1278,23 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 	if warnEvery <= 0 {
 		warnEvery = defaultReconnectWarnEvery
 	}
-	// Each poll is armed on the clock rather than taken from a ticker, as the outbox's own loops
-	// are (outbox.Run): the wait and the downtime then come from the same clock, which a test can
-	// hold still, and a poll that logs is never one the next tick is already due behind.
+	// Each poll is armed on the clock rather than taken from a ticker, so that the wait and the
+	// downtime come from one clock a test can hold still. The cadence is the ticker's, not the
+	// timer's: each poll is armed for the next MOMENT rather than for an interval after the last
+	// poll returned, so a slow poll does not stretch the period and one that overran its turn is
+	// due at once, exactly as time.NewTicker delivers a tick that came due while the receiver was
+	// busy. Arming an interval after each poll instead would make the period interval-plus-poll
+	// and drop that catch-up, which is a change to what the daemon does rather than a seam for a
+	// test, and this watchdog's job is to notice a disconnection at a known rate.
 	clock := supervise.Clock(supervise.RealClock{})
 	if w.reconnectClock != nil {
 		clock = w.reconnectClock
 	}
 	poll := make(chan struct{}, 1)
 	var disconnectedSince, warnedAt time.Time
+	next := clock.Now().Add(interval)
 	for {
-		tick := clock.AfterFunc(interval, func() { nudge(poll) })
+		tick := clock.AfterFunc(max(next.Sub(clock.Now()), 0), func() { nudge(poll) })
 		select {
 		case <-ctx.Done():
 			tick.Stop()
@@ -1296,6 +1302,11 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 		case <-poll:
 		}
 		now := clock.Now()
+		// A ticker coalesces: it never queues more than one missed tick, so a stall longer than
+		// several intervals costs one late poll rather than a burst of immediate ones catching up.
+		for !next.After(now) {
+			next = next.Add(interval)
+		}
 		if conn.IsConnected() {
 			disconnectedSince, warnedAt = time.Time{}, time.Time{}
 			continue
