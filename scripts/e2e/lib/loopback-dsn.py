@@ -10,9 +10,10 @@ environment and never from the command line, so no process list holds its passwo
 
 The helper prints the host and exits 0 when libpq reads one loopback host from the DSN:
 127.0.0.1, localhost or ::1. Every other answer is a refusal: one line on stderr that names what
-libpq read and why, and exit 1. It refuses a DSN with a control character, a DSN libpq cannot
-parse, a DSN with no host, a host list of more than one, a `hostaddr` parameter, a `service`
-parameter, and a host that is not one of the three loopback names.
+libpq read and why, and exit 1. It refuses a DSN with a control character, a DSN whose host,
+hostaddr or service holds one after libpq decodes it, a DSN libpq cannot parse, a DSN with no
+host, a host list of more than one, a `hostaddr` parameter, a `service` parameter, and a host
+that is not one of the three loopback names.
 
 libpq's own parser reads the DSN (PQconninfoParse, through ctypes), because a shell pattern and
 libpq disagree about which text is the host:
@@ -25,8 +26,9 @@ first `?` reads the host `localhost`. The run would then create and drop databas
 evil.example. libpq also decodes a percent sign in a parameter key, so `%68ost=` reaches it as
 `host=`, and it reads the whole DSN, so a newline in it hides nothing.
 
-A refusal prints the host, the hostaddr or the service name it read. It prints no other part of
-the DSN, because the user name and the password are in it.
+A refusal prints the host, the hostaddr or the service name it read, and prints that value only
+when it holds no control character, so a refusal is one line and writes no escape sequence to the
+terminal. It prints no other part of the DSN, because the user name and the password are in it.
 
 This helper needs libpq itself. Where ctypes.util.find_library("pq") finds none, every DSN is
 refused and the refusal names libpq: there is no second, weaker check to fall back on.
@@ -104,21 +106,38 @@ def parsed(library, dsn):
     return read
 
 
+def control_character(text):
+    """Return the code of the first control character of text, or None where it holds none."""
+    for character in text:
+        code = ord(character)
+        if code < 0x20 or code == 0x7F:
+            return code
+    return None
+
+
 def host_of(dsn, what):
     """Return the one loopback host libpq reads from dsn, or raise the Refusal it earns."""
-    if dsn == "":
-        raise Refusal("is empty")
-    for character in dsn:
-        if ord(character) < 0x20 or ord(character) == 0x7F:
-            raise Refusal(
-                f"holds the control character 0x{ord(character):02x}: libpq reads the whole DSN,"
-                " and a reader that stops at the end of a line reads less of it"
-            )
+    code = control_character(dsn)
+    if code is not None:
+        raise Refusal(
+            f"holds the control character 0x{code:02x}: libpq reads the whole DSN,"
+            " and a reader that stops at the end of a line reads less of it"
+        )
     read = parsed(libpq(), dsn.encode("utf-8", "surrogateescape"))
+    # libpq decodes a percent sign, so a value it read can hold a control character that the
+    # DSN's own text does not. These three are the values a refusal prints.
+    for keyword in ("host", "hostaddr", "service"):
+        code = control_character(read.get(keyword, ""))
+        if code is not None:
+            raise Refusal(
+                f"gives {keyword} the control character 0x{code:02x}: libpq decodes a percent"
+                " sign in the DSN, and this refusal prints no value that holds one"
+            )
     if read.get("service", "") != "":
         raise Refusal(
             f"must carry no service parameter: libpq reads service={read['service']} from"
-            " ~/.pg_service.conf, and that entry can name any host"
+            " ~/.pg_service.conf, and that entry can set hostaddr, which sends the connection to"
+            " another address"
         )
     if read.get("hostaddr", "") != "":
         raise Refusal(

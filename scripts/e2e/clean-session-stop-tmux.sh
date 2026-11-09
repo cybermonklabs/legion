@@ -99,7 +99,8 @@
 # one of them is stopped on any exit, by the pid it was started as; the daemon's tmux server is
 # killed, the run's database is dropped and its work directory removed. The run is re-runnable: it
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
-# NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_* or CLAUDE_* variable of the caller's.
+# NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or PGSERVICEFILE
+# variable of the caller's.
 set -Eeuo pipefail
 
 # This script's own inputs are read first: the sweep below drops every variable of those families
@@ -114,9 +115,12 @@ model_id=${LEGION_E2E_MODEL_ID:-}
 claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
 omp_bin=${LEGION_E2E_OMP_PATH:-}
 claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
+# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name a service entry that sets
+# `hostaddr`, while the loopback check below reads the DSN alone: an inherited one of the three
+# would create and drop the run's database on another server.
 for variable in $(compgen -e); do
   case $variable in
-    DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_*) unset "$variable" ;;
+    DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
   esac
 done
 
@@ -599,20 +603,13 @@ case $pg_dsn in
   postgres://* | postgresql://*) ;;
   *) fail "CLEAN_SESSION_STOP_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${pg_dsn#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-case $hostport in
-  \[*)
-    db_host=${hostport#\[}
-    db_host=${db_host%%\]*}
-    ;;
-  *) db_host=${hostport%%:*} ;;
-esac
-case $db_host in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "CLEAN_SESSION_STOP_PG_DSN must name 127.0.0.1, localhost or ::1, not '$db_host': the run creates and drops a database in it" ;;
-esac
+# Which host the DSN names, read by libpq itself: the run creates and drops a database there, so
+# it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py, whose own section of
+# scripts/e2e/README.md says what it reads and what it refuses.
+if ! db_host=$(CLEAN_SESSION_STOP_PG_DSN=$pg_dsn python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+  CLEAN_SESSION_STOP_PG_DSN "the run creates and drops a database there" 2>&1); then
+  fail "$db_host"
+fi
 [ -n "$omp_bin" ] || omp_bin=$(command -v omp || true)
 [ -n "$omp_bin" ] || { [ ! -x /opt/omp/bin/omp ] || omp_bin=/opt/omp/bin/omp; }
 [ -n "$omp_bin" ] ||
@@ -756,9 +753,13 @@ note "the listener on 127.0.0.1:$listener_port judges records with a ${live_wind
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
   fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
-database_url=${pg_dsn%%\?*}
-database_url=${database_url%/*}/$database
-case $pg_dsn in *\?*) database_url="$database_url?${pg_dsn#*\?}" ;; esac
+# The run's own database is the DSN's last parameter, which libpq and pgx both read as the
+# database: a DSN whose user name holds a `?` is cut in the wrong place by a pattern, and the
+# caller's own database would be the one this run writes.
+case $pg_dsn in
+  *\?*) database_url="$pg_dsn&dbname=$database" ;;
+  *) database_url="$pg_dsn?dbname=$database" ;;
+esac
 note "the daemon's store is the run's own database $database"
 echo "ok services"
 

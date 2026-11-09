@@ -9,7 +9,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 const helper = join(import.meta.dir, "loopback-dsn.py");
 const variable = "LOOPBACK_DSN_TEST";
 const what = "this run creates and drops databases there";
-/** A password no refusal may print, in a DSN whose host libpq reads from after the `@`. */
+/** A password no refusal may print. It is in the userinfo of each refused DSN that carries one. */
 const password = "hunter2";
 
 /** What the helper answered: its exit status, the host it printed, and its refusal line. */
@@ -52,6 +52,32 @@ describe.skipIf(skip)("loopback-dsn.py takes a loopback DSN", () => {
     });
     expect(guard("postgres://[::1]:5433/db")).toEqual({ code: 0, host: "::1", refusal: "" });
   });
+
+  test("a loopback host given as a parameter is the host libpq reads", () => {
+    expect(guard("postgres://localhost:5433/db?host=127.0.0.1")).toEqual({
+      code: 0,
+      host: "127.0.0.1",
+      refusal: "",
+    });
+  });
+
+  // libpq ends the user name at the first `@` and a `?` does not end it, so the user name here
+  // is `evil.example?x=` and the host is localhost. pgx v5 reads the same two.
+  test("a host name inside the user name is no host", () => {
+    expect(guard("postgres://evil.example?x=@localhost")).toEqual({
+      code: 0,
+      host: "localhost",
+      refusal: "",
+    });
+  });
+
+  test("an empty hostaddr parameter is no hostaddr", () => {
+    expect(guard("postgres://localhost:5433/db?hostaddr=")).toEqual({
+      code: 0,
+      host: "localhost",
+      refusal: "",
+    });
+  });
 });
 
 describe.skipIf(skip)("loopback-dsn.py refuses the host libpq reads", () => {
@@ -92,11 +118,24 @@ describe.skipIf(skip)("loopback-dsn.py refuses the host libpq reads", () => {
       `${variable} names no host: libpq would read PGHOST or its own default, and ${what}`
     );
   });
+
+  test("a Unix-socket directory is no loopback host", () => {
+    const answer = guard("postgres:///db?host=/var/run/postgresql");
+    expect(answer.code).toBe(1);
+    expect(answer.refusal).toBe(
+      `${variable} must name 127.0.0.1, localhost or ::1: libpq reads the host` +
+        ` /var/run/postgresql, and ${what}`
+    );
+  });
 });
 
 describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host", () => {
+  // Each DSN below carries the password in its userinfo, and each refusal is read back whole, so
+  // the assertion itself says that no part of that userinfo reached the refusal.
   test("a newline hides the `host=` key from a line reader, not from libpq", () => {
-    const answer = guard("postgres://localhost:5433/db?application_name=x\n&host=evil.example");
+    const answer = guard(
+      `postgres://legion_test:${password}@localhost:5433/db?application_name=x\n&host=evil.example`
+    );
     expect(answer.code).toBe(1);
     expect(answer.refusal).toBe(
       `${variable} holds the control character 0x0a: libpq reads the whole DSN, and a reader` +
@@ -105,7 +144,7 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
   });
 
   test("two hosts are two servers a drop can reach", () => {
-    const answer = guard("postgres://localhost,evil.example:5432/db");
+    const answer = guard(`postgres://legion_test:${password}@localhost,evil.example:5432/db`);
     expect(answer.code).toBe(1);
     expect(answer.refusal).toBe(
       `${variable} must name one host: libpq reads 2 (localhost, evil.example), and it connects` +
@@ -114,7 +153,7 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
   });
 
   test("hostaddr names the server the host name does not", () => {
-    const answer = guard("postgres://localhost:5433/db?hostaddr=10.0.0.1");
+    const answer = guard(`postgres://legion_test:${password}@localhost:5433/db?hostaddr=10.0.0.1`);
     expect(answer.code).toBe(1);
     expect(answer.refusal).toBe(
       `${variable} must carry no hostaddr parameter: libpq reads hostaddr=10.0.0.1 and connects` +
@@ -123,11 +162,12 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
   });
 
   test("service reads a host out of ~/.pg_service.conf", () => {
-    const answer = guard("postgres://localhost:5433/db?service=prod");
+    const answer = guard(`postgres://legion_test:${password}@localhost:5433/db?service=prod`);
     expect(answer.code).toBe(1);
     expect(answer.refusal).toBe(
       `${variable} must carry no service parameter: libpq reads service=prod from` +
-        " ~/.pg_service.conf, and that entry can name any host"
+        " ~/.pg_service.conf, and that entry can set hostaddr, which sends the connection to" +
+        " another address"
     );
   });
 
@@ -135,6 +175,27 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
     const answer = guard(`postgres://legion_test:${password}@localhost:5433/db?=x`);
     expect(answer.code).toBe(1);
     expect(answer.refusal).toBe(`${variable} is no connection string libpq can parse`);
+  });
+
+  // libpq decodes a percent sign, so these two reach it as a host holding a control character.
+  test("a percent-encoded newline in the host is refused in one line", () => {
+    const answer = guard(`postgres://legion_test:${password}@evil%0aFAKE%20LINE/db`);
+    expect(answer.code).toBe(1);
+    expect(answer.refusal).toBe(
+      `${variable} gives host the control character 0x0a: libpq decodes a percent sign in the` +
+        " DSN, and this refusal prints no value that holds one"
+    );
+    expect(answer.refusal.split("\n")).toHaveLength(1);
+  });
+
+  test("a percent-encoded escape sequence in the host is never written out", () => {
+    const answer = guard(`postgres://legion_test:${password}@%1b%5b2J/db`);
+    expect(answer.code).toBe(1);
+    expect(answer.refusal).toBe(
+      `${variable} gives host the control character 0x1b: libpq decodes a percent sign in the` +
+        " DSN, and this refusal prints no value that holds one"
+    );
+    expect(answer.refusal).not.toContain("\u001b");
   });
 
   test("an unset variable is refused by name", () => {
@@ -146,28 +207,4 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
     expect(run.exitCode).toBe(1);
     expect(run.stderr.toString().trim()).toBe(`${variable} is not set`);
   });
-});
-
-describe.skipIf(skip)("loopback-dsn.py prints no userinfo", () => {
-  // The password is in the userinfo of each refused DSN, and the user name of the first two is
-  // the text a shell pattern reads as the host.
-  const refused = [
-    `postgres://localhost?sslmode=disable:${password}@evil.example/postgres`,
-    `postgres://localhost?${password}@evil.example:5432/db`,
-    `postgres://legion_test:${password}@evil.example:5432/db`,
-    `postgres://legion_test:${password}@localhost:5433/db?%68ost=evil.example`,
-    `postgres://legion_test:${password}@localhost,evil.example:5432/db`,
-    `postgres://legion_test:${password}@localhost:5433/db?hostaddr=10.0.0.1`,
-    `postgres://legion_test:${password}@localhost:5433/db?service=prod`,
-    `postgres://legion_test:${password}@localhost:5433/db?application_name=x\n&host=evil.example`,
-  ];
-  for (const dsn of refused) {
-    test(`no part of the userinfo of ${dsn.replace(password, "<password>")}`, () => {
-      const answer = guard(dsn);
-      expect(answer.code).toBe(1);
-      expect(answer.refusal).not.toContain(password);
-      expect(answer.refusal).not.toContain("legion_test");
-      expect(answer.refusal).not.toContain("sslmode");
-    });
-  }
 });

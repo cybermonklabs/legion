@@ -98,8 +98,8 @@
 # two agent processes and two short-lived listeners of the run's own. Every one of them is
 # stopped on any exit, by the pid it was started as; the run's database is dropped and its work
 # directory removed. The run is re-runnable: it takes a work directory of its own each time and
-# inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_* or CLAUDE_* variable of the
-# caller's.
+# inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
+# PGSERVICE or PGSERVICEFILE variable of the caller's.
 set -Eeuo pipefail
 
 # This script's own three ENVOY_SESSION_STATES_* inputs are read first: the sweep below drops every
@@ -108,9 +108,12 @@ set -Eeuo pipefail
 pg_dsn=${ENVOY_SESSION_STATES_PG_DSN:-}
 wanted=${ENVOY_SESSION_STATES_CHECKS:-}
 evidence=${ENVOY_SESSION_STATES_EVIDENCE_DIR:-}
+# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name a service entry that sets
+# `hostaddr`, while the loopback check below reads the DSN alone: an inherited one of the three
+# would create and drop the run's database on another server.
 for variable in $(compgen -e); do
   case $variable in
-    DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_*) unset "$variable" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
   esac
 done
 
@@ -588,20 +591,14 @@ if [ -n "$needs_dispatch" ]; then
     postgres://* | postgresql://*) ;;
     *) fail "ENVOY_SESSION_STATES_PG_DSN must be a postgres:// or postgresql:// URL" ;;
   esac
-  authority=${pg_dsn#*://}
-  authority=${authority%%[/?]*}
-  hostport=${authority##*@}
-  case $hostport in
-    \[*)
-      db_host=${hostport#\[}
-      db_host=${db_host%%\]*}
-      ;;
-    *) db_host=${hostport%%:*} ;;
-  esac
-  case $db_host in
-    127.0.0.1 | localhost | ::1) ;;
-    *) fail "ENVOY_SESSION_STATES_PG_DSN must name 127.0.0.1, localhost or ::1, not '$db_host': the run creates and drops a database in it" ;;
-  esac
+  # Which host the DSN names, read by libpq itself: the run creates and drops a database there,
+  # so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py, whose own section
+  # of scripts/e2e/README.md says what it reads and what it refuses.
+  if ! db_host=$(ENVOY_SESSION_STATES_PG_DSN=$pg_dsn \
+    python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+    ENVOY_SESSION_STATES_PG_DSN "the run creates and drops a database there" 2>&1); then
+    fail "$db_host"
+  fi
   command -v psql >/dev/null || fail "psql is required for the checks that read an issue claim"
 fi
 if [ -n "$needs_omp" ]; then
@@ -757,9 +754,13 @@ if [ -n "$needs_dispatch" ]; then
   database=envoy_session_states_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
   psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
     fail "could not create database $database in ENVOY_SESSION_STATES_PG_DSN"
-  database_url=${pg_dsn%%\?*}
-  database_url=${database_url%/*}/$database
-  case $pg_dsn in *\?*) database_url="$database_url?${pg_dsn#*\?}" ;; esac
+  # The run's own database is the DSN's last parameter, which libpq and pgx both read as the
+  # database: a DSN whose user name holds a `?` is cut in the wrong place by a pattern, and the
+  # caller's own database would be the one this run writes.
+  case $pg_dsn in
+    *\?*) database_url="$pg_dsn&dbname=$database" ;;
+    *) database_url="$pg_dsn?dbname=$database" ;;
+  esac
   psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||
     fail "the database $database has no pgvector; ENVOY_SESSION_STATES_PG_DSN must name a PostgreSQL carrying it"
   mkdir -p "$work/web-dist"

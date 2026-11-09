@@ -121,13 +121,12 @@
 # PLAN_POINTER_DRIVE_ATTEMPTS (3) how many attempts one run makes before an unscorable run fails.
 #
 # The run refuses to start - no database, no server, no session - when LEGION_TEST_PG_DSN is
-# unset, is no postgres URL, or names a host libpq does not read as one loopback name
-# (scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own parser, and refuses a host
-# that is not loopback, a host list of more than one, a `hostaddr`, a `service` and a control
-# character), when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, when
-# --mid-approval is neither word, when --base-commit is missing or names no commit of this
-# checkout, when either arm's daemon module is missing, or when the two arms compose the same
-# prompt byte for byte, which is a base arm that is no control.
+# unset, is no postgres URL, or is a DSN scripts/e2e/lib/loopback-dsn.py refuses, which reads the
+# DSN with libpq's own parser and takes one loopback host alone (its section of
+# scripts/e2e/README.md says what it refuses), when LEGION_OMP_PATH is not executable, when
+# --tasks is neither 1 nor 2, when --mid-approval is neither word, when --base-commit is missing
+# or names no commit of this checkout, when either arm's daemon module is missing, or when the
+# two arms compose the same prompt byte for byte, which is a base arm that is no control.
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
@@ -270,13 +269,15 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# database_url NAME prints the caller's DSN with NAME as its database, keeping its user and its
-# parameters: one server, a database per run.
+# database_url NAME prints the caller's DSN with NAME as its database: NAME is appended as the
+# DSN's last parameter, which libpq and pgx both read as the database, so the DSN itself is kept
+# whole. A pattern that cut the DSN at its first `?` would cut inside a user name holding one,
+# and the run would write the caller's own database. One server, a database per run.
 database_url() {
-  local url=${pg_dsn%%\?*}
-  url=${url%/*}/$1
-  case $pg_dsn in *\?*) url="$url?${pg_dsn#*\?}" ;; esac
-  printf '%s\n' "$url"
+  case $pg_dsn in
+    *\?*) printf '%s&dbname=%s\n' "$pg_dsn" "$1" ;;
+    *) printf '%s?dbname=%s\n' "$pg_dsn" "$1" ;;
+  esac
 }
 
 # json_field FIELD FILE prints one string, number or boolean member of the JSON object FILE
@@ -319,14 +320,10 @@ for tool in bun go git jj psql curl dispatch python3 openssl; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 # Which host the DSN names, read by libpq itself: this run creates and force-drops databases
-# there, so it must be this machine's. A shell pattern and libpq disagree about which text is
-# the host, because libpq ends the user name at the first `@` and a `?` does not end it, so the
-# host of `postgres://localhost?sslmode=disable@evil.example/db` is evil.example. The guard is
-# scripts/e2e/lib/loopback-dsn.py, which asks libpq's own parser (PQconninfoParse) and refuses a
-# host that is not loopback, a host list of more than one, a `hostaddr`, a `service` and a
-# control character. Its refusal prints the host it read and no other part of the DSN, since the
-# user name and the password are in it. The sibling proofs dispatch-two-builds.sh,
-# verification-results.sh and dispatch-claimant-delivery.sh call the same helper.
+# there, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py, whose own
+# section of scripts/e2e/README.md says what it reads and what it refuses. The sibling proofs
+# dispatch-two-builds.sh, verification-results.sh, dispatch-claimant-delivery.sh,
+# clean-session-stop-tmux.sh and envoy-session-states.sh call the same helper.
 case "$pg_dsn" in
   postgres://* | postgresql://*) ;;
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;

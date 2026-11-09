@@ -48,12 +48,14 @@ envoy_port=${CLAIMANT_E2E_ENVOY_PORT:-19053}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, which would replace the URL's host for the reset below while the server,
-# which never reads it, connects to the host the check admitted.
+# psql reads PGHOSTADDR, and PGSERVICE and PGSERVICEFILE can name a service entry that sets
+# `hostaddr`, while the loopback check below reads the DSN alone: one of the three would send the
+# reset below to another server while the server, which reads none of them, connects to the host
+# the check admitted.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR) unset "$name" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
   esac
 done
 
@@ -98,13 +100,10 @@ begin prerequisites
 for tool in go bun curl psql openssl python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
-# Which host the DSN names, read by libpq itself (scripts/e2e/lib/loopback-dsn.py): the run
-# drops the database's public schema, so it must be this machine's, as the dev sign-in the
-# server runs with also insists. libpq ends the user name at the first `@`, and a `?` does not
-# end it, so a shell pattern and libpq disagree about which text is the host. The helper asks
-# libpq's own parser, and refuses a host that is not loopback, a host list of more than one, a
-# `hostaddr`, a `service` and a control character. Its refusal prints no part of the DSN's
-# userinfo.
+# Which host the DSN names, read by libpq itself: the run drops the database's public schema, so
+# it must be this machine's, as the dev sign-in the server runs with also insists. The guard is
+# scripts/e2e/lib/loopback-dsn.py, whose own section of scripts/e2e/README.md says what it reads
+# and what it refuses.
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
