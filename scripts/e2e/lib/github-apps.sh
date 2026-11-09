@@ -69,6 +69,74 @@
 
 github_apps_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
+# When a credential command's stderr reaches the operator is decided by the stages its relay
+# pipeline is made of (app_token_mint_command: `head -c`, app_token_stderr_bound, then
+# app_token_redact or app_token_redact_key), because each of them can hold a line it has already
+# read until its own buffer fills or its writer closes. Two of the three do, with the tools a
+# Debian devbox and this pod have, so a command that prints a line and then waits — a progress
+# line before a slow read of a deployment's own store — reaches nobody until it exits:
+#   awk       mawk, which is awk on a Debian devbox and in this pod (mawk 1.3.4), reads a pipe a
+#             block at a time unless it is given `-W interactive`, which has it read a line at a
+#             time and write each line out as it goes.
+#   head -c   GNU head writes its stdout through stdio, which is fully buffered on a pipe, so it
+#             holds the first line until 4 KiB have gone by or its input ends, unless it is run
+#             under `stdbuf -o0`.
+# Measured here through the real path, app_token_mint_key over a key command that prints a line
+# and then sleeps two seconds: the line reaches the run's stderr after 2104 ms unchanged, after
+# 2099 ms with the awk flag alone, after 2134 ms with the stdbuf alone — the two buffers are in
+# series, so either one left in holds the line by itself — and after 99 ms with both, of a
+# command that exits at 2128 ms. Stage by stage, over a line printed before a two-second sleep:
+# both relays plain 2026 ms against 45 ms with the flag, one relay alone 2031 ms against 49 ms,
+# `head -c 1048577` 2024 ms against 24 ms under `stdbuf -o0`. app_token_redact's `sed -u` is
+# already prompt, at 28 ms, which is what its `-u` is for. Measure this in a script run by
+# `bash`, never at a prompt of a shell whose `head` is a builtin (`type head` says which): a
+# builtin writes straight out, so the pipeline looks prompt there while the one a stage proof
+# runs, with /usr/bin/head in it, is not. That reading is how the 4 KiB above was missed once.
+#
+# Both are probes of the invocation rather than checks of a tool's name or version, since either
+# flag belongs to one implementation. `-W` is gawk's compatibility switch, so another awk may
+# take `-W interactive`, refuse it, or take it with a warning, and a warning would be a line of
+# noise in the run's transcript for every line a relay passes — the channel these relays exist to
+# keep readable. So the awk probe runs the flag exactly as the relays run it and takes it only
+# when that run exits 0 and writes nothing at all to stderr. Both probes run once, here where the
+# lib is sourced, rather than per relay call: the awk probe costs about 10 ms and the stdbuf one,
+# which is two runs, about 30 ms, and neither answer can change within a run. A tool that
+# refuses its flag leaves its array empty and keeps today's behaviour exactly, buffering and all,
+# with nothing said about it. The probes write nothing anywhere and read nothing of the caller's:
+# their input is /dev/null or a line of their own, their output goes to /dev/null or to a pipe of
+# their own, and what they would have written to stderr is what they judge themselves by.
+app_token_awk_interactive=()
+if app_token_awk_probe=$(LC_ALL=C awk -W interactive '{ print }' </dev/null 2>&1 >/dev/null) && [ -z "$app_token_awk_probe" ]; then
+  app_token_awk_interactive=(-W interactive)
+fi
+unset -v app_token_awk_probe
+
+# The stdbuf probe is in two steps, because `stdbuf` works by preloading a libc shim into the
+# program it runs: on a host whose libc it cannot preload into (musl) it is there, runs the
+# program, exits 0 and says nothing, and buffers exactly as before. An exit status proves it ran,
+# never that it unbuffered, so the second step watches the effect. First the run itself, as the
+# pipeline makes it, which must exit 0 and write nothing: that is `stdbuf` present, running
+# `head`, and silent, so the pipeline would gain no warning of its own. Then one line through a
+# `head` of its own, written into it and read back while its input stays open: unbuffered, the
+# whole step takes about 15 ms, and it allows 0.5 s, more than thirty times that, which is also
+# the whole cost of the probe on a host where stdbuf changes nothing. head's stderr is read with
+# its stdout, so a `stdbuf` that works but warns is refused here too. The timeout is a bound, not
+# a measurement: a host loaded enough to miss it keeps today's buffering and says nothing.
+app_token_head_unbuffered=()
+if app_token_head_probe=$(stdbuf -o0 head -c 1 </dev/null 2>&1 >/dev/null) && [ -z "$app_token_head_probe" ]; then
+  coproc app_token_head_coproc { stdbuf -o0 head -c 4096 2>&1; }
+  app_token_head_in=${app_token_head_coproc[1]}
+  app_token_head_out=${app_token_head_coproc[0]}
+  app_token_head_line=
+  printf 'x\n' >&"$app_token_head_in" 2>/dev/null || true
+  IFS= read -r -t 0.5 -u "$app_token_head_out" app_token_head_line 2>/dev/null || true
+  exec {app_token_head_in}>&- {app_token_head_out}<&-
+  wait "${app_token_head_coproc_PID:-$$}" 2>/dev/null || true
+  [ "$app_token_head_line" != x ] || app_token_head_unbuffered=(stdbuf -o0)
+  unset -v app_token_head_coproc app_token_head_in app_token_head_out app_token_head_line
+fi
+unset -v app_token_head_probe
+
 # The defaults, which a run that sets no input takes: the App ids of the legion-implementer and
 # legion-reviewer Apps, and the name of the secrets broker github-app secret the implement App's
 # tokens come from, which is agent tier. The review App has no default credential, since the only
@@ -374,7 +442,7 @@ app_token_redact() {
 # `a_`. The lengths are counted rather than written as regex bounds: mawk, which is awk on
 # a Debian devbox, matches a bracket range followed by {n,} as though the bound were a `+`.
 app_token_redact_key() {
-  LC_ALL=C awk '
+  LC_ALL=C awk "${app_token_awk_interactive[@]}" '
     function masked(run) {
       if (run ~ /^gh[opsur]_/) return length(run) >= 20 ? "[redacted]" : run
       if (run ~ /^github_pat_/) return length(run) >= 27 ? "[redacted]" : run
@@ -407,7 +475,7 @@ app_token_redact_key() {
 # created to say the stream overflowed. Every line it passes is whole, so the relay after it sees
 # each token, and each run of key material, whole.
 app_token_stderr_bound() {
-  LC_ALL=C awk -v limit="$1" -v marker="$2" '
+  LC_ALL=C awk "${app_token_awk_interactive[@]}" -v limit="$1" -v marker="$2" '
     { total += length($0) + 1
       if (total > limit) { printf "" > marker; exit }
       print; fflush() }'
@@ -437,7 +505,7 @@ app_token_mint_command() {
     {
       timeout --kill-after=10s 35m sh -c "$command" \
         2>&1 1>&3 3>&- </dev/null |
-        head -c "$((app_token_release_limit + 1))" |
+        "${app_token_head_unbuffered[@]}" head -c "$((app_token_release_limit + 1))" |
         app_token_stderr_bound "$app_token_release_limit" "$overflow" |
         "$relay" >&2
     } 3>&1 | head -c "$((app_token_release_limit + 1))" >"$tmp"

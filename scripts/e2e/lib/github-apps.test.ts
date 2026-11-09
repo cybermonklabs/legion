@@ -114,7 +114,7 @@ const appInputs = {
 // none, the host's POSIX sh stands in for it.
 const busyboxSh = Bun.which("busybox") === null ? ["sh"] : ["busybox", "sh"];
 
-async function githubApps(inputs: Record<string, string | undefined>, then: string) {
+function spawnGithubApps(inputs: Record<string, string | undefined>, then: string) {
   const work = mkdtempSync(join(dir, "apps."));
   // The child gets PATH with the stand-in first, a home of the test's own, the two seams and the
   // case's own inputs, never the caller's whole environment. A devbox shell exports this
@@ -137,7 +137,11 @@ fail() { printf 'FAIL %s: %s\\n' "$check" "$*" >&2; exit 1; }
 bun() { command bun "$@" "$API"; }
 . "$LIB"
 ${then}`;
-  const child = Bun.spawn(["bash", "-c", shell], { env, stdout: "pipe", stderr: "pipe" });
+  return { child: Bun.spawn(["bash", "-c", shell], { env, stdout: "pipe", stderr: "pipe" }), work };
+}
+
+async function githubApps(inputs: Record<string, string | undefined>, then: string) {
+  const { child, work } = spawnGithubApps(inputs, then);
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -1323,6 +1327,77 @@ echo done`
     // PEM armour of the line after it.
     expect(stderr).toContain("read [redacted key]");
     expect(stderr.split("\n")).toContain("[redacted key]");
+    holdsNoKey(stdout + stderr, keyIDs);
+    holdsNoKeyLine(stdout + stderr);
+  });
+
+  test("the key command's first line reaches the run's stderr while that command is still running", async () => {
+    // What the relay is for: an operator whose key command prints progress — a line before a slow
+    // read of their own store, or a prompt — reads it while the command runs, not after it ends.
+    // Every stage between that command and the run's stderr can hold a line it has read (the
+    // lib's probes: `head -c` through stdio, and mawk's block reads), and each of them held it
+    // until the command exited: measured through this path, 2104 ms against the 2 s sleep below.
+    // So the row reads the run's stderr as it arrives rather than after the exit, and asserts the
+    // gap between the two: the line is due about 100 ms in, and the command exits about 2100 ms
+    // in, so a line that arrives 1.5 s before the exit cannot be a line that arrived with it,
+    // and a host loaded enough to spend a second of that margin on starting bash still passes.
+    const progress = "reading the review App key from the deployment store";
+    const started = performance.now();
+    const { child, work } = spawnGithubApps(
+      {
+        ...appInputs,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; sleep 2; cat -- ${reviewKeyFile}`,
+      },
+      `require_app_inputs implement review
+write_github_apps --key-dir "$work/app-key" implement review
+echo written`
+    );
+    let firstLineAt = 0;
+    let stderr = "";
+    const decoder = new TextDecoder();
+    const reading = (async () => {
+      for await (const chunk of child.stderr as ReadableStream<Uint8Array>) {
+        stderr += decoder.decode(chunk, { stream: true });
+        if (firstLineAt === 0 && stderr.includes("\n")) firstLineAt = performance.now();
+      }
+    })();
+    const stdout = await new Response(child.stdout).text();
+    const code = await child.exited;
+    const exitedAt = performance.now();
+    await reading;
+    expect(code).toBe(0);
+    expect(stdout).toContain("written");
+    expect(stderr.trim()).toBe(progress);
+    // The line arrived, and it arrived while the command was still in its sleep.
+    expect(firstLineAt).toBeGreaterThan(0);
+    expect(exitedAt - firstLineAt).toBeGreaterThan(1500);
+    expect(firstLineAt - started).toBeLessThan(1000);
+    // And the key the command printed after the sleep still reached its file alone.
+    expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
+    holdsNoKey(stdout + stderr, keyIDs);
+  });
+
+  test("the relay writes nothing of its own: the run's stderr holds the command's line, masked, and nothing else", async () => {
+    // The failure the lib's two probes exist to prevent. Each probe takes a flag of one
+    // implementation — `-W interactive` is mawk's, `stdbuf -o0` wants a libc it can preload into
+    // — and an awk or a stdbuf that answers such a flag with a warning would write that warning
+    // into this very channel, the one an operator reads their own command's words out of. So the
+    // run's stderr must hold what the command wrote, masked, and nothing besides: no warning, no
+    // usage line, nothing of the relay's own.
+    const body = reviewKey.trimEnd().split("\n")[1];
+    const { code, stdout, stderr, work } = await githubApps(
+      {
+        ...appInputs,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf 'reading %s\\n' '${body}' >&2; cat -- ${reviewKeyFile}`,
+      },
+      `require_app_inputs implement review
+write_github_apps --key-dir "$work/app-key" implement review
+echo written`
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain("written");
+    expect(stderr.split("\n")).toEqual(["reading [redacted key]"]);
+    expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
     holdsNoKey(stdout + stderr, keyIDs);
     holdsNoKeyLine(stdout + stderr);
   });
