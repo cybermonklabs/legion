@@ -45,7 +45,7 @@ export function DecisionActions({
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
-  const decision = decisions.data?.decisions.find((row) => row.ref === nodeReference);
+  const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
   return <DecisionControls decision={decision} documentId={document.id} issueKey={issueKey} />;
 }
@@ -81,7 +81,7 @@ function DecisionControls({
               ...view,
               // The Keep is of the text this node showed, which the server took, so it applies
               // to the row that still holds that text.
-              decisions: view.decisions.map((row) =>
+              decisions: (view.decisions ?? []).map((row) =>
                 row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
                   ? { ...row, kept, waiting_review: false }
                   : row

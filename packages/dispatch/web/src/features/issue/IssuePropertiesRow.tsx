@@ -21,6 +21,7 @@ import { gatedStepEntries } from "./gated-steps";
 import { IssueAddMenu } from "./IssueAddMenu";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueLabels } from "./IssueLabels";
+import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -52,7 +53,7 @@ export function IssuePropertiesRow({
 }): ReactNode {
   const saving = writes.updateIssue.isPending;
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  const openAsks = issue.open_asks.filter((ask) => ask.state === "open");
+  const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the marker stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -121,7 +122,7 @@ export function IssuePropertiesRow({
       <PriorityEditor
         disabled={isClosed || saving}
         issueKey={issue.key}
-        priority={issue.priority}
+        priority={issuePriority(issue.priority)}
         write={priorityWrite}
       />
       <AssigneeControl
@@ -131,7 +132,7 @@ export function IssuePropertiesRow({
       />
       <IssueLabels
         disabled={isClosed}
-        labels={issue.labels}
+        labels={issue.labels ?? []}
         onSave={(labels) => writes.labels.mutateAsync(labels)}
         project={issue.project}
         saving={writes.labels.isPending}

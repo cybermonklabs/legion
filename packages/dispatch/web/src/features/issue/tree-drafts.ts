@@ -92,8 +92,9 @@ export interface TreeContext {
 
 export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;
-  const slugs = new Map(reads.issue.artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const specSlug = reads.issue.artifacts.find((artifact) => artifact.primary)?.slug ?? "";
+  const artifacts = reads.issue.artifacts ?? [];
+  const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
+  const specSlug = artifacts.find((artifact) => artifact.primary)?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
   const nodeIdOf = (reference: string): string | undefined => {
     const route = parseNodeReference(reference);
@@ -175,7 +176,7 @@ function citations(reads: IssueTreeReads, context: TreeContext): Map<string, Cit
   const listings = new Map<string, readonly ArtifactBlock[]>(
     (reads.documents ?? []).map((document) => [document.artifactId, document.blocks])
   );
-  const ownSlugs = new Set(reads.issue.artifacts.map((artifact) => artifact.slug));
+  const ownSlugs = new Set((reads.issue.artifacts ?? []).map((artifact) => artifact.slug));
   for (const member of reads.references?.members ?? []) {
     const slug = member.artifact.slug;
     if (!ownSlugs.has(slug) || found.has(slug)) continue;
@@ -269,7 +270,7 @@ function addDocuments(
     citedBy.set(member.artifact.slug, blockNodeId(document, block));
   }
   for (const [slug, citation] of cited) citedBy.set(slug, citation.id);
-  reads.issue.artifacts.forEach((artifact, index) => {
+  (reads.issue.artifacts ?? []).forEach((artifact, index) => {
     if (artifact.kind !== "doc" && artifact.kind !== "image") return;
     const cites = citedBy.get(artifact.slug);
     const draft = add(
@@ -336,13 +337,13 @@ function addDocumentBlocks(
 
 /** The issue's children, each one node under the issue: a child's own tree is its own page. */
 function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
-  reads.issue.children.forEach((child, index) => {
+  (reads.issue.children ?? []).forEach((child, index) => {
     const draft = add(drafts, blank(child.key, "child_issue", ROOT_ORDER.child + index));
     draft.text = child.title;
     // Named by the issue read itself rather than by the batched reference read, so there is
     // nothing left to wait for: a blocking issue's key is both its name here and its whole
     // address (`answered`, `NodeChip`).
-    draft.chips = child.blocked_by.map((blocked) => ({
+    draft.chips = (child.blocked_by ?? []).map((blocked) => ({
       answered: true,
       gone: false,
       name: blocked,
@@ -358,7 +359,7 @@ function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
  */
 function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
   const asks = new Map<string, Ask>();
-  for (const ask of [...reads.issue.open_asks, ...(reads.asks ?? [])]) {
+  for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
     if (ask.kind === "question") asks.set(ask.id, ask);
   }
   for (const ask of asks.values()) {
@@ -400,7 +401,10 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
     });
     draft.text = comment.body;
   });
-  const messages = (reads.messages ?? []).flatMap((thread) => [thread.message, ...thread.replies]);
+  const messages = (reads.messages ?? []).flatMap((thread) => [
+    thread.message,
+    ...(thread.replies ?? []),
+  ]);
   messages.forEach((message, index) => {
     const draft = add(drafts, blank(message.id, "message", ROOT_ORDER.turn + index));
     draft.author = message.author;
@@ -437,10 +441,10 @@ function addDecisions(
     // A target with no address of its own is named by nothing, so there is no chip to draw for
     // it (`GraphNode.ref` is optional).
     draft.chips = [
-      ...decision.links.flatMap((link) =>
+      ...(decision.links ?? []).flatMap((link) =>
         link.to.ref === undefined ? [] : [{ ...context.chipOf(link.to.ref), stale: link.stale }]
       ),
-      ...decision.asks.map((ask) =>
+      ...(decision.asks ?? []).map((ask) =>
         context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))
       ),
     ];
@@ -495,7 +499,7 @@ function addRequirements(
 ): void {
   const shapedBy = new Map<string, number>();
   for (const decision of reads.decisions?.decisions ?? []) {
-    for (const link of decision.links) {
+    for (const link of decision.links ?? []) {
       const shaped = link.to.ref === undefined ? undefined : context.nodeIdOf(link.to.ref);
       if (shaped === undefined) continue;
       shapedBy.set(shaped, (shapedBy.get(shaped) ?? 0) + 1);
@@ -510,7 +514,7 @@ function addRequirements(
     const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
-    draft.gaps = requirementGaps(requirement.gaps, origin, shapedBy.get(id) ?? 0);
+    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.get(id) ?? 0);
     draft.parents = origin === undefined ? [] : [origin];
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
@@ -552,9 +556,9 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.parents = held?.parents ?? [slug];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
-    draft.state = checkState(check.results);
+    draft.state = checkState(check.results ?? []);
     draft.text = check.text;
-    check.results.forEach((result, index) => {
+    (check.results ?? []).forEach((result, index) => {
       const row = add(drafts, blank(result.id, "result", index));
       row.author = result.actor;
       row.facts = resultFacts(result);

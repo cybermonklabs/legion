@@ -146,10 +146,10 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
         {child.key} · {child.title}
       </Link>
       <span {...pageChrome}>{issueStatusWord(child.status)}</span>
-      {child.blocked_by.length === 0 ? null : (
+      {(child.blocked_by ?? []).length === 0 ? null : (
         <span {...pageChrome}>
           {PROPERTY_LABELS.blocked_by}{" "}
-          {child.blocked_by.map((key) => (
+          {(child.blocked_by ?? []).map((key) => (
             <Link
               className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
               key={key}
@@ -172,7 +172,7 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
       <span {...authorText}>
         <Timestamp at={child.active_at} />
       </span>
-      {child.external_links.map((link) => (
+      {(child.external_links ?? []).map((link) => (
         <span className="inline-flex min-w-0 items-center" key={link.url} {...authorText}>
           <GitHubLink link={link} />
         </span>

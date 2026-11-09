@@ -116,9 +116,9 @@ export function IssueMarginPanel({
             resolvedRepo={issue.resolved_repo}
           />
           <IssueComponentsLine issue={issue} />
-          {issue.blocked_by.length === 0 ? null : (
+          {(issue.blocked_by ?? []).length === 0 ? null : (
             <Property label={PROPERTY_LABELS.blocked_by}>
-              {issue.blocked_by.map((key) => (
+              {(issue.blocked_by ?? []).map((key) => (
                 <Link
                   className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
                   key={key}
@@ -130,9 +130,9 @@ export function IssueMarginPanel({
               ))}
             </Property>
           )}
-          {issue.external_links.length === 0 ? null : (
+          {(issue.external_links ?? []).length === 0 ? null : (
             <Property label={PROPERTY_LABELS.external_links}>
-              {issue.external_links.map((link) => (
+              {(issue.external_links ?? []).map((link) => (
                 <GitHubLink key={link.url} link={link} />
               ))}
             </Property>

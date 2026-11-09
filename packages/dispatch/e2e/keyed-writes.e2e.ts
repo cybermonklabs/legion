@@ -1,9 +1,8 @@
 import { type AddressInfo, createServer, type Socket } from "node:net";
 
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { Event } from "../web/src/api/types";
 import { expiredRetryNote } from "../web/src/features/writes/keyed-write";
 import {
   baseUrl,
@@ -68,13 +67,13 @@ async function uploadedPercent(page: Page): Promise<number> {
 }
 
 /** The events of `type` on `issue`. */
-async function eventsOf(issue: string, type: Event["type"]): Promise<Event[]> {
+async function eventsOf(issue: string, type: DispatchEvent["type"]): Promise<DispatchEvent[]> {
   return (await getIssueEvents(issue)).filter((event) => event.type === type);
 }
 
 /** The `issue.updated` events on `issue` that set its status to `status`, read with the agent
  *  token, which a person's sign-out leaves working. */
-async function statusEvents(issue: string, status: string): Promise<Event[]> {
+async function statusEvents(issue: string, status: string): Promise<DispatchEvent[]> {
   return (await getIssueEvents(issue, {}, agent)).filter(
     (event) => event.type === "issue.updated" && event.payload.status === status
   );

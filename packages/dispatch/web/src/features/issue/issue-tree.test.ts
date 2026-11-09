@@ -37,6 +37,8 @@ function artifact(id: string, slug: string, name: string, primary = false): Arti
     name,
     primary,
     project: "CORE",
+    ref_key: `artifact:${id}`,
+    session_id: null,
     slug,
     versions: [],
   };
@@ -60,7 +62,10 @@ function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
     number: 1,
     open_asks: [],
     parent: null,
+    plan_artifact_id: "",
+    decisions_artifact_id: "",
     primary_artifact_id: artifacts.find((one) => one.primary)?.id ?? "",
+    verification_artifact_id: "",
     priority: null,
     project: "CORE",
     progress: { children: null, tasks: null },
@@ -92,7 +97,15 @@ function block(
     name,
     value,
   }));
-  return { attributes, from: 0, id, references: { asks: 0, comments: 0 }, to: 1, type };
+  return {
+    attributes,
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type,
+  };
 }
 
 function requirement(id: string, text: string, gaps: readonly string[] = []): RequirementCoverage {
@@ -108,7 +121,7 @@ function requirement(id: string, text: string, gaps: readonly string[] = []): Re
 
 function coverage(requirements: readonly RequirementCoverage[]): IssueCoverage {
   return {
-    gaps: requirements.flatMap((one) => one.gaps),
+    gaps: requirements.flatMap((one) => one.gaps ?? []),
     has_plan: false,
     issue: KEY,
     requirements: [...requirements],
@@ -134,8 +147,14 @@ function decision(blockId: string, text: string, shaped: readonly string[]): Dec
       stale: false,
       to: {
         block_id: one,
+        changed_at: null,
+        changed_by: null,
         id: "artifact-spec",
         kind: "block",
+        made_at: null,
+        made_by: null,
+        parent: null,
+        parent_version: null,
         ref: `dispatch://${KEY}/spec#b-${one}`,
       },
     })),

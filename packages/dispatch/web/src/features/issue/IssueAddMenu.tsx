@@ -118,7 +118,7 @@ export function IssueAddMenu({
         reachable: byName(`Assignee of ${details.key}`),
       });
     }
-    if (details.labels.length === 0) {
+    if ((details.labels ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.labels,
         open: press("Edit labels"),
@@ -132,7 +132,7 @@ export function IssueAddMenu({
         reachable: () => true,
       });
     }
-    if (details.blocked_by.length === 0) {
+    if ((details.blocked_by ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.blocked_by,
         open: () => onOpenField("blocked_by"),
@@ -146,7 +146,7 @@ export function IssueAddMenu({
         reachable: byName(`Repository of ${details.key}`),
       });
     }
-    if (details.components.ids.length === 0) {
+    if ((details.components.ids ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.components,
         open: press(`Edit components of ${details.key}`),

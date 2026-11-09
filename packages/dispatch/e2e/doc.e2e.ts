@@ -173,7 +173,7 @@ test("reading a document gives its headings ids without versioning it or crediti
   // nobody.
   const nameVersion = async (summary: string) => {
     const named = await createNamedVersion(artifactId, summary, { login: "bob" });
-    expect(named.authors.map(({ id }) => id)).toEqual(["bob"]);
+    expect((named.authors ?? []).map(({ id }) => id)).toEqual(["bob"]);
     return named.number;
   };
 
@@ -189,7 +189,9 @@ test("reading a document gives its headings ids without versioning it or crediti
       session
     );
     await expect
-      .poll(async () => (await getArtifact(artifactId)).versions.map(({ number }) => number))
+      .poll(async () =>
+        ((await getArtifact(artifactId)).versions ?? []).map(({ number }) => number)
+      )
       .toEqual([1, 2, 3]);
     await readAs(alice, "One region first.");
     expect(await nameVersion("after the agent's heading")).toBe(4);
@@ -240,9 +242,9 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions
+          (artifact.versions ?? [])
             .find(({ number }) => number === 2)
-            ?.authors.map(({ id }) => id)
+            ?.authors?.map(({ id }) => id)
             .sort()
         )
       )
@@ -250,7 +252,7 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 2)
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -292,7 +294,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 2)
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -305,7 +307,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 3)
+          (artifact.versions ?? []).find(({ number }) => number === 3)
         )
       )
       .toMatchObject({ named: true, number: 3, summary: "Decided Postgres" });

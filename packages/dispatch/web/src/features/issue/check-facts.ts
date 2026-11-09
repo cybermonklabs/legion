@@ -37,8 +37,9 @@ export function checkFacts(check: CheckBlock): NodeFact[] {
 export function resultFacts(result: CheckResult): NodeFact[] {
   const currency: Readonly<Record<string, string>> = RESULT_CURRENCY_WORDS;
   const stands = currency[result.currency ?? ""];
+  const verdicts: Readonly<Record<string, string>> = RESULT_VERDICT_WORDS;
   const facts: NodeFact[] = [
-    { draw: "word", name: "verdict", value: RESULT_VERDICT_WORDS[result.verdict] },
+    { draw: "word", name: "verdict", value: verdicts[result.verdict] ?? result.verdict },
   ];
   if (stands !== undefined) facts.push({ draw: "word", name: "stands", value: stands });
   for (const [name, value] of [
@@ -61,7 +62,7 @@ export function resultFacts(result: CheckResult): NodeFact[] {
   ] as const) {
     if (count > 0) facts.push({ draw: "text", name, value: String(count) });
   }
-  for (const screenshot of result.screenshots) {
+  for (const screenshot of result.screenshots ?? []) {
     facts.push({ draw: "picture", name: "screenshot", value: screenshot });
   }
   return facts;

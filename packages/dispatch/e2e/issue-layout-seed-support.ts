@@ -77,7 +77,7 @@ export async function pause(milliseconds: number): Promise<void> {
  *  for a check nobody has run, and a result whose currency the server left out is `unknown` for
  *  the reason the page calls it unmarked - nothing judged it. */
 function currencyOf(check: CheckBlock): string {
-  const latest = check.results[0];
+  const latest = (check.results ?? [])[0];
   return latest === undefined ? "none" : (latest.currency ?? "unknown");
 }
 
@@ -111,7 +111,7 @@ export async function awaitSeededCurrencies(
   const deadline = Date.now() + 20_000;
   for (;;) {
     const read = await getIssueResults(issueKey);
-    const seen = new Map(read.checks.map((check) => [check.block_id, currencyOf(check)]));
+    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, currencyOf(check)]));
     if ([...wanted].every(([block, currency]) => seen.get(block) === currency)) return;
     if (Date.now() > deadline) {
       throw new Error(
@@ -127,7 +127,7 @@ export async function awaitSeededCurrencies(
 export async function awaitBlockAsk(issueKey: string, block: string): Promise<string> {
   const deadline = Date.now() + 20_000;
   for (;;) {
-    const ask = (await getIssue(issueKey)).open_asks.find((row) => row.block_id === block);
+    const ask = ((await getIssue(issueKey)).open_asks ?? []).find((row) => row.block_id === block);
     if (ask !== undefined) return ask.id;
     if (Date.now() > deadline) {
       throw new Error(`${issueKey}'s ${block} ask was not indexed within 20 s`);

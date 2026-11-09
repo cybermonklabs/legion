@@ -48,10 +48,10 @@ export function IssueComponentsLine({
   const tree = useQuery({
     queryKey: ["architecture", issue.project],
     queryFn: () => api.getArchitecture(issue.project),
-    enabled: pickerOpen || (components.mode === "explicit" && components.ids.length > 0),
+    enabled: pickerOpen || (components.mode === "explicit" && (components.ids ?? []).length > 0),
   });
   const componentName = (id: string) =>
-    tree.data?.components.find((component) => component.id === id)?.title ?? id;
+    (tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id;
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (
@@ -84,7 +84,7 @@ export function IssueComponentsLine({
         </span>
       ) : (
         <>
-          {components.ids.map((id) => (
+          {(components.ids ?? []).map((id) => (
             <span
               className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgePrimary.bg} ${badgePrimary.text}`}
               key={id}
@@ -93,7 +93,7 @@ export function IssueComponentsLine({
               {componentName(id)}
             </span>
           ))}
-          {components.unknown.map((id) => (
+          {(components.unknown ?? []).map((id) => (
             <span
               className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
               key={id}
@@ -119,7 +119,7 @@ export function IssueComponentsLine({
           saving={write.pending}
           selected={
             components.mode === "explicit" && components.inherited_from === null
-              ? components.ids
+              ? (components.ids ?? [])
               : []
           }
           triggerAriaLabel={`Edit components of ${issue.key}`}

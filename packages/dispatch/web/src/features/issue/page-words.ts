@@ -362,6 +362,14 @@ export const APPROVAL_STATE_WORDS = freeze({
   stale: "Approved, and changed since",
 } as const);
 
+/** The word for the approval state `token`, which the generated document carries as a plain
+ *  string. A token the module does not declare reads as itself, which is what the server sent,
+ *  as `issueStatusWord` does for a status. */
+export function approvalStateWord(token: string): string {
+  const words: Readonly<Record<string, string>> = APPROVAL_STATE_WORDS;
+  return words[token] ?? token;
+}
+
 /**
  * Every label the page's own controls and headings carry. They live here rather than inside a
  * component so `DECLARED_WORDS` stays derived: a label a component writes inline would be a

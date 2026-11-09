@@ -16,7 +16,7 @@ import type { TreeNode } from "./issue-tree";
 
 /** Each artifact of the issue by its slug, which is how every node of the tree names one. */
 export function artifactsBySlug(issue: IssueDetails): ReadonlyMap<string, Artifact> {
-  return new Map(issue.artifacts.map((artifact) => [artifact.slug, artifact]));
+  return new Map((issue.artifacts ?? []).map((artifact) => [artifact.slug, artifact]));
 }
 
 /** One node's place in a document: the document itself, and the block of it the node is. */

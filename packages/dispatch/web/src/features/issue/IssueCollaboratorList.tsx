@@ -42,7 +42,8 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
    *  both belong to `others`. */
   const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null && isLegionRole(agent.legion.role);
-  const legion = collaborators.agents.filter(known);
+  const agents = collaborators.agents ?? [];
+  const legion = agents.filter(known);
   return {
     // A section is the role's slice of the server's list, in the order it sent them: the server
     // ordered the registry's agents by role and then newest first, so a filter is the whole of
@@ -54,8 +55,8 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
     }),
     // Every session no Legion section holds, so a registry entry naming a role this build does
     // not know is listed rather than dropped from the page. The server's order again.
-    others: collaborators.agents.filter((agent) => !known(agent)),
-    people: collaborators.people,
+    others: agents.filter((agent) => !known(agent)),
+    people: collaborators.people ?? [],
   };
 }
 
@@ -93,7 +94,7 @@ function Worked({
 }): ReactNode {
   return (
     <>
-      {reasons.length === 0 ? null : <span>{reasons.join(", ")}</span>}
+      {(reasons ?? []).length === 0 ? null : <span>{(reasons ?? []).join(", ")}</span>}
       {lastAt === null ? null : <Timestamp at={lastAt} />}
     </>
   );
@@ -126,10 +127,11 @@ export function IssueCollaboratorList({ issueKey }: { issueKey: string }): React
   const collaborators = query.data;
   const sections = collaboratorSections(collaborators);
   const titles = new Map(
-    collaborators.agents.map((agent) => [agent.session_id, agent.title ?? undefined])
+    (collaborators.agents ?? []).map((agent) => [agent.session_id, agent.title ?? undefined])
   );
   const unavailable = collaborators.legion_registry === "unavailable";
-  const empty = collaborators.agents.length === 0 && collaborators.people.length === 0;
+  const empty =
+    (collaborators.agents ?? []).length === 0 && (collaborators.people ?? []).length === 0;
   return (
     <section aria-label="Collaborators" className="min-w-0 space-y-6">
       {unavailable ? (

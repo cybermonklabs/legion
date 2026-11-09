@@ -158,7 +158,7 @@ test("a message to an agent written on a closed issue posts and reaches the agen
       .poll(async () =>
         (await listIssueMessages(issueKey))
           .find((thread) => thread.message.id === plannerMessageId)
-          ?.replies.map((message) => [message.body, message.target])
+          ?.replies?.map((message) => [message.body, message.target])
       )
       .toEqual([["Message after the close", `session:${planner.session_id}`]]);
     await expect
@@ -194,7 +194,7 @@ test("Reply on a closed issue's message thread posts", async ({ browser }) => {
       .poll(async () =>
         (await listIssueMessages(issueKey))
           .find((thread) => thread.message.id === questionId)
-          ?.replies.map((message) => message.body)
+          ?.replies?.map((message) => message.body)
       )
       .toEqual(["Replied after the close"]);
   } finally {
@@ -222,7 +222,7 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
     expect((await posted).ok()).toBe(true);
     await expect
       .poll(async () =>
-        (await getMessage(issueKey, testerMessageId)).message.deliveries.map((delivery) => [
+        ((await getMessage(issueKey, testerMessageId)).message.deliveries ?? []).map((delivery) => [
           delivery.attempt,
           delivery.state,
         ])

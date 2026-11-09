@@ -17,7 +17,7 @@ import type { TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { authorText, pageChrome } from "./page-structure";
 import {
-  APPROVAL_STATE_WORDS,
+  approvalStateWord,
   type CheckState,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
@@ -127,7 +127,7 @@ export function IssueThreeThings({
           {planTasks === 0 ? (
             <span {...pageChrome}>{EMPTY_STATE_LINES.plan}</span>
           ) : approval === undefined ? null : (
-            <span {...pageChrome}>{APPROVAL_STATE_WORDS[approval]}</span>
+            <span {...pageChrome}>{approvalStateWord(approval)}</span>
           )}
         </p>
         <p

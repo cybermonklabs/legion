@@ -283,7 +283,7 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
         async () =>
           (await listComments(issueKey)).find((comment) =>
             comment.body.endsWith("please review the fix")
-          )?.mentions[0]?.target
+          )?.mentions?.[0]?.target
       )
       .toBe(`role:${tokens.reviewer}`);
   } finally {

@@ -257,7 +257,7 @@ function BlockedByForm({
   writes: IssueHeaderWrites;
 }): ReactNode {
   const input = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState(issue.blocked_by.join(" "));
+  const [draft, setDraft] = useState((issue.blocked_by ?? []).join(" "));
   useEffect(() => {
     input.current?.focus();
   }, []);

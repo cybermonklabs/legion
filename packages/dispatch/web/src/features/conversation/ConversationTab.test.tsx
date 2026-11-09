@@ -5,6 +5,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import {
   type IntersectionControl,
   installIntersectionObserver,
@@ -22,7 +24,7 @@ import type {
   Ask,
   Comment,
   CommentDelivery,
-  Event,
+  DispatchEvent,
   Handoff,
   IssueAskRow,
   IssueAskThreadRow,
@@ -32,6 +34,7 @@ import type {
   UserIssueState,
   UserState,
 } from "../../api/types";
+import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -53,16 +56,15 @@ function issueState(dismissed: string[] = [], lastReadSeq = 0): UserIssueState {
 
 function comment(id: string, overrides: Partial<Comment> = {}): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
     ask_id: null,
     author: alice,
     body: `Body of ${id}`,
     created_at: "2026-09-20T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: "CORE-1",
-    mentions: [],
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -76,6 +78,8 @@ function comment(id: string, overrides: Partial<Comment> = {}): Comment {
 function message(id: string, overrides: Partial<Message> = {}): Message {
   return {
     author: alice,
+    broadcast_id: null,
+    reply_block: null,
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
@@ -93,6 +97,7 @@ function thread(root: Message, replies: Message[] = []): MessageRead {
 
 function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
   return {
+    ...messageDeliveryFields(),
     attempt: 1,
     created_at: recentAttemptAt,
     delivery: "btw",
@@ -108,6 +113,7 @@ function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
 
 function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelivery {
   return {
+    duplicate: false,
     attempt: 1,
     comment_id: "comment-1",
     created_at: recentAttemptAt,
@@ -125,6 +131,8 @@ function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelive
 
 const baseAsk: Ask = {
   anchor: null,
+  artifact_id: null,
+  block_id: null,
   answer: null,
   author: { id: "s1", kind: "session" },
   created_at: "2026-09-10T09:00:00Z",
@@ -159,7 +167,7 @@ function askRow(overrides: Partial<Ask> = {}, replies: Comment[] = []): IssueAsk
   };
 }
 
-function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): Event {
+function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): DispatchEvent {
   return {
     actor: alice,
     created_at: at,
@@ -169,7 +177,7 @@ function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): Event {
     payload: {},
     seq,
     type: "issue.created",
-  } as Event;
+  } as DispatchEvent;
 }
 
 function agent(sessionId: string, title: string, capabilities: string[] = []): Agent {
@@ -182,6 +190,7 @@ function agent(sessionId: string, title: string, capabilities: string[] = []): A
     machine_id: "m",
     open_asks: 0,
     roles: [],
+    state: "live",
     session_id: sessionId,
     title,
   };
@@ -196,6 +205,8 @@ const primaryDocument: Artifact = {
   name: "spec.md",
   primary: true,
   project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };
@@ -216,10 +227,10 @@ interface Lists {
    *  to a summary), and `getHandoff` answers one by id. */
   handoffs?: Handoff[];
   /** The issue's newest event, which a dwell on the newest card marks read through. */
-  head?: Event[];
+  head?: DispatchEvent[];
   messages?: MessageRead[];
   /** The first event the reader has not read: its moment is the unread boundary. */
-  unread?: Event[];
+  unread?: DispatchEvent[];
 }
 
 /** The four reads the Conversation builds its list from, plus the two one-row event reads that
@@ -242,7 +253,7 @@ function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
     spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
       blocks: [],
       indexed: false,
-      item: { id, issue_key: "CORE-1", kind: "comment" },
+      item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
     })),
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
       options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
@@ -2080,14 +2091,20 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   };
 }
 
-/** `element` stays on screen as `placement` says for a second, and every write it starts lands. */
+/** `element` stays on screen as `placement` says for a second, and every write it starts lands.
+ *
+ *  The landing effects of the render before it are flushed first, on the real clock: fake
+ *  timers drop whatever is still pending when they go in, and on a loaded machine the effect
+ *  that opens a landed comment's thread can still be in flight here, which left the dwell
+ *  watching nothing and the mark unwritten (`bun test --parallel` on a two-core box). */
 async function dwellOn(viewport: IntersectionControl, element: Element, placement?: Placement) {
+  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
   jest.useFakeTimers();
   act(() => viewport.show(element, placement));
   act(() => {
     jest.advanceTimersByTime(1_000);
   });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+  for (let flush = 0; flush < 20; flush += 1) await act(async () => {});
 }
 
 /** A session's reply in a message thread. */

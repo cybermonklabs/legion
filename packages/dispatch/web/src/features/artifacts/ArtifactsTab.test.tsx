@@ -10,7 +10,7 @@ import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
-const artifact: Artifact = {
+const artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
@@ -19,6 +19,8 @@ const artifact: Artifact = {
   kind: "image",
   name: "diagram.png",
   primary: false,
+  ref_key: "CORE-1/diagram-png",
+  session_id: null,
   slug: "diagram-png",
   versions: [
     {
@@ -42,7 +44,9 @@ const artifact: Artifact = {
       summary: null,
     },
   ],
-};
+  // `satisfies`, not an annotation: the tests below slice `artifact.versions`, which the route
+  // table's `Version[] | null` would not let them.
+} satisfies Artifact;
 
 const noReferences: IssueReferences = { members: [], truncated: false };
 
@@ -339,6 +343,7 @@ test("References names the agent that owns a conversation's artifact", async () 
       open_asks: 0,
       roles: [],
       session_id: "planner-session",
+      state: "live",
       title: "Planner",
     },
   ]);

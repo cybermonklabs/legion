@@ -250,7 +250,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           issueKey={details.key}
           narrow={narrowConversation(
             conversationState,
-            stateForIssue(state.data, details.key).dismissed
+            stateForIssue(state.data, details.key).dismissed ?? []
           )}
           onFirstPlacement={forgetConversationScroll}
           state={state.data}
@@ -458,7 +458,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const editedDocument =
     editing === undefined || drawnDocuments.has(editing)
       ? undefined
-      : issue.data.artifacts.find((artifact) => artifact.id === editing);
+      : (issue.data.artifacts ?? []).find((artifact) => artifact.id === editing);
 
   return (
     // A flex column, so the identity block's fourth row can be drawn at its end on a phone

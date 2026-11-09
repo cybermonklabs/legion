@@ -1,7 +1,8 @@
 kind: Added
 body: |-
-  `ReferenceTarget` and `ReferenceTargets` mirror `GET /api/v1/reference-targets`, the batched
-  reference read: one member per reference, each with its kind, the words a reader is shown for
-  its target and whether the target is gone. `ReferenceMember` gains `via_blocks`, the blocks
-  citing a referenced document, and `IssueChild` gains `blocked_by` and `claim`, carrying
-  `Issue`'s own shapes so a reader draws an issue and a child row through one type.
+  `ReferenceTarget` and `ReferenceTargets` are generated from `GET /api/v1/reference-targets`,
+  the batched reference read, as every shape of the route table now is: one member per
+  reference, each with its kind, the words a reader is shown for its target and whether the
+  target is gone. `ReferenceMember` gains `via_blocks`, the blocks citing a referenced document,
+  and `IssueChild` gains `blocked_by` and `claim`, carrying `Issue`'s own shapes so a reader
+  draws an issue and a child row through one type.

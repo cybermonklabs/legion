@@ -93,7 +93,10 @@ export function IssueBody({
     [address.filter, address.preset, named, root]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
-  const uncited = useMemo(() => uncitedArtifacts(root, issue.artifacts), [issue.artifacts, root]);
+  const uncited = useMemo(
+    () => uncitedArtifacts(root, issue.artifacts ?? []),
+    [issue.artifacts, root]
+  );
   const specSlug = primarySpec(issue)?.slug ?? "";
   // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
   // `onReport`) and drawn here as the page's own status.

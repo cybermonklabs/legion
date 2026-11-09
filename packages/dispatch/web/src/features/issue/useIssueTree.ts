@@ -65,7 +65,7 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),
   });
-  const documentIds = issue.artifacts
+  const documentIds = (issue.artifacts ?? [])
     .filter((artifact) => artifact.kind === "doc")
     .map((artifact) => artifact.id);
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
@@ -127,7 +127,7 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
     !results.isPending &&
     !documents.pending;
   const targets = useQuery(referenceTargetsQuery(treeRead ? refs : []));
-  const named = targets.data?.targets;
+  const named = targets.data === undefined ? undefined : (targets.data.targets ?? []);
   // The same answer every link of this page would otherwise read one pointer at a time: a
   // block's own words, which a link in a document, in a decision's card or in a comment's
   // preview shows (`features/refs/reference-names.tsx`, R20).

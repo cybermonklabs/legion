@@ -227,7 +227,7 @@ async function expectLoadSettled(traffic: ApiRequests): Promise<void> {
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
 async function primarySlug(key: string): Promise<string> {
-  const primary = (await getIssue(key)).artifacts.find((artifact) => artifact.primary);
+  const primary = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
   expect(primary, `${key} carries no primary document`).toBeDefined();
   return primary?.slug ?? "";
 }
@@ -1378,7 +1378,7 @@ test("documents are nodes and nothing is a file list", async ({ browser }) => {
         name: "uploaded.md",
       });
     await expect
-      .poll(async () => (await getIssue(seeded.key)).artifacts.map((artifact) => artifact.name))
+      .poll(async () => ((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.name))
       .toContain("uploaded.md");
 
     // An artifact's versions and the download of a version are reachable from the artifact.
@@ -1848,7 +1848,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
         name: "carried.md",
       });
     await expect
-      .poll(async () => (await getIssue(seeded.key)).artifacts.map((artifact) => artifact.name))
+      .poll(async () => ((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.name))
       .toContain("carried.md");
 
     // The panel's conversation, and its composer with it, is mounted once the conversation's
@@ -1888,7 +1888,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
     await naming.getByRole("button", { name: /^Save/ }).click();
     await expect
       .poll(async () =>
-        (await getArtifact(seeded.specArtifactId)).versions.map((version) => version.summary)
+        ((await getArtifact(seeded.specArtifactId)).versions ?? []).map((one) => one.summary)
       )
       .toContain("Carried over");
   });
