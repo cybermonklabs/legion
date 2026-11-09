@@ -1231,7 +1231,9 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-tools.test.sh'
               - '.github/scripts/check-ci-tools.sh'
-              # :446 runs the gate over this repository's own tree.
+              # check-ci-tools.sh:609-610 runs it for this repository's own addresses.
+              - '.github/scripts/repo-paths.sh'
+              # :1195 runs the gate over this repository's own tree.
               - '.github/ci-tools.yaml'
             check_action_pins_test: &check_action_pins_test
               - *ci_router
