@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"strings"
 	"testing"
 
@@ -50,7 +52,8 @@ func TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan(t *testing.T) {
 	const q = "index test"
 	var planJSON []byte
 	if err := tx.QueryRow(ctx, "explain (format json) "+searchQueryMeaning, q, "", searchDefaultLimit, firstTerm(q), headlineOptions,
-		0, contracts.SearchKindDepth, searchFusionK, embed.Literal(queryVector()), searchMeaningFloor, embedder.Identity()).Scan(&planJSON); err != nil {
+		0, contracts.SearchKindDepth, searchFusionK, embed.Literal(queryVector()), searchMeaningFloor, embedder.Identity(),
+		refs.VisibilityArg(model.Actor{})).Scan(&planJSON); err != nil {
 		t.Fatalf("explain: %v", err)
 	}
 	var plan []struct {

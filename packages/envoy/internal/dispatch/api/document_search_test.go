@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"net/http"
 	"slices"
 	"strings"
@@ -46,9 +48,29 @@ type documentSearchStatement struct {
 	statement string
 	oracle    string
 	arguments []any
-	sorted    bool
-	holds     []string
-	lacks     []string
+	// oracleArguments is what the oracle is run with where it declares fewer parameters than
+	// the statement under test: the acting credential every statement of this build binds
+	// (refs.VisibilityArg) is a parameter main's own statement does not have.
+	oracleArguments []any
+	sorted          bool
+	holds           []string
+	lacks           []string
+}
+
+// oracleArgs is what the oracle is run with: its own list where it has one, else the
+// statement's.
+func (s documentSearchStatement) oracleArgs() []any {
+	if s.oracleArguments != nil {
+		return s.oracleArguments
+	}
+	return s.arguments
+}
+
+// documentSearchSeen is the acting credential every statement of this build binds last
+// (refs.VisibilityArg): these reads act for a credential that proves no author, which is what
+// a read of a corpus holding no author-private node answers for anyone.
+func documentSearchSeen() []any {
+	return []any{refs.VisibilityArg(model.Actor{})}
 }
 
 // documentSearchFixture is the corpus of R1's plan and equality tests: one project whose
@@ -167,31 +189,33 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 	documents := []string{f.notes, f.atlas}
 	return []documentSearchStatement{
 		{
-			name:      "search, keywords only",
-			statement: searchQuery,
-			oracle:    mainSearchQuery,
-			arguments: searchArguments,
-			holds:     documents,
+			name:            "search, keywords only",
+			statement:       searchQuery,
+			oracle:          mainSearchQuery,
+			arguments:       slices.Concat(searchArguments, documentSearchSeen()),
+			oracleArguments: searchArguments,
+			holds:           documents,
 		},
 		{
 			name:      "search, meaning and keywords",
 			statement: searchQueryMeaning,
 			oracle:    searchQueryMeaningOverMainsDocumentArm,
-			arguments: slices.Concat(searchArguments, meaning),
+			arguments: slices.Concat(searchArguments, meaning, documentSearchSeen()),
 			holds:     documents,
 		},
 		{
-			name:      "the related-item check's keyword stage",
-			statement: relatedKeywordQuery,
-			oracle:    mainRelatedKeywordQuery,
-			arguments: relatedKeyword,
-			holds:     documents,
+			name:            "the related-item check's keyword stage",
+			statement:       relatedKeywordQuery,
+			oracle:          mainRelatedKeywordQuery,
+			arguments:       slices.Concat(relatedKeyword, documentSearchSeen()),
+			oracleArguments: relatedKeyword,
+			holds:           documents,
 		},
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningQuery,
 			oracle:    relatedMeaningQueryOverMainsDocumentArm,
-			arguments: relatedMeaning,
+			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
 		{
@@ -248,12 +272,12 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 		{
 			name:      "the related-item check's keyword stage, excluding its own issue",
 			statement: relatedKeywordExcludingQuery,
-			arguments: slices.Concat(keyword, owners),
+			arguments: slices.Concat(keyword, owners, documentSearchSeen()),
 		},
 		{
 			name:      "the related-item check's meaning stage, excluding its own issue",
 			statement: relatedMeaningExcludingQuery,
-			arguments: slices.Concat(meaning, owners),
+			arguments: slices.Concat(meaning, owners, documentSearchSeen()),
 		},
 	}
 }
@@ -292,7 +316,7 @@ func TestEveryDocumentArmSearchesTheDocumentSearchIndex(t *testing.T) {
 func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 	fixture := newDocumentSearchFixture(t)
 	statement := fixture.statements()[0]
-	plan := planWithoutSeqScans(t, fixture.database, statement.oracle, statement.arguments...)
+	plan := planWithoutSeqScans(t, fixture.database, statement.oracle, statement.oracleArgs()...)
 	for _, scan := range explaintest.IndexScans(t, plan) {
 		if scan.Index == documentSearchIndex {
 			t.Fatalf("main's keyword search reads %s, a table it does not know:\n%s", documentSearchIndex, plan)
@@ -318,7 +342,7 @@ func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {
 	ctx := context.Background()
 	for _, statement := range fixture.statements() {
 		t.Run(statement.name, func(t *testing.T) {
-			want := documentSearchRows(t, ctx, fixture.database, statement.oracle, statement.arguments, nil)
+			want := documentSearchRows(t, ctx, fixture.database, statement.oracle, statement.oracleArgs(), nil)
 			got := documentSearchRows(t, ctx, fixture.database, statement.statement, statement.arguments,
 				[]string{"set local enable_seqscan = off"})
 			if statement.sorted {

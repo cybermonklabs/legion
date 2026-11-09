@@ -134,7 +134,10 @@ func TestTheBackfillLeavesSearchAnsweringWhatMainsStatementDoes(t *testing.T) {
 			arguments := []any{word, "FILL", searchDefaultLimit, firstTerm(word), headlineOptions,
 				0, contracts.SearchKindDepth, searchFusionK}
 			want := documentSearchRows(t, ctx, database, mainSearchQuery, arguments, nil)
-			got := documentSearchRows(t, ctx, database, searchQuery, arguments, nil)
+			// This build's statement binds the acting credential last; main's has no such
+			// parameter, so the two lists differ by it and in nothing else.
+			got := documentSearchRows(t, ctx, database, searchQuery,
+				slices.Concat(arguments, documentSearchSeen()), nil)
 			if !slices.Equal(got, want) {
 				t.Fatalf("search for %q over the filled table answered\n%v\nwant main's rows\n%v", word, got, want)
 			}

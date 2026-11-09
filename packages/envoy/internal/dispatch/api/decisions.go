@@ -80,6 +80,10 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
 	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
@@ -88,7 +92,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if specFound {
-		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID); err != nil {
+		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), who, key, spec.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -108,7 +112,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID); err != nil {
+	if answer.Decisions, err = s.readDecisions(r.Context(), who, document, reference, specID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -172,7 +176,7 @@ func artifactMissing(err error) bool {
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
 // shape every ask read has (askReadColumns, with the newest reply beside the row).
-func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]issueAskRow, error) {
+func (s *server) specOpenQuestions(ctx context.Context, who model.Actor, key, specID string) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
 		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
@@ -201,7 +205,7 @@ func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]i
 	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
 		return nil, err
 	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
 		return nil, err
 	}
 	return questions, nil
@@ -211,7 +215,7 @@ func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]i
 // own blocks, its links from the block graph (refs.BlockLinks), its asks from the block mentions
 // its blocks hold, and its keeps from decision_keeps. specID is "" when the issue has no spec, and
 // every decision then has no links.
-func (s *server) readDecisions(ctx context.Context, document model.Artifact, reference, specID string) ([]model.Decision, error) {
+func (s *server) readDecisions(ctx context.Context, who model.Actor, document model.Artifact, reference, specID string) ([]model.Decision, error) {
 	markdown, sections, err := s.decisionSections(ctx, document.ID)
 	if err != nil {
 		return nil, err
@@ -222,7 +226,7 @@ func (s *server) readDecisions(ctx context.Context, document model.Artifact, ref
 	}
 	var links []model.BlockLink
 	if specID != "" {
-		if links, err = refs.BlockLinks(ctx, s.deps.Store.Pool, document.ID, specID); err != nil {
+		if links, err = refs.BlockLinks(ctx, s.deps.Store.Pool, who, document.ID, specID); err != nil {
 			return nil, err
 		}
 	}
@@ -751,7 +755,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockID := r.PathValue("block_id")
-	decision, err := s.keptDecision(r.Context(), document, blockID)
+	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -802,7 +806,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 // decisions.md of its issue - resolved as the view resolves it, by slug and then by filename, so
 // Keep and the view never disagree about which document holds the decisions - and that block is
 // the heading of a decision outside `## Replaced`.
-func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
+func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, error) {
 	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
@@ -814,7 +818,7 @@ func (s *server) keptDecision(ctx context.Context, document model.Artifact, bloc
 	if !found || decisionsDocument.ID != document.ID {
 		return model.Decision{}, notFound
 	}
-	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "")
+	decisions, err := s.readDecisions(ctx, who, document, artifactReference(document), "")
 	if err != nil {
 		return model.Decision{}, err
 	}

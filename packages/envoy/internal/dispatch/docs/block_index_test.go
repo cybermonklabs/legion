@@ -395,7 +395,7 @@ func TestBlockIndexIndexesAClosedDocumentWhoseAskStatesAreAheadOfItsVersion(t *t
 	if strings.Contains(texts["region"], `state="resolved"`) {
 		t.Fatalf("the ask block is indexed at version 1 with the sweep's state: %q", texts["region"])
 	}
-	document, found, err := refs.Node(ctx, database.Pool, "artifact", spec, false)
+	document, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "artifact", spec, false)
 	if err != nil || !found {
 		t.Fatalf("resolve the spec: found %v (%v)", found, err)
 	}
@@ -405,7 +405,7 @@ func TestBlockIndexIndexesAClosedDocumentWhoseAskStatesAreAheadOfItsVersion(t *t
 		if !ok {
 			t.Fatalf("%s is no reference", reference)
 		}
-		node, found, err := refs.Node(ctx, database.Pool, "block", text.TargetID(ref), true)
+		node, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "block", text.TargetID(ref), true)
 		if err != nil || !found || node.BlockID != id {
 			t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, id)
 		}
@@ -442,7 +442,7 @@ func TestBlockIndexIndexesAClosedDocumentWithAnUnsettledEdit(t *testing.T) {
 	if version := blockIndexAt(t, database, spec); version == nil || *version != 1 {
 		t.Fatalf("blocks indexed at %v, want version 1", version)
 	}
-	document, found, err := refs.Node(ctx, database.Pool, "artifact", spec, false)
+	document, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "artifact", spec, false)
 	if err != nil || !found {
 		t.Fatalf("resolve the spec: found %v (%v)", found, err)
 	}
@@ -452,7 +452,7 @@ func TestBlockIndexIndexesAClosedDocumentWithAnUnsettledEdit(t *testing.T) {
 	if !ok {
 		t.Fatalf("%s is no reference", reference)
 	}
-	node, found, err := refs.Node(ctx, database.Pool, "block", text.TargetID(ref), true)
+	node, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "block", text.TargetID(ref), true)
 	if err != nil || !found || node.BlockID != holder {
 		t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, holder)
 	}
@@ -622,7 +622,7 @@ func TestAClosedDocumentsUnsettledEditOfAnUntypedBlockIsDatedToTheVersionThatHol
 	if version := blockIndexAt(t, database, spec); version == nil || *version != 1 {
 		t.Fatalf("blocks indexed at %v, want version 1", version)
 	}
-	document, found, err := refs.Node(ctx, database.Pool, "artifact", spec, false)
+	document, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "artifact", spec, false)
 	if err != nil || !found {
 		t.Fatalf("resolve the spec: found %v (%v)", found, err)
 	}
@@ -633,7 +633,7 @@ func TestAClosedDocumentsUnsettledEditOfAnUntypedBlockIsDatedToTheVersionThatHol
 		if !ok {
 			t.Fatalf("%s is no reference", reference)
 		}
-		node, found, err := refs.Node(ctx, database.Pool, "block", text.TargetID(ref), true)
+		node, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "block", text.TargetID(ref), true)
 		if err != nil || !found || node.BlockID != id {
 			t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, id)
 		}
@@ -1044,7 +1044,7 @@ func TestAClosedDocumentsCrossedEditsKeepTheirRowsHistory(t *testing.T) {
 			if version := blockIndexAt(t, database, spec); version == nil || *version != 1 {
 				t.Fatalf("blocks indexed at %v, want version 1", version)
 			}
-			document, found, err := refs.Node(ctx, database.Pool, "artifact", spec, false)
+			document, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "artifact", spec, false)
 			if err != nil || !found {
 				t.Fatalf("resolve the spec: found %v (%v)", found, err)
 			}
@@ -1055,7 +1055,7 @@ func TestAClosedDocumentsCrossedEditsKeepTheirRowsHistory(t *testing.T) {
 				if !ok {
 					t.Fatalf("%s is no reference", reference)
 				}
-				node, found, err := refs.Node(ctx, database.Pool, "block", text.TargetID(ref), true)
+				node, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "block", text.TargetID(ref), true)
 				if err != nil || !found || node.BlockID != id {
 					t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, id)
 				}
@@ -1273,7 +1273,7 @@ func TestAClosedDocumentsPasteKeepingItsSourcesIDTakesNoRow(t *testing.T) {
 	if changed != 1 || deleted || kept != secondText {
 		t.Fatalf("after the closed tick, block %s is dated %d with text %q (deleted %v) at version 1, want version 1 with version 1's text %q", second, changed, kept, deleted, secondText)
 	}
-	document, found, err := refs.Node(ctx, database.Pool, "artifact", spec, false)
+	document, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "artifact", spec, false)
 	if err != nil || !found {
 		t.Fatalf("resolve the spec: found %v (%v)", found, err)
 	}
@@ -1282,7 +1282,7 @@ func TestAClosedDocumentsPasteKeepingItsSourcesIDTakesNoRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("%s is no reference", reference)
 	}
-	if node, found, err := refs.Node(ctx, database.Pool, "block", text.TargetID(ref), true); err != nil || !found || node.BlockID != second {
+	if node, found, err := refs.Node(ctx, database.Pool, model.Actor{}, "block", text.TargetID(ref), true); err != nil || !found || node.BlockID != second {
 		t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, second)
 	}
 }
@@ -1618,7 +1618,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -1626,7 +1626,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}

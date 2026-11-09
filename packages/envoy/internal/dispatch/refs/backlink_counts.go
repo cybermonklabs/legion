@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
@@ -33,6 +35,7 @@ import (
 func BacklinkCounts(
 	ctx context.Context,
 	q Queryer,
+	who model.Actor,
 	toKind string,
 	ids []string,
 	excludeKinds []string,
@@ -41,7 +44,7 @@ func BacklinkCounts(
 	if len(ids) == 0 {
 		return counts, nil
 	}
-	statement, args, err := backlinkCountStatement(toKind, ids, excludeKinds)
+	statement, args, err := backlinkCountStatement(who, toKind, ids, excludeKinds)
 	if err != nil {
 		return nil, err
 	}
@@ -61,11 +64,11 @@ func BacklinkCounts(
 // trip on it (the issue read's own count, api.getIssue, and api.queueAskDetails). No id queues
 // nothing and leaves counts as it is, so a caller need not ask whether it has any. A kind the arm
 // table does not declare is refused here as BacklinkCounts refuses it, before anything is queued.
-func QueueBacklinkCounts(b *pgx.Batch, toKind string, ids, excludeKinds []string, counts map[string]int) error {
+func QueueBacklinkCounts(b *pgx.Batch, who model.Actor, toKind string, ids, excludeKinds []string, counts map[string]int) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	statement, args, err := backlinkCountStatement(toKind, ids, excludeKinds)
+	statement, args, err := backlinkCountStatement(who, toKind, ids, excludeKinds)
 	if err != nil {
 		return err
 	}
@@ -78,12 +81,16 @@ func QueueBacklinkCounts(b *pgx.Batch, toKind string, ids, excludeKinds []string
 // backlinkCountStatement is the statement and arguments both halves run. A kind that is no key of
 // the arm table is refused before any SQL is built: the count has no arms to read for it, and
 // would otherwise be silently low.
-func backlinkCountStatement(toKind string, ids, excludeKinds []string) (string, []any, error) {
+//
+// The acting credential is bound as $3, which every arm's visibility predicate names: an edge
+// whose source who may not see raises no count, by the same test the list of those edges binds
+// (readEdgeRows), so a count and its list cannot disagree.
+func backlinkCountStatement(who model.Actor, toKind string, ids, excludeKinds []string) (string, []any, error) {
 	statement, ok := backlinkCountSQL(toKind, excludeKinds)
 	if !ok {
 		return "", nil, fmt.Errorf("count %s backlinks: no arms declared for that node kind", toKind)
 	}
-	args := []any{ids, nodeKinds}
+	args := []any{ids, nodeKinds, VisibilityArg(who)}
 	if len(excludeKinds) > 0 {
 		args = append(args, excludeKinds)
 	}
@@ -112,10 +119,11 @@ func scanBacklinkCounts(rows pgx.Rows, toKind string, counts map[string]int) err
 
 // backlinkCountSQL is the statement BacklinkCounts runs: the union of the arms of graph_edges
 // that can point at a node of toKind, grouped by target, with the arms a caller's excludeKinds
-// rule out left out. It binds the addresses as $1, the node kinds this build reads as $2 and,
-// when excludeKinds is not empty, those kinds as $3. ok is false for a kind backlinkArms does not
-// declare, the one kind BacklinkCounts refuses; it is a builder of its own so a test can read the
-// statement BacklinkCounts runs and hold its plan to an index on every arm.
+// rule out left out. It binds the addresses as $1, the node kinds this build reads as $2, the
+// acting credential as $3 (backlinkSeen) and, when excludeKinds is not empty, those kinds as
+// $4. ok is false for a kind backlinkArms does not declare, the one kind BacklinkCounts
+// refuses; it is a builder of its own so a test can read the statement BacklinkCounts runs and
+// hold its plan to an index on every arm.
 //
 // The kind is written into each arm as a literal rather than a parameter because the statement
 // text already differs per kind, and a literal lets the planner know how selective each arm's
@@ -191,6 +199,10 @@ func (t backlinkTarget) read(toID string) (counted, join, keyed, address string)
 		`part.node_id`
 }
 
+// backlinkSeen is the parameter the acting credential is bound at, which every arm's
+// visibility predicate names (backlinkCountStatement).
+const backlinkSeen = "$3"
+
 // backlinkArm is one arm of graph_edges whose edge kind is a SQL literal rather than a column:
 // kind is that literal, from the relations the arm reads, where the arm's own predicates and
 // toID the address the view selects as its to_id. Because the kind is fixed, a caller excluding
@@ -200,6 +212,12 @@ func (t backlinkTarget) read(toID string) (counted, join, keyed, address string)
 type backlinkArm struct {
 	kind string
 	from string
+	// fromKind and fromID are the node the arm's edge comes from: the kind the view writes as
+	// that arm's from_kind, and the expression that names the node under it. They are what the
+	// arm binds its visibility predicate over, so an edge whose source the acting person may
+	// not see raises no count, exactly as it is no row of the list (readEdgeRows).
+	fromKind string
+	fromID   string
 	// addressIs is the test the view's arm makes of the address itself, written as the tail of
 	// a predicate over it: a reply names an ask's part and a comment's block in one column, and
 	// the node id's prefix is what tells the two kinds apart. It is written over whichever
@@ -214,7 +232,8 @@ type backlinkArm struct {
 	toID      string
 }
 
-// sql is the arm as the count reads it for target, keyed on the addresses bound as $1.
+// sql is the arm as the count reads it for target, keyed on the addresses bound as $1 and
+// narrowed to the sources the acting credential may see.
 func (a backlinkArm) sql(target backlinkTarget) string {
 	counted, join, keyed, address := target.read(a.toID)
 	where := a.where
@@ -227,7 +246,8 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 	if where != "" {
 		where += ` and `
 	}
-	return `select ` + counted + ` from ` + a.from + join + ` where ` + where + keyed
+	return `select ` + counted + ` from ` + a.from + join + ` where ` + where + keyed +
+		` and ` + VisibleKind(a.fromKind, a.fromID, backlinkSeen)
 }
 
 // backlinkArms is, for each node kind nodeLoaders resolves, every arm of graph_edges whose edge
@@ -246,59 +266,78 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 var backlinkArms = map[string][]backlinkArm{
 	"issue": {
 		// issues_parent_key, partial on parent_key is not null.
-		{kind: "child_of", from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`},
+		{kind: "child_of", from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`,
+			fromKind: "issue", fromID: `i.key`},
 		// issue_links_target (target_key, kind).
-		{kind: "blocked_by", from: `issue_links l`, where: `l.kind = 'blocked_by'`, toID: `l.target_key`},
+		{kind: "blocked_by", from: `issue_links l`, where: `l.kind = 'blocked_by'`, toID: `l.target_key`,
+			fromKind: "issue", fromID: `l.issue_key`},
 		// artifacts_issue_key, partial on issue_key is not null.
-		{kind: "attached_to", from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`},
+		{kind: "attached_to", from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`,
+			fromKind: "artifact", fromID: `a.ref_key`},
 	},
 	// The view addresses an artifact by artifacts.ref_key, so each arm starts at artifacts
 	// through the unique artifacts_ref_key_key and joins the table that points at it.
 	"artifact": {
 		// asks_anchor_artifact, on the same coalesce the join makes.
-		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`},
+		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`,
+			fromKind: "ask", fromID: `k.id::text`},
 		// comments_anchor_artifact, on the same cast the join makes.
-		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`},
+		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
+			fromKind: "comment", fromID: `c.id::text`},
 		// asks_artifact_id.
-		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`},
+		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
+			fromKind: "ask", fromID: `k.id::text`},
 		// comments_artifact_id.
-		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`},
+		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
+			fromKind: "comment", fromID: `c.id::text`},
 		// The document_blocks primary key (artifact_id, block_id).
-		{kind: "part_of", from: `artifacts a join document_blocks d on d.artifact_id = a.id`, toID: `a.ref_key`},
+		{kind: "part_of", from: `artifacts a join document_blocks d on d.artifact_id = a.id`, toID: `a.ref_key`,
+			fromKind: "block", fromID: `d.node_id`},
 	},
 	"ask": {
 		// comments_ask_id_text.
-		{kind: "replies_to", from: `comments c`, where: `c.ask_id is not null`, toID: `c.ask_id::text`},
+		{kind: "replies_to", from: `comments c`, where: `c.ask_id is not null`, toID: `c.ask_id::text`,
+			fromKind: "comment", fromID: `c.id::text`},
 		// ask_blocks_ask_id_text. The view's arm counts a current part only, so this one carries
 		// its position filter.
-		{kind: "part_of", from: `ask_blocks b`, where: `b.position is not null`, toID: `b.ask_id::text`},
+		{kind: "part_of", from: `ask_blocks b`, where: `b.position is not null`, toID: `b.ask_id::text`,
+			fromKind: "ask_block", fromID: `b.node_id`},
 	},
 	"comment": {
 		// comments_reply_to_text.
-		{kind: "replies_to", from: `comments c`, where: `c.reply_to is not null`, toID: `c.reply_to::text`},
+		{kind: "replies_to", from: `comments c`, where: `c.reply_to is not null`, toID: `c.reply_to::text`,
+			fromKind: "comment", fromID: `c.id::text`},
 		// comments_answers_text, partial on answers is not null.
-		{kind: "answers", from: `comments c`, where: `c.answers is not null`, toID: `c.answers::text`},
+		{kind: "answers", from: `comments c`, where: `c.answers is not null`, toID: `c.answers::text`,
+			fromKind: "comment", fromID: `c.id::text`},
 		// comment_blocks_comment_id_text. The view's arm counts a current block only, so this
 		// one carries its position filter.
-		{kind: "part_of", from: `comment_blocks b`, where: `b.position is not null`, toID: `b.comment_id::text`},
+		{kind: "part_of", from: `comment_blocks b`, where: `b.position is not null`, toID: `b.comment_id::text`,
+			fromKind: "comment_block", fromID: `b.node_id`},
 	},
 	"message": {
 		// messages_in_reply_to_text.
-		{kind: "replies_to", from: `messages m`, where: `m.in_reply_to is not null`, toID: `m.in_reply_to::text`},
+		{kind: "replies_to", from: `messages m`, where: `m.in_reply_to is not null`, toID: `m.in_reply_to::text`,
+			fromKind: "message", fromID: `m.id::text`},
 		// message_blocks_message_id_text, with the view's position filter.
-		{kind: "part_of", from: `message_blocks b`, where: `b.position is not null`, toID: `b.message_id::text`},
+		{kind: "part_of", from: `message_blocks b`, where: `b.position is not null`, toID: `b.message_id::text`,
+			fromKind: "message_block", fromID: `b.node_id`},
 	},
 	"component": {
 		// components_parent_node, on the same expression the arm selects.
-		{kind: "part_of", from: `components c`, where: `c.parent is not null`, toID: `c.project_key || '/' || c.parent`},
+		{kind: "part_of", from: `components c`, where: `c.parent is not null`, toID: `c.project_key || '/' || c.parent`,
+			fromKind: "component", fromID: `c.project_key || '/' || c.id`},
 		// component_depends_to_node.
-		{kind: "depends_on", from: `component_depends d`, toID: `d.project_key || '/' || d.to_id`},
+		{kind: "depends_on", from: `component_depends d`, toID: `d.project_key || '/' || d.to_id`,
+			fromKind: "component", fromID: `d.project_key || '/' || d.from_id`},
 		// issue_component_members_node.
-		{kind: "affects", from: `issue_component_members m`, toID: `m.project_key || '/' || m.component_id`},
+		{kind: "affects", from: `issue_component_members m`, toID: `m.project_key || '/' || m.component_id`,
+			fromKind: "issue", fromID: `m.issue_key`},
 	},
 	"session": {
 		// ask_followers_session_id (migration 20261101182419), which exists for this arm.
-		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`},
+		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
+			fromKind: "ask", fromID: `f.ask_id::text`},
 	},
 	// A person, a role and a page are pointed at by mentions alone. The tuples the store holds
 	// of them - authored_by, delivered_to, held_by and part_of - are no arm of graph_edges, so
@@ -317,32 +356,40 @@ var backlinkArms = map[string][]backlinkArm{
 	// own arm carries. Both read comments_replies_to_block, partial on replies_to_block is not
 	// null, and neither carries a position filter, as the view's arms do not.
 	"comment_block": {
-		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` not like 'ask/%'`, toID: `c.replies_to_block`},
+		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` not like 'ask/%'`, toID: `c.replies_to_block`,
+			fromKind: "comment", fromID: `c.id::text`},
 	},
 	"ask_block": {
-		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` like 'ask/%'`, toID: `c.replies_to_block`},
+		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` like 'ask/%'`, toID: `c.replies_to_block`,
+			fromKind: "comment", fromID: `c.id::text`},
 	},
 	"message_block": {
 		// messages_replies_to_block, partial on replies_to_block is not null.
-		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`},
+		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`,
+			fromKind: "message", fromID: `m.id::text`},
 	},
 }
 
 // mentionBacklinkArms is the five arms of graph_edges whose edge kind and target kind are
 // columns rather than literals: refs and the four tables of block references. Every node kind
 // gets all five, since a mention can name any node. The target kind is written as a literal (see
-// BacklinkCounts), and excludeKinds the caller's excluded edge kinds, bound as $3 - on these
+// BacklinkCounts), and excludeKinds the caller's excluded edge kinds, bound as $4 - on these
 // arms the edge kind is a column, so an exclusion is a predicate and never drops an arm, and an
 // empty list adds nothing.
+//
+// Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
+// source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
+// the from side's spelling of an id), and each block arm's source is a block of the kind its
+// table holds.
 func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string {
 	exclude := ""
 	if len(excludeKinds) > 0 {
-		exclude = ` and not (r.kind = any($3))`
+		exclude = ` and not (r.kind = any($4))`
 	}
 	counted, join, keyed, _ := target.read(`r.to_id`)
-	arm := func(relation, rest string) string {
+	arm := func(relation, rest, visible string) string {
 		return `select ` + counted + ` from ` + relation + join + `
-			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude
+			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude + ` and ` + visible
 	}
 	arms := []string{
 		// refs_to (to_kind, to_id). heldByABlock belongs on this arm alone: it is gated on
@@ -352,13 +399,15 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// view's readers do not. The source-kind filter is this arm's alone for the same reason:
 		// every other arm's literal from_kind is a kind nodeLoaders resolves, so the filter would
 		// drop nothing there.
-		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r")),
+		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
+			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// block_refs_to (to_kind, to_id). The view's own arm lists a block[] pointer's row only
 		// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
 		// with no limit is listed without the call; this arm repeats both, so the count is the
 		// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
 		// the count the moment it leaves the list, with no rewrite of either.
-		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))`),
+		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))`,
+			VisibleKind("block", `r.from_node`, backlinkSeen)),
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to
 	// (to_kind, to_id, (<item>::text)), then the blocks table's primary key for the join. The
@@ -368,7 +417,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		arms = append(arms, arm(tables.refs+` r join `+tables.blocks+` b on b.`+tables.item+` = r.`+tables.item+` and b.block_id = r.block_id`,
-			` and b.position is not null`))
+			` and b.position is not null`, VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms
 }

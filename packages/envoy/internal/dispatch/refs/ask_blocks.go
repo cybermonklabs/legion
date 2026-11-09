@@ -324,14 +324,20 @@ const (
 // target it cites, at the latest time one of its parts took that link; the read's own dedupe
 // (ReferencedBy) keeps it once overall, as it does for a comment citing the document from two
 // blocks.
-func asksCitingTheDocument(param string) string {
+//
+// seen names the acting credential, bound by the read these arms belong to: an ask the acting
+// person may not see cites nothing here, and neither does a part that cites one of the
+// document's blocks the acting person may not see.
+func asksCitingTheDocument(param, seen string) string {
 	ask := `'` + string(ItemAsk) + `', r.ask_id::text, max(r.created_at), max(r.source_seq), `
-	return `select r.kind, ` + ask + `null::text` + askPartLinks + `
+	visibleAsk := ` and ` + VisibleKind(string(ItemAsk), `r.ask_id::text`, seen)
+	return `select r.kind, ` + ask + `null::text` + askPartLinks + visibleAsk + `
 		and r.to_kind = 'artifact' and r.to_id = ` + param + `
 		group by r.kind, r.ask_id
 		union all
-		select r.kind, ` + ask + `r.to_id` + askPartLinks + `
+		select r.kind, ` + ask + `r.to_id` + askPartLinks + visibleAsk + `
 		and r.to_kind = 'block' and r.to_id in ` + documentBlockIDs(param) + `
+		and ` + VisibleKind("block", "r.to_id", seen) + `
 		group by r.kind, r.ask_id, r.to_id`
 }
 

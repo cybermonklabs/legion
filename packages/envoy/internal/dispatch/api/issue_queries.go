@@ -517,7 +517,11 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"))
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -557,7 +561,7 @@ type issueDetail struct {
 // loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes.
-func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error) {
+func (s *server) readIssue(ctx context.Context, who model.Actor, key string) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
 	var asks []model.Ask
@@ -595,7 +599,7 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 		read.Children = scanned
 		return err
 	})
-	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
@@ -607,7 +611,7 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(read.Artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, who, artifactPointers(read.Artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
 	read.OpenAsks = issueOpenAsksOf(asks, replies)
@@ -618,10 +622,10 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
 // (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
-func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
+func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -275,8 +276,17 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 // over its own q and with the owners it leaves out filtered out of kinds (searchKindsCTE).
 //
 // Parameters: $1 q, $2 project (empty for every project), $3 limit, $4 firstTerm,
-// $5 headlineOptions, $6 offset, $7 contracts.SearchKindDepth, $8 searchFusionK.
-var searchQuery = searchQOpener + searchQueryBody(searchKeywordLegsSQL, "")
+// $5 headlineOptions, $6 offset, $7 contracts.SearchKindDepth, $8 searchFusionK, $9 the acting
+// credential (refs.VisibilityArg).
+var searchQuery = searchQOpener + searchQueryBody(searchKeywordLegsSQL, "", searchSeenParam)
+
+// searchSeenParam and searchMeaningSeenParam are where each of search's own two queries binds
+// the acting credential: after every parameter the query already had, so neither query's
+// numbering moved. The related-item check numbers its own (suggestions.go).
+const (
+	searchSeenParam        = 9
+	searchMeaningSeenParam = 12
+)
 
 // searchQOpener opens searchQuery and searchQueryMeaning: their q, the query text read as
 // websearch_to_tsquery, its first term ($4) for the snippet window, and the issue key the whole
@@ -288,31 +298,43 @@ with q as (select websearch_to_tsquery('english', $1) as tsq, $4::text as term, 
 `
 
 // searchKindsCTE is the kinds CTE both bodies open with: the arms whose rows the query ranks,
-// with every row exclude names dropped before anything ranks, counts or pages them. exclude is
-// an SQL predicate over the arms' own columns, true of a row the caller leaves out, and empty
-// for a query that leaves nothing out, whose text is then the arms as they stand. Search leaves
-// nothing out; the related-item check passes relatedExcludedOwners, because the page it takes is
-// ten rows deep (suggestionSearchDepth) and rows dropped after that page took places in it and
-// hid the matches the check exists to find (INFRA-1160).
+// with every row exclude names dropped before anything ranks, counts or pages them, and every
+// row the acting person may not see dropped with them. exclude is an SQL predicate over the
+// arms' own columns, true of a row the caller leaves out, and empty for a query that leaves
+// nothing out. Search leaves nothing out; the related-item check passes relatedExcludedOwners,
+// because the page it takes is ten rows deep (suggestionSearchDepth) and rows dropped after
+// that page took places in it and hid the matches the check exists to find (INFRA-1160).
+//
+// seen is the parameter the acting credential is bound at. This is the one choke point both
+// bodies pass through, and the related-item check's two shapes of each with them, so binding
+// the registry's predicate here (refs.VisibleEnd, over the arms' own kind and id) reaches
+// every keyword arm at once; a meaning arm binds its own besides, because its candidate CTE
+// cuts to its limit before this filter ever sees a row. A search row's kind is the reader's
+// word for it, and `document` is the node kind `artifact`.
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
-func searchKindsCTE(arms, exclude string) string {
-	if exclude == "" {
-		return `kinds as (` + arms + `
-),
-`
+func searchKindsCTE(arms, exclude string, seen int) string {
+	visible := refs.VisibleEnd(`case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
+	if exclude != "" {
+		visible = `not (` + exclude + `) and ` + visible
 	}
 	return `kinds as (select * from (` + arms + `
-) arms where not (` + exclude + `)
+) arms where ` + visible + `
 ),
 `
 }
 
+// searchParam is the placeholder of a numbered parameter, as the query bodies name theirs.
+func searchParam(number int) string {
+	return "$" + strconv.Itoa(number)
+}
+
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs) and without
-// or with an exclusion (searchKindsCTE): every CTE it reads q from and the page.
-func searchQueryBody(keywordLegs, exclude string) string {
-	return searchKindsCTE(keywordLegs, exclude) + `ranked as (
+// or with an exclusion (searchKindsCTE): every CTE it reads q from and the page. seen is the
+// parameter the acting credential is bound at, which every caller numbers after its own.
+func searchQueryBody(keywordLegs, exclude string, seen int) string {
+	return searchKindsCTE(keywordLegs, exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
     from kinds
@@ -424,18 +446,25 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 //
 // Parameters: $1 q, $2 project, $3 limit, $4 firstTerm, $5 headlineOptions, $6 offset,
 // $7 contracts.SearchKindDepth, $8 searchFusionK, $9 the query's embedding (a vector literal),
-// $10 searchMeaningFloor, $11 the query embedder's identity.
-var searchQueryMeaning = searchQOpener + searchQueryMeaningBody(searchKeywordLegsSQL, "")
+// $10 searchMeaningFloor, $11 the query embedder's identity, $12 the acting credential.
+var searchQueryMeaning = searchQOpener + searchQueryMeaningBody(searchKeywordLegsSQL, "", searchMeaningSeenParam)
 
 // searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs)
-// and without or with an exclusion (searchKindsCTE).
-func searchQueryMeaningBody(keywordLegs, exclude string) string {
+// and without or with an exclusion (searchKindsCTE). seen is the parameter the acting
+// credential is bound at.
+//
+// Each candidate CTE binds the predicate of its own node kind besides the one searchKindsCTE
+// binds over every arm: a candidate CTE cuts to its own limit by distance before anything
+// downstream filters it, so a node the acting person may not see would otherwise take a place
+// in that cut and hide a node they may.
+func searchQueryMeaningBody(keywordLegs, exclude string, seen int) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id
    where e.kind = 'issue' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
+     and ` + refs.VisibleKind("issue", "i.key", searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    limit $7
 ),
@@ -456,6 +485,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and ($2 = '' or p.key = $2)
+     and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -477,6 +507,7 @@ meaning_comment_candidates as (
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -499,6 +530,7 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -518,6 +550,7 @@ meaning_message_candidates as (
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
+     and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -534,7 +567,7 @@ meaning_message as (
   union all select * from meaning_document
   union all select * from meaning_comment
   union all select * from meaning_ask
-  union all select * from meaning_message`, exclude) + `ranked as (
+  union all select * from meaning_message`, exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind, list order by own desc, r desc, updated_at desc, id) as pos
     from kinds
 ),
@@ -557,6 +590,10 @@ totals as (
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 
@@ -598,7 +635,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		offset = parsed
 	}
 
-	response, err := s.runSearch(r.Context(), searchText, project, limit, offset)
+	response, err := s.runSearch(r.Context(), who, searchText, project, limit, offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -621,7 +658,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // (runFusedSearchQuery) only when the query's own embedding could not be had - never when the
 // meaning query itself then fails, which is a real error the caller should see as a 500, not
 // something to paper over as a degraded answer.
-func (s *server) runSearch(ctx context.Context, q, project string, limit, offset int) (model.SearchResponse, error) {
+func (s *server) runSearch(ctx context.Context, who model.Actor, q, project string, limit, offset int) (model.SearchResponse, error) {
 	var nodes int
 	if err := s.deps.Store.Pool.QueryRow(ctx, "select numnode(websearch_to_tsquery('english', $1))", q).Scan(&nodes); err != nil {
 		return model.SearchResponse{}, err
@@ -630,22 +667,22 @@ func (s *server) runSearch(ctx context.Context, q, project string, limit, offset
 		return model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}, nil
 	}
 	if s.deps.Embedder == nil {
-		return s.runKeywordOnlyDegraded(ctx, q, project, limit, offset)
+		return s.runKeywordOnlyDegraded(ctx, who, q, project, limit, offset)
 	}
 	vector, err := s.embedQuery(ctx, q)
 	if err != nil {
 		slog.Warn("dispatch search: query embedding unavailable, answering keyword-only", "error", err)
-		return s.runKeywordOnlyDegraded(ctx, q, project, limit, offset)
+		return s.runKeywordOnlyDegraded(ctx, who, q, project, limit, offset)
 	}
-	return s.runMeaningSearch(ctx, q, project, limit, offset, vector)
+	return s.runMeaningSearch(ctx, who, q, project, limit, offset, vector)
 }
 
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on
 // success: the one thing both of runSearch's fallback branches (no embedder configured, or the
 // query's own embedding failing) do identically. runSearch has already run the numnode check
 // before ever reaching here.
-func (s *server) runKeywordOnlyDegraded(ctx context.Context, q, project string, limit, offset int) (model.SearchResponse, error) {
-	response, err := s.runFusedSearchQuery(ctx, q, project, limit, offset)
+func (s *server) runKeywordOnlyDegraded(ctx context.Context, who model.Actor, q, project string, limit, offset int) (model.SearchResponse, error) {
+	response, err := s.runFusedSearchQuery(ctx, who, q, project, limit, offset)
 	if err == nil {
 		response.Degraded = contracts.SearchDegradedEmbedderUnavailable
 	}
@@ -655,10 +692,10 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, q, project string, 
 // runFusedSearchQuery runs searchQuery, assuming nodes > 0 already, which its caller
 // (runKeywordOnlyDegraded, after runSearch's check) must have established first. q is assumed
 // already validated (length, non-empty after trimming); project empty searches every project.
-func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, limit, offset int) (model.SearchResponse, error) {
+func (s *server) runFusedSearchQuery(ctx context.Context, who model.Actor, q, project string, limit, offset int) (model.SearchResponse, error) {
 	started := time.Now()
 	rows, err := s.deps.Store.Pool.Query(ctx, searchQuery, q, project, limit, firstTerm(q), headlineOptions,
-		offset, contracts.SearchKindDepth, searchFusionK)
+		offset, contracts.SearchKindDepth, searchFusionK, refs.VisibilityArg(who))
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -679,7 +716,7 @@ func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, lim
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan).
-func (s *server) runMeaningSearch(ctx context.Context, q, project string, limit, offset int, vector []float32) (model.SearchResponse, error) {
+func (s *server) runMeaningSearch(ctx context.Context, who model.Actor, q, project string, limit, offset int, vector []float32) (model.SearchResponse, error) {
 	started := time.Now()
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
@@ -687,7 +724,8 @@ func (s *server) runMeaningSearch(ctx context.Context, q, project string, limit,
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	rows, err := tx.Query(ctx, searchQueryMeaning, q, project, limit, firstTerm(q), headlineOptions,
-		offset, contracts.SearchKindDepth, searchFusionK, embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
+		offset, contracts.SearchKindDepth, searchFusionK, embed.Literal(vector), searchMeaningFloor,
+		s.deps.Embedder.Identity(), refs.VisibilityArg(who))
 	if err != nil {
 		return model.SearchResponse{}, err
 	}

@@ -171,7 +171,10 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 	// one relay subscription, never ending it partway: whatever the relay publishes meanwhile waits
 	// in the subscription (or overflows it, which ends the subscription with an ended frame, behind).
 	for cursor := from; cursor < published; {
-		page, err := s.readEventsAfterID(ctx, cursor, published)
+		// The relay's catch-up serves whoever subscribed, and this read resolves no credential
+		// of theirs, so it reads as one that proves no author: an ask reserved for its author
+		// carries no detail here (refs' visibility registry).
+		page, err := s.readEventsAfterID(ctx, model.Actor{}, cursor, published)
 		if err != nil {
 			endEventsAfterFailure(ctx, stream, sub, "read the event log", err)
 			return

@@ -49,7 +49,7 @@ func edgeSummary(edge model.GraphEdge) string {
 
 func edgeSummaries(t *testing.T, tx pgx.Tx, query Query) []string {
 	t.Helper()
-	edges, err := Edges(context.Background(), tx, query)
+	edges, err := Edges(context.Background(), tx, model.Actor{}, query)
 	if err != nil {
 		t.Fatalf("read %s edges of %s %s: %v", query.Direction, query.Kind, query.ID, err)
 	}
@@ -113,7 +113,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got := edgeSummaries(t, tx, Query{Direction: "out", Kind: "ask", ID: ask.ID, Kinds: []string{"mentions"}}); !slices.Equal(got, []string{"out mentions issue:CORE-2@b1"}) {
 		t.Errorf("this build's ask links = %v; want the mention from its question part", got)
 	}
-	counts, err := BacklinkCounts(ctx, tx, "issue", []string{"CORE-2"}, nil)
+	counts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-2"}, nil)
 	if err != nil {
 		t.Fatalf("count CORE-2 backlinks: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		slices.Sort(kinds)
 		return kinds
 	}
-	current, err := resolveNodes(ctx, tx, false, ends)
+	current, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
 	if err != nil {
 		t.Fatalf("resolve the ends: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		previous[kind] = loaders[kind]
 	}
 	nodeLoaders = previous
-	older, err := resolveNodes(ctx, tx, false, ends)
+	older, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
 	nodeLoaders = loaders
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
@@ -213,7 +213,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; truncated || !reflect.DeepEqual(members, want) {
 		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, handbook)
+	citers, err := ReferencedBy(ctx, tx, model.Actor{}, handbook)
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}

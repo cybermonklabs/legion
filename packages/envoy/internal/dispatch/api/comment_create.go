@@ -241,6 +241,7 @@ func (s *server) owedCommentMentions(ctx context.Context, commentID string) ([]R
 func (s *server) normalizeCommentThreadTarget(
 	ctx context.Context,
 	tx pgx.Tx,
+	who model.Actor,
 	owner owner,
 	input commentInput,
 ) (commentThreadTarget, error) {
@@ -282,10 +283,10 @@ func (s *server) normalizeCommentThreadTarget(
 		return commentThreadTarget{}, nil
 	}
 	if strings.TrimSpace(*input.AskID) == "" {
-		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, owner)
+		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, who, owner)
 	}
 	if _, err := uuid.Parse(*input.AskID); err != nil {
-		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, owner)
+		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, who, owner)
 	}
 	target, err := s.describeAsk(ctx, tx, owner, input.AskID)
 	if err != nil || input.ReplyToBlock == nil {
@@ -658,7 +659,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !isSuggestion {
 		documentCtx = docs.WithCommentMarks(documentCtx)
 	}
-	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, owner, input)
+	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, actor, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

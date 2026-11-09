@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -72,19 +73,22 @@ var (
 	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank)
 	// relatedKeywordQuery is the check's stage 1: search's keyword query (searchQueryBody) over the
 	// chosen lexemes, with relatedKeywordLegs. Parameters: searchQueryBody's $1-$8, then $9 the
-	// lexemes and $10 their idf.
-	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, "")
+	// lexemes, $10 their idf and $11 the acting credential (refs.VisibilityArg).
+	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, "", 11)
 	// relatedKeywordExcludingQuery is relatedKeywordQuery with the exclusion filter over one more
-	// parameter, $11 the owners the check leaves out (relatedExcludedOwners).
+	// parameter, $11 the owners the check leaves out (relatedExcludedOwners), which moves the
+	// acting credential to $12.
 	relatedKeywordExcludingQuery = relatedQOpener + relatedTermWeights(9) +
-		searchQueryBody(relatedKeywordLegs, relatedExcludedOwners(11))
+		searchQueryBody(relatedKeywordLegs, relatedExcludedOwners(11), 12)
 	// relatedMeaningQuery is the check's stage 2: search's meaning query, which fuses the same
 	// keyword legs with the meaning arms, over the same lexemes and the text's embedding.
-	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes and $13 their idf.
-	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "")
-	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14.
+	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes, $13 their idf and $14
+	// the acting credential.
+	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "", 14)
+	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14,
+	// which moves the acting credential to $15.
 	relatedMeaningExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14))
+		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14), 15)
 	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs.
 	relatedKeywordStatement = relatedStatement{plain: relatedKeywordQuery, excluding: relatedKeywordExcludingQuery}
 	relatedMeaningStatement = relatedStatement{plain: relatedMeaningQuery, excluding: relatedMeaningExcludingQuery}
@@ -636,6 +640,12 @@ func (s *server) relatedSearch(
 	if len(excluded) > 0 {
 		query, args = statement.excluding, append(args, excluded)
 	}
+	// The acting credential, last of the parameters each statement declares. The check runs off
+	// the write that triggered it, on a context of its own and with no credential of that
+	// writer's to hand, so it reads as one that proves no author (graphstore.ProvesAuthor): a
+	// node reserved for its author is suggested to nobody, which is the answer that can mislead
+	// no reader.
+	args = append(args, refs.VisibilityArg(model.Actor{}))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err

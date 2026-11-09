@@ -70,14 +70,13 @@ const referencesSinceWait = time.Second
 // nothing else: a whole id is read whatever owner the reference names, as this route has always
 // read one (refs.loadAskNodes filters on the id alone). That asymmetry is deliberate. A whole id
 // already names one row, so an owner that disagrees with it says nothing this read needs; a
-// prefix names a row only within some set, and the set the reference itself names is the one its
-// writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	_, human, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	who := actor.Recorded()
 	query, ref, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -95,9 +94,9 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	var node model.GraphNode
 	if ref.Kind == "block" {
 		if ref.Item != "" {
-			node, err = s.itemBlockReferenceNode(r.Context(), query, ref)
+			node, err = s.itemBlockReferenceNode(r.Context(), who, query, ref)
 		} else {
-			node, err = s.blockReferenceNode(r.Context(), query, ref)
+			node, err = s.blockReferenceNode(r.Context(), who, query, ref)
 		}
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -120,7 +119,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var found bool
-		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, query.Kind, query.ID, query.Direction == "in")
+		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -138,7 +137,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		query.Through = &safe
 	}
-	edges, err := refs.Edges(r.Context(), s.deps.Store.Pool, query)
+	edges, err := refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -307,17 +306,17 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
 // a version the document lacks, to one whose blocks are not on record (an older build wrote it and
 // none indexed it) or to one that did not hold the block answers 404, each saying which.
-func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
+func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, err := refs.Node(ctx, pool, "artifact", documentKey, true)
+	document, found, err := refs.Node(ctx, pool, who, "artifact", documentKey, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
 	if !found {
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", documentKey)
 	}
-	node, current, err := refs.Node(ctx, pool, "block", query.ID, true)
+	node, current, err := refs.Node(ctx, pool, who, "block", query.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -374,18 +373,18 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // (refs.RemovedItemBlockNode). A pin past the item's current revision, or to one that did not
 // hold the block, answers 404, each saying which. A message never changes, so no reference pins
 // a message's block (parseReferencesQuery refuses one).
-func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
+func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
 	noun := itemBlockNoun(ref.Item)
-	item, found, err := refs.Node(ctx, pool, ref.Item, ref.ID, true)
+	item, found, err := refs.Node(ctx, pool, who, ref.Item, ref.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
 	if !found {
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %s", ref.Item, ref.ID)
 	}
-	node, current, err := refs.Node(ctx, pool, query.Kind, query.ID, true)
+	node, current, err := refs.Node(ctx, pool, who, query.Kind, query.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -412,7 +411,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
-		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, kind, query.ID, at.RemovedRevision)
+		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, who, kind, query.ID, at.RemovedRevision)
 		if err != nil {
 			return model.GraphNode{}, err
 		}
@@ -612,6 +611,10 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -622,7 +625,7 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, artifact.RefKey)
+	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, who, artifact.RefKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

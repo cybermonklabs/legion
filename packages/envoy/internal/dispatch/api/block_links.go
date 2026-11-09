@@ -17,16 +17,20 @@ func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	var documents [2]model.GraphNode
 	for index, param := range [2]string{"from", "to"} {
-		document, err := s.blockLinksDocument(r, param)
+		document, err := s.blockLinksDocument(r, who, param)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		documents[index] = document
 	}
-	links, err := refs.BlockLinks(r.Context(), s.deps.Store.Pool, documents[0].ID, documents[1].ID)
+	links, err := refs.BlockLinks(r.Context(), s.deps.Store.Pool, who, documents[0].ID, documents[1].ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -38,13 +42,13 @@ func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
 // issue's or a project's document, parsed as GET /api/v1/references parses one (text.ParseRef,
 // whatever the length of its name). Anything else is 400 INVALID_REFERENCE, and a document that
 // does not exist is 404 NOT_FOUND.
-func (s *server) blockLinksDocument(r *http.Request, param string) (model.GraphNode, error) {
+func (s *server) blockLinksDocument(r *http.Request, who model.Actor, param string) (model.GraphNode, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(param))
 	ref, ok := text.ParseRef(raw, s.deps.ServerURL)
 	if !ok || ref.Kind != "artifact" || ref.Session != "" {
 		return model.GraphNode{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%s must name a document: dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>", param)
 	}
-	document, found, err := refs.Node(r.Context(), s.deps.Store.Pool, "artifact", text.TargetID(ref), true)
+	document, found, err := refs.Node(r.Context(), s.deps.Store.Pool, who, "artifact", text.TargetID(ref), true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}

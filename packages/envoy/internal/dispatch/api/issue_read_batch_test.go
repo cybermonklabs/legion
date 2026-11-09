@@ -147,7 +147,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}
-	asks, replies, err := served.queryOwnerAsks(ctx, pool, issueOwner(issue.Key), "open")
+	asks, replies, err := served.queryOwnerAsks(ctx, pool, model.Actor{}, issueOwner(issue.Key), "open")
 	if err != nil {
 		t.Fatalf("load the open asks: %v", err)
 	}
@@ -160,7 +160,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the children: %v", err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, "issue", []string{issue.Key}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 	served := directServer(deps)
 	ctx := context.Background()
 
-	if _, err := served.readIssue(ctx, fixture.key); err != nil {
+	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key); err != nil {
 		t.Fatalf("read the issue: %v", err)
 	}
 	prepared := preparedStatementNames(t, deps.Store)
@@ -403,7 +403,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 		t.Fatal("the read prepared no statement, so a deallocation would not show here")
 	}
 
-	if _, err := served.readIssue(ctx, "NOPE-1"); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := served.readIssue(ctx, model.Actor{}, "NOPE-1"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("read a missing issue: %v, want pgx.ErrNoRows", err)
 	}
 	after := preparedStatementNames(t, deps.Store)
@@ -412,7 +412,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 			t.Fatalf("the missing key's read left %s deallocated: %v are prepared, %v were", name, after, prepared)
 		}
 	}
-	if _, err := served.readIssue(ctx, fixture.key); err != nil {
+	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key); err != nil {
 		t.Fatalf("read the issue after the missing key: %v", err)
 	}
 	if again := preparedStatementNames(t, deps.Store); len(again) != len(after) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"maps"
 	"regexp"
 	"slices"
@@ -540,7 +541,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 			ids = append(ids, fixture.commentBlock)
 		}
 		for _, exclusions := range backlinkExclusionCases(toKind) {
-			counts, err := BacklinkCounts(ctx, pool, toKind, ids, exclusions)
+			counts, err := BacklinkCounts(ctx, pool, model.Actor{}, toKind, ids, exclusions)
 			if err != nil {
 				t.Fatalf("count %s backlinks excluding %v: %v", toKind, exclusions, err)
 			}
@@ -555,7 +556,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 		}
 	}
 
-	counts, err := BacklinkCounts(ctx, pool, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
+	counts, err := BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
 	if err != nil {
 		t.Fatalf("count the block-held issues' backlinks: %v", err)
 	}
@@ -570,7 +571,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 func TestBacklinkCountsRefuseANodeKindWithNoDeclaredArms(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := BacklinkCounts(ctx, database.Pool, "pull_request", []string{"x"}, nil); err == nil {
+	if _, err := BacklinkCounts(ctx, database.Pool, model.Actor{}, "pull_request", []string{"x"}, nil); err == nil {
 		t.Fatal("counting the backlinks of a node kind with no declared arms answered without an error")
 	}
 	for _, kind := range nodeKinds {
@@ -615,10 +616,16 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 			if !ok {
 				t.Fatalf("no arms declared for %s, the kind nodeLoaders resolves", toKind)
 			}
-			args := []any{ids, nodeKinds}
-			literals := []string{textArrayLiteral(ids), textArrayLiteral(nodeKinds)}
+			// The acting credential rides as $3, as backlinkCountStatement binds it: an author
+			// who proves none, so every arm's predicate is the shape a reader of the project
+			// runs, and the plan is the one every count pays for.
+			seen := VisibilityArg(model.Actor{})
+			args := []any{ids, nodeKinds, seen}
+			types := []string{"text[]", "text[]", "jsonb"}
+			literals := []string{textArrayLiteral(ids), textArrayLiteral(nodeKinds), "null"}
 			if len(exclusions) > 0 {
 				args = append(args, exclusions)
+				types = append(types, "text[]")
 				literals = append(literals, textArrayLiteral(exclusions))
 			}
 			prepared++
@@ -626,7 +633,7 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 			for mode, plan := range map[string]json.RawMessage{
 				"custom": customPlan(t, connection, statement, args),
 				"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
-					slices.Repeat([]string{"text[]"}, len(literals)), literals, planSettings...),
+					types, literals, planSettings...),
 			} {
 				if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 					t.Errorf("the %s backlink count excluding %v reads %s under its %s plan, which no index serves:\n%s",

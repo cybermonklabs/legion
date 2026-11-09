@@ -561,7 +561,9 @@ func (r *eventStreamRelay) read(ctx context.Context, checkReset bool) (safe int6
 		if cursor >= safe {
 			return safe, horizon.Pending(), true
 		}
-		page, err := r.server.readEventsAfterID(tracked, cursor, safe)
+		// The relay reads one page for every subscriber at once and resolves no credential, so
+		// it reads as one that proves no author (refs' visibility registry).
+		page, err := r.server.readEventsAfterID(tracked, model.Actor{}, cursor, safe)
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.Warn("dispatch: the event stream relay could not read the committed events; retrying", "error", err)

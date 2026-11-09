@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"net/http"
 	"slices"
 	"strings"
@@ -392,8 +394,9 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 	if term, _ := pickedTerm(picked, "walrus"); term.Surface != "Walruses" {
 		t.Fatalf("walrus's surface = %q, want the text's own 'Walruses'", term.Surface)
 	}
-	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, ""),
-		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK)
+	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, "", searchSeenParam),
+		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK,
+		refs.VisibilityArg(model.Actor{}))
 	if err != nil {
 		t.Fatalf("run the keyword body under the related q: %v", err)
 	}

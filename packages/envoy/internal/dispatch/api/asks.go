@@ -26,8 +26,8 @@ const (
 	askQuestionHintLimit = 120
 )
 
-func (s *server) askIDInputForOwner(ctx context.Context, q queryer, owner owner) error {
-	asks, _, err := s.queryOwnerAsks(ctx, q, owner, "open")
+func (s *server) askIDInputForOwner(ctx context.Context, q queryer, who model.Actor, owner owner) error {
+	asks, _, err := s.queryOwnerAsks(ctx, q, who, owner, "open")
 	if err != nil {
 		return err
 	}
@@ -746,7 +746,11 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, issueOwner(r.PathValue("key")), state)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, issueOwner(r.PathValue("key")), state)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -820,6 +824,10 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	ask, err := s.loadAsk(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -828,7 +836,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	// The ask read is the one caller that serialises the count; the write paths load the row
 	// only to check its owner and answer from their own re-read, so they do not pay for it. The
 	// same goes for the part ids of its options and of its answer, and its part revision.
-	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, []*model.Ask{&ask}); err != nil {
+	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, who, []*model.Ask{&ask}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1029,7 +1037,7 @@ var (
 // options and answer with its part revision (attachAskPartIDs), and WaitingOn when open. The
 // newest reply in each ask's thread is returned keyed by ask id; an ask nobody has replied to has
 // no entry. The issue detail's `open_asks` and the issue's own ask list read through it.
-func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
+func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
@@ -1064,7 +1072,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := loadAskDetails(ctx, q, askReadPointers(asks)); err != nil {
+	if err := loadAskDetails(ctx, q, who, askReadPointers(asks)); err != nil {
 		return nil, nil, err
 	}
 	return asks, replies, nil
