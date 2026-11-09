@@ -32,9 +32,12 @@
 #   ci_tools_extract meets that same fault on the other side and is not refused the same way.
 #   It opens its destination before it reads a byte of an archive, and the sentence it refuses
 #   an unwritable one with says the same of this run — but its status is 1 and not 23, so its
-#   caller reports it as it reports every other failure of that read, which does name a
-#   source: `no source served the bytes; pypi: this run cannot write …`. That naming is the
-#   caller's and not this cause's, and it is why the rule below is written of exit 23 alone.
+#   callers report it as they report every other failure of that read, each naming a source:
+#   ci_tools__primary_open prints `<word> served the bytes, and this run cannot write …`, and
+#   ci_tools__second_source prints `no source served the bytes; <word>: this run cannot
+#   write …`, whose prefix is wrong, since that source did serve them. Neither is reachable
+#   where a destination is a fresh mktemp, which every destination of this file is, and the
+#   naming is the caller's rather than this cause's: the rule below is of exit 23 alone.
 #   A MEMBER THE ARCHIVE DOES NOT HOLD, which python3's zipfile answers for by name: the archive
 #   read, and it holds no member of that name, which is a row naming a path that archive has not
 #   got and a mistake in this repository.
@@ -539,9 +542,7 @@ ci_tools_curl() {
 # file, and the sentence says that and nothing of any source or the bytes it serves. The status
 # is that 23, which a caller reads to refuse rather than fetch again elsewhere.
 # Every other exit keeps the sentence its caller wrote and returns 1: the bytes did not arrive,
-# and nothing here says why. This function is handed no address, and neither sentence names
-# one: the write error's sentence is about this run and that file, and the caller wrote the
-# other one already.
+# and nothing here says why.
 ci_tools__curl_report() {
   local status=$1 file=$2 otherwise=$3
   if [ "$status" -eq "$ci_tools__write_error" ]; then
