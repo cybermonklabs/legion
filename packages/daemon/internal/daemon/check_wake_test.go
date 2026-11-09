@@ -21,8 +21,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -136,7 +136,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 		rt: fake.NewRuntime(), built: &built{}, records: record.NewStore(), pool: pool, logs: &syncBuffer{}}
 
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

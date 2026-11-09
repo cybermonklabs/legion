@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // The controller orphan sweep's live proof (scripts/e2e/controller-sweep-kind.sh, whose driver is
@@ -138,7 +139,7 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	if cfg.ControllerLaunch != config.ControllerLaunchDaemon {
 		t.Fatalf("the proof's file launches the controller as %q, want %q", cfg.ControllerLaunch, config.ControllerLaunchDaemon)
 	}
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
 	}

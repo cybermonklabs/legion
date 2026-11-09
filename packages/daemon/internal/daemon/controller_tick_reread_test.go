@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -385,7 +385,7 @@ func seedTickMirror(t *testing.T, pool *pgxpool.Pool, key, status string, seq in
 // project token (api/controller.go). Without one, a tick's wake is queued for nobody.
 func registerTickController(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	st, err := store.Open(context.Background(), pool.Config().ConnString())
+	st, err := testpg.OpenStore(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

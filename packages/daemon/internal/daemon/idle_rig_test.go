@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -352,7 +353,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 		r.t.Fatal(err)
 	}
 	ctx := context.Background()
-	st, err := store.Open(ctx, r.cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, r.cfg.PostgresDSN)
 	if err != nil {
 		r.t.Fatalf("open the store: %v", err)
 	}

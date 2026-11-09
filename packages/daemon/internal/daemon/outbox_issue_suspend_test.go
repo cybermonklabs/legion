@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -55,7 +56,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 		t.Helper()
 		runtimeCtx, stopRuntime := context.WithCancel(ctx)
 		t.Cleanup(stopRuntime)
-		reopened, err := store.Open(ctx, pool.Config().ConnString())
+		reopened, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -372,7 +373,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

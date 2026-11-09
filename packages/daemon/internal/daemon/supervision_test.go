@@ -31,10 +31,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -640,7 +640,7 @@ func TestRunLaunchesAgainALaunchThePreviousDaemonDidNotFinish(t *testing.T) {
 func refuseRelease(t *testing.T, cfg config.Config, token claim.Token) func() {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -1167,7 +1167,7 @@ func readyClaimReporting(t *testing.T, d *daemon, rt *fake.Runtime, token claim.
 // in the state's projection.
 func admitIssue(t *testing.T, cfg config.Config, issue string, role claim.Role, token claim.Token) {
 	t.Helper()
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	st, err := testpg.OpenStore(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open state store: %v", err)
 	}
@@ -1309,7 +1309,7 @@ func streamEventTypes(t *testing.T) []string {
 func putClaim(t *testing.T, cfg config.Config, c supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

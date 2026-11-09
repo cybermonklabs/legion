@@ -35,8 +35,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -214,7 +214,7 @@ func waveClaims(t *testing.T, cfg config.Config, role claim.Role, build func(i i
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

@@ -22,8 +22,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -492,7 +492,7 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

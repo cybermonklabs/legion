@@ -22,8 +22,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // reportingClaim is a claim of this project in state, on a tmux pane at incarnation "4242:1".
@@ -412,7 +412,7 @@ func TestStateShowsAStoredReportRedactedAfterARestart(t *testing.T) {
 	for _, branch := range branches {
 		raw.Rows = append(raw.Rows, capabilities.Row{Name: capabilities.Name(branch.Row), Detail: branch.Upstream})
 	}
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	st, err := testpg.OpenStore(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

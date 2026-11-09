@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -651,7 +652,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -2556,7 +2557,7 @@ func openTreeTx(ctx context.Context, tx pgx.Tx, project, tree string) error {
 func outboxTreeStore(t *testing.T, pool *pgxpool.Pool, roots ...string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

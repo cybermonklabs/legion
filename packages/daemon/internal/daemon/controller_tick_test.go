@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -27,7 +27,7 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The daemon's own path: `legion controller start` mints the capability and its session
 	// registers with it, both under the project token (api/controller.go).
-	st, err := store.Open(context.Background(), pool.Config().ConnString())
+	st, err := testpg.OpenStore(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

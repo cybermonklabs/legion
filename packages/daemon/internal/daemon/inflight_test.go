@@ -25,8 +25,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	workershim "github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -232,7 +232,7 @@ func stopWithin(t *testing.T, d *daemon, logs *syncBuffer, bound time.Duration) 
 func lastBootStopped(t *testing.T, cfg config.Config) *time.Time {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -507,7 +507,7 @@ func bootSwept(t *testing.T, logs *syncBuffer) {
 func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.Claim {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // registerController records the project's controller the way the daemon does when
@@ -25,7 +25,7 @@ import (
 func registerController(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

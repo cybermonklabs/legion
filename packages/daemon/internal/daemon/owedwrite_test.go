@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -223,7 +224,7 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 		Project: "LEGION", Tree: owedIssue, Title: "The claim write the database did not take",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, claims...)
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

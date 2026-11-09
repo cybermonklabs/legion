@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -106,7 +107,7 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	p.js = workflowJetStream(t, natsURL)
 	testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	ctx := context.Background()
-	if p.st, err = store.Open(ctx, p.cfg.PostgresDSN); err != nil {
+	if p.st, err = testpg.OpenStore(ctx, p.cfg.PostgresDSN); err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(p.st.Close)

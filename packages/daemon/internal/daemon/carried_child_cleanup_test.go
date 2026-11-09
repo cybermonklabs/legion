@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -142,7 +143,7 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

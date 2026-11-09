@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -48,7 +48,7 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reset(t)
 			ctx := context.Background()
-			st, err := store.Open(ctx, pool.Config().ConnString())
+			st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 			if err != nil {
 				t.Fatalf("open the store: %v", err)
 			}

@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -55,7 +55,7 @@ func loggedLines(t *testing.T, logs, text string) []map[string]any {
 // daemon boots, as a registration an earlier boot took leaves the record.
 func recordControllerSession(t *testing.T, cfg config.Config, project, session string) {
 	t.Helper()
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	st, err := testpg.OpenStore(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
 	}

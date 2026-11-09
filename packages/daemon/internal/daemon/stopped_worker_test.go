@@ -19,8 +19,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -287,7 +287,7 @@ func workingPane(token claim.Token) *runtime.Locator {
 func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim, owed record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
