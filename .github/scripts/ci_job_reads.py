@@ -632,6 +632,14 @@ UNIT_TEST_PATTERN = "|".join(
 # calls' transactions (ci.yaml's postgres_routes service). It is on the call rather than in the
 # step's env:, where it would reach the other five.
 ROUTES_DSN = "postgres://postgres:ci@localhost:5433/postgres?sslmode=disable"
+# The third service, 5434, and the one untagged test of cmd/dispatch that reads a live event
+# feed: it waits on events_start as the routes package does, and the horizon is instance-wide, so
+# it runs where no other test opens a transaction. The name is unique in the module, so the
+# package list below skips it by that one name (dispatch://INFRA-1075).
+SHUTDOWN_DSN = "postgres://postgres:ci@localhost:5434/postgres?sslmode=disable"
+SHUTDOWN_PACKAGE = "cmd/dispatch"
+SHUTDOWN_TESTS = ["TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument"]
+SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
 # -p 8 and -parallel 12, the five calls the step starts in the background beside the package
 # list, and the streams and logs they write, are ci.yaml's own comments' to explain. The text
 # itself is UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
@@ -880,6 +888,16 @@ impossible=$!
 # loaded two-core pod, so 10 minutes is ample.
 DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
+# The one untagged test of cmd/dispatch that reads a live event feed, on the third
+# Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
+# timed out on events_start while another package's database held a transaction open,
+# the server naming that holder. It cannot share the routes service in either
+# direction - routes' own tests hold transaction ids on purpose, and its horizon loop
+# has been blown by a sibling's clone before - so 5434 is named on this call and
+# nowhere else. The package list below skips this test by name, which is unique in the
+# module (dispatch://INFRA-1075).
+DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 2m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+shutdown=$!
 # internal/testnats runs its server in the test process, so the package list below
 # starts no container. The two-image matrix, which proves a rendered authorization on
 # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
@@ -917,11 +935,13 @@ vet=$!
 lead="{UNIT_TEST_LEAD_TEXT}"
 s=0
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
 p=0
 wait "$impossible" || p=$?
 r=0
 wait "$routes" || r=$?
+d=0
+wait "$shutdown" || d=$?
 n=0
 wait "$natslive" || n=$?
 i=0
@@ -931,7 +951,7 @@ wait "$vet" || v=$?
 # One group per call: the package list first, then the background calls in the order
 # they were started. Each is its own log, then its stream - the package result lines
 # when it passed, the whole stream when it failed - and an ::error:: naming it when it
-# failed. The step's status is the first non-zero of the six, and the package list,
+# failed. The step's status is the first non-zero of the seven, and the package list,
 # which prints as it goes, writes no log of its own.
 status=0
 replay() {{
@@ -949,6 +969,7 @@ replay() {{
 replay "the package list" "$s" unit
 replay "the race-impossible run" "$p" race-impossible
 replay "the routes package" "$r" routes
+replay "the shutdown feed test" "$d" shutdown
 replay "the natslive matrix" "$n" natslive
 replay "the integration suite" "$i" integration
 echo "::group::the agentloop vet (exit $v)"
@@ -1391,6 +1412,7 @@ GATES = [
             *[(ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
               for under in RACE_IMPOSSIBLE_PACKAGES],
             (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),
+            (ENVOY, [f"./{SHUTDOWN_PACKAGE}/"], f"go test -run of the live-feed test in ./{SHUTDOWN_PACKAGE}/", {}),
             (ENVOY, ["./internal/integration/"], "go test ./internal/integration/", {}),
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),

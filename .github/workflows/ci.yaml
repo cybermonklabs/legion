@@ -4115,6 +4115,32 @@ jobs:
           --health-interval 1s
           --health-timeout 5s
           --health-retries 50
+      # A third instance, for the one untagged test of cmd/dispatch that reads a live event feed
+      # (TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument, shutdown_test.go). It
+      # waits on events_start exactly as the routes package does, and in run 42581214577 it timed
+      # out on it with the server naming the holder: "event horizon held back by an open
+      # transaction … database=dispatch_test_2be55348167c1ee8", a database of another package of
+      # this job, pending_for 5.14 s. It cannot share the routes service either, in either
+      # direction: routes' own tests hold instance-wide transaction ids on purpose
+      # (whoami_test.go's pg_current_xact_id hold, its cluster-database holder and its
+      # out-of-order insert), and routes' horizon loop has already been blown once by a sibling's
+      # `create database … strategy file_copy` (run 41868325451), which is what this test's own
+      # harness does. So it gets a server no other test touches, on 5434
+      # (dispatch://INFRA-1075).
+      postgres_shutdown:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5434:5432"]
+        # The five settings of the services above, for the reasons given there.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -4321,6 +4347,16 @@ jobs:
           # loaded two-core pod, so 10 minutes is ample.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
+          # The one untagged test of cmd/dispatch that reads a live event feed, on the third
+          # Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
+          # timed out on events_start while another package's database held a transaction open,
+          # the server naming that holder. It cannot share the routes service in either
+          # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
+          # has been blown by a sibling's clone before - so 5434 is named on this call and
+          # nowhere else. The package list below skips this test by name, which is unique in the
+          # module (dispatch://INFRA-1075).
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+          shutdown=$!
           # internal/testnats runs its server in the test process, so the package list below
           # starts no container. The two-image matrix, which proves a rendered authorization on
           # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
@@ -4363,11 +4399,13 @@ jobs:
           github.com/sjawhar/envoy/cmd/broker"
           s=0
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
           p=0
           wait "$impossible" || p=$?
           r=0
           wait "$routes" || r=$?
+          d=0
+          wait "$shutdown" || d=$?
           n=0
           wait "$natslive" || n=$?
           i=0
@@ -4377,7 +4415,7 @@ jobs:
           # One group per call: the package list first, then the background calls in the order
           # they were started. Each is its own log, then its stream - the package result lines
           # when it passed, the whole stream when it failed - and an ::error:: naming it when it
-          # failed. The step's status is the first non-zero of the six, and the package list,
+          # failed. The step's status is the first non-zero of the seven, and the package list,
           # which prints as it goes, writes no log of its own.
           status=0
           replay() {
@@ -4395,6 +4433,7 @@ jobs:
           replay "the package list" "$s" unit
           replay "the race-impossible run" "$p" race-impossible
           replay "the routes package" "$r" routes
+          replay "the shutdown feed test" "$d" shutdown
           replay "the natslive matrix" "$n" natslive
           replay "the integration suite" "$i" integration
           echo "::group::the agentloop vet (exit $v)"

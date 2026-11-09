@@ -56,6 +56,20 @@ import (
 // alone.
 const promptShutdown = 3 * time.Second
 
+// eventFeedWait bounds a read of a frame the event feed owes, here the events_start that opens an
+// events subscription (openLiveEvents). It is a give-up bound and never a measurement: that frame
+// waits for the relay's first cursor, which waits for a horizon proven after its own read
+// (api.server.firstRelayCursor, events.Horizon.Await), and a horizon is proven from
+// pg_snapshot_xmin, the oldest transaction id open anywhere on the Postgres instance. Nothing
+// bounds that wait: Horizon.Await bounds only observations that fail (horizonAwaitFailFor, ten
+// seconds), and an observation taken behind another database's open transaction does not fail, it
+// waits for that transaction to end. So no number here can be read off the server's own wait, and
+// no number a loaded instance cannot exceed exists. What keeps the read prompt is the instance,
+// not this bound, which only turns a hang into a failure that names itself. It is the number the
+// API package's own feed waits carry (internal/dispatch/api/live_events_test.go's eventFeedWait,
+// dispatch://INFRA-1075).
+const eventFeedWait = 30 * time.Second
+
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
 const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
@@ -70,6 +84,17 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // Serial: its assertion is a time. waitPromptExit holds the whole ordered shutdown to
 // promptShutdown, three seconds, and a parallel test's load is what would stretch it past that
 // (dispatch://INFRA-985).
+//
+// Its Postgres must be an instance no other package writes on, which ci.yaml's envoy-go lane gives
+// it by running it in a go test call of its own, with DISPATCH_TEST_DATABASE_URL naming a service
+// of its own, as it does for internal/dispatch/routes (postgres_routes). The two live sockets
+// below each wait for the event feed's events_start, which waits for the safe horizon, and that
+// horizon waits on the oldest transaction id open anywhere on the instance, whatever database it
+// is in and whatever it is doing (internal/dispatch/events, horizon.go). On the lane's shared
+// service this test failed that wait in run 42581214577: its own process logged "event horizon
+// held back by an open transaction" naming a backend of another package's clone,
+// database=dispatch_test_2be55348167c1ee8, running a block-state read, and the events_start never
+// came.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -1586,6 +1611,11 @@ type streamEnd struct {
 // openLiveEvents opens GET /ws/live as a signed-in tab does and subscribes it to the event feed,
 // from the head, returning once Dispatch has started the subscription (its events_start frame) with
 // the socket the feed's frames arrive on. The socket closes when the test ends.
+//
+// That frame waits for the relay's first cursor, so it waits for the safe horizon, which any
+// transaction open anywhere on this Postgres instance holds back: a test that calls this needs an
+// instance no other package writes on, and the read's own bound (eventFeedWait) is a hang guard
+// rather than the thing that makes it prompt.
 func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	t.Helper()
 	conn, response, err := gws.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(p.port)+"/ws/live", http.Header{
@@ -1602,11 +1632,14 @@ func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "events", "view": map[string]string{"kind": "events"}}); err != nil {
 		t.Fatalf("subscribe the live socket to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(eventFeedWait))
 	for {
 		var frame struct{ Type, Sub string }
 		if err := conn.ReadJSON(&frame); err != nil {
-			t.Fatalf("read the event feed's events_start: %v\n%s", err, p.Output.String())
+			// A timeout here is the safe horizon more often than it is anything else, and the
+			// process log below names the transaction holding it: "dispatch: event horizon held
+			// back by an open transaction", with the holder's database and statement.
+			t.Fatalf("read the event feed's events_start within %v: %v\n%s", eventFeedWait, err, p.Output.String())
 		}
 		if frame.Type == "events_start" && frame.Sub == "events" {
 			break
