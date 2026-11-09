@@ -2,6 +2,7 @@ package pmdoc
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
@@ -17,8 +18,9 @@ func TestValidateRejectsUnknownNodeType(t *testing.T) {
 // Two builds serve one database during a release, so a stored tree can hold an element a newer
 // build wrote: a node, mark or typed block this build's manifest does not name, an attribute a
 // typed block does not declare, or a value its enum attribute does not list. Its refusal is
-// ErrSchema and ErrUnknownElement both. A known element in a broken shape is ErrSchema alone, so a
-// reader can tell the two apart.
+// ErrSchema and ErrUnknownElement both, and names those elements as data (UnknownElements), which
+// a caller records in place of the refusal's own message. A known element in a broken shape is
+// ErrSchema alone, so a reader can tell the two apart.
 func TestValidateTellsAnUnknownElementFromABrokenShape(t *testing.T) {
 	paragraph := func() *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: "x"}}}
@@ -27,28 +29,34 @@ func TestValidateTellsAnUnknownElementFromABrokenShape(t *testing.T) {
 		return &Node{Type: "doc", Children: []*Node{{Type: "callout", Attrs: attrs, Children: children}}}
 	}
 	for _, test := range []struct {
-		name    string
-		tree    *Node
-		unknown bool
+		name string
+		tree *Node
+		// elements are the names the refusal carries, and empty for a refusal of a known
+		// element's shape, which is not ErrUnknownElement at all.
+		elements []string
 	}{
-		{"an unknown node", &Node{Type: "doc", Children: []*Node{{Type: "future_block", Children: []*Node{paragraph()}}}}, true},
+		{"an unknown node", &Node{Type: "doc", Children: []*Node{{Type: "future_block", Children: []*Node{paragraph()}}}}, []string{"future_block"}},
 		{"an unknown mark", &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{
 			{Type: "text", Text: "x", Marks: []Mark{{Type: "futureMark"}}},
-		}}}}, true},
-		{"an attribute the typed block does not declare", callout(Attrs{"kind": "note", "title": "", "icon": "star"}, paragraph()), true},
-		{"a value the enum does not list", callout(Attrs{"kind": "danger", "title": ""}, paragraph()), true},
+		}}}}, []string{"futureMark"}},
+		{"an attribute the typed block does not declare", callout(Attrs{"kind": "note", "title": "", "icon": "star"}, paragraph()), []string{"icon"}},
+		{"a value the enum does not list", callout(Attrs{"kind": "danger", "title": ""}, paragraph()), []string{"danger"}},
 		{"an unknown node inside a known block", &Node{Type: "doc", Children: []*Node{{Type: "blockquote", Children: []*Node{
 			{Type: "future_block", Children: []*Node{paragraph()}},
-		}}}}, true},
-		{"a typed block with no content", callout(Attrs{"kind": "note", "title": ""}), false},
-		{"an enum attribute that is not a string", callout(Attrs{"kind": float64(1), "title": ""}, paragraph()), false},
-		{"a paragraph holding a block", &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{paragraph()}}}}, false},
-		{"a mark on a block", &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Marks: []Mark{{Type: "strong"}}}}}, false},
+		}}}}, []string{"future_block"}},
+		{"a typed block with no content", callout(Attrs{"kind": "note", "title": ""}), nil},
+		{"an enum attribute that is not a string", callout(Attrs{"kind": float64(1), "title": ""}, paragraph()), nil},
+		{"a paragraph holding a block", &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{paragraph()}}}}, nil},
+		{"a mark on a block", &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Marks: []Mark{{Type: "strong"}}}}}, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			unknown := len(test.elements) > 0
 			err := test.tree.Validate()
-			if !errors.Is(err, ErrSchema) || errors.Is(err, ErrUnknownElement) != test.unknown {
-				t.Fatalf("Validate() = %v, want ErrSchema, and ErrUnknownElement %t", err, test.unknown)
+			if !errors.Is(err, ErrSchema) || errors.Is(err, ErrUnknownElement) != unknown {
+				t.Fatalf("Validate() = %v, want ErrSchema, and ErrUnknownElement %t", err, unknown)
+			}
+			if got := UnknownElements(err); !slices.Equal(got, test.elements) {
+				t.Fatalf("UnknownElements(%v) = %q, want %q", err, got, test.elements)
 			}
 		})
 	}

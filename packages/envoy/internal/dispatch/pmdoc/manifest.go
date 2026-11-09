@@ -347,7 +347,7 @@ func unknownBeside(doc *Node, err error) error {
 	}) {
 		return err
 	}
-	return unknownElement(fmt.Errorf("%w: %s, in a tree also refused as %v", ErrSchema, unknown, err))
+	return unknownElement(fmt.Errorf("%w: %s, in a tree also refused as %v", ErrSchema, unknown, err), unknown.Name)
 }
 
 // refuseUncreatable is the refusal of a write that makes nodes holding an element this build reads

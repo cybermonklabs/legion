@@ -667,6 +667,8 @@ a node, mark or typed block the manifest does not name, an undeclared attribute 
 It is a `docs.NewerContentError`, classified where `treeOf` and `documentMarkdown` classify a tree outside the schema, and it is not `ErrDocSchema`:
 a replacement from markdown, a rebuild and settlement all refuse or skip it rather than repair it, since a repair would delete the element, and the document socket closes with `4425`, which the provider reconnects on.
 A tree that holds such an element beside a known element in a broken shape is this code (`pmdoc` reads the unknown one first).
+The refusal names those elements as data as well as in its message (`docs.NewerContentError.Elements`, from `pmdoc.UnknownElements`), and the WARN line the route writes carries that list alone.
+It carries no error: the chain that reaches `writeHandlerError` holds what each route wrapped the refusal in, the caller's own identity among it, which no log of ours writes (CodeQL `go/clear-text-logging`).
 `DOC_SCHEMA` is a tree outside the schema:
 one the document holds is a `docs.OutsideSchemaError`, which `treeOf` and `documentMarkdown` classify where they read or render a document's tree, so every route that starts from it - `GET /text`, `GET /blocks`, `POST /edits`, `POST /versions` - answers 409 with its one message, while a schema refusal of a tree a write itself produced is a 500 (`producedSchemaError`).
 Both are taken after the refusals that name the caller's own input or a missing block, so an ask block the renderer refused stays `400 INVALID_ASK_BLOCK`.

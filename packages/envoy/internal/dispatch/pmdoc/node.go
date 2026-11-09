@@ -40,8 +40,12 @@ var ErrBlockHTML = fmt.Errorf("%w: block HTML is not accepted by Proof", ErrSche
 var ErrUnknownElement = errors.New("element this build does not know")
 
 // unknownElementError is a refusal of an element this build does not know: err, which names it,
-// is also ErrUnknownElement, and keeps its own message.
-type unknownElementError struct{ err error }
+// is also ErrUnknownElement, and keeps its own message. elements names those elements as data, so
+// a caller reads them without parsing the message (UnknownElements).
+type unknownElementError struct {
+	err      error
+	elements []string
+}
 
 func (e unknownElementError) Error() string { return e.err.Error() }
 
@@ -49,9 +53,27 @@ func (e unknownElementError) Is(target error) bool { return target == ErrUnknown
 
 func (e unknownElementError) Unwrap() error { return e.err }
 
-// unknownElement is err, a refusal of an element this build does not know, marked as
-// ErrUnknownElement.
-func unknownElement(err error) error { return unknownElementError{err: err} }
+// unknownElement marks err as a refusal of an element this build does not know
+// (ErrUnknownElement), carrying names, the names of those elements, as data (UnknownElements).
+func unknownElement(err error, names ...string) error {
+	return unknownElementError{err: err, elements: names}
+}
+
+// UnknownElements names the elements a refusal of an element this build does not know
+// (ErrUnknownElement) is of: the type of the node, mark or typed block the manifest does not
+// name, the attributes a typed block does not declare, or the value an enum attribute does not
+// list. It is empty for every other error.
+//
+// It is there for a caller that records what a document holds without recording the refusal
+// itself: an error's message carries whatever the chain that answered the request wrapped it in,
+// the caller's own identity among it, and these names carry the document and nothing else.
+func UnknownElements(err error) []string {
+	var unknown unknownElementError
+	if errors.As(err, &unknown) {
+		return unknown.elements
+	}
+	return nil
+}
 
 // sortMarks puts marks in one order whatever order they arrive in: by type, then, for two marks of
 // one type (the record marks, which may overlap: anchorMarkTypes), by id, and by their attributes
@@ -145,7 +167,7 @@ func validateNode(n *Node, depth int) error {
 	}
 	if !active.nodes[n.Type] {
 		if _, typed := typedBlock(n.Type); !typed {
-			return unknownElement(fmt.Errorf("%w: node %q", ErrSchema, n.Type))
+			return unknownElement(fmt.Errorf("%w: node %q", ErrSchema, n.Type), n.Type)
 		}
 	}
 	if n.Type != "text" && len(n.Marks) != 0 {
@@ -153,7 +175,7 @@ func validateNode(n *Node, depth int) error {
 	}
 	for _, m := range n.Marks {
 		if !active.marks[m.Type] {
-			return unknownElement(fmt.Errorf("%w: mark %q", ErrSchema, m.Type))
+			return unknownElement(fmt.Errorf("%w: mark %q", ErrSchema, m.Type), m.Type)
 		}
 		if err := attrNestingError("mark", m.Type, m.Attrs, maxMarkAttrNesting); err != nil {
 			return err
@@ -241,13 +263,14 @@ func undeclaredAttributes(typeName string, attrs Attrs, declared BlockAttributes
 	case 0:
 		return nil
 	case 1:
-		return unknownElement(fmt.Errorf("%w: typed block %q does not declare attribute %q", ErrSchema, typeName, names[0]))
+		return unknownElement(fmt.Errorf("%w: typed block %q does not declare attribute %q", ErrSchema, typeName, names[0]), names[0])
 	}
 	sort.Strings(names)
+	quoted := make([]string, len(names))
 	for index, name := range names {
-		names[index] = fmt.Sprintf("%q", name)
+		quoted[index] = fmt.Sprintf("%q", name)
 	}
-	return unknownElement(fmt.Errorf("%w: typed block %q does not declare attributes %s", ErrSchema, typeName, strings.Join(names, ", ")))
+	return unknownElement(fmt.Errorf("%w: typed block %q does not declare attributes %s", ErrSchema, typeName, strings.Join(quoted, ", ")), names...)
 }
 
 func validateTypedBlock(n *Node, typ BlockTypeSchema) error {

@@ -63,7 +63,20 @@ func (e *OutsideSchemaError) Unwrap() error { return e.Cause }
 // documentMarkdown classify a document's tree by it where they read or render it, as they do an
 // OutsideSchemaError, so every route answers it alike. An operation that would repair a tree
 // outside the schema refuses it as it refuses any other error.
-type NewerContentError struct{ Cause error }
+type NewerContentError struct {
+	Cause error
+	// Elements names the elements this build does not know (pmdoc.UnknownElements), as data: a
+	// caller records what the document holds without recording Cause, whose message carries
+	// whatever the chain that answered the request wrapped it in, the caller's own identity
+	// among it. newerContent fills it wherever this error is made.
+	Elements []string
+}
+
+// newerContent is cause, a refusal of an element this build does not know, as the error every
+// route answers DOC_NEWER_CONTENT, naming those elements as data.
+func newerContent(cause error) *NewerContentError {
+	return &NewerContentError{Cause: cause, Elements: pmdoc.UnknownElements(cause)}
+}
 
 func (e *NewerContentError) Error() string {
 	return ErrDocNewerContent.Error() + " (" + e.Cause.Error() + ")"
@@ -85,7 +98,7 @@ func documentSchemaError(err error) error {
 		return err
 	}
 	if errors.Is(err, pmdoc.ErrUnknownElement) {
-		return &NewerContentError{Cause: err}
+		return newerContent(err)
 	}
 	if errors.Is(err, ErrDocSchema) || errors.Is(err, pmdoc.ErrSchema) {
 		return &OutsideSchemaError{Cause: err}

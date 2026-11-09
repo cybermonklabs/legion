@@ -190,7 +190,7 @@ func typedDirectiveRefusal(directive *typedDirective) error {
 	}
 	typ, ok := typedBlock(directive.Name)
 	if !ok {
-		return unknownElement(fmt.Errorf("%w: unknown typed block %q (known types: %s)", ErrSchema, directive.Name, strings.Join(typedBlockNames(), ", ")))
+		return unknownElement(fmt.Errorf("%w: unknown typed block %q (known types: %s)", ErrSchema, directive.Name, strings.Join(typedBlockNames(), ", ")), directive.Name)
 	}
 	if err := undeclaredAttributes(directive.Name, directive.Attrs, typ.Attributes); err != nil {
 		return err

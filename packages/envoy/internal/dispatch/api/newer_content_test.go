@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A document holding an element this build does not know was written by a newer build while two
@@ -15,7 +17,8 @@ import (
 // doc-edit` calls) and a named version - answers 409 DOC_NEWER_CONTENT with one message, whether a
 // room holds the document or only the store does. The message says to try again in one minute and
 // not to replace or rebuild the document, and an upload over the document is refused, so the
-// element stays.
+// element stays. Each refusal writes one WARN line, which names the elements the document holds
+// and carries nothing of the error (requireNewerContentWarnings).
 func TestEveryRouteAnswersADocumentHoldingNewerContentAlike(t *testing.T) {
 	for _, resident := range []bool{true, false} {
 		name := "stored"
@@ -23,6 +26,8 @@ func TestEveryRouteAnswersADocumentHoldingNewerContentAlike(t *testing.T) {
 			name = "resident"
 		}
 		t.Run(name, func(t *testing.T) {
+			logs := &logtest.Recorder{}
+			logtest.SetDefault(t, logs)
 			handler, _, deps := newTestServer(t, testServerOptions{})
 			issue := createArtifactIssue(t, handler)
 			created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -80,7 +85,49 @@ func TestEveryRouteAnswersADocumentHoldingNewerContentAlike(t *testing.T) {
 			if text.Code != http.StatusConflict || !strings.Contains(text.Body.String(), `"code":"DOC_NEWER_CONTENT"`) {
 				t.Fatalf("read after the refused upload: status=%d body=%s, want the element still there (409 DOC_NEWER_CONTENT)", text.Code, text.Body.String())
 			}
+			requireNewerContentWarnings(t, logs, len(messages))
 		})
+	}
+}
+
+// newerContentWarning is the WARN line writeHandlerError writes for a document holding an element
+// this build cannot read, written out here rather than taken from the code under test.
+const newerContentWarning = "dispatch: API document holds an element this build cannot read"
+
+// requireNewerContentWarnings fails t unless the log holds at least least of those lines and
+// every one of them names the elements the document holds and nothing else.
+//
+// The line carries no error: the chain that reaches writeHandlerError carries what each route
+// wrapped the refusal in, the caller's own identity among it, which the operator's log is not
+// the place for (CodeQL go/clear-text-logging). The elements come from the refusal's own field
+// (docs.NewerContentError.Elements), so the line still says what the document holds.
+func requireNewerContentWarnings(t *testing.T, logs *logtest.Recorder, least int) {
+	t.Helper()
+	warned := 0
+	for _, record := range logs.Records() {
+		if record.Message != newerContentWarning {
+			continue
+		}
+		warned++
+		attributes := map[string]string{}
+		record.Attrs(func(attr slog.Attr) bool {
+			attributes[attr.Key] = attr.Value.String()
+			return true
+		})
+		if !strings.Contains(attributes["elements"], docs.UnknownElementForTest) {
+			t.Errorf("the warn line's elements are %q, want the element %q among them", attributes["elements"], docs.UnknownElementForTest)
+		}
+		if len(attributes) != 1 {
+			t.Errorf("the warn line carries %v, want the elements alone: every other reading of the refusal carries what the route wrapped it in", attributes)
+		}
+		for key, value := range attributes {
+			if strings.Contains(value, docs.ErrDocNewerContent.Error()) {
+				t.Errorf("the warn line's %s carries the refusal's own message, which no log of ours writes: %q", key, value)
+			}
+		}
+	}
+	if warned < least {
+		t.Errorf("warn lines %q = %d, want at least one per route the document refused (%d)", newerContentWarning, warned, least)
 	}
 }
 

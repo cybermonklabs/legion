@@ -119,11 +119,16 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		// The message is the document's own (docs.NewerContentError), the same on every route.
 		var newer *docs.NewerContentError
 		message := docs.ErrDocNewerContent.Error()
+		var elements []string
 		if errors.As(err, &newer) {
 			message = newer.Error()
+			elements = newer.Elements
 		}
 		writeError(w, documentCode, http.StatusConflict, message)
-		slog.Warn("dispatch: API document holds an element this build cannot read", "error", err)
+		// The operator's line names the elements the document holds and nothing taken from the
+		// error: its chain carries whatever the request wrapped it in, the caller's own identity
+		// among it, which no log of ours writes (CodeQL go/clear-text-logging).
+		slog.Warn("dispatch: API document holds an element this build cannot read", "elements", elements)
 		return
 	}
 	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one

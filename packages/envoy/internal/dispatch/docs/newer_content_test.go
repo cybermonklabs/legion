@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +52,9 @@ func storedHoldsUnknownElement(t *testing.T, service *Service, artifactID string
 
 // A document holding an element this build does not know is newer content, not a tree outside the
 // schema: a newer build wrote it while two builds serve one database. Every read answers
-// ErrDocNewerContent, whether a room holds the document or only the store does.
+// ErrDocNewerContent, whether a room holds the document or only the store does, and names the
+// element as data on the error (NewerContentError.Elements) as well as in its message, so a log
+// writes the name without writing the message.
 func TestADocumentHoldingAnUnknownElementReadsAsNewerContent(t *testing.T) {
 	service, artifactID := newerContentDocument(t)
 	reads := []struct {
@@ -77,6 +80,13 @@ func TestADocumentHoldingAnUnknownElementReadsAsNewerContent(t *testing.T) {
 			err := read.read()
 			if !errors.Is(err, ErrDocNewerContent) || errors.Is(err, ErrDocSchema) || !strings.Contains(err.Error(), UnknownElementForTest) {
 				t.Fatalf("%s %s: %v, want ErrDocNewerContent naming %q and not ErrDocSchema", where, read.name, err, UnknownElementForTest)
+			}
+			var newer *NewerContentError
+			if !errors.As(err, &newer) {
+				t.Fatalf("%s %s: %v is no *NewerContentError, so it names no element as data", where, read.name, err)
+			}
+			if !slices.Contains(newer.Elements, UnknownElementForTest) {
+				t.Fatalf("%s %s: the refusal names the elements %q, want %q among them", where, read.name, newer.Elements, UnknownElementForTest)
 			}
 		}
 	}
