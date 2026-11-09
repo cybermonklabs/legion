@@ -72,7 +72,10 @@
 --   - enroll.Service.testSchemaReadHook, which exists to reproduce that race deterministically,
 --     and the test that uses it, enroll/pod_self_enroll_test.go's
 --     TestTheNextReleasesIndexDropWaitsForALoginInFlight: it runs `drop index` without
---     `if exists`, so once the migration has dropped the index that statement errors.
+--     `if exists`, so once the migration has dropped the index that statement errors. The test
+--     puts that error back into its `dropped` channel and asserts nothing on it, so what it
+--     prints is "the drop ran while the login was in flight; it must wait on the login's lock"
+--     rather than anything about a missing index: read the error, not the message.
 --   - in enroll/pod_self_enroll_test.go,
 --     TestThePreviousBrokersTokenLoginStillRunsOnTheMigratedSchema,
 --     which runs the previous broker's upsert against this migration's schema. Neither index
