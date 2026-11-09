@@ -1,0 +1,140 @@
+name: INFRA-1075 pmdoc untimed CPU
+
+# TEMPORARY, the INFRA-1075 reading of how internal/dispatch/pmdoc's twelve measured tests spend
+# the CPU their own timed windows do NOT count. Those windows summed to 132.3 s and 160.4 s on
+# runs 42505403839 and 42609296982 while the pmdoc binary spent 273.7 s and 369.8 s of CPU in the
+# envoy-go lane, so roughly 91-170 s of that chain is input building and the runtime.GC() every
+# timedWindow runs before it opens (linear_test.go:660). Neither is timed by design, so cutting
+# either changes no number any test asserts on - which is why it is worth measuring exactly.
+#
+# The twelve run alone, in one process, as the real step runs them (they call no t.Parallel):
+# once under a CPU profile with the binary's own -test.v kept, and once under GODEBUG=gctrace=1,
+# so every collection's own CPU and the live heap it marked are read off the collector's trace
+# rather than inferred. None of the three Postgres services of ci.yaml's envoy-go is here: pmdoc
+# opens no database, and no test of the twelve calls requireBun either (the bun steps that job
+# carries for update_test.go are not needed by this -run).
+#
+# Delete this file once the reading is taken (dispatch://INFRA-1075).
+on:
+  push:
+    branches: [legion/INFRA-1075]
+  workflow_dispatch:
+
+# Every reading is wanted; a later push does not cancel a measurement already running.
+concurrency:
+  group: infra-1075-pmdoc-untimed-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+# Reading the tree and the caches is all this workflow does; it reports no check.
+permissions:
+  contents: read
+
+env:
+  # ci.yaml's proxy fall-through, for the reason its env block gives.
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  untimed:
+    runs-on: ubuntu-24.04
+    # Two runs of the twelve, each about the 220-330 s pmdoc's measured chain takes in the lane,
+    # plus the build and the profile reading.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: packages/envoy
+    env:
+      # The twelve of .github/scripts/ci_job_reads.py's PMDOC_MEASURED at commit 458d68a2, as one
+      # anchored alternation (that file's `anchored`), so no test whose name merely begins with
+      # one of these is drawn in.
+      MEASURED: ^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestBareURLShapesParseAndRenderLinearly|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # The go-envoy-test family envoy-go restores, at the same key and the same paths, so the
+      # build here starts from the cache the real job starts from.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      # Every figure this run yields is this runner's, so the runner says what it is.
+      - name: The runner these figures are measured on
+        run: |
+          nproc
+          grep -m1 'model name' /proc/cpuinfo
+          go env GOVERSION GOMAXPROCS GOARCH
+      # Built once, outside both measured runs, and run directly: the build is not what is being
+      # read, and both runs then read the same binary.
+      - name: Build the pmdoc test binary
+        run: go test -c -o "$RUNNER_TEMP/pmdoc.test" ./internal/dispatch/pmdoc/
+      # Run 1: the twelve under a CPU profile. The working directory is the package's, which is
+      # where `go test` puts a test binary it runs itself.
+      - name: The twelve under a CPU profile
+        id: profile
+        working-directory: packages/envoy/internal/dispatch/pmdoc
+        run: |
+          status=0
+          /usr/bin/time -v -o "$RUNNER_TEMP/profile.rusage" \
+            "$RUNNER_TEMP/pmdoc.test" -test.run "$MEASURED" -test.count=1 -test.v \
+            -test.timeout 20m -test.cpuprofile "$RUNNER_TEMP/cpu.out" \
+            > "$RUNNER_TEMP/profile.log" 2>&1 || status=$?
+          echo "the profiled run exited $status"
+          grep -E '^(ok|FAIL|PASS|--- )' "$RUNNER_TEMP/profile.log" | tail -n 30
+          grep -E 'Elapsed|User time|System time|Maximum resident' "$RUNNER_TEMP/profile.rusage"
+          ls -l "$RUNNER_TEMP/cpu.out"
+      # Run 2: the same twelve with the collector's own trace. Every line names a collection's
+      # CPU and the heap it marked, and a forced one - every runtime.GC() of timedWindow - says
+      # "(forced)", so the forced collections' cost and the live heap each marked are read off
+      # the collector rather than inferred from the profile. gctrace writes to stderr, which is
+      # merged into the -test.v stream, so each collection lands between the test lines around it.
+      - name: The twelve again under GODEBUG=gctrace=1
+        id: gctrace
+        if: always()
+        working-directory: packages/envoy/internal/dispatch/pmdoc
+        env:
+          GODEBUG: gctrace=1
+        run: |
+          status=0
+          /usr/bin/time -v -o "$RUNNER_TEMP/gctrace.rusage" \
+            "$RUNNER_TEMP/pmdoc.test" -test.run "$MEASURED" -test.count=1 -test.v \
+            -test.timeout 20m > "$RUNNER_TEMP/gctrace.log" 2>&1 || status=$?
+          echo "the gctrace run exited $status"
+          grep -c '^gc ' "$RUNNER_TEMP/gctrace.log" || true
+          grep -c 'forced' "$RUNNER_TEMP/gctrace.log" || true
+          grep -E 'Elapsed|User time|System time|Maximum resident' "$RUNNER_TEMP/gctrace.rusage"
+      # The profile read on the runner, so the split is in this job's own log whatever happens to
+      # the artifact. A Go runtime profile carries its own symbols, so no binary is needed here.
+      - name: Read the profile
+        if: always()
+        run: |
+          cpu="$RUNNER_TEMP/cpu.out"
+          echo '=== -top -nodecount=40'
+          go tool pprof -top -nodecount=40 "$cpu"
+          echo '=== -top -cum -nodecount=60'
+          go tool pprof -top -cum -nodecount=60 "$cpu"
+          for what in 'timedWindow$' 'runtime\.GC$' 'gcBgMarkWorker$' 'gcDrain$' 'strings\.Repeat$' \
+                      'cputest\.Measure$' 'pmdoc\.ParseRendering$' 'pmdoc\.repeatedBlocks$' 'pmdoc\.Update$'; do
+            echo "=== -peek $what"
+            go tool pprof -peek "$what" "$cpu" || true
+          done
+      - name: Keep the profile and the logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: infra-1075-pmdoc-untimed
+          path: |
+            ${{ runner.temp }}/cpu.out
+            ${{ runner.temp }}/profile.log
+            ${{ runner.temp }}/gctrace.log
+            ${{ runner.temp }}/profile.rusage
+            ${{ runner.temp }}/gctrace.rusage
+          if-no-files-found: error
