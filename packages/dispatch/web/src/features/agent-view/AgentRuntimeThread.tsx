@@ -43,24 +43,27 @@ function dispatchId(messageId: string): string {
 
 /**
  * Whether a streamed user turn is the stored message it names, so the view draws the pair once
- * rather than one under the other.
+ * rather than one under the other, and which of the two it is.
  *
  * A turn saying what the person wrote is that message, beside what the stream names of what the
  * message carried, such as a picture's `[image]` (`turnSaysBody`, which holds the row to the
- * body's own lines and to the body's own pictures). So is the report of a person's `!command`
- * (INFRA-812, R4): the session runs the line itself and publishes the person's line and what the
- * command printed as one user message, because the person ran it and the host wrote nothing
- * (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). What a report reads like is
- * one rule both packages import rather than spell twice (`isShellCommandReport` in
- * `@legion/contracts`): the body is a `!` command, and the turn opens with that whole body and a
- * blank line, so the turn still says what the person said and the rest of it - the fenced output
- * and how the command ended - is the session's answer to that line.
+ * body's own lines and to the body's own pictures): `"says-body"`. So is the report of a
+ * person's `!command` (INFRA-812, R4): the session runs the line itself and publishes the
+ * person's line and what the command printed as one user message, because the person ran it and
+ * the host wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). What
+ * a report reads like is one rule both packages import rather than spell twice
+ * (`isShellCommandReport` in `@legion/contracts`): the body is a `!` command, and the turn opens
+ * with that whole body and a blank line, so the turn still says what the person said and the
+ * rest of it - the fenced output and how the command ended - is the session's answer to that
+ * line. A report is named as one (`"report"`) because the session also posts it as its reply to
+ * that message, which the caller draws nowhere.
  *
- * Anything else is left to show beside the stored copy: the bus is open to any client, and a
- * tag is no licence to put words in a person's mouth.
+ * Anything else is left to show beside the stored copy (`"no"`): the bus is open to any client,
+ * and a tag is no licence to put words in a person's mouth.
  */
-function takesOverStored(turn: DispatchTurn, body: string): boolean {
-  return turnSaysBody(turn, body) || isShellCommandReport(turn.text, body);
+function takesOverStored(turn: DispatchTurn, body: string): "no" | "report" | "says-body" {
+  if (isShellCommandReport(turn.text, body)) return "report";
+  return turnSaysBody(turn, body) ? "says-body" : "no";
 }
 
 /**
@@ -142,11 +145,14 @@ export function AgentRuntimeThread({
     const streamed = toThreadMessages(conversation).map((message) => {
       const turn = turns.get(message.id ?? "");
       const source = byID.get(turn?.dispatchMessageId ?? "");
-      if (turn === undefined || source === undefined || !takesOverStored(turn, source.body)) {
-        return message;
-      }
+      if (turn === undefined || source === undefined) return message;
+      // One read of the rule for this turn: it says both that the streamed turn replaces the
+      // stored copy and, for a `!` report, that the session's reply saying it again is drawn
+      // nowhere.
+      const takeover = takesOverStored(turn, source.body);
+      if (takeover === "no") return message;
       taken.add(source.id);
-      if (isShellCommandReport(turn.text, source.body)) reported.add(source.id);
+      if (takeover === "report") reported.add(source.id);
       // The streamed turn keeps the key the stored copy would have had, so it is one turn under
       // one key for `useLiveFollow` whether the reader sees this frame or, after a rebuild that
       // dropped it, the stored copy below under that same `dispatch:<id>` id.
@@ -158,6 +164,13 @@ export function AgentRuntimeThread({
         }),
       };
     });
+    // The session's own reply to a `!` message whose report the stream already took over: the
+    // same text a third time, so the reader meets it nowhere.
+    const answersReportedCommand = (message: Message): boolean =>
+      message.author.kind === "session" &&
+      message.author.id === sessionId &&
+      message.in_reply_to !== null &&
+      reported.has(message.in_reply_to);
     // Dispatch's side of the conversation, interleaved with the stream by time: what the session
     // wrote is its reply, what the viewer wrote is theirs, and anything anyone else sent the
     // session (another human's direct message, an issue message, another agent) says who. The
@@ -165,16 +178,7 @@ export function AgentRuntimeThread({
     // messages carry microseconds, so they are put in time order first, and the stable merge keeps
     // that order between two stored messages in one millisecond.
     const dispatch: KeyedMessage[] = messagesOfReads
-      .filter(
-        (message) =>
-          !taken.has(message.id) &&
-          !(
-            message.author.kind === "session" &&
-            message.author.id === sessionId &&
-            message.in_reply_to !== null &&
-            reported.has(message.in_reply_to)
-          )
-      )
+      .filter((message) => !taken.has(message.id) && !answersReportedCommand(message))
       .sort((left, right) => compareTimestamps(left.created_at, right.created_at))
       .map((message) => {
         const content = [{ text: message.body, type: "text" as const }];

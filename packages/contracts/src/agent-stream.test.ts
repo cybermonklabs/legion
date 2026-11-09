@@ -28,4 +28,18 @@ test("a turn's text is the report of the `!` message whose body it carries", () 
   // One line break is not the separator, and a report of another command is not this one's.
   expect(isShellCommandReport("!printf hi\nhi", "!printf hi")).toBe(false);
   expect(isShellCommandReport("!printf bye\n\nbye", "!printf hi")).toBe(false);
+  // The body is the person's line as they sent it and as Dispatch stored it, every space around
+  // the mark kept. A report opening with the trimmed command is the report of no message here,
+  // so the page draws that person's line twice: once as their message, once as the report
+  // (dispatch://INFRA-812, round 2).
+  expect(isShellCommandReport("! ls\n\n```\none.txt\n```", "! ls")).toBe(true);
+  expect(isShellCommandReport("!ls\n\n```\none.txt\n```", "! ls")).toBe(false);
+  expect(
+    isShellCommandReport("!  git status\n\nThe command printed nothing.", "!  git status")
+  ).toBe(true);
+  expect(isShellCommandReport("!git status\n\nThe command printed nothing.", "!  git status")).toBe(
+    false
+  );
+  expect(isShellCommandReport("!ls\t\n\nThe command printed nothing.", "!ls\t")).toBe(true);
+  expect(isShellCommandReport("!ls\n\nThe command printed nothing.", "!ls\t")).toBe(false);
 });

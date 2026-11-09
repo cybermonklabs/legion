@@ -44,11 +44,11 @@ const NOTHING_PRINTED = "The command printed nothing.";
 const SHELL_COMMAND_HEADING =
   "A person ran this shell command in this session from Dispatch. Nothing is asked of you; this is the command and what it printed.";
 
-/** What a person's `!command` did: the command without its mark, what it printed (both streams, in
- *  the order their chunks arrived, cut at `SHELL_OUTPUT_MAX`), and how it ended when it did not
- *  end well. */
+/** What a person's `!command` did: what it printed (both streams, in the order their chunks
+ *  arrived, cut at `SHELL_OUTPUT_MAX`), and how it ended when it did not end well. The person's
+ *  line is not in here: it is theirs as they sent it, and the texts below are handed it with
+ *  this, so none of them can write the trimmed command in its place. */
 export interface ShellCommandResult {
-  readonly command: string;
   readonly output: string;
   readonly cut: boolean;
   /** One sentence naming the exit status of a command that failed, was killed or was stopped;
@@ -244,7 +244,6 @@ export async function runShellCommand(
     });
   } catch (error) {
     return {
-      command,
       cut: false,
       output: "",
       status: `The command could not start: ${messageFor(error)}.`,
@@ -276,7 +275,6 @@ export async function runShellCommand(
   const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;
   return {
-    command,
     cut,
     output: output.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
     status: statusOf(child, ended, options.limitMs),
@@ -334,12 +332,15 @@ function fenced(output: string): string {
  * so every `!` message has an answer. The person's line is the first paragraph and the separator
  * follows it, which is the rule the Agents page reads this text back by
  * (`isShellCommandReport`, `@legion/contracts`).
+ *
+ * `line` is that message as the person sent it and as Dispatch stored it, the mark and every
+ * space around it kept: `! ls` opens with `! ls` and `!ls\t` with `!ls\t`, while `ls` is what
+ * ran (`shellCommandFrom` trims the command, as the CLI does). The page reads this text back
+ * against the stored body, so a text opening with the trimmed command instead matches nothing
+ * and the view draws the person's line twice.
  */
-export function shellCommandReport(result: ShellCommandResult): string {
-  const parts = [
-    `!${result.command}`,
-    result.output === "" ? NOTHING_PRINTED : fenced(result.output),
-  ];
+export function shellCommandReport(line: string, result: ShellCommandResult): string {
+  const parts = [line, result.output === "" ? NOTHING_PRINTED : fenced(result.output)];
   if (result.cut) parts.push(`The output was cut at ${SHELL_OUTPUT_MAX} characters.`);
   if (result.status !== undefined) parts.push(result.status);
   return parts.join(SHELL_COMMAND_REPORT_SEPARATOR);
@@ -353,14 +354,21 @@ export function shellCommandMessage(report: string): string {
   return `${SHELL_COMMAND_HEADING}${SHELL_COMMAND_REPORT_SEPARATOR}${report}`;
 }
 
+/** The answer a `!` nothing ran for: the person's line as they sent it, the separator, and the
+ *  one sentence saying why nothing ran. The two refusals below are this text and a reason, so
+ *  the shape a refusal has is written here alone. */
+function shellCommandRefusal(line: string, why: string): string {
+  return `${line}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: ${why}`;
+}
+
 /** The answer a `!` gets while this session still runs one: the line, and the command it waits
  *  on. One command runs for a session at a time, and a second is refused rather than queued. */
-export function shellCommandBusyReport(command: string, running: string): string {
-  return `!${command}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: this session is still running !${running}.`;
+export function shellCommandBusyReport(line: string, running: string): string {
+  return shellCommandRefusal(line, `this session is still running !${running}.`);
 }
 
 /** The answer a `!` gets once this session has begun shutting down: nothing was run, and nothing
  *  will be. A command started now would outlive the session that was asked for it. */
-export function shellCommandShutdownReport(command: string): string {
-  return `!${command}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: this session is shutting down.`;
+export function shellCommandShutdownReport(line: string): string {
+  return shellCommandRefusal(line, "this session is shutting down.");
 }

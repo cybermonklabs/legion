@@ -46,6 +46,25 @@ const OUTPUT = "cat: missing.txt: No such file or directory";
  *  must meet it once. */
 const REPORT = `${COMMAND_LINE}\n\n\`\`\`\n${OUTPUT}\n\`\`\`\n\nThe command ended with exit status 1.`;
 
+/** The person's second message, whose mark is followed by a space. The session runs the trimmed
+ *  command, as the CLI does, and opens its report with the line as the person sent it, that
+ *  space kept (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`): a report is read
+ *  back against the message's own stored body (`isShellCommandReport`), so one opening with the
+ *  trimmed `!ls` would leave the view drawing this line twice. */
+const SPACED_LINE = "! ls";
+const SPACED_OUTPUT = "one.txt";
+const SPACED_REPORT = `${SPACED_LINE}\n\n\`\`\`\n${SPACED_OUTPUT}\n\`\`\``;
+
+/** One `!` exchange as the wire carries it: the person's line, and the report the session
+ *  answers it with - in its frame, and in its reply on Dispatch. */
+interface ShellExchange {
+  readonly line: string;
+  readonly report: string;
+}
+
+const FAILED: ShellExchange = { line: COMMAND_LINE, report: REPORT };
+const SPACED: ShellExchange = { line: SPACED_LINE, report: SPACED_REPORT };
+
 function livePath(sessionID: string): string {
   return `/agents/${sessionID}/live`;
 }
@@ -65,45 +84,51 @@ function shellSession(): FakeSession {
 }
 
 /**
- * Seeds the exchange one `!` message makes, as production holds it: the person's Dispatch
- * message, the session's user message frame carrying the report and that message's id, and the
- * session's reply to that message, which carries the same report once more. Answers the
- * Dispatch message's id, which is the key the view must draw the pair under.
+ * Seeds the exchanges `!` messages make, as production holds them: each person's Dispatch
+ * message, the session's user message frame carrying that message's report and its id, and the
+ * session's reply to it, which carries the same report once more. Every frame goes in one
+ * replay, which is what the page asks the session for when it opens. Answers the Dispatch
+ * message ids in the order the exchanges were given, which are the keys the view must draw each
+ * pair under.
  */
-async function seedShellCommand(): Promise<string> {
+async function seedShellCommands(exchanges: readonly ShellExchange[]): Promise<readonly string[]> {
   await setLiveSessions([shellSession()]);
-  const asked = await createAgentMessage(SHELL_ID, { body: COMMAND_LINE, delivery: "steer" });
+  const seeded: { readonly exchange: ShellExchange; readonly id: string }[] = [];
+  for (const exchange of exchanges) {
+    const asked = await createAgentMessage(SHELL_ID, { body: exchange.line, delivery: "steer" });
+    seeded.push({ exchange, id: asked.id });
+  }
   await publishAgentStreamFrame(
     SHELL_ID,
     {
-      frames: [
-        {
-          kind: "message",
-          message: {
-            at: 1_000,
-            dispatchMessageId: asked.id,
-            id: "u1000",
-            parts: [{ text: REPORT, type: "text" }],
-            role: "user",
-            streaming: false,
-          },
-          seq: 1,
-          v: 1,
+      frames: seeded.map(({ exchange, id }, index) => ({
+        kind: "message",
+        message: {
+          at: 1_000 * (index + 1),
+          dispatchMessageId: id,
+          id: `u${index + 1}000`,
+          parts: [{ text: exchange.report, type: "text" }],
+          role: "user",
+          streaming: false,
         },
-      ],
+        seq: index + 1,
+        v: 1,
+      })),
       session_id: SHELL_ID,
       v: 1,
     },
     "replay"
   );
-  // The plugin answers the person's message on Dispatch too, with the report it published: the
+  // The plugin answers each of these messages on Dispatch too, with the report it published: the
   // view has the same text from both sides, and draws it once.
-  await replyToMessageDelivery(
-    asked.id,
-    { attempt: 1, body: REPORT },
-    { id: SHELL_ID, kind: "session" }
-  );
-  return asked.id;
+  for (const { exchange, id } of seeded) {
+    await replyToMessageDelivery(
+      id,
+      { attempt: 1, body: exchange.report },
+      { id: SHELL_ID, kind: "session" }
+    );
+  }
+  return seeded.map(({ id }) => id);
 }
 
 test.beforeEach(async () => {
@@ -119,7 +144,7 @@ test.beforeEach(async () => {
 test("the live view shows a person's shell command, its output and its exit status as their own message", async ({
   browser,
 }) => {
-  await seedShellCommand();
+  await seedShellCommands([FAILED]);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
@@ -144,35 +169,43 @@ test("the live view shows a person's shell command, its output and its exit stat
 // message it names and the session's reply carrying the same report are one message in the
 // conversation, and the key that message is drawn under is Dispatch's own - which is what
 // re-keying the frame over the person's turn means, and what keeps them from being drawn one
-// under the other.
-// SLOW(>=2s): a live view opened on the session's replay, over a Dispatch message and a reply
-// the row stored first.
+// under the other. The second message's mark is followed by a space, which the session keeps in
+// its report: the line a person sent is the line the view reads that report back against, so
+// `! ls` is drawn once too - their line, the report, and no third copy.
+// SLOW(>=2s): a live view opened on the session's replay, over two Dispatch messages and the
+// replies the row stored first.
 test("a shell command's frame and the Dispatch message it answers are one message, not two", async ({
   browser,
 }) => {
-  const messageID = await seedShellCommand();
+  const [failedID = "", spacedID = ""] = await seedShellCommands([FAILED, SPACED]);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.goto(livePath(SHELL_ID));
     const own = frontLiveView(page).getByTestId("agent-message-user");
-    await expect(own).toHaveCount(1);
-    // The one turn is the frame - it carries what the command printed, which Dispatch's stored
+    await expect(own).toHaveCount(2);
+    // Each turn is the frame - it carries what the command printed, which Dispatch's stored
     // copy of the person's line does not - under the key the stored message would have had.
-    await expect(own).toContainText(OUTPUT);
-    await expect(own).toHaveAttribute("data-message-id", `dispatch:${messageID}`);
+    await expect(own.first()).toContainText(OUTPUT);
+    await expect(own.first()).toHaveAttribute("data-message-id", `dispatch:${failedID}`);
+    await expect(own.last()).toContainText(SPACED_OUTPUT);
+    await expect(own.last()).toHaveAttribute("data-message-id", `dispatch:${spacedID}`);
+    // Neither report is drawn a third time as the session's own reply.
+    await expect(frontLiveView(page).getByTestId("agent-dispatch-reply")).toHaveCount(0);
 
-    // Counted across the whole transcript rather than one test id: the line appears in one turn.
-    const lines = await frontLiveView(page)
+    // Counted across the whole transcript rather than one test id: each line is in one turn.
+    const counts = await frontLiveView(page)
       .getByTestId("agent-thread")
       .evaluate(
-        (thread, line) =>
-          [...thread.querySelectorAll<HTMLElement>("[data-message-id]")].filter((turn) =>
-            (turn.textContent ?? "").includes(line)
-          ).length,
-        COMMAND_LINE
+        (thread, lines) => {
+          const turns = [...thread.querySelectorAll<HTMLElement>("[data-message-id]")];
+          return lines.map(
+            (line) => turns.filter((turn) => (turn.textContent ?? "").includes(line)).length
+          );
+        },
+        [COMMAND_LINE, SPACED_LINE]
       );
-    expect(lines).toBe(1);
+    expect(counts).toEqual([1, 1]);
   } finally {
     await context.close();
   }

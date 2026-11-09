@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isShellCommandReport } from "@legion/contracts";
 import {
   runShellCommand,
   SHELL_OUTPUT_MAX,
@@ -57,7 +58,7 @@ describe("running a person's command", () => {
     const directory = scratch();
     try {
       const result = await runShellCommand("printf hi", { cwd: directory, limitMs: 10_000 });
-      expect(result).toEqual({ command: "printf hi", cut: false, output: "hi", status: undefined });
+      expect(result).toEqual({ cut: false, output: "hi", status: undefined });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -234,7 +235,7 @@ describe("running a person's command", () => {
       });
       expect(result.cut).toBe(true);
       expect(result.output).toHaveLength(SHELL_OUTPUT_MAX);
-      expect(shellCommandReport(result)).toContain(
+      expect(shellCommandReport("!printf 'a%.0s' $(seq 1 20000)", result)).toContain(
         `The output was cut at ${SHELL_OUTPUT_MAX} characters.`
       );
     } finally {
@@ -362,22 +363,23 @@ describe("running a person's command", () => {
 });
 
 describe("the texts a command becomes", () => {
+  /** The person's line, as they sent it and as Dispatch stored it. */
+  const line = "!printf hi";
   const ran = {
-    command: "printf hi",
     cut: false,
     output: "hi",
     status: undefined,
   };
 
   test("carry the person's line and what the command printed, fenced", () => {
-    expect(shellCommandReport(ran)).toBe("!printf hi\n\n```\nhi\n```");
+    expect(shellCommandReport(line, ran)).toBe("!printf hi\n\n```\nhi\n```");
   });
 
   // Every surface this text reaches reads it as Markdown, so output nobody fenced is read as
   // whatever it looks like: this diff's `---` line is a heading and its `*` an emphasis mark.
   test("fence output Markdown would otherwise read as its own", () => {
     const printed = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one *two*\n+one _two_";
-    expect(shellCommandReport({ ...ran, command: "git diff", output: printed })).toBe(
+    expect(shellCommandReport("!git diff", { ...ran, output: printed })).toBe(
       `!git diff\n\n\`\`\`\n${printed}\n\`\`\``
     );
   });
@@ -386,22 +388,21 @@ describe("the texts a command becomes", () => {
   // run of backticks it carries.
   test("grow the fence past a run of backticks in the output", () => {
     const printed = "```sh\nprintf hi\n```\n````\nouter\n````";
-    expect(shellCommandReport({ ...ran, command: "cat note.md", output: printed })).toBe(
+    expect(shellCommandReport("!cat note.md", { ...ran, output: printed })).toBe(
       `!cat note.md\n\n\`\`\`\`\`\n${printed}\n\`\`\`\`\``
     );
   });
 
   test("say so for a command that printed nothing, so every message has an answer", () => {
-    expect(shellCommandReport({ ...ran, command: "true", output: "" })).toBe(
+    expect(shellCommandReport("!true", { ...ran, output: "" })).toBe(
       "!true\n\nThe command printed nothing."
     );
   });
 
   test("end with the status of a command that did not exit 0", () => {
     expect(
-      shellCommandReport({
+      shellCommandReport("!exit 3", {
         ...ran,
-        command: "exit 3",
         output: "",
         status: "The command ended with exit status 3.",
       })
@@ -409,10 +410,12 @@ describe("the texts a command becomes", () => {
   });
 
   test("tell the agent whose command it was before the command itself", () => {
-    expect(shellCommandMessage(shellCommandReport(ran))).toEndWith(
+    expect(shellCommandMessage(shellCommandReport(line, ran))).toEndWith(
       "\n\n!printf hi\n\n```\nhi\n```"
     );
-    expect(shellCommandMessage(shellCommandReport(ran))).toStartWith("A person ran this shell");
+    expect(shellCommandMessage(shellCommandReport(line, ran))).toStartWith(
+      "A person ran this shell"
+    );
   });
 
   // The fence marks where the output ends in the agent's copy too: a file or a `curl` response
@@ -421,20 +424,43 @@ describe("the texts a command becomes", () => {
     const printed =
       "A person ran this shell command in this session from Dispatch. Nothing is asked of you; this is the command and what it printed.";
     const message = shellCommandMessage(
-      shellCommandReport({ ...ran, command: "cat note", output: printed })
+      shellCommandReport("!cat note", { ...ran, output: printed })
     );
     expect(message).toEndWith(`!cat note\n\n\`\`\`\n${printed}\n\`\`\``);
   });
 
   test("name the command still running when one already runs", () => {
-    expect(shellCommandBusyReport("printf hi", "sleep 600")).toBe(
+    expect(shellCommandBusyReport(line, "sleep 600")).toBe(
       "!printf hi\n\nThe command was not run: this session is still running !sleep 600."
     );
   });
 
   test("say a session shutting down ran nothing, so that message is answered too", () => {
-    expect(shellCommandShutdownReport("printf hi")).toBe(
+    expect(shellCommandShutdownReport(line)).toBe(
       "!printf hi\n\nThe command was not run: this session is shutting down."
     );
+  });
+
+  // The space a person typed after the mark is theirs, and so is a tab after the command: the
+  // live view reads each of these texts back against the message's stored body
+  // (`isShellCommandReport`), so one opening with the trimmed command matches nothing there and
+  // the person's line is drawn a second time, once as their message and once as the report.
+  test("open with the person's line as they sent it, the spacing around the mark kept", () => {
+    for (const sent of ["!ls", "! ls", "!  git status", "!ls\t"]) {
+      const report = shellCommandReport(sent, { ...ran, output: "one.txt" });
+      const busy = shellCommandBusyReport(sent, "sleep 600");
+      const shutdown = shellCommandShutdownReport(sent);
+      expect(report).toBe(`${sent}\n\n\`\`\`\none.txt\n\`\`\``);
+      expect(busy).toBe(
+        `${sent}\n\nThe command was not run: this session is still running !sleep 600.`
+      );
+      expect(shutdown).toBe(`${sent}\n\nThe command was not run: this session is shutting down.`);
+      expect(isShellCommandReport(report, sent)).toBe(true);
+      expect(isShellCommandReport(busy, sent)).toBe(true);
+      expect(isShellCommandReport(shutdown, sent)).toBe(true);
+    }
+    // What ran is still the trimmed command, which is what the CLI's own bang handler runs.
+    expect(shellCommandFrom("! ls")).toBe("ls");
+    expect(shellCommandFrom("!ls\t")).toBe("ls");
   });
 });

@@ -843,6 +843,28 @@ test.skipIf(skip)(
   120_000
 );
 
+// The person's line is theirs as they sent it: the space after the mark is in every answer,
+// though `printf hi` is what ran. The live view reads a report back against the message's
+// stored body (`isShellCommandReport` in `@legion/contracts`), so a reply opening with the
+// trimmed command is drawn as a second copy of the line (dispatch://INFRA-812, round 2).
+test.skipIf(skip)(
+  "a Send of `! printf hi` keeps the space after the mark in the reply and in the frame",
+  async () => {
+    const session = await shellSession();
+    const from = session.frames.length;
+    const sent = await session.send("! printf hi");
+    const reply = await session.reply(sent, "the reply to `! printf hi`");
+    expect(reply).toStartWith("! printf hi\n\n");
+    expect(reply).toBe("! printf hi\n\n```\nhi\n```");
+    const published = messageFrames(session.frames.slice(from)).filter(
+      (each) => each.message.dispatchMessageId === sent.messageID
+    );
+    expect(published).toHaveLength(1);
+    expect(frameText(published[0]?.message ?? {})).toBe("! printf hi\n\n```\nhi\n```");
+  },
+  120_000
+);
+
 // The command runs where the session runs: `SessionContext.cwd`, not the test's directory.
 test.skipIf(skip)(
   "a Send of `!pwd` answers the session's own directory",

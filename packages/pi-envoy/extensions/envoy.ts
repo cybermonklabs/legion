@@ -1387,6 +1387,11 @@ export default function envoyExtension(pi: PiApi): void {
     const running = runningShellCommand;
     const session = sessionID;
     const cwd = activeSessionContext?.cwd ?? process.cwd();
+    // Every text this message is answered with opens with the person's line as they sent it and
+    // as Dispatch stored it, never the trimmed command: that is what the live view reads a
+    // report back against (`isShellCommandReport` in `@legion/contracts`), and an opening it
+    // cannot match leaves `! ls` drawn twice, the person's line and then the report.
+    const line = turn.body;
     // Claimed before the command starts rather than from inside it, so a second `!` handed to
     // this session in the same tick is answered naming this one.
     const claim = { command, stop: () => {} };
@@ -1394,8 +1399,8 @@ export default function envoyExtension(pi: PiApi): void {
     const ran = async (): Promise<string> => {
       // A session shutting down starts no command: what it started would outlive the session it
       // was asked of, and nothing here would be left to answer for it.
-      if (shuttingDown) return shellCommandShutdownReport(command);
-      if (running !== undefined) return shellCommandBusyReport(command, running.command);
+      if (shuttingDown) return shellCommandShutdownReport(line);
+      if (running !== undefined) return shellCommandBusyReport(line, running.command);
       try {
         const result = await runShellCommand(command, {
           cwd,
@@ -1404,7 +1409,7 @@ export default function envoyExtension(pi: PiApi): void {
             claim.stop = stop;
           },
         });
-        const report = shellCommandReport(result);
+        const report = shellCommandReport(line, result);
         // The frame carries the Dispatch message id, so the live view re-keys it over the
         // person's Dispatch turn instead of drawing the line twice.
         if (session !== "") {
