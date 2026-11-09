@@ -207,6 +207,11 @@ frame as the page does, and reconnects and resumes as the page does. When the ti
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.
+`--reconnect-spread-ms <n>` sets the window the probe's first reconnect attempt's wait is drawn
+from, uniformly in [0, n), in place of the page's own `RECONNECT_SPREAD_MS` of two seconds; a
+later attempt keeps the page's backoff whatever it is set to.
+A value above a timer's longest wait, 2147483647 ms, is refused, because the runtime clamps such
+a delay to 1 ms and the probe would reopen at once: the opposite of what the option says.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside

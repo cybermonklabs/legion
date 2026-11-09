@@ -131,6 +131,10 @@ const USAGE =
 
 /** The probe's one subscription. */
 const SUB = "probe";
+/** The longest wait a timer holds. A `setTimeout` delay above this is clamped to 1 ms, so a
+ *  `--reconnect-spread-ms` whose draws pass it would make the probe reopen at once: the option
+ *  honoured as its own opposite. The probe refuses such a value instead. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** Dispatch closes every socket with this code when it shuts down; the page reconnects within the
  *  first attempt's spread (`reconnectDelayMs(0)`). */
 const SERVICE_RESTART = 1012;
@@ -312,9 +316,15 @@ function parseOptions(argv: readonly string[]): Options {
   }
   const rawSpread = values["reconnect-spread-ms"];
   const reconnectSpreadMs = rawSpread === undefined ? RECONNECT_SPREAD_MS : Number(rawSpread);
-  if (rawSpread === "" || !Number.isFinite(reconnectSpreadMs) || reconnectSpreadMs < 0) {
+  if (
+    rawSpread === "" ||
+    !Number.isFinite(reconnectSpreadMs) ||
+    reconnectSpreadMs < 0 ||
+    reconnectSpreadMs > MAX_TIMER_DELAY_MS
+  ) {
     throw new UsageError(
-      `--reconnect-spread-ms is a number of milliseconds from 0 up, not ${rawSpread}`
+      "--reconnect-spread-ms is a number of milliseconds from 0 to " +
+        `${MAX_TIMER_DELAY_MS}, not ${rawSpread}`
     );
   }
   return {
