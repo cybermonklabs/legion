@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -2637,12 +2638,7 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 // timeout passes.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(timeout); !cond(); {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", desc)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, 50*time.Millisecond, desc, cond)
 }
 
 // bindOutcome is what a bindListenerDurable run in a goroutine returned, and when.
@@ -3569,6 +3565,13 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
+	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
+	// lands while that first read runs is taken back out of the copy until the watcher delivers
+	// its own record, so a target registered before the reads end is one the fan-out cannot see
+	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
+	// reads are waited out here, before registerFanoutTarget's writes, as the rows above do.
+	waitForRegistry(t, harness.registry)
+	waitForSessions(t, harness.sessions)
 	harness.registerFanoutTarget(t, firstTarget, topic, nil)
 	harness.registerFanoutTarget(t, nextTarget, topic, nil)
 	// The fan-out reaches only what these two registries answer for, so they are read here: a

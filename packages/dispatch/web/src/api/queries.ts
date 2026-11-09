@@ -18,7 +18,7 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
@@ -112,6 +112,23 @@ export const issueResultsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "results"],
     queryFn: () => api.getIssueResults(key),
+  });
+
+/** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).
+ *  The Collaborators tab and the composer's "Not running" options read this one entry, so a tab
+ *  read within the shell's `staleTime` opens the picker with no request of its own, and what
+ *  refreshes one refreshes both. The event feed refreshes `["issue", key]` exactly, not as a
+ *  prefix, so this key has a rule of its own there (`changesCollaborators`); the write paths that
+ *  do invalidate the whole `["issue", key]` prefix reach it as well. The key takes `undefined`
+ *  for the composer, whose own `enabled` holds the read until the picker opens on an issue
+ *  owner. */
+export const issueCollaboratorsQuery = (key: string | undefined) =>
+  queryOptions({
+    queryKey: ["issue", key, "collaborators"],
+    queryFn: () => {
+      if (key === undefined) throw new Error("A collaborators read needs the issue's key.");
+      return api.getIssueCollaborators(key);
+    },
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -265,7 +282,7 @@ export const projectIssuesQuery = (project: string, labels: readonly string[]) =
     queryKey: projectIssuesQueryKey(project, labels),
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
-      return api.listIssues(labels.length === 0 ? { project } : { labels, project });
+      return api.listIssues(labels.length === 0 ? { project } : { label: [...labels], project });
     },
   });
 
@@ -314,7 +331,7 @@ const LIVE = {
 
 /** The body each delivery view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
-  readonly timeline: DeliveryTimelineResponse;
+  readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
 }

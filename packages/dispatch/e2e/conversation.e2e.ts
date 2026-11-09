@@ -122,9 +122,10 @@ test("Conversation owns the route, lists one card per message newest first, and 
       "Plan",
       "Conversation",
       "Children",
-      "Artifacts1",
+      "Artifacts 1",
       "Activity",
       "Decisions",
+      "Collaborators",
     ]);
 
     await page.goto(`/issues/${issue.key}/conversation`);
@@ -370,12 +371,11 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
 test("an agent's answer on a failed attempt is accepted and shown as the answer", async ({
   browser,
 }) => {
-  // None of the three reads another; only the issue waits on its project.
-  await Promise.all([
-    setLiveSessions([planner]),
-    setSessionSendStatus("s1", 404),
-    createProject({ key: "CORE", name: "Core" }),
-  ]);
+  // `setSessionSendStatus` patches the session `setLiveSessions` writes - `planner` is `s1` - so
+  // it cannot share their round: a PATCH that arrives first answers
+  // `404 unknown fixture session s1` and fails the row. Only the project is independent.
+  await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
+  await setSessionSendStatus("s1", 404);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
@@ -587,11 +587,12 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
 
-    // The Conversation has no dividers of any kind - they belong to the Activity tab - and
-    // nothing is unread, so no card carries the New mark.
+    // The Conversation has no dividers of any kind - they belong to the Activity tab, where
+    // each is a labelled list item (`e2e/activity.e2e.ts`) - and nothing is unread, so no card
+    // carries the New mark.
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(turn(page, "Overflow turn 29")).toBeVisible();
-    await expect(turns.getByRole("separator")).toHaveCount(0);
+    await expect(turns.locator("li[aria-label]")).toHaveCount(0);
     await expect(turns.getByText("New", { exact: true })).toHaveCount(0);
 
     const composer = page.getByRole("form", { name: "Comment composer" });
@@ -954,7 +955,7 @@ async function expandedCommentCard(page: Page, commentID: string): Promise<Locat
 /** The reply `replyID`'s `reply_block` as the server reads it now, under its thread's head. */
 async function commentReplyBlock(root: string, replyID: string) {
   const { replies } = await getComment(root);
-  return replies.find((reply) => reply.id === replyID)?.reply_block;
+  return (replies ?? []).find((reply) => reply.id === replyID)?.reply_block;
 }
 
 // A reply that names one block of its parent quotes that block, not the parent's first line; an
@@ -986,7 +987,9 @@ test("a reply quotes the passage it names", async ({ browser }) => {
     bob
   );
   const thread = await getMessage(issue.key, message.id);
-  expect(thread.replies.find((reply) => reply.id === messageReply.id)?.reply_block).toMatchObject({
+  expect(
+    (thread.replies ?? []).find((reply) => reply.id === messageReply.id)?.reply_block
+  ).toMatchObject({
     block_id: "b2",
     node: `message/${message.id}#b2`,
     removed: false,
@@ -995,13 +998,13 @@ test("a reply quotes the passage it names", async ({ browser }) => {
   // The blocks the replies name, as the blocks routes list them.
   const messageBlocks = await getMessageBlocks(message.id);
   expect(messageBlocks.indexed).toBe(true);
-  expect(messageBlocks.blocks.map(({ id, text }) => ({ id, text }))).toEqual([
+  expect((messageBlocks.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
     { id: "b1", text: "Gamma first." },
     { id: "b2", text: "Delta second." },
   ]);
   const commentBlocks = await getCommentBlocks(comment.id);
   expect(commentBlocks.indexed).toBe(true);
-  expect(commentBlocks.blocks.map(({ id, text }) => ({ id, text }))).toEqual([
+  expect((commentBlocks.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
     { id: "b1", text: "Alpha first." },
     { id: "b2", text: "Beta second." },
   ]);
@@ -1111,7 +1114,7 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
       cited: { removed: boolean; text: string }
     ) => {
       const read = await getCommentBlocks(comment.id);
-      expect(read.blocks.map(({ id, text }) => ({ id, text }))).toEqual(blocks);
+      expect((read.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual(blocks);
       expect(await commentReplyBlock(comment.id, reply.id)).toMatchObject({
         block_id: "b2",
         node: `comment/${comment.id}#b2`,
@@ -1269,7 +1272,7 @@ test("the editor keeps a cited passage's id when its whole text is typed over", 
     expect((await saved).ok()).toBe(true);
 
     const read = await getCommentBlocks(comment.id);
-    expect(read.blocks.map(({ id, text }) => ({ id, text }))).toEqual([
+    expect((read.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
       { id: "b1", text: "Alpha first." },
       { id: "b2", text: "Other words entirely." },
       { id: "b3", text: "Gamma third." },

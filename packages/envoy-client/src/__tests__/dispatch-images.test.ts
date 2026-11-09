@@ -1,9 +1,9 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { truncateSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
@@ -23,8 +23,7 @@ const config = {
   error: null,
 };
 const session = "01a1058e-f14f-7684-87eb-3dc885955551";
-const directory = temporaryDirectory("dispatch-images-");
-afterAll(removeTemporaryDirectories);
+const directory = temporaryDirectory("dispatch-images");
 
 const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG = [0xff, 0xd8, 0xff, 0xe0];
@@ -295,6 +294,11 @@ describe("sending pictures", () => {
     expect(server.posted.map((posted) => posted.body)).toEqual([`${body}\n\n${line}`]);
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row uploads 25 MiB, the most one Dispatch
+  // upload takes, and bun's unwritten 5,000 ms per-test default is a limit on moving those bytes
+  // rather than on a hang. Measured in a 2-CPU pod: 0.94 s idle; under 16 busy loops (8 x nproc),
+  // 5.05 s at most in a whole-suite run and 5.13 s with this file alone, which passes that
+  // default. It fires only if the upload never answers.
   test("a picture of exactly 25 MiB, the most one Dispatch upload takes, is uploaded and posted", async () => {
     const server = dispatch();
     const largest = file("largest.png", PNG, 25 * MiB);
@@ -309,7 +313,7 @@ describe("sending pictures", () => {
     expect(server.posted.map((body) => body.body)).toEqual([
       "Full size.\n\n![largest.png](dispatch://DSP-41/artifact/largest-png@v1)",
     ]);
-  });
+  }, 30_000);
 
   test("a file name holding brackets or a backslash still reads back as its picture", async () => {
     const server = dispatch();

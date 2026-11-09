@@ -93,6 +93,10 @@
       "types": "./src/stall-limits.ts",
       "bun": "./src/stall-limits.ts"
     },
+    "./stall-watchdog": {
+      "types": "./src/stall-watchdog.ts",
+      "bun": "./src/stall-watchdog.ts"
+    },
     "./workspace-recreated": {
       "types": "./src/workspace-recreated.ts",
       "bun": "./src/workspace-recreated.ts"
@@ -131,6 +135,7 @@
     "@biomejs/biome": "^2.3.14",
     "@legion/contracts": "workspace:*",
     "@legion/envoy-client": "workspace:*",
+    "@legion/test-fixtures": "workspace:*",
     "@oh-my-pi/pi-tui": "^18.1.15",
     "@oh-my-pi/pi-utils": "^18.1.15",
     "@types/bun": "latest",

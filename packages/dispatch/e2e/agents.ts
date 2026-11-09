@@ -1,4 +1,4 @@
-import { DELIVERY_CAPABILITIES } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
@@ -130,6 +130,71 @@ export async function setListsState(state: ListsState): Promise<void> {
   await fixtureRequest("/__fixture/lists", "PUT", { state });
 }
 
+/** One Legion agent registry entry as the daemon writes it to the listener
+ *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
+ *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
+export interface FakeLegionAgent {
+  session_id: string;
+  legion_project: string;
+  issue: string;
+  role: LegionRole;
+  role_token: string;
+  title: string;
+  harness: "omp" | "claude";
+  started_at: string;
+  recorded_at?: string;
+}
+
+/** One registry entry as the daemon writes it: `omp` harness, the role's own token under the
+ *  Legion project, and the title the daemon stamps. A spec that seeds the registry builds its
+ *  rows here so the `role_token` a read is checked against is always the one the daemon would
+ *  have written for that project, issue and role. */
+export function legionAgentEntry({
+  issue,
+  legionProject,
+  role,
+  sessionId,
+  startedAt,
+}: {
+  issue: string;
+  legionProject: string;
+  role: LegionRole;
+  sessionId: string;
+  startedAt: string;
+}): FakeLegionAgent {
+  return {
+    harness: "omp",
+    issue,
+    legion_project: legionProject,
+    role,
+    role_token: roleToken(legionProject, issue, role),
+    session_id: sessionId,
+    started_at: startedAt,
+    title: `Legion ${role} · ${issue}`,
+  };
+}
+
+/** Replaces the fake listener's Legion agent registry, which the three registry reads answer from
+ *  with `live`, `replaced_by` and `replaced_at` derived at the read. A session reseed keeps it. */
+export async function setLegionAgents(rows: FakeLegionAgent[]): Promise<void> {
+  await fixtureRequest("/__fixture/legion-agents", "PUT", rows);
+}
+
+/** How the fake listener answers the three Legion agent registry reads, which is its own
+ *  question rather than part of `ListsState`: the real listener serves every other route while
+ *  the registry's bucket alone is unavailable (`packages/envoy/cmd/listener/legion_agents.go`),
+ *  so a row that refused the list reads instead would take the sessions down with the entries.
+ *  `ok` answers from the seeded entries; `unopened` is the bucket that never opened (503, no
+ *  `Retry-After`) and `unreadable` a read the open bucket did not answer (503, `Retry-After: 1`).
+ *  Dispatch answers either with `legion_registry: "unavailable"`, keeping the issue's people and
+ *  the sessions its events name. A session reseed keeps the state; `resetFakeEnvoy` puts it back
+ *  to `ok`. */
+export type RegistryState = "ok" | "unopened" | "unreadable";
+
+export async function setLegionRegistryState(state: RegistryState): Promise<void> {
+  await fixtureRequest("/__fixture/legion-registry", "PUT", { state });
+}
+
 export async function getSentMessages(): Promise<Record<string, unknown>[]> {
   return (await fixtureRequest("/__fixture/sends", "GET")).json() as Promise<
     Record<string, unknown>[]
@@ -176,8 +241,9 @@ export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastInput>[] {
   page.on("response", async (response) => {
     if (!isBroadcastPost(response.request()) || !response.ok()) return;
     const created = (await response.json()) as BroadcastCreated;
-    const pending = created.recipients.some(
-      ({ message: { deliveries } }) => deliveries.length === 1 && deliveries[0]?.state === "pending"
+    const pending = (created.recipients ?? []).some(
+      ({ message: { deliveries } }) =>
+        deliveries?.length === 1 && deliveries[0]?.state === "pending"
     );
     if (pending) owed.add(response.request().headers()["idempotency-key"]);
   });

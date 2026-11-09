@@ -1,8 +1,9 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
@@ -23,6 +24,7 @@ function blockEdge(
     excerpt: { block_id: blockId, text },
     kind: "mentions",
     node: {
+      ...graphNodeFields(),
       block_id: blockId,
       document,
       id: `${document.slice("dispatch://".length)}#${blockId}`,
@@ -62,6 +64,7 @@ test("an answers edge is labelled Answer", async () => {
         direction: "in",
         kind: "answers",
         node: {
+          ...graphNodeFields(),
           id: "11111111-1111-4111-8111-111111111111",
           issue_key: "OPS-1",
           kind: "comment",
@@ -71,7 +74,13 @@ test("an answers edge is labelled Answer", async () => {
         source_seq: null,
       },
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -89,7 +98,13 @@ test("two blocks of one document version citing the node are two rows under that
       blockEdge(notes, "OPS-1", "ship_it", "ship%5Fit", "Ship it as dispatch://CORE-1 says."),
       blockEdge(notes, "OPS-1", "p2", "p2", "And hold the rest for dispatch://CORE-1."),
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -104,7 +119,8 @@ test("two blocks of one document version citing the node are two rows under that
   const sources = panel.querySelectorAll(":scope > ul > li");
   expect(sources).toHaveLength(1);
   const source = within(sources[0] as HTMLElement);
-  expect(source.getByRole("link", { name: "Artifact · OPS-1" }).getAttribute("href")).toBe(
+  expect(source.getByRole("link", { name: "Artifact · OPS-1" })).toHaveAttribute(
+    "href",
     "/issues/OPS-1/artifacts/notes-md"
   );
   // Each block its own row, with its own excerpt and a link to that block, its id encoded as
@@ -134,6 +150,7 @@ test("a source of one citing node links to where its mention is: a block at the 
         excerpt: { block_id: "hold_it", text: "Hold it." },
         kind: "mentions",
         node: {
+          ...graphNodeFields(),
           id: "CORE/handbook-md",
           kind: "artifact",
           project: "CORE",
@@ -142,7 +159,13 @@ test("a source of one citing node links to where its mention is: a block at the 
         source_seq: 8,
       },
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -151,10 +174,12 @@ test("a source of one citing node links to where its mention is: a block at the 
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
   await within(panel).findByText("Hold it.");
-  expect(within(panel).getByRole("link", { name: "Artifact · OPS-1" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Artifact · OPS-1" })).toHaveAttribute(
+    "href",
     "/issues/OPS-1/spec#b-ship%5Fit"
   );
-  expect(within(panel).getByRole("link", { name: "Artifact · CORE" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Artifact · CORE" })).toHaveAttribute(
+    "href",
     "/projects/CORE/documents/handbook-md#b-hold%5Fit"
   );
   // A one-node source's header is its only link.
@@ -162,10 +187,12 @@ test("a source of one citing node links to where its mention is: a block at the 
 });
 
 test("one source citing two blocks of the shown document is two rows, each linked to its block and keeping its own state across a refetch", async () => {
+  const user = userEvent.setup();
   const spec = "dispatch://CORE-1/spec";
   const citing = (blockId: string) =>
     ({
       block: {
+        ...graphNodeFields(),
         block_id: blockId,
         document: spec,
         id: `CORE-1/spec#${blockId}`,
@@ -180,6 +207,7 @@ test("one source citing two blocks of the shown document is two rows, each linke
       excerpt: { text: `Both of these hold: ${"the plan stands as written. ".repeat(12)}` },
       kind: "mentions",
       node: {
+        ...graphNodeFields(),
         id: "c1",
         issue_key: "OPS-1",
         kind: "comment",
@@ -188,7 +216,13 @@ test("one source citing two blocks of the shown document is two rows, each linke
       },
       source_seq: 9,
     }) satisfies GraphEdge;
-  const node = { id: "CORE-1/spec", issue_key: "CORE-1", kind: "artifact", ref: spec } as const;
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1/spec",
+    issue_key: "CORE-1",
+    kind: "artifact",
+    ref: spec,
+  } as const;
   const consoleError = spyOn(console, "error");
   const { client, getReferences, view } = renderPanel(
     { edges: [citing("a"), citing("b")], node },
@@ -217,7 +251,7 @@ test("one source citing two blocks of the shown document is two rows, each linke
 
   // Expand the excerpt of the row citing b only.
   const showMore = within(panel).getAllByRole("button", { name: "Show more" });
-  fireEvent.click(showMore[1] as HTMLElement);
+  await user.click(showMore[1] as HTMLElement);
   expect(rows()).toEqual([
     ["/issues/CORE-1/spec#b-a", "false"],
     ["/issues/CORE-1/spec#b-b", "true"],
@@ -241,6 +275,7 @@ function itemBlockEdge(kind: BlockItemKind, id: string, blockId: string, text: s
     excerpt: { block_id: blockId, text },
     kind: "mentions",
     node: {
+      ...graphNodeFields(),
       block_id: blockId,
       id: `${kind}/${id}#${blockId}`,
       issue_key: "OPS-1",
@@ -262,7 +297,13 @@ test("blocks of one comment citing the node are rows under that comment, labelle
       itemBlockEdge("comment", comment, "b2", "Beta cites it too."),
       itemBlockEdge("message", message, "b1", "The message cites dispatch://CORE-1."),
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -275,7 +316,8 @@ test("blocks of one comment citing the node are rows under that comment, labelle
   expect(sources).toHaveLength(2);
   // The comment is one source: its header names and opens the comment.
   const commentSource = within(sources[0] as HTMLElement);
-  expect(commentSource.getByRole("link", { name: "Comment · OPS-1" }).getAttribute("href")).toBe(
+  expect(commentSource.getByRole("link", { name: "Comment · OPS-1" })).toHaveAttribute(
+    "href",
     `/issues/OPS-1/comments/${comment}`
   );
   const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
@@ -290,7 +332,8 @@ test("blocks of one comment citing the node are rows under that comment, labelle
   ]);
   // A message's one block is a source of one node: its header opens the message at the block.
   const messageSource = within(sources[1] as HTMLElement);
-  expect(messageSource.getByRole("link", { name: "Message · OPS-1" }).getAttribute("href")).toBe(
+  expect(messageSource.getByRole("link", { name: "Message · OPS-1" })).toHaveAttribute(
+    "href",
     `/issues/OPS-1/messages/${message}#b-b1`
   );
   expect(messageSource.getByText("The message cites dispatch://CORE-1.")).toBeTruthy();
@@ -303,7 +346,13 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
       itemBlockEdge("ask", ask, "b1", "Ship it once dispatch://CORE-1 lands?"),
       itemBlockEdge("ask", ask, "b3", "Hold — dispatch://CORE-1 is not ready."),
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -315,10 +364,11 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
   const sources = panel.querySelectorAll<HTMLElement>(":scope > ul > li");
   expect(sources).toHaveLength(1);
   // The ask is the source: the question and the option are its rows, each linked to its part.
-  expect(within(panel).getByRole("link", { name: "Ask · OPS-1" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Ask · OPS-1" })).toHaveAttribute(
+    "href",
     `/issues/OPS-1/asks/${ask}`
   );
-  expect(within(panel).queryByRole("link", { name: /^Artifact/ })).toBeNull();
+  expect(within(panel).queryByRole("link", { name: /^Artifact/ })).not.toBeInTheDocument();
   const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
   expect(
     [...rows].map((row) => [
@@ -345,6 +395,7 @@ test("a block of a project document's comment links to its comment, with no frag
         excerpt: { block_id: "b2", text: "Beta cites dispatch://CORE-1." },
         kind: "mentions",
         node: {
+          ...graphNodeFields(),
           block_id: "b2",
           id: `comment/${comment}#b2`,
           kind: "block",
@@ -355,7 +406,13 @@ test("a block of a project document's comment links to its comment, with no frag
         source_seq: 10,
       },
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -364,7 +421,8 @@ test("a block of a project document's comment links to its comment, with no frag
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
   await within(panel).findByText("Beta cites dispatch://CORE-1.");
-  expect(within(panel).getByRole("link", { name: "Comment · CORE" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Comment · CORE" })).toHaveAttribute(
+    "href",
     `/projects/CORE/documents/handbook-md?comment=${comment}`
   );
 });
@@ -382,6 +440,7 @@ test("a serves edge reads as served by and a needs edge as needed by", async () 
         { ...blockEdge(plan, "CORE-1", "t1", "t1", "Write the panel."), kind: "needs" },
       ],
       node: {
+        ...graphNodeFields(),
         block_id: "r1",
         document: "dispatch://CORE-1/spec",
         id: "CORE-1/spec#r1",

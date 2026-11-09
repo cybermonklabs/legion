@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    Dispatch can build the embeddings owner-lookup index concurrently without raising the 1 GiB
+    migration-census limit. The block-window migration remains catalog-only, existing valid
+    indexes are preserved, and an INVALID index produces recovery instructions instead of being
+    mistaken for a completed build. Explicitly marked migrations accept one idempotent,
+    non-unique concurrent index statement; UNIQUE builds cannot bypass the size limit.
+time: 2026-11-08T08:44:06Z
+custom:
+    Issue: pr2983

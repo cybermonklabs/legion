@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A failed room's eviction flushes the document and compacts its rows older than the tail under
@@ -645,8 +646,7 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 // waiting, in a statement of its own, and so holds it only for that statement.
 func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Store, returned <-chan error) {
 	t.Helper()
-	deadline := time.Now().Add(recoveryBound)
-	for time.Now().Before(deadline) {
+	if !testwait.Holds(recoveryBound, time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before it took the owner lock", err)
@@ -656,12 +656,10 @@ func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Stor
 		if err != nil {
 			t.Fatalf("probe the owner lock: %v", err)
 		}
-		if len(taken) == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
+		return len(taken) == 0
+	}) {
+		t.Fatal("no transaction took the owner lock")
 	}
-	t.Fatal("no transaction took the owner lock")
 }
 
 // Settlement is a transaction too: it holds the document's advisory lock while it stamps block

@@ -277,12 +277,36 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
-	// The earlier sweep's own start creates the bucket, so its requests are bounded by the hang
-	// guard a clustered create needs rather than by Cluster.JetStream's ten seconds, which one
-	// create can use up on a loaded machine. The command below connects for itself and looks the
+	// The earlier sweep's own start creates the bucket, through a context bounded by the ten
+	// seconds every production caller opens its own with (bus.RequestTimeout,
+	// cmd/listener/brokerauth.go:149). That bound is a per-send hang guard and not a budget for
+	// one request: a create or a lookup the server leaves unanswered is sent again rather than
+	// waited out (bus.EnsureKeyValue), so a clustered create that is merely slow is answered on
+	// the send it is answered on, and what a step that draws no answer at all costs is counted in
+	// that function's doc rather than here. The command below connects for itself and looks the
 	// bucket up on whichever member answers it, so every member answers for the bucket first.
-	if _, err := redeliver.OpenState(conn, testnats.BucketJetStream(t, conn), 1); err != nil {
-		t.Fatalf("create the R1 redelivery bucket: %v", err)
+	//
+	// The create is the step a slow or unsettled cluster fails this row at, and its error alone
+	// says nothing of why: `open envoy_webhook_redelivery KV bucket: context deadline exceeded`
+	// in a CI log names neither how long the call waited nor what the members were doing while
+	// it did. So the failure prints the wall time of this one call, which tells a refusal the
+	// server answered at once from a wait that ran out, and every member's captured server log,
+	// where a meta leader election or a member that never came up is written down. A CI log is
+	// read from its last line backwards, so the short line that says what failed belongs at the
+	// end, and three logs of hundreds of lines each belong in blocks a reader can tell apart
+	// rather than inside that one line. A passing run prints none of it.
+	buckets, err := conn.JetStream(natsgo.MaxWait(bus.RequestTimeout))
+	if err != nil {
+		t.Fatalf("open the JetStream context the earlier sweep's start uses: %v", err)
+	}
+	start := time.Now()
+	_, err = redeliver.OpenState(conn, buckets, 1)
+	elapsed := time.Since(start)
+	if err != nil {
+		for i, server := range cluster.Servers {
+			t.Logf("member %s logged:\n%s", cluster.Name(i), server.Log())
+		}
+		t.Fatalf("create the R1 redelivery bucket: %v (the call took %s)", err, elapsed.Round(time.Millisecond))
 	}
 	cluster.AwaitBucket(t, bus.WebhookRedeliveryBucket)
 	js := cluster.JetStream(t)

@@ -18,6 +18,7 @@ beforeAll(async () => {
 const specQuestionAsk: IssueAskRow = {
   anchor: null,
   answer: null,
+  artifact_id: null,
   author: { id: "planner", kind: "session" },
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "q2",
@@ -38,7 +39,9 @@ const specQuestionAsk: IssueAskRow = {
 const answeredAsk: Ask = {
   anchor: null,
   answer: { at: "2026-09-09T01:00:00Z", selected: [], text: "Done.", user: "alice" },
+  artifact_id: null,
   author: { id: "session-1", kind: "session" },
+  block_id: null,
   created_at: "2026-09-09T00:00:00Z",
   edited_at: null,
   id: "ask-1",
@@ -83,11 +86,21 @@ const read: AskRead = {
   route_status_reason: null,
 };
 
+/** The ask `#q2` names in the reply, read by the reference the reply draws to title it. */
+const designAsk: Ask = {
+  ...answeredAsk,
+  answer: null,
+  id: "ask-design",
+  question: "Which way round?",
+  state: "open",
+};
+
 test("an Inbox reply's `#q2` names the question of the document its comment is anchored to", async () => {
   // The reply is anchored to `design.md`, which is no primary document of the issue: the server
   // scopes the comment's text to that document (`refs.ScopeOf`), so `#q2` is that document's
   // question. A map built from the issue's ask list would have chosen the spec's `q2` instead.
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([specQuestionAsk]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({ ...read, ask: designAsk, replies: [] });
   const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
     document: "artifact-design",
     questions: [
@@ -117,6 +130,7 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
     expect(listIssueAsks).not.toHaveBeenCalled();
   } finally {
     view.unmount();
+    getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
     listIssueAsks.mockRestore();
   }

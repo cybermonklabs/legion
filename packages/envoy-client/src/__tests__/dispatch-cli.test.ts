@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -14,6 +14,8 @@ interface Recorded {
   readonly path: string;
   readonly body: unknown;
 }
+
+const makeDirectory = temporaryDirectories("dispatch-cli");
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -491,7 +493,6 @@ const server = Bun.serve({
 });
 
 afterAll(() => server.stop(true));
-afterAll(removeTemporaryDirectories);
 
 let stateDir = "";
 beforeEach(() => {
@@ -502,7 +503,7 @@ beforeEach(() => {
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
-  stateDir = temporaryDirectory("dispatch-cli-");
+  stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
   forgetKeyedLayerMemory();
@@ -1518,6 +1519,12 @@ describe("the dispatch entry as its own process", () => {
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
   // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
   // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  //
+  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
+  // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
+  // Measured in a 2-CPU pod: 0.37 s idle; under 16 busy loops (8 x nproc), 3.98 s at most over 23
+  // whole-suite runs and 2.98 s with this file alone, past half that default. It fires only if the
+  // child never exits.
   test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
     writeFileSync(join(stateDir, "rows.jsonl"), rows);
 
@@ -1535,8 +1542,13 @@ describe("the dispatch entry as its own process", () => {
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
     expect(stdout).toContain("--path <file>");
     expect(requests).toEqual([]);
-  });
+  }, 30_000);
 
+  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process twice
+  // over, once per command, and bun's unwritten 5,000 ms per-test default is a limit on that work
+  // rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out at
+  // 5,261.76 ms, 1 run of 3 with this file alone, where it costs 0.70 s idle and 6.81 s at most
+  // over 23 whole-suite runs under those loops. It fires only if a child never exits.
   test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
     const refusal = blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
     const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
@@ -1552,7 +1564,7 @@ describe("the dispatch entry as its own process", () => {
       expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
       expect(stdout.trim(), command).toBe(refusal);
     }
-  });
+  }, 30_000);
 });
 
 describe("the dispatch CLI's envoy.json", () => {
@@ -1578,7 +1590,7 @@ describe("the dispatch CLI's envoy.json", () => {
 
   /** A directory whose envoy.json is not JSON, so a command that reads it exits 2. */
   function brokenConfigDirectory(): string {
-    const dir = temporaryDirectory("dispatch-cli-broken-");
+    const dir = makeDirectory("broken");
     writeFileSync(join(dir, "envoy.json"), "{not json");
     return dir;
   }
@@ -1914,7 +1926,7 @@ describe("the dispatch CLI's subscription note", () => {
     ] as const) {
       interests = answer;
       requests.length = 0;
-      stateDir = temporaryDirectory("dispatch-cli-");
+      stateDir = makeDirectory();
       nextProcess("ses-1");
       const { code, stdout } = await run(ask, withListener);
       expect(code).toBe(0);
@@ -2116,7 +2128,7 @@ describe("cliRefusals", () => {
     expect(unreadable.code).toBe(2);
     expect(cliRefusals(unreadable.stdout)).toEqual(refusal(unreadable.stdout, null));
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     writeFileSync(join(stateDir, "sessions"), "a file where the directory goes");
     const unlisted = await run(["projects"], omp);
     expect(unlisted.code).toBe(2);
@@ -2131,14 +2143,14 @@ describe("cliRefusals", () => {
     expect(warned.stderr).toStartWith("dispatch: warning: ");
     expect(cliRefusals(`${warned.stderr}${warned.stdout}`)).toEqual([]);
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     mkdirSync(join(stateDir, "sessions", "ses-1", "results.jsonl"), { recursive: true });
     const unrecorded = await run(["message", "--issue", "DSP-1", "--body", "x"], omp);
     expect(unrecorded.code).toBe(0);
     expect(unrecorded.stdout).toContain("\ndispatch: Dispatch took the call, but this session's");
     expect(cliRefusals(unrecorded.stdout)).toEqual([]);
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     mkdirSync(join(stateDir, ".config", "legion"), { recursive: true });
     writeFileSync(
       join(stateDir, ".config", "legion", "envoy.json"),
@@ -2188,7 +2200,7 @@ describe("cliRefusals", () => {
       ],
     ];
     for (const [name, argv, env, tool] of cases) {
-      stateDir = temporaryDirectory("dispatch-cli-");
+      stateDir = makeDirectory();
       const { code, stdout } = await run(argv, env);
       expect(code, name).toBeGreaterThan(0);
       const logged = ledger("ses-1");
@@ -2209,7 +2221,7 @@ describe("cliRefusals", () => {
     expect(code).toBe(2);
     expect(existsSync(join(stateDir, "sessions"))).toBe(false);
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     await run(["doc-edit", "--help"], omp);
     await run(["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"], omp);
     expect(existsSync(join(stateDir, "sessions", "ses-1", "results.jsonl"))).toBe(false);
