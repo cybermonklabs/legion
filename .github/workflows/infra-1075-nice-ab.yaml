@@ -1,0 +1,749 @@
+name: INFRA-1075 nice A/B
+
+# TEMPORARY, the INFRA-1075 niced pmdoc measurement: envoy-go's unit step twice, in two jobs
+# that differ in exactly one thing - whether internal/dispatch/pmdoc runs inside the foreground
+# package list at the same priority as everything else (the `whole` arm, ci.yaml's step as this
+# head has it, copied byte for byte) or as a go test process of its own at normal priority,
+# started first, beside a package list that no longer holds pmdoc and runs under `nice -n 10`
+# (the `niced` arm). Everything else is the same text in both: the three Postgres services, the
+# read-back steps, the image pull, setup-bun, setup-go, the go-envoy-test cache restore, the
+# clock around the test step, the reporting step and the artifact upload.
+#
+# Why this pair at all. pmdoc is the step's tail: its twelve CPU-budget tests run one after
+# another, because cputest.Process reads RUSAGE_SELF and none of the twelve calls t.Parallel,
+# and they spend 123.6 s of CPU, 105.9 s of it inside their measurement windows (run
+# 42652756229). Inside the lane that chain has taken 223-331 s of wall and the package 267-395 s
+# (runs 42505403839 and 42609296982), while the last non-pmdoc package finishes 29-70 s before
+# pmdoc does - so the step's last minutes are one serial chain against a mostly idle step, and
+# the chain's wall is its CPU multiplied by what it loses to the six other calls on four cores.
+#
+# Why priority rather than more processes. Splitting pmdoc into three processes at equal
+# priority was measured and refused: 391/495/501 s against the whole step's 574/421/579 s over
+# two rounds of three (run 42641097458). That shape added parallelism the runner did not have.
+# This one adds none: it leaves pmdoc one process and one chain, and only moves everything that
+# competes with it down the scheduler's weighting, so the chain's wall falls towards its CPU
+# while the rest of the step fills the cores pmdoc is not using.
+#
+# Why a pair rather than one run against another: the same code has taken 294, 350 and 395 s for
+# that package, so a single run of each arm cannot tell a change that helps from a runner that
+# was quiet. Each round of the matrix runs both arms at the same time on two runners of the same
+# image, and the three rounds give three pairs; the reading is taken on the difference within a
+# pair, on the test step's wall, on pmdoc's span (inside unit.json in `whole`, its own stream in
+# `niced`) and on the last non-pmdoc package to finish, which is what pmdoc's tail is measured
+# against.
+#
+# Delete this file once the measurement is read (dispatch://INFRA-1075).
+on:
+  push:
+    branches: [legion/INFRA-1075]
+  workflow_dispatch:
+
+# Every pair is wanted, so a new push does not cancel a round that is already measuring.
+concurrency:
+  group: infra-1075-nice-ab-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+# Reading the tree, the caches and the registry is all this workflow does; it reports no check.
+permissions:
+  contents: read
+
+env:
+  # ci.yaml's proxy fall-through, for the reason its env block gives.
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  # Arm A: ci.yaml's envoy-go unit step as this head has it, pmdoc leading the package list.
+  whole:
+    runs-on: ubuntu-24.04
+    # ci.yaml's envoy-go is 27; this workflow measures rather than gates, and the niced arm's
+    # pmdoc call carries the package list's own 12m limit, so 30 leaves both arms room to finish
+    # and be reported. Both jobs carry the same number: the arms differ in the test script and
+    # in nothing else.
+    timeout-minutes: 30
+    strategy:
+      # Three pairs, and a failed round must not take the other two with it: each round is a
+      # measurement of its own.
+      fail-fast: false
+      matrix:
+        round: [1, 2, 3]
+    services:
+      # The three services of ci.yaml's envoy-go, at the same image, command and options, for the
+      # reasons that job's own comments give: one for the job's packages, one for the routes
+      # package's instance-wide safe horizon (5433), one for the single live-feed test of
+      # cmd/dispatch (5434).
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+      postgres_routes:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5433:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+      postgres_shutdown:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5434:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # bun, because pmdoc's update tests drive the proof editor's TypeScript through `bun run`
+      # and refuse to pass without it (update_test.go:312-323). This measurement is pmdoc's, so
+      # the two steps are not optional here.
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # The go-envoy-test family envoy-go restores, at the same key and the same paths, so each
+      # arm starts from the build cache the real job starts from.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      - name: Postgres service version
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+      - name: Read the disposable service's settings back
+        run: |
+          id="${{ job.services.postgres.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
+      - name: Read the routes service's settings back
+        run: |
+          id="${{ job.services.postgres_routes.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the routes Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/tests3/seaweedfs.go Image
+      # The step's wall, read by the reporting step below: GitHub publishes no step duration a
+      # later step can read, and the test script itself cannot write one in the `whole` arm,
+      # whose script is ci.yaml's byte for byte.
+      - name: Start the clock on the test step
+        run: echo "AB_TEST_START=$(date +%s)" >> "$GITHUB_ENV"
+      # Arm A's one difference: this run: is ci.yaml's envoy-go unit step at this head, copied
+      # byte for byte, pmdoc and all. Nothing in it is to be edited - the pair measures the real
+      # step against the niced one, so a change here would measure something else.
+      - name: Unit test envoy Go package
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+          # The tests the race detector makes impossible, which the race job of each of these
+          # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
+          # internal/bus counts HoldsSeed's allocations, which the race runtime's own
+          # allocations would be counted into; the API's two guards read the module's source, to
+          # which the detector adds nothing; and the documents package measures the heap a room
+          # keeps, which the detector's shadow memory and instrumentation move. Those are out of
+          # the race build altogether (//go:build !race), and the two render-reuse storms run
+          # fewer seeds and fewer edits under it (raceEnabled), so this is their full-size run.
+          # It was a step of its own before this one until dispatch://INFRA-985's condition for
+          # running it here was measured: the three documents memory bounds read this process's
+          # own heap after two forced collections, and the question was whether a slow mark
+          # under contention lets the heap overshoot before the reading is taken. Run
+          # 42526940781 ran all three sixty times in this shape - beside pmdoc's CPU-budget
+          # tests, under busy loops at twice the runner's cores, against a Postgres service
+          # exactly like this job's - and every run passed, the worst of them using 36.1 per
+          # cent of its bound, where the condition was no failure and no run within 15 per cent.
+          # The other half of that step's old reason went with the API package, whose live-feed
+          # and delivery-hub tests wait for the event log's safe horizon and run in
+          # envoy-go-race-api now. The one -run list is derived in
+          # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
+          # //go:build !race and raceEnabled, so a test added to either and missing here fails
+          # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the
+          # bus under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s,
+          # so 10 minutes each is ample.
+          #
+          # One go test over the three packages rather than one per package: go builds the three
+          # test binaries together and runs each package's tests as soon as its own binary is
+          # linked, so the documents package's tests run beside the API package's build instead
+          # of after it. Three commands in a row cost 96 s for 44 s of tests - 40 s of them the
+          # API package's build, with nothing running beside it (run 42307926510,
+          # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
+          # so running them at the same time changes no number any of them asserts on.
+          go test -json -count=1 -timeout 6m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          impossible=$!
+          # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
+          # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
+          # its own tests'. It is on the call rather than on the step because every other call
+          # here runs against 5432. The package measured 56 s with an instance to itself on a
+          # loaded two-core pod, so 10 minutes is ample.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+          routes=$!
+          # The one untagged test of cmd/dispatch that reads a live event feed, on the third
+          # Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
+          # timed out on events_start while another package's database held a transaction open,
+          # the server naming that holder. It cannot share the routes service in either
+          # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
+          # has been blown by a sibling's clone before - so 5434 is named on this call and
+          # nowhere else. The package list below skips this test by name, which is unique in the
+          # module (dispatch://INFRA-1075).
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+          shutdown=$!
+          # internal/testnats runs its server in the test process, so the package list below
+          # starts no container. The two-image matrix, which proves a rendered authorization on
+          # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
+          # reproduce: it sits behind the natslive tag, and this call is where it runs
+          # (INFRA-250). internal/bus has one test of its own on that matrix: the module links
+          # nats-server v2.15.1 in process, which caps a stream that sets no cap at a default of
+          # its own and takes a change of MaxConsumers on a stream that already exists, so the
+          # raise of an uncapped ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and
+          # the keeper's restore of a cap an operator lowered or unset are proved in process.
+          # What is left for a real image is the pair of 2.10 cases - the stream with no cap the
+          # binary must leave alone, and the refusal of the raise of a lower cap, naming the
+          # field, the cap and the first server taking the change - and the hub's own reconcile
+          # on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each package runs
+          # only the tests its tag adds: `-tags natslive ./pkg` would re-run the package's
+          # untagged tests, which already run elsewhere - internal/testnats in the package list
+          # below, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
+          # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
+          # source at run time, and no test name is spelled here. Each assignment is a line of
+          # its own and runs before the call it feeds: under bash -e it carries the script's exit
+          # status, so an empty or refused list fails the step instead of running -run "", which
+          # matches every test.
+          rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
+          cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
+          { go test -json -count=1 -tags natslive -run "$rig" ./internal/testnats/ &&
+            go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+          natslive=$!
+          # The integration suite, which runs a real NATS server in the test process.
+          go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
+          integration=$!
+          # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
+          # never runs it. Vetting it keeps it compiling as the package changes. It writes no
+          # stream: its log is everything it prints.
+          go vet -tags modellive ./agentloop/ > "$RUNNER_TEMP/go-test-logs/agentloop-vet.log" 2>&1 &
+          vet=$!
+          lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
+          github.com/sjawhar/envoy/cmd/dispatch-seed
+          github.com/sjawhar/envoy/internal/dispatch/outbox
+          github.com/sjawhar/envoy/internal/pgmigrate
+          github.com/sjawhar/envoy/cmd/dispatch
+          github.com/sjawhar/envoy/cmd/broker"
+          s=0
+          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          p=0
+          wait "$impossible" || p=$?
+          r=0
+          wait "$routes" || r=$?
+          d=0
+          wait "$shutdown" || d=$?
+          n=0
+          wait "$natslive" || n=$?
+          i=0
+          wait "$integration" || i=$?
+          v=0
+          wait "$vet" || v=$?
+          # One group per call: the package list first, then the background calls in the order
+          # they were started. Each is its own log, then its stream - the package result lines
+          # when it passed, the whole stream when it failed - and an ::error:: naming it when it
+          # failed. The step's status is the first non-zero of the seven, and the package list,
+          # which prints as it goes, writes no log of its own.
+          status=0
+          replay() {
+            echo "::group::$1 (exit $2)"
+            [ ! -s "$RUNNER_TEMP/go-test-logs/$3.log" ] || cat "$RUNNER_TEMP/go-test-logs/$3.log"
+            if [ "$2" -eq 0 ]; then
+              jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            else
+              jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            fi
+            echo "::endgroup::"
+            [ "$2" -eq 0 ] || echo "::error::$1 failed (exit $2)"
+            [ "$status" -ne 0 ] || status=$2
+          }
+          replay "the package list" "$s" unit
+          replay "the race-impossible run" "$p" race-impossible
+          replay "the routes package" "$r" routes
+          replay "the shutdown feed test" "$d" shutdown
+          replay "the natslive matrix" "$n" natslive
+          replay "the integration suite" "$i" integration
+          echo "::group::the agentloop vet (exit $v)"
+          cat "$RUNNER_TEMP/go-test-logs/agentloop-vet.log"
+          echo "::endgroup::"
+          [ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
+          [ "$status" -ne 0 ] || status=$v
+          exit "$status"
+        working-directory: packages/envoy
+      # The pair is read off this step: the test step's wall, every package's elapsed time
+      # slowest first, each call's own span (pmdoc's span is the package list's in the `whole`
+      # arm and its own stream's in the `niced` one) and the last packages to finish, which is
+      # where pmdoc's tail shows.
+      - name: Report this arm's times
+        if: always()
+        run: |
+          json="$RUNNER_TEMP/go-test-json"
+          printf 'the %s arm, round %s\n' '${{ github.job }}' '${{ matrix.round }}'
+          start="${AB_TEST_START:-}"
+          if [ -n "$start" ]; then
+            printf 'the test step wall: %s s (the clock step wrote the start, this step reads the end, so it holds the runner turnaround between the two steps as well)\n' "$(( $(date +%s) - start ))"
+          else
+            echo "the test step wall: unknown, the clock step did not run"
+          fi
+          # Each call's own span, first event of its stream to last: in the niced arm pmdoc.json
+          # is pmdoc's own call, and in the whole arm pmdoc is inside unit.json, whose span is
+          # the package list's.
+          echo "::group::each call's own span"
+          for stream in "$json"/*.json; do
+            call=$(basename "$stream" .json)
+            stamps=$(jq -r 'select(.Time != null) | .Time' "$stream" | sort)
+            if [ -z "$stamps" ]; then
+              printf '%s: no events\n' "$call"
+              continue
+            fi
+            first=$(printf '%s\n' "$stamps" | sed -n '1p')
+            last=$(printf '%s\n' "$stamps" | sed -n '$p')
+            printf '%s: %s s (%s to %s)\n' "$call" "$(( $(date -d "$last" +%s) - $(date -d "$first" +%s) ))" "$first" "$last"
+          done
+          echo "::endgroup::"
+          # One row per package result: elapsed, package, action, the call it ran in, its finish
+          # instant as epoch seconds (the sort key of the two orders below) and that instant as
+          # go test wrote it. The fraction is cut before fromdateiso8601, which takes none.
+          rows="$RUNNER_TEMP/package-times.tsv"
+          : > "$rows"
+          for stream in "$json"/*.json; do
+            jq -r --arg call "$(basename "$stream" .json)" 'select(.Test == null and .Package != null and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | [(.Elapsed // 0), .Package, .Action, $call, (.Time | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601), .Time] | @tsv' "$stream" >> "$rows"
+          done
+          echo "::group::every package, slowest first"
+          sort -t "$(printf '\t')" -k1,1gr "$rows"
+          echo "::endgroup::"
+          echo "the last three packages to finish:"
+          sort -t "$(printf '\t')" -k5,5n "$rows" | tail -3
+          echo "the last package other than pmdoc itself to finish:"
+          awk -F '\t' '$2 != "github.com/sjawhar/envoy/internal/dispatch/pmdoc"' "$rows" | sort -t "$(printf '\t')" -k5,5n | tail -1
+      - name: Upload the go test -json streams
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nice-ab-${{ github.job }}-round-${{ matrix.round }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
+
+  # Arm B: the same job, with pmdoc out of the foreground package list and run as a go test
+  # process of its own at normal priority, started first, while the package list that is left
+  # runs under `nice -n 10`. Every line but the test step's run: is arm A's.
+  niced:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        round: [1, 2, 3]
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+      postgres_routes:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5433:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+      postgres_shutdown:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5434:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      - name: Postgres service version
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+      - name: Read the disposable service's settings back
+        run: |
+          id="${{ job.services.postgres.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
+      - name: Read the routes service's settings back
+        run: |
+          id="${{ job.services.postgres_routes.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the routes Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/tests3/seaweedfs.go Image
+      - name: Start the clock on the test step
+        run: echo "AB_TEST_START=$(date +%s)" >> "$GITHUB_ENV"
+      # Arm B's one difference, which is arm A's script with two edits and no others: pmdoc is
+      # taken out of the foreground package list - out of `lead` and into the grep -Ev, whose `$`
+      # anchor excludes the package alone and keeps its two Go subpackages, pmdoctest and
+      # heavybodies, in the list - and run as a go test call of its own, at this shell's own
+      # priority, started before every other call; and the package list that is left is run
+      # under `nice -n 10`. Checked against this head with `go list` through both greps: the
+      # whole arm's list is 142 packages, this arm's is 141, the one difference is
+      # internal/dispatch/pmdoc, and pmdoc/heavybodies and pmdoc/pmdoctest stay in both.
+      #
+      # Why priority rather than more processes. pmdoc's twelve CPU-budget tests are a serial
+      # chain - cputest.Process reads RUSAGE_SELF, this process's whole CPU, so a measured test
+      # must run while nothing else in its process computes, none of the twelve calls t.Parallel,
+      # and go runs a package's parallel tests only once the ones that do not have finished. The
+      # chain spends 123.6 s of CPU (run 42652756229) and 223-331 s of wall inside the lane, so
+      # most of its wall is what it loses to the other six calls on four cores. Cutting it into
+      # three processes at equal priority was measured and refused (391/495/501 s against
+      # 574/421/579 s, run 42641097458): it asked the runner for parallelism it does not have.
+      # This arm asks for none. It keeps pmdoc one process running exactly the tests it runs
+      # today, in the order it runs them, and only moves the step's other foreground work below
+      # it in the scheduler's weighting.
+      - name: Unit test envoy Go package
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+          # pmdoc, alone, at this shell's own priority (nice 0), started before every other call
+          # so that the package list below never holds a core pmdoc wants. The package is run
+          # whole: no -run, no -skip, no partition, so this call does exactly what the `whole`
+          # arm's package list does for this one package, and the two arms' pmdoc spans are
+          # comparable.
+          #
+          # Its -timeout is the package list's own 12m, which is the deadline the `whole` arm
+          # gives pmdoc, and it is that for a measured reason rather than a sized one: every
+          # measured call in this package runs under perCallDeadline (linear_test.go:1020),
+          # which is what the test binary's own deadline LEAVES after perCallReportMargin, 60 s.
+          # The bound therefore shrinks as the test proceeds, and a -timeout sized tightly to
+          # the chain starves its last measurement - run 42637377762's split arm went red
+          # exactly so, on a 5m call ("did not return within 2.121862116s", job 129229030809)
+          # and on a 6m one (job 129229030693). Giving this call the whole arm's own 12m keeps
+          # the pair a measurement of the priority and of nothing else. This is the pair's
+          # limit, not a limit proposed for ci.yaml: ci.yaml's own unit step is unchanged, and
+          # what a niced step's limits should be is a question for the reading, not for this
+          # file.
+          #
+          # -parallel 12, because that is what the `whole` arm's package list gives pmdoc, and
+          # the package's unmeasured tests use it. No -p: -p caps concurrent package actions and
+          # this call names one package. No -skip either: the whole arm's -skip names
+          # TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument, a cmd/dispatch test
+          # whose name is unique in the module, so it matches nothing here.
+          go test -json -count=1 -parallel 12 -timeout 12m ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc.log" &
+          pmdoc=$!
+          # The tests the race detector makes impossible, which the race job of each of these
+          # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
+          # internal/bus counts HoldsSeed's allocations, which the race runtime's own
+          # allocations would be counted into; the API's two guards read the module's source, to
+          # which the detector adds nothing; and the documents package measures the heap a room
+          # keeps, which the detector's shadow memory and instrumentation move. Those are out of
+          # the race build altogether (//go:build !race), and the two render-reuse storms run
+          # fewer seeds and fewer edits under it (raceEnabled), so this is their full-size run.
+          # It was a step of its own before this one until dispatch://INFRA-985's condition for
+          # running it here was measured: the three documents memory bounds read this process's
+          # own heap after two forced collections, and the question was whether a slow mark
+          # under contention lets the heap overshoot before the reading is taken. Run
+          # 42526940781 ran all three sixty times in this shape - beside pmdoc's CPU-budget
+          # tests, under busy loops at twice the runner's cores, against a Postgres service
+          # exactly like this job's - and every run passed, the worst of them using 36.1 per
+          # cent of its bound, where the condition was no failure and no run within 15 per cent.
+          # The other half of that step's old reason went with the API package, whose live-feed
+          # and delivery-hub tests wait for the event log's safe horizon and run in
+          # envoy-go-race-api now. The one -run list is derived in
+          # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
+          # //go:build !race and raceEnabled, so a test added to either and missing here fails
+          # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the
+          # bus under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s,
+          # so 10 minutes each is ample.
+          #
+          # One go test over the three packages rather than one per package: go builds the three
+          # test binaries together and runs each package's tests as soon as its own binary is
+          # linked, so the documents package's tests run beside the API package's build instead
+          # of after it. Three commands in a row cost 96 s for 44 s of tests - 40 s of them the
+          # API package's build, with nothing running beside it (run 42307926510,
+          # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
+          # so running them at the same time changes no number any of them asserts on.
+          go test -json -count=1 -timeout 6m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          impossible=$!
+          # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
+          # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
+          # its own tests'. It is on the call rather than on the step because every other call
+          # here runs against 5432. The package measured 56 s with an instance to itself on a
+          # loaded two-core pod, so 10 minutes is ample.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+          routes=$!
+          # The one untagged test of cmd/dispatch that reads a live event feed, on the third
+          # Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
+          # timed out on events_start while another package's database held a transaction open,
+          # the server naming that holder. It cannot share the routes service in either
+          # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
+          # has been blown by a sibling's clone before - so 5434 is named on this call and
+          # nowhere else. The package list below skips this test by name, which is unique in the
+          # module (dispatch://INFRA-1075).
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+          shutdown=$!
+          # internal/testnats runs its server in the test process, so the package list below
+          # starts no container. The two-image matrix, which proves a rendered authorization on
+          # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
+          # reproduce: it sits behind the natslive tag, and this call is where it runs
+          # (INFRA-250). internal/bus has one test of its own on that matrix: the module links
+          # nats-server v2.15.1 in process, which caps a stream that sets no cap at a default of
+          # its own and takes a change of MaxConsumers on a stream that already exists, so the
+          # raise of an uncapped ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and
+          # the keeper's restore of a cap an operator lowered or unset are proved in process.
+          # What is left for a real image is the pair of 2.10 cases - the stream with no cap the
+          # binary must leave alone, and the refusal of the raise of a lower cap, naming the
+          # field, the cap and the first server taking the change - and the hub's own reconcile
+          # on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each package runs
+          # only the tests its tag adds: `-tags natslive ./pkg` would re-run the package's
+          # untagged tests, which already run elsewhere - internal/testnats in the package list
+          # below, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
+          # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
+          # source at run time, and no test name is spelled here. Each assignment is a line of
+          # its own and runs before the call it feeds: under bash -e it carries the script's exit
+          # status, so an empty or refused list fails the step instead of running -run "", which
+          # matches every test.
+          rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
+          cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
+          { go test -json -count=1 -tags natslive -run "$rig" ./internal/testnats/ &&
+            go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+          natslive=$!
+          # The integration suite, which runs a real NATS server in the test process.
+          go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
+          integration=$!
+          # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
+          # never runs it. Vetting it keeps it compiling as the package changes. It writes no
+          # stream: its log is everything it prints.
+          go vet -tags modellive ./agentloop/ > "$RUNNER_TEMP/go-test-logs/agentloop-vet.log" 2>&1 &
+          vet=$!
+          lead="github.com/sjawhar/envoy/cmd/dispatch-seed
+          github.com/sjawhar/envoy/internal/dispatch/outbox
+          github.com/sjawhar/envoy/internal/pgmigrate
+          github.com/sjawhar/envoy/cmd/dispatch
+          github.com/sjawhar/envoy/cmd/broker"
+          s=0
+          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/dispatch/pmdoc$' | grep -vxF "$lead")
+          # `nice -n 10` on the package list, and on nothing else in this step. Two questions it
+          # raises, answered here because the reading depends on both:
+          #
+          # Does the niceness reach what `go test` spawns? Yes. Niceness is a property of the
+          # process, inherited across fork and kept across exec, and nothing in the Go toolchain
+          # calls setpriority - so `nice` here sets the `go` driver to 10 and every child it
+          # starts, each package's compile and link and each package's test binary, begins at 10
+          # too. It is `nice` and not `renice` for that reason: the children do not exist yet
+          # when the step starts, and they inherit rather than need finding. Read on this pod
+          # (two cores, not CI's four) rather than assumed: `nice -n 10 go test ... pmdoc` and a
+          # plain `go test ... pmdoc` side by side gave `ps -o pid,ppid,ni,comm` driver 10 with
+          # child pmdoc.test 10, and driver 0 with child pmdoc.test 0. What it does NOT reach is
+          # the three Postgres services: they are containers the runner starts, not children of
+          # this step, so the niced tests' queries are still served at the server's own priority
+          # and a niced test waiting on the database waits no longer for the server's sake.
+          #
+          # Does -p 8 still matter once the list is niced? Yes, and it is kept at 8 for that
+          # reason. -p caps how many package actions - builds, and test binaries - the driver
+          # runs at once, so it caps how many runnable niced threads stand against pmdoc. Linux
+          # weighs a nice 10 thread at 110 against a nice 0 thread's 1024, per run queue, so a
+          # pmdoc thread sharing a core with k niced threads keeps 1024/(1024 + 110k) of it:
+          # about 90 per cent against one, about 65 against five. Niceness decides the ratio;
+          # -p decides the k that the ratio is applied to, and on a four-core runner -p 8 with
+          # -parallel 12 is already wide enough to keep every core busy whenever pmdoc is not.
+          # Lowering it would raise pmdoc's share a little and cost the other 141 packages
+          # throughput, which is a second change and would make this pair measure two things, so
+          # the list keeps the -p 8 and -parallel 12 the `whole` arm gives it.
+          printf '%s\n%s\n' "$lead" "$rest" | xargs nice -n 10 go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          m=0
+          wait "$pmdoc" || m=$?
+          p=0
+          wait "$impossible" || p=$?
+          r=0
+          wait "$routes" || r=$?
+          d=0
+          wait "$shutdown" || d=$?
+          n=0
+          wait "$natslive" || n=$?
+          i=0
+          wait "$integration" || i=$?
+          v=0
+          wait "$vet" || v=$?
+          # One group per call: the package list first, then the background calls in the order
+          # they were started. Each is its own log, then its stream - the package result lines
+          # when it passed, the whole stream when it failed - and an ::error:: naming it when it
+          # failed. The step's status is the first non-zero of the eight, and the package list,
+          # which prints as it goes, writes no log of its own.
+          status=0
+          replay() {
+            echo "::group::$1 (exit $2)"
+            [ ! -s "$RUNNER_TEMP/go-test-logs/$3.log" ] || cat "$RUNNER_TEMP/go-test-logs/$3.log"
+            if [ "$2" -eq 0 ]; then
+              jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            else
+              jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            fi
+            echo "::endgroup::"
+            [ "$2" -eq 0 ] || echo "::error::$1 failed (exit $2)"
+            [ "$status" -ne 0 ] || status=$2
+          }
+          replay "the package list, niced" "$s" unit
+          replay "pmdoc, at normal priority" "$m" pmdoc
+          replay "the race-impossible run" "$p" race-impossible
+          replay "the routes package" "$r" routes
+          replay "the shutdown feed test" "$d" shutdown
+          replay "the natslive matrix" "$n" natslive
+          replay "the integration suite" "$i" integration
+          echo "::group::the agentloop vet (exit $v)"
+          cat "$RUNNER_TEMP/go-test-logs/agentloop-vet.log"
+          echo "::endgroup::"
+          [ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
+          [ "$status" -ne 0 ] || status=$v
+          exit "$status"
+        working-directory: packages/envoy
+      - name: Report this arm's times
+        if: always()
+        run: |
+          json="$RUNNER_TEMP/go-test-json"
+          printf 'the %s arm, round %s\n' '${{ github.job }}' '${{ matrix.round }}'
+          start="${AB_TEST_START:-}"
+          if [ -n "$start" ]; then
+            printf 'the test step wall: %s s (the clock step wrote the start, this step reads the end, so it holds the runner turnaround between the two steps as well)\n' "$(( $(date +%s) - start ))"
+          else
+            echo "the test step wall: unknown, the clock step did not run"
+          fi
+          # Each call's own span, first event of its stream to last: in the niced arm pmdoc.json
+          # is pmdoc's own call, and in the whole arm pmdoc is inside unit.json, whose span is
+          # the package list's.
+          echo "::group::each call's own span"
+          for stream in "$json"/*.json; do
+            call=$(basename "$stream" .json)
+            stamps=$(jq -r 'select(.Time != null) | .Time' "$stream" | sort)
+            if [ -z "$stamps" ]; then
+              printf '%s: no events\n' "$call"
+              continue
+            fi
+            first=$(printf '%s\n' "$stamps" | sed -n '1p')
+            last=$(printf '%s\n' "$stamps" | sed -n '$p')
+            printf '%s: %s s (%s to %s)\n' "$call" "$(( $(date -d "$last" +%s) - $(date -d "$first" +%s) ))" "$first" "$last"
+          done
+          echo "::endgroup::"
+          # One row per package result: elapsed, package, action, the call it ran in, its finish
+          # instant as epoch seconds (the sort key of the two orders below) and that instant as
+          # go test wrote it. The fraction is cut before fromdateiso8601, which takes none.
+          rows="$RUNNER_TEMP/package-times.tsv"
+          : > "$rows"
+          for stream in "$json"/*.json; do
+            jq -r --arg call "$(basename "$stream" .json)" 'select(.Test == null and .Package != null and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | [(.Elapsed // 0), .Package, .Action, $call, (.Time | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601), .Time] | @tsv' "$stream" >> "$rows"
+          done
+          echo "::group::every package, slowest first"
+          sort -t "$(printf '\t')" -k1,1gr "$rows"
+          echo "::endgroup::"
+          echo "the last three packages to finish:"
+          sort -t "$(printf '\t')" -k5,5n "$rows" | tail -3
+          echo "the last package other than pmdoc itself to finish:"
+          awk -F '\t' '$2 != "github.com/sjawhar/envoy/internal/dispatch/pmdoc"' "$rows" | sort -t "$(printf '\t')" -k5,5n | tail -1
+      - name: Upload the go test -json streams
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nice-ab-${{ github.job }}-round-${{ matrix.round }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
