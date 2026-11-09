@@ -55,4 +55,6 @@ body: |-
   admitted read runs every statement on one pinned connection for its whole length, where an issue
   read took twelve connections one after another; a read of weight two, whose two reads run side
   by side, and the four file version downloads, which hold no connection while their bytes move,
-  pin none.
+  pin none. The OpenAPI document `envoy-dispatch openapi` writes carries these answers, so a
+  client generated from it holds them: the `429` on every admitted route, the `503` on every
+  route, each with its `Retry-After`, and the `500` on every route that writes.

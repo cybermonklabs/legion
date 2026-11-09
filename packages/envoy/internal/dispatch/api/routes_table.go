@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -473,25 +475,31 @@ var routeScopes = map[string]routeScopeSet{
 	"DELETE /api/v1/me/agent-tokens/{id}":             {model.ScopePerson, model.ScopeApprove},
 }
 
-// scopedRoutesNotMounted names every route routeScopes gives scopes that the table does not
-// hold. A scope named on no row is a scope nothing enforces, which is what register refuses to
-// mount, as it refuses a write class it cannot decide (undecidableWrites). The walk is over the
-// table with its test hooks in, since a hook's row is a row of the table wherever a deployment
-// leaves it out, and its scope says what it needs when the deployment serves it.
-func scopedRoutesNotMounted() []string {
+// routesNotMounted names every route of names that is no row of the table, sorted. The walk is
+// over the table with its test hooks in, since a hook's row is a row of the table wherever a
+// deployment leaves it out.
+func routesNotMounted(names iter.Seq[string]) []string {
 	table := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	mounted := make(map[string]bool, len(table))
 	for _, route := range table {
 		mounted[route.Method+" "+route.Pattern] = true
 	}
 	var unmounted []string
-	for name := range routeScopes {
+	for name := range names {
 		if !mounted[name] {
 			unmounted = append(unmounted, name)
 		}
 	}
 	sort.Strings(unmounted)
 	return unmounted
+}
+
+// scopedRoutesNotMounted names every route routeScopes gives scopes that the table does not
+// hold. A scope named on no row is a scope nothing enforces, which is what register refuses to
+// mount, as it refuses a write class it cannot decide (undecidableWrites). Its scope says what
+// a row needs when the deployment serves it, test hooks included.
+func scopedRoutesNotMounted() []string {
+	return routesNotMounted(maps.Keys(routeScopes))
 }
 
 // routeRow is one row of the route table: what a route is, the five columns every route has,
@@ -507,7 +515,9 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: its row, how register serves it (serveRoute), and the write
-// class and OAuth scopes mountedRoutes stamps onto it from writeClasses and routeScopes.
+// class and OAuth scopes mountedRoutes stamps onto it from writeClasses and routeScopes. What
+// the route takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row
+// carries it.
 type apiRoute struct {
 	routeRow
 	// TestHook marks a route TestHooksEnabled mounts: a test's own route is neither admitted nor
@@ -924,9 +934,16 @@ func routeIndexEntries(routes []apiRoute) []routeIndexEntry {
 	return entries
 }
 
-// routeIndexBody is the body GET /api/v1 answers.
-func routeIndexBody(entries []routeIndexEntry) map[string]any {
-	return map[string]any{"routes": entries, "docs": routeIndexDocs}
+// routeIndex is the body GET /api/v1 answers.
+type routeIndex struct {
+	Docs   string            `json:"docs"`
+	Routes []routeIndexEntry `json:"routes"`
+}
+
+// routeIndexBody wraps the rendered rows in that body, which is the one place the agent-facing
+// guide is named on an answer.
+func routeIndexBody(entries []routeIndexEntry) routeIndex {
+	return routeIndex{Docs: routeIndexDocs, Routes: entries}
 }
 
 func (s *server) getRouteIndex(w http.ResponseWriter, _ *http.Request) {

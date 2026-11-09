@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// slowWriteInput is the body of POST /api/v1/writes/_test/slow.
+type slowWriteInput struct {
+	Method  string `json:"method" required:"true"`
+	Path    string `json:"path" required:"true"`
+	DelayMS int64  `json:"delay_ms"`
+}
+
 // slowWriteRecord is what the slow-write hook did on one route, held beside the route's armed
 // delay so a test can ask afterwards whether the hook really ran. A disarm leaves the record
 // standing - only the delay goes - because what a test wants to know once it has disarmed a route
@@ -33,11 +40,7 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Method  string `json:"method"`
-		Path    string `json:"path"`
-		DelayMS int64  `json:"delay_ms"`
-	}
+	var input slowWriteInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -56,7 +59,7 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.slowWrites.Store(route, time.Duration(input.DelayMS)*time.Millisecond)
 	}
-	WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	WriteJSON(w, http.StatusOK, testHookOK{OK: true})
 }
 
 // slowedByTestHook is handler behind the slow-write hook's delay for the request's method and path,
