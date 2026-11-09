@@ -44,6 +44,16 @@ const home = join(dir, "home");
 // EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
+// A directory holding one stand-in `awk`, which the row that reads the relay's own silence puts
+// in front of fakeBin on PATH and no other row sees: it writes a warning when it is given `-W`,
+// as gawk and busybox awk do, and is otherwise the host's own awk. It is what makes that row
+// able to fail here, where awk is a mawk that takes `-W interactive` silently: the lib's probe
+// must refuse a flag whose run says anything at all, and a probe that accepted this one would
+// put a warning in the channel the row reads.
+const warningAwk = join(dir, "warning-awk");
+// Resolved here, before that directory is first on PATH, so the stand-in runs the real awk
+// rather than itself.
+const hostAwk = Bun.which("awk") ?? "/usr/bin/awk";
 // The review App's own private key, the one the stand-in GitHub verifies an App JWT against, read
 // in the hook below rather than here: appPrivateKey generates that key at its first read, and a
 // run that selects no row of this file must generate none. The rig drives the key as a deployment
@@ -100,6 +110,15 @@ if [ -n "\${OVERSIZED_MINT:-}" ]; then exec yes x; fi
 value=$(cat "\${STORE:-${store}}/$name") || exit 9
 export "$name=$value"
 exec "$@"
+`,
+    { mode: 0o755 }
+  );
+  mkdirSync(warningAwk);
+  writeFileSync(
+    join(warningAwk, "awk"),
+    `#!/bin/sh
+case " $* " in *" -W "*) echo "awk: warning: -W is not a supported option" >&2 ;; esac
+exec ${hostAwk} "$@"
 `,
     { mode: 0o755 }
   );
@@ -1334,9 +1353,10 @@ echo done`
   test("the key command's first line reaches the run's stderr while that command is still running", async () => {
     // What the relay is for: an operator whose key command prints progress — a line before a slow
     // read of their own store, or a prompt — reads it while the command runs, not after it ends.
-    // Every stage between that command and the run's stderr can hold a line it has read (the
-    // lib's probes: `head -c` through stdio, and mawk's block reads), and each of them held it
-    // until the command exited: measured through this path, 2104 ms against the 2 s sleep below.
+    // Every stage between that command and the run's stderr can hold a line it has read, and
+    // each of them held it until the command exited before the lib's two probes released them
+    // (github-apps.sh, above app_token_flag_taken, says which stage holds a line and which flag
+    // releases it).
     // So the row reads the run's stderr as it arrives rather than after the exit, and asserts the
     // gap between the two: the line is due about 100 ms in, and the command exits about 2100 ms
     // in, so a line that arrives 1.5 s before the exit cannot be a line that arrived with it,
@@ -1379,15 +1399,20 @@ echo written`
 
   test("the relay writes nothing of its own: the run's stderr holds the command's line, masked, and nothing else", async () => {
     // The failure the lib's two probes exist to prevent. Each probe takes a flag of one
-    // implementation — `-W interactive` is mawk's, `stdbuf -o0` wants a libc it can preload into
-    // — and an awk or a stdbuf that answers such a flag with a warning would write that warning
-    // into this very channel, the one an operator reads their own command's words out of. So the
-    // run's stderr must hold what the command wrote, masked, and nothing besides: no warning, no
-    // usage line, nothing of the relay's own.
+    // implementation (github-apps.sh, above app_token_flag_taken), and an awk or a stdbuf that
+    // answers such a flag with a warning would write that warning into this very channel, the
+    // one an operator reads their own command's words out of. So the run's stderr must hold what
+    // the command wrote, masked, and nothing besides: no warning, no usage line, nothing of the
+    // relay's own. The stand-in awk goes first on PATH to make that failure reachable here: this
+    // pod's awk is a mawk that takes `-W interactive` without a word, so a probe that wrongly
+    // accepted a warning would pass this row against the real awk. The stand-in warns on `-W`
+    // and is the real awk otherwise, so the probe must refuse its flag — and if it does not, the
+    // warning lands in the stderr this row reads.
     const body = reviewKey.trimEnd().split("\n")[1];
     const { code, stdout, stderr, work } = await githubApps(
       {
         ...appInputs,
+        PATH: `${warningAwk}:${fakeBin}:${process.env.PATH}`,
         LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf 'reading %s\\n' '${body}' >&2; cat -- ${reviewKeyFile}`,
       },
       `require_app_inputs implement review
@@ -1400,6 +1425,49 @@ echo written`
     expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
     holdsNoKey(stdout + stderr, keyIDs);
     holdsNoKeyLine(stdout + stderr);
+  });
+
+  test("a key command whose stderr holds NUL bytes is still bounded at a megabyte and refused", async () => {
+    // The bound counts the lines awk reads, and mawk under `-W interactive` — the flag the lib's
+    // probe takes here — drops everything from a NUL byte to the end of its line and joins the
+    // rest to the next line. Without the NUL replacement the lib puts before the bound, these
+    // 1024 lines of 1024 bytes count as one short line: the command writes a megabyte of stderr,
+    // the overflow refusal never fires, and the key is written from a command that overran. With
+    // it the bound sees the bytes that arrived, refuses with 123, and the token the command
+    // wrote after them — the line that crosses the limit, which `head -c` had already cut — is
+    // dropped rather than relayed in pieces.
+    const nulLines = `awk 'BEGIN { s = sprintf("%1022s", ""); gsub(/ /, "a", s); for (i = 0; i < 1024; i++) printf "@%s\\n", s }' | tr '@' '\\000' >&2`;
+    const { code, stdout, stderr, work } = await githubApps(
+      {
+        ...appInputs,
+        NUL_STDERR: `${nulLines}; printf 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\\n' >&2; cat -- ${reviewKeyFile}`,
+      },
+      `review_app_id=202
+review_app_key_command=$NUL_STDERR
+set +e
+app_token_mint_command "$work/direct-key.pem" "$NUL_STDERR" key
+printf 'status %s\n' "$?"
+set -e
+app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+echo done`
+    );
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toContain("status 123");
+    expect(stdout).toContain(
+      "refused: the review App (App 202, LEGION_E2E_REVIEW_APP_KEY_COMMAND) gave no private key for"
+    );
+    expect(stdout).toContain("the key command wrote more than 1048576 bytes to stderr");
+    expect(stdout).toContain("done");
+    // Neither call left a key behind, and no NUL byte reached the run's stderr.
+    expect(existsSync(join(work, "direct-key.pem"))).toBe(false);
+    expect(existsSync(join(work, "app-key", "review", "key.pem"))).toBe(false);
+    expect(stderr).not.toContain("\0");
+    // The lines that fitted were relayed, masked, and the token after them was not relayed at
+    // all: it is in the line the bound drops.
+    expect(stderr.split("\n")).toContain("?[redacted key]");
+    expect(stdout + stderr).not.toContain("ghp_ABCDEFGHIJKLMNO");
+    holdsNoToken(stdout + stderr);
+    holdsNoKey(stdout + stderr, keyIDs);
   });
 
   test("a request waiting on a person reaches the operator with its approval link whole, and the key command's relay still masks a key", async () => {
