@@ -4408,17 +4408,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The step's -timeout 29m must fire before the runner cancels the job, so a hung test prints
+    # The step's -timeout 34m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. Both numbers come from this job's own green runs, the slowest of
-    # them 128148376484: 1022 s in the package, against 950 s in 127770782204 and 927 s in
-    # 127053239518, and 55 s of checkout, setup and compile before any of them. The package has
-    # grown twice under this pull request, first when main took in #2414's tests (953 services
-    # built to 1068) and again on the merge of #2870, which moved work into this lane. The step's
-    # deadline is the smallest whole minute at which the slowest package time is at most 60 % of
-    # it, and this limit is six minutes above that. Measure again before changing either, and
-    # from the slowest run rather than the newest: a package that has grown past 60 % of its
-    # deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 35
+    # them 128761197501: 1136.829 s in the package, against 1016.966 s in 128809181011,
+    # 1012.796 s in 128790317116 and 864.037 s in 128751128912, and about 71 s of checkout,
+    # setup and compile before any of them. The package has grown three times under this pull
+    # request, first when main took in #2414's tests (953 services built to 1068), again on the
+    # merge of #2870, which moved work into this lane, and now with #2960's wedged-commit row,
+    # measured at 56 s in series in an issue pod (the row's own 47.69 s, and 8.29 s more in the
+    # residency case, which gives each of its trials a connection of its own). The step's
+    # deadline is the smallest whole minute at which the slowest package time, that growth
+    # included, is at most 60 % of it, and this limit is six minutes above that. Measure again
+    # before changing either, and from the slowest run rather than the newest: a package that
+    # has grown past 60 % of its deadline is a deadline to raise, not a flake to re-run.
+    timeout-minutes: 40
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4465,7 +4468,7 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
