@@ -482,15 +482,61 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 	}
 }
 
-// quietStop requires the stop to have logged nothing at WARN or ERROR: a rollout's stop cuts
-// decisions short by design, and the next boot takes their claims up.
+// quietStop requires the stop to have logged nothing an operator must act on, which is every WARN
+// and ERROR but one: the claim write a cancelled decision left owed.
+//
+// A rollout's stop cuts decisions short by design — halt closes every machine's inbox, narrows the
+// stream and cancels, waiting for nothing, and its own `legion daemon stopping` line names the
+// decisions it is cancelling (`deciding`, daemon.go). A decision caught mid-write fails with
+// context.Canceled, which writeOwed owes because it is no *pgconn.PgError, so the stop logs
+// owedWriteFailedLine with `"owed":true` and the claim's next decision writes the row again. That
+// line means the design is working; its sibling with `"owed":false` — a repair that failed again —
+// is the one an operator must come and look at, and this still refuses it, as it refuses every
+// other WARN and ERROR.
+//
+// The permission is not bounded by that list, and the bound was tried before it was dropped: the
+// run this exception exists for owed the write of a claim the stopping line did not name, because
+// the list is read as the halt begins and the race is between that read and the cancel a few
+// statements later. A bound on the named claims would refuse the very line it was written to
+// permit. The line's own `"owed":true` is the bound instead, and the list is reported beside it so
+// a reader sees what the halt caught.
+//
+// One shuffled run in 31 at 6ad469101b6f hit it, in
+// TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon, which drives a shim's frame
+// into the drain on purpose; the serial suite never lost the race and so never read the line.
 func quietStop(t *testing.T, stopLog string) {
 	t.Helper()
 	for _, line := range strings.Split(stopLog, "\n") {
-		if strings.Contains(line, `"level":"ERROR"`) || strings.Contains(line, `"level":"WARN"`) {
-			t.Errorf("the stop logged: %s", line)
+		if !strings.Contains(line, `"level":"ERROR"`) && !strings.Contains(line, `"level":"WARN"`) {
+			continue
 		}
+		if strings.Contains(line, loggedMessage(owedWriteFailedLine)) && strings.Contains(line, `"owed":true`) {
+			t.Logf("the stop owed a claim write, which the next daemon repairs (the halt was deciding %v): %s",
+				decidingAtHalt(t, stopLog), line)
+			continue
+		}
+		t.Errorf("the stop logged: %s", line)
 	}
+}
+
+// decidingAtHalt is the decisions the halt reported cancelling, read from the stop's own
+// `legion daemon stopping` line: each claim with the decision it was in. It is empty where the
+// window holds no such line.
+func decidingAtHalt(t *testing.T, stopLog string) []string {
+	t.Helper()
+	for _, line := range strings.Split(stopLog, "\n") {
+		if !strings.Contains(line, `"msg":"legion daemon stopping"`) {
+			continue
+		}
+		var fields struct {
+			Deciding []string `json:"deciding"`
+		}
+		if err := json.Unmarshal([]byte(line), &fields); err != nil {
+			t.Fatalf("read the stopping line's deciding list (%v): %s", err, line)
+		}
+		return fields.Deciding
+	}
+	return nil
 }
 
 // bootSwept waits for the liveness sweep's first verdict, which a daemon with no controller
