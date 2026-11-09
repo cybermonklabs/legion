@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -150,5 +152,89 @@ func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
 	}
 	if again != 0 {
 		t.Errorf("a second run labelled %d rows, want none: the pass is finished", again)
+	}
+}
+
+// The fill is about an hour of 6 KB row rewrites on a deployment of a million vectors, so the
+// two processes of a rolling update must never both make it: the second would walk the same
+// keyset behind the first's commits and label nothing the first had not already labelled, for
+// the same hour of work. With embeddings-project-key-fill held by another session - the other
+// process, inside a pass of its own - this process's fill labels nothing, moves no cursor and
+// records no pass finished.
+//
+// Then the lease is given back and the same call labels every row. The lease belongs to the
+// pass and not to the process, so the skip costs the work nothing; and a test whose second call
+// labelled nothing either would be proving the rows unlabellable rather than the lease held.
+func TestTheEmbeddingProjectKeyFillUnderALeaseHeldElsewhereLabelsNothing(t *testing.T) {
+	const project = "LEAS"
+	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, project, "A leased fill", "Body text.")
+	createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to label."}, "alice")
+	uploadSearchDocument(t, handler, issue.Key, "notes.md", "A document to label.\n")
+	windowOwedOwners(t, deps)
+
+	ctx := context.Background()
+	stored := countRows(t, database, "select count(*) from embeddings where kind = any($1)", embeddingProjectKinds)
+	if stored == 0 {
+		t.Fatal("the fixture stored no embeddings row of a searched kind, so this test proves nothing")
+	}
+	if _, err := database.Pool.Exec(ctx, "update embeddings set project_key = null"); err != nil {
+		t.Fatalf("unlabel the stored rows: %v", err)
+	}
+
+	// The other process, standing inside its own pass of the fill for as long as this test needs
+	// it there. It is duty.Exclusive and not this package's own runner because the pass this
+	// stands for must be held open, which the fill's own pass cannot be.
+	leases := sweepLeases(t, database)
+	taken, release := make(chan struct{}), make(chan struct{})
+	held := make(chan bool, 1)
+	go func() {
+		held <- duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
+			close(taken)
+			<-release
+		})
+	}()
+	select {
+	case <-taken:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the other process never took the embeddings-project-key-fill lease")
+	}
+
+	RunEmbeddingProjectKeyFill(ctx, database, leases)
+	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
+		t.Errorf("the fill labelled %d rows under a lease held elsewhere; want none", labelled)
+	}
+	var kind, id string
+	var done bool
+	if err := database.Pool.QueryRow(ctx,
+		"select kind, id, done from embeddings_project_key_backfill").Scan(&kind, &id, &done); err != nil {
+		t.Fatalf("read the fill's progress: %v", err)
+	}
+	if kind != "" || id != "" || done {
+		t.Errorf("the skipped fill left the cursor at (%q, %q) done=%v; want the cursor where it was and the pass unfinished",
+			kind, id, done)
+	}
+
+	close(release)
+	if !<-held {
+		t.Fatal("the other process never held the lease, so the fill above was free to label and this test proves nothing")
+	}
+
+	RunEmbeddingProjectKeyFill(ctx, database, leases)
+	if left := countRows(t, database,
+		"select count(*) from embeddings where kind = any($1) and project_key is null", embeddingProjectKinds); left != 0 {
+		t.Errorf("%d rows are still unlabelled after the fill that took the lease; want none", left)
+	}
+	if mislabelled := countRows(t, database,
+		"select count(*) from embeddings where kind = any($1) and project_key is distinct from $2",
+		embeddingProjectKinds, project); mislabelled != 0 {
+		t.Errorf("%d rows carry a project other than %q", mislabelled, project)
+	}
+	if err := database.Pool.QueryRow(ctx, "select done from embeddings_project_key_backfill").Scan(&done); err != nil {
+		t.Fatalf("read the fill's progress: %v", err)
+	}
+	if !done {
+		t.Error("the fill that took the lease did not record itself finished, so every later boot would read the table again")
 	}
 }

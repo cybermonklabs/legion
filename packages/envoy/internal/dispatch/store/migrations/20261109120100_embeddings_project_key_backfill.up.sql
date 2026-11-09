@@ -6,9 +6,11 @@
 -- then on. That labels nothing already stored, and an unlabelled row is a row no
 -- project-scoped meaning search can return - which is the defect this change exists to end, so
 -- the stored rows have to be labelled once. The pass itself is
--- store.FillEmbeddingProjectKeys, which the boot runs in committed batches
--- (cmd/dispatch/main.go), and this migration is the one row it records its place in, as
--- 20261101182501 is for document_search's fill.
+-- store.FillEmbeddingProjectKeys, which the boot starts in the background in committed batches
+-- under the lease embeddings-project-key-fill (api.RunEmbeddingProjectKeyFill,
+-- cmd/dispatch/main.go), so one process of a roll labels and the other skips, and this
+-- migration is the one row it records its place in, as 20261101182501 is for document_search's
+-- fill.
 --
 -- It is batched, and so it is not one migration statement, because the work is an hour of row
 -- rewrites. Each embeddings row carries a 1,536-float vector, so an update rewrites about 6 KB

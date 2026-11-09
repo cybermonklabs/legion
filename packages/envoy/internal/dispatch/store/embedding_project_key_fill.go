@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // EmbeddingProjectKeyBatch is how many embeddings rows one transaction of
@@ -16,6 +17,18 @@ import (
 // that writer little and cost one more commit, one more `for update` of the cursor and one
 // more descent of embeddings_pkey each.
 const EmbeddingProjectKeyBatch = 200
+
+// embeddingProjectKeyProgressEvery is how often a running fill says where it has got to. The pass
+// is about an hour on a deployment of a million vectors and labels 156 to 228 rows a second
+// (EmbeddingProjectKeyBatch's measurements), so a line every half minute is about 120 lines for
+// the whole of it: enough for a reader of a rolling deploy to see the row count climbing within
+// one scroll of the log, and far short of the one line per batch - 5,000 of them - that logging
+// each second of work would be.
+//
+// It is a variable only so a test can see a progress line without labelling a deployment's worth
+// of rows, as duty's jitterN is a variable only so a test can fix the draw
+// (internal/dispatch/duty/ticker.go:22).
+var embeddingProjectKeyProgressEvery = 30 * time.Second
 
 // fillEmbeddingProjectKeysBatchQuery is one batch: it takes the next EmbeddingProjectKeyBatch
 // rows by keyset from the cursor, labels each one whose project_key is still null from the
@@ -71,26 +84,44 @@ const fillEmbeddingProjectKeysBatchQuery = `
 	select (select count(*) from labelled), (select done from moved)`
 
 // FillEmbeddingProjectKeys labels the embeddings rows stored before 20261109120000 added
-// project_key, and answers how many it labelled. The boot runs it in the background
-// (cmd/dispatch/main.go): the pass is about an hour on a deployment of a million vectors, and
-// an unlabelled row costs a project-scoped meaning search exactly what it cost that search
-// before this release, so the server serves while it runs and every batch can only add rows
-// such a search finds.
+// project_key, and answers how many it labelled. The boot starts it in the background under a
+// lease (api.RunEmbeddingProjectKeyFill): the pass is about an hour on a deployment of a
+// million vectors, and an unlabelled row costs a project-scoped meaning search exactly what it
+// cost that search before this release, so the server serves while it runs and every batch can
+// only add rows such a search finds.
 //
 // A pass already finished costs one row: the progress row 20261109120100 creates says so, and
 // this reads nothing else. Otherwise it loops, each iteration one short transaction that takes
 // the next batch by keyset, labels it and commits, so no row it writes stays uncommitted for
 // longer than its own batch and an enqueue that meets one of its keys waits for that batch
 // alone. 20261109120100's header holds the measurement that says why.
+//
+// What it logs, which is the whole of what a reader of a rolling deploy sees of an hour-long
+// pass: one line that it began and the cursor it begins from, one every
+// embeddingProjectKeyProgressEvery while it runs, with the rows and batches so far, and one that
+// it finished, with the rows, the batches and how long it took. A pass with nothing to do says so
+// in the one line that costs it, and the lines are distinct sentences rather than one sentence in
+// two tenses, so a reader of a stopped deployment's log can tell a fill still running from a fill
+// that finished.
 func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
+	var fromKind, fromID string
 	var done bool
-	if err := s.Pool.QueryRow(ctx, "select done from embeddings_project_key_backfill").Scan(&done); err != nil {
+	if err := s.Pool.QueryRow(ctx, "select kind, id, done from embeddings_project_key_backfill").
+		Scan(&fromKind, &fromID, &done); err != nil {
 		return 0, fmt.Errorf("read the embeddings project_key fill's progress: %w", err)
 	}
 	if done {
+		slog.Info("dispatch: the embeddings project_key fill has nothing to do: every row stored before this release carries its project")
 		return 0, nil
 	}
+	// The cursor the pass starts from, which is the empty pair on a database no pass has reached
+	// yet and the last row of the last committed batch on one a killed process left part-labelled:
+	// the reader of the second boot's log sees it resume rather than start again.
+	started := time.Now()
+	slog.Info("dispatch: the embeddings project_key fill began",
+		"from_kind", fromKind, "from_id", fromID, "batch", EmbeddingProjectKeyBatch)
 	var labelled, batches int64
+	said := started
 	for {
 		rows, finished, err := s.fillEmbeddingProjectKeysBatch(ctx)
 		if err != nil {
@@ -99,8 +130,17 @@ func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
 		labelled += rows
 		batches++
 		if finished {
-			slog.Info("dispatch: embeddings project_key fill finished", "rows", labelled, "batches", batches)
+			slog.Info("dispatch: the embeddings project_key fill finished",
+				"rows", labelled, "batches", batches, "duration", time.Since(started))
 			return labelled, nil
+		}
+		// Timed from the last line rather than counted in batches, so the rate of the lines holds
+		// whatever the database's own rate of rows is: a batch is about a second on the deployment
+		// the measurements come from, and a tenth of that on an empty test database.
+		if now := time.Now(); now.Sub(said) >= embeddingProjectKeyProgressEvery {
+			said = now
+			slog.Info("dispatch: the embeddings project_key fill is labelling",
+				"rows", labelled, "batches", batches, "elapsed", now.Sub(started))
 		}
 	}
 }

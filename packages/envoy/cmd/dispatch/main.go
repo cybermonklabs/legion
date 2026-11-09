@@ -350,25 +350,6 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
-	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
-	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
-	// functions set it from the deploy on, and this labels the rows stored before it, in
-	// committed batches of its own (20261109120100 holds the cursor it records its place in).
-	//
-	// In the background, where the document_search fill above blocks the boot: each row carries
-	// a 1,536-float vector, so the pass is about an hour on a deployment of a million of them
-	// (INFRA-988), and a boot that waited for it would outlast any rollout. What waiting would
-	// buy is nothing: an unlabelled row costs a project-scoped search exactly what it cost that
-	// search in the release before this one, and every batch can only add rows such a search
-	// finds. A failure is logged and the process serves on, for the same reason.
-	go func() {
-		if labelled, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
-			slog.Error("dispatch: label the embeddings rows stored before this release with their project", "error", err)
-		} else if labelled > 0 {
-			slog.Info("dispatch: labelled the embeddings rows stored before this release with their project", "rows", labelled)
-		}
-	}()
-
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
 	// lower-case document id, the form every server-written anchor carries. A row an earlier
 	// release stored with another spelling is left out, and settlement records no mark for it:
@@ -709,6 +690,25 @@ func main() {
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
+	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
+	// functions set it from the deploy on, and this labels the rows stored before it, in
+	// committed batches of its own (20261109120100 holds the cursor it records its place in).
+	//
+	// In the background, where the document_search fill above blocks the boot: each row carries
+	// a 1,536-float vector, so the pass is about an hour on a deployment of a million of them
+	// (INFRA-988), and a boot that waited for it would outlast any rollout. What waiting would
+	// buy is nothing: an unlabelled row costs a project-scoped search exactly what it cost that
+	// search in the release before this one, and every batch can only add rows such a search
+	// finds. A failure is logged and the process serves on, for the same reason.
+	//
+	// Here, among the loops, and not beside the document_search fill above, because it needs the
+	// lease pool, which is opened below that: one process of a roll fills and the other logs a
+	// skip, since two of them would each pay the same hour for one result
+	// (api.RunEmbeddingProjectKeyFill, which says why the lease is duty.Exclusive itself and
+	// not one of duty's loops). It is the one leased caller here that makes a single pass, so
+	// its connection of the lease pool goes back for good once the rows are labelled.
+	go api.RunEmbeddingProjectKeyFill(ctx, database, leases)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
 	go documentService.RunSettlementResumption(ctx, leases)

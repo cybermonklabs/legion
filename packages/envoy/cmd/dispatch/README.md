@@ -816,7 +816,8 @@ What the two processes share, and what each keeps to itself:
   The suggestion outcome sweep takes no lease at all:
   each of its pages holds the `suggestion_outcome_cursor` row `for update`, which serialises two processes by itself (Background loops, below).
   The settlement resumption is leased because a settlement reads the store under the document's lock whichever process runs it, so one process per minute arms every owed settlement.
-  Fifteen names are leased in all: those thirteen loops, the CI reconcile among them, and one per delivery durable for the consumers' reconciliation, which is why the lease pool holds fifteen connections (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names, and `TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller` counts this process's leased callers against it).
+  The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop: it is one pass of about an hour that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
+  Sixteen names are leased in all: those thirteen loops, the CI reconcile among them, one per delivery durable for the consumers' reconciliation, and the fill, which is why the lease pool holds sixteen connections (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names, and `TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller` counts this process's leased callers against it).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and drops every vector its own embedder did not make, so every process takes the same embedder settings (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -998,12 +999,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 15 + 8 + 4 + 2 + 1 + 2 + 2 + 1 + 5 = 104 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 16 + 8 + 4 + 2 + 1 + 2 + 2 + 1 + 5 = 105 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 15 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), one per caller that can be inside a lease at once. |
+| Leases (`store.LeasePoolSize`) | 16 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), one per caller that can be inside a lease at once, and the embeddings `project_key` fill's one pass. |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1013,7 +1014,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`permanentListeners`) | 5 | Held for the life of the process: the delivery hub, the event stream relay, the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each on a connection of its own. |
 
-Two processes at their ceiling hold 208, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 210, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.

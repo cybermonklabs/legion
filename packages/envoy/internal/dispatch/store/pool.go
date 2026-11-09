@@ -375,7 +375,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (duty.Exclusive). One connection per caller that can be inside Exclusive at the same moment is
 // the whole requirement, and it is a caller and not a lease that needs one: Exclusive takes its
 // connection before it learns whether the lease is held, so a pass that skips because the other
-// process holds the lease holds a connection for that round trip too. Fifteen names are leased -
+// process holds the lease holds a connection for that round trip too. Sixteen names are leased -
 // the document compaction, the keyed writes' maintenance sweep (api.RunMaintenanceSweep, which
 // keeps the lease name suggestion-outcomes the suggestion sweep carried that work under), the
 // reference-excerpt reconciliation, the block-index reconciliation, the term-statistics refresh,
@@ -383,21 +383,26 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // reconcile (cireconcile.Lease), the edit-notice sweep, the document settlement resumption
 // (docs.RunSettlementResumption), the repair of closed and reopened issues' asks
 // (api.RunIssueAskRepair), one per delivery durable for the consumers' reconciliation
-// (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the server
-// process registry's prune (processes.RunPrune) - taken by fifteen callers, since each delivery
-// intake takes its own durable's name from a bind poll of its own, so fifteen callers can be
-// inside Exclusive at once. The suggestion outcome sweep is not among them: it takes no lease,
-// since the cursor row each of its pages holds for update serialises two processes by itself
-// (api/suggestion_outcomes.go). Fifteen connections are exactly those fifteen: the headroom is
-// zero, not one, and the next leased loop added here makes a sixteenth caller that waits for a
-// connection rather than failing, for as long as the longest pass then holding one - which is
-// why cmd/dispatch counts its leased callers against this number
+// (delivery.consumerLease, a name each for delivery-events and delivery-jobs), the server
+// process registry's prune (processes.RunPrune) and the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill) - taken by sixteen callers, since each delivery intake takes
+// its own durable's name from a bind poll of its own, so sixteen callers can be inside Exclusive
+// at once. The fill is the one that is not a loop: it makes a single pass of about an hour and
+// holds a connection for the whole of it, and gives that connection back for good once the rows
+// stored before migration 20261109120000 are labelled - which is why it is counted here like any
+// other caller, since the hour it holds one is exactly the window in which every other caller
+// must still find a connection of its own. The suggestion outcome sweep is not among them: it
+// takes no lease, since the cursor row each of its pages holds for update serialises two
+// processes by itself (api/suggestion_outcomes.go). Sixteen connections are exactly those
+// sixteen: the headroom is zero, not one, and the next leased loop added here makes a
+// seventeenth caller that waits for a connection rather than failing, for as long as the longest
+// pass then holding one - which is why cmd/dispatch counts its leased callers against this number
 // (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so that caller fails a test instead.
 // They cannot come from the shared pool: a lease is held for the whole pass, which is minutes
 // for the compaction, and the shared pool's sharedPoolSize connections are what every request
 // reads through. The document compaction holds only its lease here: each document it compacts
 // reads and writes on the compaction pool (Pool.Compaction).
-const LeasePoolSize = 15
+const LeasePoolSize = 16
 
 // Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
 // only one process runs each pass (duty.Exclusive). The lease is a session-level advisory lock, so
