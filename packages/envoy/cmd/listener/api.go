@@ -1298,26 +1298,19 @@ type sessionRegistration struct {
 	LastSeen  int64 `json:"last_seen"`
 	UpdatedAt int64 `json:"updated_at"`
 	// ClientInstanceID names the client process whose registration this is
-	// (session.SessionEntry.ClientInstanceID), and is what this view exists to answer: the
-	// Legion daemon's clean stop of a dead role removes the registration by that id
-	// (HTTPPublisher.DeleteSession, packages/daemon/internal/notify/notify.go), so the stop
-	// cannot take down the relaunch that registered the same session id again. It is left out
-	// where the entry carries none - a client predating the field, or one that states no
-	// instance - as sessionInfo leaves it out, so a reader takes an absent field for "this
+	// (session.SessionEntry.ClientInstanceID), and is what this view exists to answer. It is
+	// left out where the entry carries none - a client predating the field, or one that states
+	// no instance - as sessionInfo leaves it out, so a reader takes an absent field for "this
 	// registration names no process" rather than for the empty string.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
 // writeSessionRegistration answers GET /v1/registry/<session_id>?view=registration: the stored
-// registration alone, for the one caller that asks for it, the Legion daemon's clean stop of a
-// dead role's session (ReadSessionRegistration, packages/daemon/internal/notify/notify.go),
-// which reads the registration to name it in the delete that follows. It answers whenever the
-// session bucket answers, because it makes no other read: no claims view is read and no interest
-// record, where the full answer reads both (sessionInfoFor) and so turns a claims view that is
-// still refilling into a 503 and a record this build cannot decode into a 500. Either of those
-// reaches the daemon as a read that failed, on which it sends no delete at all, and the dead
-// session then holds its role claim and its issue claims until the gone horizon takes them - the
-// very delay the clean stop exists to remove.
+// registration alone, for the caller that names its client instance in a delete that follows
+// (the Legion daemon's clean stop of a dead role). It answers whenever the session bucket
+// answers, because it makes no other read: no claims view is read and no interest record, where
+// the full answer reads both (sessionInfoFor) and so turns a claims view that is still refilling
+// into a 503 and a record this build cannot decode into a 500.
 //
 // The entry is read from the session bucket itself and never from this listener's cache
 // (bucketSessionEntry), for the reason that function's own comment gives: a cached entry can
@@ -1382,12 +1375,9 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, d *lis
 // one with no topics or roles. An interest record this build cannot decode is the 500
 // writeInterestRecordUnreadable writes: the bus answered it.
 //
-// view=registration asks for the stored registration alone, and is answered by
-// writeSessionRegistration: the session bucket's own entry, with neither of the two reads above
-// joined to it, so the answer costs one bucket read and carries no topics and no roles. It is a
-// shape of its own (sessionRegistration), and under it no state filter applies, so
-// include=unresponsive decides nothing. Any other value of view is refused 400 naming the
-// selector, and no view at all is this route's own answer, unchanged in every respect.
+// view=registration is answered by writeSessionRegistration, whose comment says what it reads
+// and answers; any other value of view is refused 400 naming the selector, and no view at all is
+// this route's own answer, unchanged in every respect.
 func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

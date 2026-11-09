@@ -90,7 +90,7 @@
 #
 # The heartbeat is an input because it decides how often a kill lands just after a registration,
 # which is the window a clean stop dated before the moment its probe judged refuses a stop that
-# is owed in (dispatch://INFRA-2064). A small value makes that window near-certain — measured at
+# is owed in (dispatch://INFRA-2064). A small value makes a kill inside that window likely —
 # 3 of 4 runs at main with 500 — so the defect's reproduction is a command rather than an edit,
 # and 5000, the value before this input existed, leaves every run as it was. It moves nothing
 # else: the live window, the gone horizon, the reap interval and the ten-second acceptance are

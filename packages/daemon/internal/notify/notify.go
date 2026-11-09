@@ -307,15 +307,14 @@ const registrationReadBodyLimit = 1 << 20
 // order to answer a record past its live window at all — it ignores the unknown selector and
 // answers the full row, which carries no client_instance_id, so against that listener the stop
 // rests on the moment alone. Which probe judged the death decides whether that matters: the one
-// the shim's closing stream starts reads the record milliseconds after the last heartbeat, with
-// the record still live, while the resync tick's can be a probe interval later, past the live
-// window, and it is for the second that include=unresponsive is sent at all.
+// the shim's closing stream starts reads the record moments after the death, while it is still
+// live, while the resync tick's can be a probe interval later, past the live window, and it is
+// for the second that include=unresponsive is sent at all.
 //
 // A 404 is no failure and no error: there is no registration for the stop to name, which is the
 // outcome the stop wanted, and Registered is false. Every other status is an error naming what
-// the listener said, as a refused delete is, and the caller then sends nothing: the conditions
-// the delete holds under come from this answer (DeleteConditions), so a delete sent on a
-// registration this daemon could not read would be one sent blind.
+// the listener said, as a refused delete is, and the caller then sends nothing (sessionStop.send
+// in packages/daemon/internal/daemon/daemon.go says why).
 func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -355,8 +354,8 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		session, response.Status, strings.TrimSpace(string(body)))
 }
 
-// DeleteConditions is what one clean stop of a dead role's session holds under, and the one
-// place this rule is written out: every other comment that needs it points here.
+// DeleteConditions is what one clean stop of a dead role's session holds under, and where this
+// daemon's code argues the rule in full: its other comments point here.
 //
 // The delete must take the dead process's registration and never the registration a relaunch of
 // the same claim writes under the same session id, so it carries both conditions at once. The
@@ -366,11 +365,13 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 //
 // NotRegisteredAfter is the moment the daemon's probe judged the process gone, and rides as
 // if_not_registered_after with nothing subtracted from it. The probe runs after the dead
-// process's last heartbeat, so the listener stamped that heartbeat at or before this moment and
-// the registration goes. A moment dated earlier than the probe's, to cover a clock, puts that
-// heartbeat after it and refuses the stop that is owed, because UpdatedAt is the listener's own
-// stamp at every write (packages/envoy/internal/session/registry.go) and tells a dead process's
-// heartbeat from a successor's registration not at all.
+// process's last heartbeat, so on clocks that agree the listener stamped that heartbeat at or
+// before this moment and the registration goes; a listener clock ahead of this daemon's by more
+// than the time between that heartbeat and the probe keeps it. A moment dated earlier than the
+// probe's, to cover a clock, puts that heartbeat after it and refuses the stop that is owed,
+// because UpdatedAt is the listener's own stamp at every write
+// (packages/envoy/internal/session/registry.go) and tells a dead process's heartbeat from a
+// successor's registration not at all.
 //
 // ClientInstanceID is the id the entry itself carried when the stop read it
 // (ReadSessionRegistration), and names that one client process, which no comparison of moments

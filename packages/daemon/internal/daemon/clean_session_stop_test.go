@@ -85,9 +85,9 @@ func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 
 // answerRead is the registry route: it answers the held registration, 404 for a registry that
 // holds none, and leaves out client_instance_id for an entry that names no process, as the real
-// route does (sessionInfo, packages/envoy/cmd/listener/api.go). A relaunch the test staged takes
-// the entry's place once this answer is written, so the delete that follows meets what the
-// relaunch wrote and not what the read reported.
+// route's registration view does (sessionRegistration, packages/envoy/cmd/listener/api.go). A
+// relaunch the test staged takes the entry's place once this answer is written, so the delete
+// that follows meets what the relaunch wrote and not what the read reported.
 func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
 	if l.hangRead {
 		<-r.Context().Done()
@@ -319,10 +319,10 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 	}
 }
 
-// A read the listener refuses names no registration, and the conditions the delete holds under
-// are what that read returns: a delete sent without it is sent blind and can take a live
-// registration. So nothing is deleted and nothing is tried again, and the registration lapses
-// at the gone horizon, which is the wait the session already had.
+// A read the listener refuses leaves unknown whether the entry names a client process, so a
+// delete sent then would rest on the moment alone for an entry that may name one (sessionStop.send
+// says why that is not sent). So nothing is deleted and nothing is tried again, and the
+// registration lapses at the gone horizon, which is the wait the session already had.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)

@@ -112,13 +112,13 @@ const (
 	// registry read and the delete that follows it, together (cleanSessionStop). It is longer
 	// than the listener's own budget for one route (sendRequestBudget,
 	// packages/envoy/cmd/listener/api.go: 3.5 s) and shorter than two of them, so a listener
-	// answering promptly answers both inside it while one slow on the read spends the budget
-	// there and sends no delete — which costs that session only the wait it already had. It is
-	// short enough that a listener which never answers is abandoned while the claim's relaunch
-	// is still a launch backoff and a process boot away (launchBackoffFirst), rather than left
-	// in flight for as long as the listener likes. What keeps a stop that does land late off
-	// the relaunch's registration is the two conditions the stop carries (cleanSessionStop),
-	// not this bound.
+	// answering promptly answers both inside it, while a read that spends the whole budget sends
+	// no delete and one answered late leaves the delete less than its own route's budget — which
+	// costs that session at most the wait it already had. It is short enough that a listener
+	// which never answers is abandoned while the claim's relaunch is still a launch backoff and
+	// a process boot away (launchBackoffFirst), rather than left in flight for as long as the
+	// listener likes. What keeps a stop that does land late off the relaunch's registration is
+	// the two conditions the stop carries (cleanSessionStop), not this bound.
 	cleanSessionStopBudget = 5 * time.Second
 )
 
@@ -1369,7 +1369,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // The listener keeps the entry when either condition refuses it, so the id rescues no
 // registration the moment refuses: a heartbeat whose write lands after the probe, or a listener
 // clock ahead of this daemon's, is kept even where the id names the dead process, and that
-// session waits the gone horizon out as it did before this path existed.
+// session waits the gone horizon out.
 //
 // The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
 // answers does not leave the stop in flight for as long as it likes, and supervision's own end
@@ -1400,20 +1400,24 @@ type sessionStop struct {
 // process gone. It reads what the listener holds for the session and then deletes that
 // registration by name: one read, one delete, one answer, and nothing is sent twice.
 //
-// A read the listener does not answer sends no delete at all: the conditions the delete holds
-// under are what that read returns (notify.DeleteConditions), so a delete sent without it is
-// sent blind and can take a live registration, where a registration left standing lapses at the
-// gone horizon, which is the wait the session already had. An answer of no registration is the
-// outcome the stop asked for, already reached.
+// A read the listener does not answer sends no delete at all. The moment is this daemon's own,
+// but the instance id is not: a failed read leaves unknown whether the entry names a client
+// process, and a delete sent then would rest on the moment alone for an entry that may well name
+// one, which is the case where the id is the relaunch's guard against a daemon clock ahead of
+// the listener's. An entry the listener answers with no instance id is known to name none, so
+// the moment-only delete is the only delete there is, and it is sent. A registration left
+// standing lapses at the gone horizon, the wait the session already had. An answer of no
+// registration is the outcome the stop asked for, already reached.
 //
 // It reports the stop refused, kept or done, one line either way, since nothing waits on its
 // answer. The listener keeps a registration for three separate reasons — another client
 // instance owns it, it was written after the moment, or the delete lost its compare-and-swap —
 // so the line says only that it was kept and carries the listener's own words for which
 // (SessionDeleted.Reason), beside the two conditions the stop named and the registration the
-// read answered with. Those four are the whole of what decided it, so a reader of the log can
-// tell a stop refused for a successor's registration from one refused for the dead process's
-// own last heartbeat without asking the listener anything.
+// read answered with. The registration is what the read saw, not what the delete compared, so
+// where the entry changed between the two the line cannot say whose write refused it; where it
+// did not, it tells a stop refused for a successor's registration from one refused for the dead
+// process's own last heartbeat without asking the listener anything.
 func (s sessionStop) send(supervising context.Context, session string, goneAt time.Time) {
 	ctx, cancel := context.WithTimeout(supervising, cleanSessionStopBudget)
 	defer cancel()
