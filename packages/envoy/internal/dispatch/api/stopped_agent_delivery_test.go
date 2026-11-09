@@ -234,7 +234,9 @@ func TestRoleMessageToARoleWhoseIssueStillRunsIsNotSentToTheStoppedWorker(t *tes
 	if len(comment.Deliveries) != 2 {
 		t.Fatalf("mention deliveries = %#v, want one per mention", comment.Deliveries)
 	}
-	for _, delivery := range comment.Deliveries {
+	// The mention sender settles each attempt after the comment's response, so the outcome is
+	// read off the settled rows rather than off the pending attempts that response carries.
+	for _, delivery := range settledCommentDeliveries(t, database, comment.ID) {
 		if delivery.Target == roleTarget {
 			if delivery.State != "failed" || delivery.SessionID != nil || delivery.Error == nil || *delivery.Error != noHolder {
 				t.Fatalf("the role mention = %#v (session %v, error %q), want failed %q with no session",
@@ -270,7 +272,8 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 	if len(comment.Deliveries) != 2 {
 		t.Fatalf("mention deliveries = %#v, want one per mention", comment.Deliveries)
 	}
-	for _, delivery := range comment.Deliveries {
+	// The create response carries the pending attempts; the mention sender settles them behind it.
+	for _, delivery := range settledCommentDeliveries(t, database, comment.ID) {
 		if delivery.State != "sent" || delivery.Attempt != 1 || delivery.Error != nil ||
 			delivery.SessionID == nil || *delivery.SessionID != want[delivery.Target] {
 			t.Fatalf("mention delivery = %#v (session %v, error %q), want attempt 1 sent to %s",
@@ -364,7 +367,8 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 			if len(comment.Deliveries) != 2 {
 				t.Fatalf("mention deliveries = %#v, want one per mention", comment.Deliveries)
 			}
-			for _, delivery := range comment.Deliveries {
+			// The mention sender settles each attempt after the comment's response.
+			for _, delivery := range settledCommentDeliveries(t, database, comment.ID) {
 				failure := want[delivery.Target]
 				if delivery.State != "failed" || delivery.SessionID != nil || delivery.Error == nil || *delivery.Error != failure {
 					t.Fatalf("%s mention delivery = %#v (session %v, error %q), want failed %q with no session",

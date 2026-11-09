@@ -44,6 +44,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: AgentDecisionNotice, Role: claim.RoleTester, AgentDecision: &AgentDecision{
 			ID: "dispatch:c-9", Issue: "LEGION-209", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-209/comment/c-9", Text: "Use B.",
 		}},
+		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
+			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},

@@ -94,11 +94,17 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 59's questions passed to
+number is the one `DaemonAPIVersion` declares, last bumped by contract 60's questions passed to
 the controller (`GET /legion/v1/state` carries `questionsForController`, every question to a
 stopped agent that the answer loop passed to the controller in the last seven days, newest first
-and at most 100, which a plugin from before 59 refuses the state for), after contract 58's
-waiting line
+and at most 100, which a plugin from before 60 refuses the state for), after contract 59's end of
+fix-attempt counting and its two recovery operations (the settings block of
+`GET /legion/v1/state` no longer carries `max_fix_attempts` and each pull request in it loses
+`fixAttempts`, which the strict reader every worker's `read_record` parses the state through
+requires, so the boot gate and `legion probe-image` hold plugin and daemon equal and neither
+order of the two ever runs; the controller's `legion` tool gains `compact (issue, role)` and
+`fresh_session (issue, role)`, which post `POST /legion/v1/claims/compact` and
+`POST /legion/v1/claims/fresh-session`), after contract 58's waiting line
 (INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
 an issue the list does not name, a slot holder among them, carries no such key, and a caller
