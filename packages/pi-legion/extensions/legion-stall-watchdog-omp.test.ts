@@ -11,6 +11,7 @@ import {
   conversation,
   DEADLINE_MS,
   exitsFile,
+  gone,
   ISSUE,
   kernelOf,
   lastMessage,
@@ -158,7 +159,7 @@ test.skipIf(skip)(
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
 
     // The cell was waiting on that child, so the call came back on its own: the next turn carries
@@ -167,6 +168,11 @@ test.skipIf(skip)(
       pane.turns().find((turn) => conversation(turn).includes("the child is gone"))
     );
     expect(conversation(after)).toContain("the child is gone");
+    // An absence read taken while the pane is mid-write would be the absence of a line still
+    // being written, not of the record: `records()` withholds an unfinished last line while the
+    // pane runs (test/transcript-entries.ts, dispatch://INFRA-2188), so this waits for the
+    // transcript to end on a newline before it reads one.
+    await pane.settled();
     const records = await pane.records();
     expect(ofKind(records, "step").map((record) => record.step)).toEqual(["end-processes"]);
     expect(ofKind(records, "stopped")).toEqual([]);
@@ -202,7 +208,7 @@ test.skipIf(skip)(
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
     expect(pane.publishes().map((publish) => publish.topic)).toEqual([ARCHITECT_TOPIC]);
 
@@ -222,6 +228,7 @@ test.skipIf(skip)(
     );
     expect(lastMessage(again)).toContain("`eval` call");
     expect(lastMessage(again)).toContain("Decide whether that call is still worth making");
+    await pane.settled();
     const restarts = await pane.restarts();
     expect(restarts).toHaveLength(1);
     expect(restarts[0]).toContain("Your turn was ended because its `eval` call");
@@ -230,6 +237,7 @@ test.skipIf(skip)(
     // The ladder stopped at the abort: the turn it ended closed the call's record, so the step
     // that ends this process never ran, nothing was told that the ladder had stopped, and no
     // exit was counted.
+    await pane.settled();
     const records = await pane.records();
     expect(ofKind(records, "step").map((record) => record.step)).toEqual([
       "end-processes",
@@ -391,6 +399,7 @@ test.skipIf(skip)(
     // Past the bound and two sweeps. A real clock, deliberately: the proposition is that the watch
     // did nothing at all, and a watch that does nothing emits no signal to await.
     await Bun.sleep(QUIET_MS);
+    await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
@@ -443,7 +452,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(runner.pid)).toBe(false);
+    await gone(pane, runner.pid);
 
     // Ending the runner ends the call: the host hands back a dead kernel, so the ladder takes no
     // second step and this worker goes on with its work.
@@ -451,6 +460,7 @@ test.skipIf(skip)(
       pane.turns().find((turn) => conversation(turn).includes("Kernel died"))
     );
     expect(conversation(after)).toContain("Kernel died");
+    await pane.settled();
     expect(ofKind(await pane.records(), "step").map((record) => record.step)).toEqual([
       "end-processes",
     ]);
@@ -487,7 +497,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
 
     // Then the turn the abort ended settles, and the host has the steered message to go on with:
     // the run's own end says so — `isTerminal` false on the RPC frame — and the host starts
@@ -590,6 +600,7 @@ test.skipIf(skip)(
     // turn immediately after it backgrounds the call, so the turn's own close takes the record
     // either way. No live case can hold one of these four alone.
     await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
+    await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
     expect(pane.running()).toBe(true);
