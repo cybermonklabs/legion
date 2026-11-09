@@ -22,18 +22,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // buildStands builds the command into a directory of the test's own and returns its path.
 func buildStands(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "dev-airlock-stands")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.3")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/dev-airlock-stands: %v\n%s", err, out)
-	}
-	return binary
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "dev-airlock-stands", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})
 }
 
 // TestTheStandsServeTheirRecordsAndStopOnASignal is the whole of what a check script does with
