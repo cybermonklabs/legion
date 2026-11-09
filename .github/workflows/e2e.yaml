@@ -147,13 +147,14 @@ jobs:
           # Both apt phases retry through .github/scripts/ci-retry.sh: five attempts, the last
           # starting 150 s after the first. What bounds an attempt is the inner `sudo timeout`,
           # not `timeout sudo`, so the signal reaches apt-get itself rather than a sudo holding
-          # it — .github/scripts/playwright-install.sh states that rule; retry_fetch's own bound
-          # sits five seconds above it and backstops the sudo alone.
+          # it; retry_fetch's own bound sits five seconds above it and backstops the sudo
+          # alone. The script that stated that rule, .github/scripts/playwright-install.sh, went
+          # with #2938's move of the browser jobs into an image, so the rule is written here.
           #
-          # 90 s for the index read, which is the bound .github/scripts/playwright-install.sh
-          # derives for this same runner image and these same indexes: the slowest green
-          # `apt-get update` of its window fetched 10.5 MB at 233 kB/s, so 12.9 MB of indexes
-          # need 55.4 s there.
+          # 90 s for the index read, derived for this same runner image and these same
+          # indexes and now held here rather than in the deleted script: the slowest green
+          # `apt-get update` of the window that figure was measured over fetched 10.5 MB at
+          # 233 kB/s, so 12.9 MB of indexes need 55.4 s there.
           # 120 s for the package download: a proof installs one package of
           # .github/e2e-scripts.json (postgresql-client or tmux), a few MB against that script's
           # 51.4 MB, and at the slowest green package rate of the same window, 186 kB/s, even
@@ -165,8 +166,8 @@ jobs:
             sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
           # Each word is one package name of .github/e2e-scripts.json.
           # The download is the half that retries; the unpack after it takes no network, so an
-          # attempt the bound kills never stops a dpkg run part way
-          # (.github/scripts/playwright-install.sh says why the two are separate).
+          # attempt the bound kills never stops a dpkg run part way, which is why `-d` is here
+          # and the install without it follows.
           # shellcheck disable=SC2086
           retry_fetch "the proof's apt packages" 125 -- \
             sudo timeout 120 apt-get install -y --no-install-recommends -d $PACKAGES
