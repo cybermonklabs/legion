@@ -1462,20 +1462,39 @@ class Call:
         return Call(self.line, self.factor + other.factor, self.wait + other.wait, None)
 
 
+# What one Uncounted names: a fetch written in the body itself, or a call of a script that
+# body runs. The two are read differently and take different advice, and the `kind` field
+# below is the one place that difference is written down.
+UNCOUNTED_SITE = "site"
+UNCOUNTED_SCRIPT_CALL = "script call"
+
+
 class Uncounted:
     """One thing a step waits for that this check can put no figure on: a retried call, or a
     script the body runs, inside a loop whose passes it cannot read, and for which no
     DeclaredArithmetic entry writes the seconds.
-    `what` is the verb, or the script's path; `one` is what one of them costs, left None for a
-    script, whose arithmetic is read when the refusal is written."""
+
+    `what` is the verb, or the script's path; `one` is what one call of it costs, left None
+    wherever no figure can be made of that — a script, whose arithmetic is read when the
+    refusal is written because the scripts are read after the steps that run them, and a site
+    whose bound is written as a variable rather than as a number.
+
+    `kind` tells apart the two things this class holds: UNCOUNTED_SITE, a fetch written in the
+    body the item was read from, and UNCOUNTED_SCRIPT_CALL, a call of a script that body runs.
+    Every reader asking which of the two it has asks this field. Reading `one is None` for
+    that question was wrong, because None is an answer about a figure and not about a kind: a
+    site whose bound is a variable has no figure either, so it read as a script call, and the
+    filter that drops a script waiting for nothing dropped it instead of refusing it
+    (dispatch://INFRA-1545, R8)."""
 
     def __init__(self, path: str, line: int, what: str, loop: int | None,
-                 one: int | None) -> None:
+                 one: int | None, kind: str) -> None:
         self.path = path
         self.line = line
         self.what = what
         self.loop = loop
         self.one = one
+        self.kind = kind
 
 
 def one_call(site: Site) -> int | None:
@@ -1492,11 +1511,14 @@ def one_call(site: Site) -> int | None:
     length is written where this check cannot read it, a bound given as `"$T"` rather than as a
     number. There is no arithmetic to do for that last one, and rule 4 is what refuses an
     attempt with no bound at all, but it is not the same answer as 0: the body holding it waits
-    for something of unread length rather than for nothing. waits_for_nothing below is the
-    reader that needs the two apart, and reading both as 0 is the hole round 6 of
-    dispatch://INFRA-1545 found in it: a `curl -fsSL --retry 7 --retry-all-errors --max-time
-    "$T"` inside a script made that script read as one that retries nothing, and a loop whose
-    passes this check cannot read around a call of it was dropped rather than refused."""
+    for something of unread length rather than for nothing. Two readers need the pair apart.
+    retries_nothing, through script_waits, asks whether a script holds any call at all, and
+    reading both as 0 is the hole round 6 of dispatch://INFRA-1545 found there: a `curl -fsSL
+    --retry 7 --retry-all-errors --max-time "$T"` inside a script made that script read as one
+    that retries nothing, and a loop whose passes this check cannot read around a call of it
+    was dropped rather than refused. uncounted_of below asks the same of a site written in the
+    body itself: it keeps the sites answering None, which are waits of unread length, and
+    drops the ones answering 0, which are waits of no length at all (R8)."""
     if site.silent:
         return 0
     if site.retry == "retry_fetch":
@@ -1684,10 +1706,11 @@ def blocked_calls(path: str, calls: dict[str, Call]) -> list[Uncounted]:
 
     Every such call is listed here, the ones that cost nothing included, because what a script
     costs cannot be asked at this point: the scripts are read after the steps that run them, so
-    script_cost, script_calls and script_waits are still being filled while this runs.
-    waits_for_nothing below asks that question where the answer exists and drops the calls
-    that turn out to wait for no attempt at all."""
-    return [Uncounted(path, call.line, target, call.loop, None)
+    script_cost, script_calls and script_waits are still being filled while this runs. That is
+    why `one` is None for every item here and why the kind is written down instead:
+    waits_for_nothing below asks its question of these items alone, and asks it by the kind,
+    dropping the calls that turn out to wait for no attempt at all."""
+    return [Uncounted(path, call.line, target, call.loop, None, UNCOUNTED_SCRIPT_CALL)
             for target, call in sorted(calls.items()) if call.factor is None]
 
 
@@ -1732,19 +1755,23 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
     the loop's place, and a loop no budget reaches costs nobody anything and is left alone —
     rule 2 is what reads a loop wherever it sits.
 
-    A site one_call answers None for — its bound is written as a variable — is left out with
-    the ones that cost nothing. The refusal below is written around what one call of the site
-    takes and there is no such figure to write, and `one` is what tells a site's item from a
-    script call's everywhere one of these is read, which a None written here would blur. Such
-    a site is read all the same, by the question waits_for_nothing asks of the script holding
-    it."""
+    A site one_call answers 0 for is left out: a `mise x`, or a verb whose attempts neither the
+    helper nor curl itself makes, is a wait of no length, and a loop around no wait is a loop
+    rule 8 has nothing to compare a budget with. A site it answers None for is kept, because
+    that is a wait of unread length and not an absent one: the bound is written as a variable,
+    so one call of it has no figure, the loop around it has no pass count, and both halves of
+    the step's wait are unreadable. Dropping it priced the step's whole wait at 0 and refused
+    nobody for it (dispatch://INFRA-1545, R8). The refusal below reads the kind field, not
+    `one`, to tell these items from blocked_calls's script calls, so a None written here blurs
+    nothing."""
     kept = []
     for site in found:
         if site.factor is not None or site.path in DOCKERFILES:
             continue
         one = one_call(site)
-        if one and declared_arithmetic(site) is None:
-            kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one))
+        if one != 0 and declared_arithmetic(site) is None:
+            kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one,
+                                  UNCOUNTED_SITE))
     return kept
 
 
@@ -2564,8 +2591,15 @@ def waits_for_nothing(item: Uncounted) -> bool:
     Rule 8 exists to compare a step's budget with the attempts it waits for. A loop around a
     script that makes none is a loop with no attempt under it, so there is nothing to compare
     and no pass count to ask the author for: refusing it told a step holding no retry to write
-    one, and the refusal priced the run it was refusing at `0 s` (dispatch://INFRA-1545, R5)."""
-    return item.one is None and retries_nothing(item.what, set())
+    one, and the refusal priced the run it was refusing at `0 s` (dispatch://INFRA-1545, R5).
+
+    The item is recognised by its kind and not by `one is None`. That inference read a site
+    whose bound is written as a variable as one of blocked_calls's script calls, and then
+    asked retries_nothing for a path that is a verb, which answers True for anything no script
+    is named by: the site was dropped, and the step waiting for it was refused by nobody
+    (dispatch://INFRA-1545, R8). uncounted_of's sites are never this filter's business: a site
+    that waits for nothing is already dropped where it is found."""
+    return item.kind == UNCOUNTED_SCRIPT_CALL and retries_nothing(item.what, set())
 
 
 def action_arithmetic(path: str, seen: set[str]) -> int | None:
@@ -2612,12 +2646,17 @@ for budget in budgets:
             for item in blocking
         )
         # The figure and the advice are written for the first of them, which is the step's own
-        # uncounted site wherever it has one: uncounted_of's verb sites come before
-        # blocked_calls's scripts. A retried call carries what one call of it costs; a script
-        # carries None, and what one run of it costs is read here rather than when the call was
-        # found, because the scripts are read after the steps that run them. The two take
-        # different advice, because a declaration names a site by the verb it retries and a
-        # script call writes a path where that verb would be.
+        # uncounted site wherever it has one: uncounted_of's sites come before blocked_calls's
+        # script calls. Which of the two an item is is read off its kind. `one` is a figure,
+        # and it answers None for reasons of its own, so inferring the kind from it read a
+        # site whose bound is a variable as a call of a script and sent it to the filter above
+        # (dispatch://INFRA-1545, R8). The two take different advice, because a declaration
+        # names a site by the verb it retries and a call of a script writes a path where that
+        # verb would be.
+        #
+        # A site carries what one call of it costs, read where the site was found. A script
+        # call carries None there, because the scripts are read after the steps that run them,
+        # and what one run of it costs is read here instead.
         #
         # That read of a script answers None in its turn when one run of the script reaches an
         # uncounted loop — its own, or one in a script it calls in turn, which costs the run
@@ -2633,10 +2672,22 @@ for budget in budgets:
         # one the script makes and an undercount where it is not, and neither is a figure to
         # print, so the sentence names the unread bound instead. That is the item this filter
         # dropped before round 6 of dispatch://INFRA-1545.
-        script_call = blocking[0].one is None
+        #
+        # A site is unreadable in that one way only, and it is the same way: `--max-time "$T"`
+        # bounds the attempt where this check cannot read the bound. Then both halves of what
+        # the step waits for are unread — what one call takes, and how many calls the loop
+        # makes — so no number is printed for it either. Its advice is a site's all the same,
+        # because the verb is there for a declaration to name (R8).
+        script_call = blocking[0].kind == UNCOUNTED_SCRIPT_CALL
+        unread_bound = not script_call and blocking[0].one is None
         one = (script_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
-        if one is None:
+        if unread_bound:
+            cost_read = (f"What one call of `{blocking[0].what}` there takes is a figure this "
+                         "check cannot make, because its bound is written as a variable "
+                         "rather than as a number, and the step waits for that once per pass "
+                         "of a loop whose passes this check cannot read either")
+        elif one is None:
             cost_read = (f"One run of `{blocking[0].what}` reaches a loop, its own or one in a "
                          "script it calls, whose passes this check cannot read either, so what "
                          "one run of it takes is a figure this check cannot make, and the step "
@@ -2652,26 +2703,50 @@ for budget in budgets:
                        else "One call there takes")
             cost_read = (f"{waiting} {one} s to exhaust its attempts and the step waits for "
                          "that once per pass")
-        instead = (
-            "take the call out of the loop, or write the loop inside that script, where the "
-            "call it retries is a site a declaration can name. No entry of DECLARED_LOOPS "
-            "answers this one: an entry matches a site by its file, its step and the verb it "
-            "retries, and a call of a script writes a path where that verb would be, so an "
-            "entry pointed at it matches no retried call and fails this check in its own "
-            "right."
-            if script_call else
-            "where the passes are as many as the run finds work, declare that site in "
-            "DECLARED_LOOPS in .github/scripts/check-download-retry.sh: a DeclaredArithmetic "
-            "entry there writes the seconds the site contributes to this budget and the sum "
-            "they come from.")
+        if script_call:
+            instead = (
+                "take the call out of the loop, or write the loop inside that script, where "
+                "the call it retries is a site a declaration can name. No entry of "
+                "DECLARED_LOOPS answers this one: an entry matches a site by its file, its "
+                "step and the verb it retries, and a call of a script writes a path where "
+                "that verb would be, so an entry pointed at it matches no retried call and "
+                "fails this check in its own right.")
+        elif unread_bound:
+            # The bound first and the loop second, and in that order rather than as a choice:
+            # a bound written as a number leaves the loop still unread, which is this rule's
+            # ordinary refusal and the one a declaration answers, while a pass count written
+            # over an unread bound takes the site out of this list and prices the step's whole
+            # wait at nothing, which is the hole this branch exists to close. No declaration
+            # answers the bound: arithmetic_of reads one_call first and returns 0 where there
+            # is no figure, so an entry pointed at such a site is counted by nothing and this
+            # check then refuses the entry itself for matching no call (R8).
+            instead = (
+                "write that bound as a number, which is the figure this check multiplies by "
+                "the passes it reads. No entry of DECLARED_LOOPS answers this one: an entry "
+                "writes the seconds a site contributes to a budget, and a site whose bound is "
+                "unread contributes a figure nobody can write, so an entry pointed at it is "
+                "counted by nothing and fails this check in its own right. Where the loop's "
+                "passes are still unread once that bound is a number, this check refuses the "
+                "step again with the seconds one call takes, and an entry of DECLARED_LOOPS "
+                "answers that refusal: it matches a site by its file, the verb it retries and "
+                "the step where the site is written in a workflow, a site inside a script "
+                "being read with no step at all.")
+        else:
+            instead = (
+                "where the passes are as many as the run finds work, declare that site in "
+                "DECLARED_LOOPS in .github/scripts/check-download-retry.sh: a "
+                "DeclaredArithmetic entry there writes the seconds the site contributes to "
+                "this budget and the sum they come from.")
+        count_advice = ("" if unread_bound else
+                        "Write the count where this check reads it — a "
+                        "`for x in 1 2 3 4 5 6 7`, a `for x in $(seq 1 7)`, or a "
+                        "`for ((i = 0; i < 7; i++))` — or ")
         problem(budget.path, budget.line,
                 f"step '{budget.step}' {carries} and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
                 f"passes it cannot read — {named}. {cost_read}, so a budget written for one "
                 "pass is a step the runner "
-                "cuts in the middle of the retry it exists to allow. Write the count where "
-                "this check reads it — a `for x in 1 2 3 4 5 6 7`, a `for x in "
-                f"$(seq 1 7)`, or a `for ((i = 0; i < 7; i++))` — or {instead}")
+                f"cuts in the middle of the retry it exists to allow. {count_advice}{instead}")
         continue
     if cost is None or not cost:
         continue

@@ -1369,6 +1369,91 @@ check "says the bound is written as a variable rather than as a number" \
 check "prices no run of that script at nothing" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 
+# The third member of that family, and the one the two cases above leave open: the site whose
+# bound this check cannot read, written in the body's own loop rather than in a script the
+# loop runs. One call of it has no figure — `--max-time "$bound"` bounds the attempt where the
+# seconds are not written — and the loop around it has no pass count, so both halves of what
+# the step waits for are unread. uncounted_of dropped it with the sites that cost nothing,
+# because `one is None` was read as "this item is a script call" and a site with no figure had
+# no sentence of its own to be refused with, so rule 8 priced the step's whole wait at 0 and
+# refused nobody for it (dispatch://INFRA-1545, R8).
+#
+# The fetch is written in a function the loop calls, because rule 2 refuses any fetch that is
+# not a `retry_fetch` call written in a loop's own body, and a fetch in a function the loop
+# runs sits in no loop of its own. That is rule 8's second reading of a loop — times_run folds
+# the loops around the calls of the function holding the call — so the case is about rule 8
+# alone, and the fixture passes every other rule.
+echo "case: a loop around the step's own curl whose bound is a variable is refused"
+root=$(fixture site-unread-bound-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          read_run() {
+            curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+              -o "run-$1.json" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+          }
+          while read -r id; do
+            read_run "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the site it cannot count" \
+  "$(contains "$out" "step .Read every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it")"
+check "names the site's line and the loop around it" \
+  "$(contains "$out" '.curl. at .github/workflows/case.yaml:10, inside the loop at line 13')"
+check "says what one call of it takes is a figure it cannot make" \
+  "$(contains "$out" 'What one call of .curl. there takes is a figure this check cannot make, because its bound is written as a variable rather than as a number')"
+check "says the passes of the loop are unread too" \
+  "$(contains "$out" 'the step waits for that once per pass of a loop whose passes this check cannot read either')"
+check "prints no figure for a call it cannot price" \
+  "$(is "$(contains "$out" 'One call there takes')" false)"
+check "prices the site at nothing nowhere" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+check "gives the site's advice and not a script call's" \
+  "$(contains "$out" 'write that bound as a number')"
+check "says no declaration answers an unread bound" \
+  "$(contains "$out" 'No entry of DECLARED_LOOPS answers this one: an entry writes the seconds a site contributes to a budget')"
+check "names the refusal that follows a bound written as a number, and what answers it" \
+  "$(contains "$out" 'this check refuses the step again with the seconds one call takes, and an entry of DECLARED_LOOPS answers that refusal')"
+check "offers no pass count as a way out of this one" \
+  "$(is "$(contains "$out" 'Write the count where this check reads it')" false)"
+check "does not tell the author to take a call out of a loop" \
+  "$(is "$(contains "$out" 'take the call out of the loop')" false)"
+
+# The other half of that reading, which the case above must not take with it: a site one_call
+# prices at 0 is still dropped. The loop the exempt action writes is as unreadable as the one
+# above, and the `docker pull` under it is a verb this check puts no attempt behind, so there
+# is nothing under that loop for the step's budget to exceed and no pass count to ask the
+# action's author for. Keeping every site with no figure, rather than only the ones whose
+# bound is unread, refuses this step — and the baseline's own two image loops with it.
+echo "case: a step whose action loops, uncounted, over a verb that waits for nothing passes"
+root=$(fixture site-costless-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull the images tests start
+        timeout-minutes: 30
+        uses: ./.github/actions/pull-test-images
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "prices no call of that loop at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
 # The filter's question asked one layer in: the step's loop runs a script whose own work is a
 # loop this check cannot count over a script that fetches nothing. No attempt waits under
 # either loop, so neither is a loop rule 8 has a pass count to ask the step's author for.
