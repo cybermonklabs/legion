@@ -7,28 +7,33 @@ name: CI job plugin-pack
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# What runs here is one test: internal/daemon's TestTheRealPluginsOnTheRealOhMyPi, which packs
-# packages/pi-envoy and packages/pi-legion with `bun pm pack` — each pack running that package's
-# prepack, which reads bun.lock and builds the bundle from the installed workspace — installs the
-# two tarballs on the real Oh My Pi and reads back what the daemon's boot gate reads. It was a
-# test of .github/workflows/ci-job-daemon-go.yaml's race step, which skips it by name now: its
-# reads are the whole reason that job's filter named the lockfile, and a lockfile change then ran
-# the daemon's entire Go suite, 1,083 s of tests that could not see it (dispatch://INFRA-1413).
-# With the test here, a bun.lock-only change runs this test and no other daemon Go test.
+# What runs here is internal/daemon's three tests that load a plugin on the real Oh My Pi:
+# TestTheRealPluginsOnTheRealOhMyPi, which packs packages/pi-envoy and packages/pi-legion with
+# `bun pm pack` — each pack running that package's prepack, which reads bun.lock and builds the
+# bundle from the installed workspace — installs the two tarballs on the real Oh My Pi and reads
+# back what the daemon's boot gate reads; TestTheAgentModelCheckOnTheRealOhMyPi, which probes the
+# prompts this checkout ships, laid out as the release lays them out (packages/pi-legion/agents
+# copied and each plugin's partition of skills/ staged with scripts/pi-plugin-prepack.sh itself);
+# and TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName, which probes a plugin it writes
+# itself. They were tests of .github/workflows/ci-job-daemon-go.yaml's race step, which skips them
+# by name now: their reads are the whole reason that job's filter named the lockfile and skills/,
+# and a change to either then ran the daemon's entire Go suite, 1,083 s of tests that could not
+# see it (dispatch://INFRA-1413). With the tests here, a change to bun.lock or to one skill runs
+# them and no other daemon Go test.
 #
-# The test's name is written in .github/scripts/ci_job_reads.py (PACK_TESTS), which builds this
-# step's `-run` and the race step's `-skip` from the one list and holds each step's whole script
-# to the text it builds, so the two cannot come to name different tests.
+# The tests' names are written in .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which
+# builds this step's `-run` and the race step's `-skip` from the one list and holds each step's
+# whole script to the text it builds, so the two cannot come to name different tests.
 #
-# Everything here is what that one test needs:
-#   * Bun and a frozen install — `bun pm pack` is the test's first act, and each prepack builds
-#     its bundle from the installed workspace and fails rather than skips without it;
-#   * Oh My Pi at the pin .omp-pin names, which the test installs the two packed plugins on
+# Everything here is what those tests need:
+#   * Bun and a frozen install — `bun pm pack` is the pack test's first act, and each prepack
+#     builds its bundle from the installed workspace and fails rather than skips without it;
+#   * Oh My Pi at the pin .omp-pin names, which the tests install their plugins on
 #     (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), installed
 #     through the mise install-jj leaves at ~/.local/bin/mise;
 #   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
 #     the same build the daemon-go race step makes, so it restores the same entry.
-# No database, no tmux, no uv and no container image: the test starts none of them.
+# No database, no tmux, no uv and no container image: the tests start none of them.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -95,15 +100,16 @@ jobs:
       # through: no test of this job runs jj.
       - uses: ./.github/actions/install-jj
 
-      # The test runs the Oh My Pi the worker image ships and refuses on GitHub Actions without
+      # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without
       # one (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of
       # it, installed through the mise above (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
 
-      # The one test, by name. .github/scripts/ci_job_reads.py builds this text and the daemon-go
-      # race step's `-skip` from PACK_TESTS and holds both steps to what it builds.
-      - name: Pack the plugin releases and load them on the real Oh My Pi
-        run: go test -count=1 -timeout 15m -run '^(TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
+      # The three tests, by name. .github/scripts/ci_job_reads.py builds this text and the
+      # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
+      # builds.
+      - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
+        run: go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
         working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run

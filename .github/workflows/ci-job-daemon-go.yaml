@@ -31,14 +31,15 @@ name: CI job daemon-go
 #     setup-go of its own — its held-port, CI-filter and build-tag-lister steps still run go —
 #     but no restore: the entry holds what compiling packages/daemon leaves behind, and those
 #     steps compile a scratch module and the envoy listener instead.
-# No Bun and no install: the one test of this module that needed the workspace built was
-# internal/daemon's `bun pm pack` of the two plugins, which is
-# .github/workflows/ci-job-plugin-pack.yaml's now, and the race step below skips it by name. What
-# is left that names bun runs no pack: agentmodels_omp_test.go:175 runs
-# scripts/pi-plugin-prepack.sh --stage-skills, which copies the skill directories and builds
-# nothing, and handoff_records_live_test.go's bun is behind `//go:build e2e`, which no step here
-# compiles. So this job's filter names no lockfile and no workspace manifest, and a bun.lock-only
-# change runs the plugin-pack test and no test of this job (dispatch://INFRA-1413, A4).
+# No Bun and no install: the tests of this module that needed the workspace built, or the
+# repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
+# `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
+# partition of skills/ with scripts/pi-plugin-prepack.sh — which are
+# .github/workflows/ci-job-plugin-pack.yaml's now, and the race step below skips all three by
+# name. What is left here that names bun runs no pack: handoff_records_live_test.go's is behind
+# `//go:build e2e`, which no step here compiles. So this job's filter names no lockfile, no
+# workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
+# tests and no test of this job (dispatch://INFRA-1413, A4).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -201,15 +202,15 @@ jobs:
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
       # slowest run.
       #
-      # The -skip is the plugin-pack test, the one test of internal/daemon that packs the two
-      # plugin releases: it runs in .github/workflows/ci-job-plugin-pack.yaml, so that its reads
-      # — bun.lock among them — are that job's inputs and not this suite's, and a test run twice
-      # is a test whose second run tells nobody anything. The name is written in
-      # .github/scripts/ci_job_reads.py (PACK_TESTS), which builds this step's text and the other
-      # job's from the one list and holds each step to it, so the skip and the run cannot come to
-      # name different tests.
+      # The -skip is the plugin-pack job's three tests, the tests of internal/daemon that load a
+      # plugin on the real Oh My Pi: they run in .github/workflows/ci-job-plugin-pack.yaml, so
+      # that their reads — bun.lock and skills/ among them — are that job's inputs and not this
+      # suite's, and a test run twice is a test whose second run tells nobody anything. The names
+      # are written in .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which builds this
+      # step's text and the other job's from the one list and holds each step to it, so the skip
+      # and the run cannot come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

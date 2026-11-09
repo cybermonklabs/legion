@@ -357,10 +357,6 @@ RULES = {
     # with nobody noticing (dispatch://INFRA-1413).
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
-    f"{DAEMON}/internal/daemon/agentmodels_omp_test.go": reads(
-        ("packages/pi-legion/agents/**", "internal/daemon/agentmodels_omp_test.go:165 copyDir"),
-        ("scripts/pi-plugin-prepack.sh", "internal/daemon/agentmodels_omp_test.go:175 --stage-skills"),
-        ("skills/**", "internal/daemon/agentmodels_omp_test.go:175 prepack stages skills/<name>")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:315")),
     f"{DAEMON}/internal/daemon/check_settlement_test.go": reads((f"{FIX}/checks-settlement/*", "internal/daemon/check_settlement_test.go:57")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1324")),
@@ -778,29 +774,39 @@ DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
 go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m"""
 
-# The one test of this module that packs the two plugin releases:
-# internal/daemon/promptreferences_omp_test.go:132 packs packages/pi-envoy and packages/pi-legion
-# with `bun pm pack` (packedPlugin, :207-228), and each pack runs that package's prepack, which
-# reads bun.lock and builds the bundle from the installed workspace. It runs once per run of the
-# router, in the plugin-pack job, and the race step that runs its package skips it by name: the
-# pack's reads - the lockfile, the two plugin packages and what their prepack reads - are then
-# inputs of that one job rather than of the daemon's whole Go suite, so a lockfile-only change
-# runs this test and no other daemon Go test (dispatch://INFRA-1413, A4). Both step texts are
-# built from this one list, and check-ci-filters.sh pins each step's whole script, so the -skip
-# and the -run cannot come to name different tests.
-PLUGIN_PACK_TESTS = ["TestTheRealPluginsOnTheRealOhMyPi"]
+# The three tests of this module that load a plugin on the real Oh My Pi and read back what the
+# daemon's gates read. They run once per run of the router, in the plugin-pack job, and the race
+# step that runs their package skips them by name:
+#   * promptreferences_omp_test.go:132 packs packages/pi-envoy and packages/pi-legion with `bun pm
+#     pack` (packedPlugin, :207-228), and each pack runs that package's prepack, which reads
+#     bun.lock and builds the bundle from the installed workspace;
+#   * agentmodels_omp_test.go:113 probes the prompts this checkout ships, laid out as the release
+#     lays them out: packages/pi-legion/agents copied and each plugin's partition of skills/
+#     staged with scripts/pi-plugin-prepack.sh itself (shippedPromptPlugin, :165-167);
+#   * agentmodels_omp_test.go:186 probes a plugin it writes itself and reads no file of the
+#     repository. It is here because it is the other test of agentmodels_omp_test.go, and RULES is
+#     keyed on the source file rather than on the test: with both of that file's tests in this job,
+#     no test of it runs outside this job, and what the plugin-pack gate declares below stays the
+#     whole truth about the file however it grows.
+# Their reads - the lockfile, the two plugin packages, what their prepack reads, and skills/ - are
+# inputs of this one job rather than of the daemon's whole Go suite, so a lockfile-only change, or
+# a change to one skill, runs these tests and no other daemon Go test (dispatch://INFRA-1413, A4).
+# Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
+# script, so the -skip and the -run cannot come to name different tests.
+PLUGIN_PACK_TESTS = ["TestTheRealPluginsOnTheRealOhMyPi", "TestTheAgentModelCheckOnTheRealOhMyPi",
+                     "TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName"]
 PLUGIN_PACK_PACKAGE = "internal/daemon"
 PLUGIN_PACK_JOB = "plugin-pack"
-PLUGIN_PACK_STEP = "Pack the plugin releases and load them on the real Oh My Pi"
+PLUGIN_PACK_STEP = "Pack the plugin releases and run the prompt probes on the real Oh My Pi"
 PLUGIN_PACK_PATTERN = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS))})$'"
 PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
-# The skip belongs to the step that would otherwise run the test, so the two lists are held
+# The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: a package moved out of the race step while the
-# pack test stayed in it would run that test twice and read the lockfile in both jobs.
+# pack tests stayed in it would run them twice and read the lockfile in both jobs.
 if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
-    raise ValueError(f"the plugin-pack test is in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
-                     f"nothing skips it there; name that package's step here, or move the -skip to the step that "
-                     f"runs it")
+    raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
+                     f"nothing skips them there; name that package's step here, or move the -skip to the step that "
+                     f"runs them")
 DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
@@ -1430,10 +1436,11 @@ GATES = [
     # the plain step over every package of the module but the three concurrent ones and the text
     # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
     # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
-    # closure while it was aliased into the test filter and gated nothing of its own. The one
-    # test the race step does not run is the plugin pack's (PLUGIN_PACK_TESTS), whose job is
-    # below: with it goes the Bun install, which no other test of this module needs, and with
-    # that the lockfile and the workspace manifests.
+    # closure while it was aliased into the test filter and gated nothing of its own. The tests
+    # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
+    # below: with them goes the Bun install, which no other test of this module needs, and with
+    # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
+    # that stages each plugin's partition of it, which no other test of this module reads.
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
@@ -1450,11 +1457,11 @@ GATES = [
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
         # its script is pinned too. What it compiles is every test file of the three packages,
-        # the skipped test's included: -skip leaves a test out of the run, never out of the
-        # build, so the closure here is the step's whole closure and only the pack's own reads
+        # the skipped tests' included: -skip leaves a test out of the run, never out of the
+        # build, so the closure here is the step's whole closure and only those tests' own reads
         # (the plugin-pack gate below) leave this job.
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
-            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack test "
+            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
         ]),
     ], reads=reads(
@@ -1470,16 +1477,18 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
-    # The plugin-pack job: the one test of internal/daemon that packs the two plugin releases
-    # and loads them on the real Oh My Pi (PLUGIN_PACK_TESTS, which the daemon-go race step
-    # skips by name). The step runs that test alone, and compiles the package it is in to do
-    # it, so this filter is that package's whole test closure as well as the pack's own reads -
-    # the two plugin packages, what their prepack builds each bundle from, and the lockfile the
-    # frozen install reads. The job exists for the lockfile: with the test here, a bun.lock-only
-    # change runs this one test instead of the daemon's whole Go suite.
+    # The plugin-pack job: the three tests of internal/daemon that load a plugin on the real Oh
+    # My Pi (PLUGIN_PACK_TESTS, which the daemon-go race step skips by name) - the one that packs
+    # the two plugin releases and loads them, and the two prompt probes, one of which stages the
+    # prompts this checkout ships as the release stages them. The step runs those tests alone,
+    # and compiles the package they are in to do it, so this filter is that package's whole test
+    # closure as well as what the three read: the two plugin packages, what their prepack builds
+    # each bundle from, skills/, and the lockfile the frozen install reads. The job exists for
+    # those reads: with the tests here, a change to the lockfile or to one skill runs them
+    # instead of the daemon's whole Go suite (dispatch://INFRA-1413).
     gate("plugin_pack", PLUGIN_PACK_JOB, exact=[
         pinned_step(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP, DAEMON, PLUGIN_PACK_SCRIPT, [
-            (DAEMON, [f"./{PLUGIN_PACK_PACKAGE}/"], "go test -run over the package the pack test is in", {}),
+            (DAEMON, [f"./{PLUGIN_PACK_PACKAGE}/"], "go test -run over the package the three tests are in", {}),
         ]),
     ], reads=[
         Read(g, f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/promptreferences_omp_test.go:132,207-228 "
@@ -1488,6 +1497,16 @@ GATES = [
     ] + reads(
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "scripts/pi-plugin-prepack.sh:96, run by the pack "
                                                                 "in promptreferences_omp_test.go:228"),
+        # The prompts this checkout ships, laid out for the agent-model probe as the release lays
+        # them out: these were a RULES row of agentmodels_omp_test.go while the daemon-go race
+        # step ran that test, which put skills/ on that job's filter and ran 1,083 s of Go tests
+        # that could not see a skill (dispatch://INFRA-1413).
+        ("packages/pi-legion/agents/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/"
+                                         "agentmodels_omp_test.go:165 copyDir"),
+        ("scripts/pi-plugin-prepack.sh", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/"
+                                         "agentmodels_omp_test.go:175 --stage-skills"),
+        ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:175 "
+                      "prepack stages skills/<name>"),
     ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
