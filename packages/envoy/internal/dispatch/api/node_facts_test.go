@@ -248,6 +248,13 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 		"question": "Ship it?", "actor": sessionActor(),
 	})))
 	inThread := decodeBody[model.Comment](t, issueRequest("/comments", map[string]any{"body": "Context for the ask.", "ask_id": ask.ID}))
+	// The one write that records the asking session itself: a session is a node of the store
+	// from the first write that records it, and an ask it opened is no such write
+	// (graphstore.Authored). Without this its follower edge below would have no node to answer.
+	sessionComment := decodeBody[model.Comment](t, created(t, "a session's comment",
+		sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+child.Key+"/comments", map[string]any{
+			"body": "On it.", "actor": sessionActor(),
+		})))
 	anchoredAsk := decodeBody[model.Ask](t, issueRequest("/asks", map[string]any{
 		"anchor": map[string]string{"artifact": "spec", "quote": "Second paragraph"}, "question": "Is this right?",
 	}))
@@ -371,7 +378,8 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	if len(followers) != 1 || followers[0].Node.Kind != "session" || followers[0].Node.ID != sessionID {
 		t.Fatalf("the ask's followers = %#v, want session %s", followers, sessionID)
 	}
-	requireFacts(t, "the session following the ask", followers[0].Node, nodeFacts{MadeBy: nobody, ChangedBy: nobody})
+	requireFacts(t, "the session following the ask", followers[0].Node,
+		unchanged(session, sessionComment.CreatedAt, nil, nil))
 }
 
 // A11: the other end of an edge, a document read's block at an edge, and every node of a

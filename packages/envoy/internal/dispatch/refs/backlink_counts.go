@@ -300,6 +300,13 @@ var backlinkArms = map[string][]backlinkArm{
 		// ask_followers_session_id (migration 20261101182419), which exists for this arm.
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`},
 	},
+	// A person, a role and a page are pointed at by mentions alone. The tuples the store holds
+	// of them - authored_by, delivered_to, held_by and part_of - are no arm of graph_edges, so
+	// no count reads one; each entry is present and empty so its kind is counted from the
+	// mention arms rather than refused, as a document's block is.
+	"person": {},
+	"role":   {},
+	"page":   {},
 	// No arm of the view whose edge kind is a literal targets a document's block: such a block
 	// is pointed at by mentions alone, a reply naming the block of an ask, a comment or a
 	// message instead. The entry is present and empty so a block is counted from its mention

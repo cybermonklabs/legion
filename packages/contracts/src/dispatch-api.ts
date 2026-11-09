@@ -2839,8 +2839,15 @@ export type GraphEdgeKind =
   | "affects"
   | (string & {});
 
-// GraphNode is one end of a reference-graph edge. `ref` is its dispatch:// address; a
-// session node has none. A component node's id is `<project>/<component id>`.
+// GraphNode is one end of a reference-graph edge. `ref` is its dispatch:// address; a person,
+// a role, a session and a page have none. A component node's id is `<project>/<component id>`.
+//
+// A `person` node's id is that person's login, lower-cased and trimmed, the one answer to who a
+// person is. A `session` node's id is a session id, one run of an agent, and a `role` node's id
+// is the topic token a run claims, which is the agent Dispatch keeps across a restart. A `page`
+// node is the page of a role (`role/<topic>`) or of a session that claimed no role
+// (`session/<session id>`). Each exists from the moment Dispatch first records it: a session it
+// has recorded nothing of is no node, and an edge at one is left out.
 //
 // Every node carries six facts: `made_by` and `made_at` (who made it and when), `changed_by`
 // and `changed_at` (who last changed its own text or fields and when; the maker when nothing
@@ -2866,7 +2873,10 @@ export interface GraphNode {
     | "ask"
     | "comment"
     | "message"
+    | "person"
     | "session"
+    | "role"
+    | "page"
     | "component";
   readonly id: string;
   readonly block_id?: string;

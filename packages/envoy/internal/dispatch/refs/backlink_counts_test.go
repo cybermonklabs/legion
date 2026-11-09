@@ -313,6 +313,12 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message", rootMessage},
 		{"component", "CORE/core"},
 		{"session", "session-backlink"},
+		// The three kinds the store holds that no structural arm points at, as the view's
+		// mention arm reaches them: a person by their canonical login, a role by its topic,
+		// and the page of that role.
+		{"person", "person-backlink@example.com"},
+		{"role", "role-backlink"},
+		{"page", "role/role-backlink"},
 		{"block", notesBlock},
 		{"comment_block", commentBlock},
 		{"comment_block", removedCommentBlock},

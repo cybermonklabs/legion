@@ -109,13 +109,13 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		return err
 	}
 	want := newWanted()
-	_, _, _ = eventDestinations(event, item.Topic, routing, want)
+	_, _ = eventDestinations(event, item.Topic, routing, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
 	}
-	list, mentionPending, resolveErr := eventDestinations(event, item.Topic, routing, found)
-	single := &batchEvent{item: item, destinationsOf: list}
+	to, resolveErr := eventDestinations(event, item.Topic, routing, found)
+	single := &batchEvent{item: item, destinationsOf: to.list}
 	resolveRoleHolders(ctx, deps, []*batchEvent{single})
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
@@ -143,7 +143,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err := errors.Join(append(failures, resolveErr)...); err != nil {
 		return err
 	}
-	if mentionPending {
+	if to.mentionPending {
 		return errMentionPending
 	}
 	return nil

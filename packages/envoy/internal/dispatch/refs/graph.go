@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -424,7 +425,10 @@ var nodeLoaders = map[string]nodeLoader{
 	"comment":       loadCommentNodes,
 	"message":       loadMessageNodes,
 	"component":     loadComponentNodes,
-	"session":       loadSessionNodes,
+	"person":        loadStoreNodes,
+	"session":       loadStoreNodes,
+	"role":          loadStoreNodes,
+	"page":          loadStoreNodes,
 	"block":         loadBlockNodes,
 	"ask_block":     loadAskBlockNodes,
 	"comment_block": loadCommentBlockNodes,
@@ -465,13 +469,35 @@ func resolveNodes(ctx context.Context, q Queryer, byRefKey bool, rows []edgeRow)
 	return nodes, nil
 }
 
-// loadSessionNodes addresses a session node by its id alone. Dispatch records no fact of a
-// session: it is made by nobody recorded, never changed and belongs to no node.
-func loadSessionNodes(_ context.Context, _ Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	for _, id := range ids {
-		nodes[[2]string{kind, id}] = resolvedNode{GraphNode: model.GraphNode{Kind: kind, ID: id, MadeBy: []model.Actor{}, ChangedBy: []model.Actor{}}}
+// loadStoreNodes resolves the kinds the node and tuple store holds itself: a person, a session,
+// a role and a role's or a session's page (graphstore). Each is read from graph_nodes, and one
+// the store has no row for is absent from the answer, as every other loader leaves out a node
+// that does not exist: a session Dispatch has recorded nothing of is no node of the graph, and
+// the edges at it are omitted until a write records it. None of the four carries a dispatch://
+// address or belongs to a node here: what a session is part of is a tuple, which the reads that
+// show one follow for themselves.
+func loadStoreNodes(ctx context.Context, q Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	rows, err := q.Query(ctx, `
+		select id, made_by, made_at from graph_nodes
+		where kind = $1 and id = any($2) and state = $3`, kind, ids, graphstore.StateLive)
+	if err != nil {
+		return fmt.Errorf("load %s nodes: %w", kind, err)
 	}
-	return nil
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var madeBy []byte
+		var madeAt time.Time
+		if err := rows.Scan(&id, &madeBy, &madeAt); err != nil {
+			return fmt.Errorf("scan %s node: %w", kind, err)
+		}
+		node := model.GraphNode{Kind: kind, ID: id}
+		if err := setMadeAndChanged(&node, madeBy, madeAt, nil, nil, storedActors); err != nil {
+			return err
+		}
+		nodes[[2]string{kind, id}] = resolvedNode{GraphNode: node}
+	}
+	return rows.Err()
 }
 
 // loadIssueNodes resolves issue nodes. An issue is made by its creator; its last change is the

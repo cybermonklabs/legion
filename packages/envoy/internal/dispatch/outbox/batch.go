@@ -300,11 +300,15 @@ type batchEvent struct {
 	// it off; mentionPending is a session's copy left out of the list for a mention still being
 	// sent, which blocks the event (eventDestinations, settleEvent). A copy so left out is no
 	// destination of the event, so it holds none of the owner's later events back.
-	delivered      map[string]struct{}
-	destinationsOf []destination
-	resolveErr     error
-	resolveLost    bool
-	mentionPending bool
+	// deliveredByMention are the sessions a mention of this comment already reached, which are
+	// no destination of it either - the mention delivered the comment - and which the record
+	// writes as the deliveries they are (deliveredGraph).
+	delivered          map[string]struct{}
+	destinationsOf     []destination
+	deliveredByMention []string
+	resolveErr         error
+	resolveLost        bool
+	mentionPending     bool
 	// incomplete is that the list ends at a recipient read that failed (unansweredRecipients): the
 	// sessions that read would add are unknown, so the event holds its owner's later events back
 	// from every session key its list neither names nor it already reached (planChains).

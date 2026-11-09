@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -905,6 +906,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "comment", comment.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Who wrote it, as the node and tuple store holds it: the author's node and the comment's
+	// authored_by tuple, beside the stamp and under the event that caused both.
+	if err := graphstore.Authored(r.Context(), tx, "comment", comment.ID, actor, comment.CreatedAt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

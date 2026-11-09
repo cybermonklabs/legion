@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -273,6 +275,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	// scheduled is the record's own check, on the database's clock (recordBatch).
 	settleAndRecord := func(owned []*batchEvent, releaseUnacknowledged bool) (settlement, error) {
 		var outcomes []outcome
+		var settled []*batchEvent
 		var done settlement
 		for _, event := range owned {
 			if !event.due {
@@ -280,6 +283,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
 			outcomes = append(outcomes, event.outcome)
+			settled = append(settled, event)
 			switch event.outcome.state {
 			case published:
 				done.published++
@@ -302,7 +306,8 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		// accepted and releases the rest.
 		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 		defer cancel()
-		holds, err := recordBatch(record, deps, outcomes, holder)
+		reached := deliveredGraph(settled, time.Now())
+		holds, err := recordBatch(record, deps, outcomes, holder, reached)
 		done.holds = holds
 		return done, err
 	}
@@ -690,12 +695,21 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // same statement, so a process that lost the hold mid-batch schedules nothing beside the holder
 // that took it. Each row is guarded on published_at is null.
 //
+// Beside the events' own rows it writes what the batch delivered into the node and tuple store
+// (deliveredGraph), as further arms of this one statement (graphstore.WriteArms): the nodes of
+// the roles and sessions it reached, the pages under them, each role's held_by tuple and the
+// delivered_to tuple of every delivery. Those arms are written whoever holds the publisher
+// hold, as the reached destinations are: a delivery that happened is no schedule to make. They
+// take no owner row - this statement runs on a pooled connection with no transaction of its own
+// - and each is repeat-safe under the store's two partial repeat keys, which is what a record
+// that is retried needs.
+//
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
 // leaves too: they are sent again by the next scan or the next holder. JetStream drops each repeat
 // inside its duplicate window by its MsgId, a role forward's included (roleForward.send), and a
 // role's holder drops a repeat forward by its dedupe key (internal/contracts/dedupe.go).
-func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid.UUID) (bool, error) {
+func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid.UUID, reached graphWrite) (bool, error) {
 	if len(outcomes) == 0 {
 		return true, nil
 	}
@@ -728,6 +742,16 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedTopics = append(reachedTopics, topic)
 		}
 	}
+	// The store's arms are numbered after this statement's own ten parameters and bound after
+	// them; a batch that reached no node of the store adds neither text nor parameter.
+	arms, stored, err := graphstore.WriteArms(11, reached.nodes, reached.tuples, reached.claims)
+	if err != nil {
+		return false, fmt.Errorf("record the batch's outcome: %w", err)
+	}
+	if arms != "" {
+		arms = ",\n" + arms
+	}
+	args := append([]any{publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics}, stored...)
 	var holds bool
 	if err := deps.lanes.statement(func() error {
 		return deps.Store.Pool.QueryRow(ctx, `
@@ -768,13 +792,200 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			left join reached r on r.id = o.id
 			where e.id = o.id and e.published_at is null
 			  and (o.state = 'published' or h.mine or r.id is not null)
-		)
+		)`+arms+`
 		select mine from hold
-	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics).Scan(&holds)
+	`, args...).Scan(&holds)
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}
 	return holds, nil
+}
+
+// graphWriter is who the node and tuple store records as the writer of what a batch delivered.
+// The event's own actor wrote the thing; that it reached a session is this process's fact and
+// nobody's act, as the schema seed's writer is the seed (migration 20261109051232).
+var graphWriter = model.Actor{Kind: "system", ID: "dispatch-outbox"}
+
+// graphWrite is what one record states about the store: the nodes of the roles, sessions and
+// pages it reached, the delivered_to tuples of what it delivered, and the claims - each role's
+// holder and what hangs under what - which are written only where they change (graphstore.Claim).
+type graphWrite struct {
+	nodes  []graphstore.Node
+	tuples []graphstore.Tuple
+	claims []graphstore.Claim
+}
+
+// resolvedRole is a role of a batch as its resolution left it: the lowest event id that routed
+// to it, which is the cause the store records; the session holding it, empty for a role read
+// unclaimed or whose holder is gone; and whether the resolution reached the claim at all. A
+// claim that could not be read states nothing, and the role keeps the holder the store holds.
+type resolvedRole struct {
+	event    int64
+	holder   string
+	resolved bool
+}
+
+// deliveredGraph is what the settled events of one record state about the people and agents of
+// the store (graphstore): the role each event routed to with the session resolveRoleHolders
+// found holding it, every session the batch reached, and one delivered_to tuple per delivery.
+//
+// A delivery is a destination this batch reached, and a mention of a new comment that some
+// attempt already delivered (mentionDeliveries.sent): the outbox sends such a session nothing,
+// the mention having delivered it, so without that arm what reached a person through a mention
+// would be recorded nowhere. An attempt still pending or failed delivered nothing and is in
+// neither list. A delivery to a role ends at the role node: the session it was forwarded to is
+// what the role's held_by tuple names.
+//
+// Every page there is hangs here: a role's page under the role, and a session's own page under
+// a session this batch saw holding no role. A session the batch resolved as a role's holder is
+// part_of that role instead, and its page is the role's.
+func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
+	roles := map[string]resolvedRole{}
+	var roleOrder []string
+	sessions := map[string]int64{}
+	var sessionOrder []string
+	var write graphWrite
+	recordSession := func(id string, event int64) {
+		if id == "" {
+			return
+		}
+		if _, held := sessions[id]; !held {
+			sessions[id] = event
+			sessionOrder = append(sessionOrder, id)
+		}
+	}
+	for _, event := range events {
+		cause := event.event.ID
+		for _, dest := range event.destinationsOf {
+			if dest.role == "" || dest.forward == nil {
+				continue
+			}
+			if _, held := roles[dest.role]; held {
+				continue
+			}
+			holder, resolved := resolvedHolder(dest.forward)
+			roles[dest.role] = resolvedRole{event: cause, holder: holder, resolved: resolved}
+			roleOrder = append(roleOrder, dest.role)
+		}
+		kind, id, delivers := deliveredItem(event.event)
+		if !delivers {
+			continue
+		}
+		for _, subject := range event.outcome.reached {
+			toKind, toID, ok := nodeOfSubject(subject)
+			if !ok {
+				continue
+			}
+			if toKind == graphstore.KindSession {
+				recordSession(toID, cause)
+			}
+			write.tuples = append(write.tuples, deliveredTo(kind, id, toKind, toID, at, cause))
+		}
+		for _, session := range event.deliveredByMention {
+			recordSession(session, cause)
+			write.tuples = append(write.tuples, deliveredTo(kind, id, graphstore.KindSession, session, at, cause))
+		}
+	}
+	held := map[string]struct{}{}
+	for _, role := range roleOrder {
+		claim := roles[role]
+		page := graphstore.RolePageID(role)
+		write.nodes = append(write.nodes,
+			graphstore.RoleNode(role, graphWriter, at, claim.event),
+			graphstore.PageNode(page, graphWriter, at, claim.event))
+		write.claims = append(write.claims,
+			partOf(graphstore.KindPage, page, graphstore.KindRole, role, at, claim.event))
+		if !claim.resolved {
+			continue
+		}
+		toKind := ""
+		if claim.holder != "" {
+			toKind = graphstore.KindSession
+		}
+		write.claims = append(write.claims, graphstore.Claim{
+			FromKind: graphstore.KindRole, FromID: role, Kind: graphstore.TupleHeldBy,
+			ToKind: toKind, ToID: claim.holder,
+			At: at, Who: graphWriter, SourceEvent: claim.event,
+		})
+		// A session holds one role at a time, so the first role of this batch that resolved to
+		// it is the one it is part of; a second would state two parents from one read.
+		if _, holds := held[claim.holder]; claim.holder == "" || holds {
+			continue
+		}
+		held[claim.holder] = struct{}{}
+		write.nodes = append(write.nodes, graphstore.SessionNode(claim.holder, graphWriter, at, claim.event))
+		write.claims = append(write.claims,
+			partOf(graphstore.KindSession, claim.holder, graphstore.KindRole, role, at, claim.event))
+	}
+	for _, session := range sessionOrder {
+		if _, holds := held[session]; holds {
+			continue
+		}
+		cause := sessions[session]
+		page := graphstore.SessionPageID(session)
+		write.nodes = append(write.nodes,
+			graphstore.SessionNode(session, graphWriter, at, cause),
+			graphstore.PageNode(page, graphWriter, at, cause))
+		write.claims = append(write.claims,
+			partOf(graphstore.KindPage, page, graphstore.KindSession, session, at, cause))
+	}
+	return write
+}
+
+// resolvedHolder is the session a role's forward says holds it now, and whether the resolution
+// reached the claim at all. A read that failed (heldStateUnresolved) reached none, and the store
+// is told nothing rather than that the role is unclaimed; a holder that is not answering holds
+// its claim still, which is the holder the forward carries.
+func resolvedHolder(forward *roleForward) (string, bool) {
+	if forward.heldState == heldStateUnresolved {
+		return "", false
+	}
+	return forward.holder, true
+}
+
+// deliveredTo is one delivery: the thing delivered, pointing at the session or the role it
+// reached, caused by the event that carried it.
+func deliveredTo(fromKind, fromID, toKind, toID string, at time.Time, event int64) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: fromKind, FromID: fromID, Kind: graphstore.TupleDeliveredTo,
+		ToKind: toKind, ToID: toID,
+		At: at, Who: graphWriter, SourceEvent: event, Asserted: true,
+	}
+}
+
+// partOf hangs one node under another, as the claim it is: a page under whose page it is, and a
+// session under the role it claimed, each ending when the store is told a different one.
+func partOf(fromKind, fromID, toKind, toID string, at time.Time, event int64) graphstore.Claim {
+	return graphstore.Claim{
+		FromKind: fromKind, FromID: fromID, Kind: graphstore.TuplePartOf,
+		ToKind: toKind, ToID: toID,
+		At: at, Who: graphWriter, SourceEvent: event,
+	}
+}
+
+// nodeOfSubject is the node of the store a destination's subject reaches: the session an agent
+// subject names, or the role a role topic names. An owner's topic family reaches whoever
+// subscribed to it, whom nothing records, so it reaches no node.
+func nodeOfSubject(subject string) (kind, id string, ok bool) {
+	if session, found := strings.CutPrefix(subject, contracts.AgentTopicPrefix); found {
+		return graphstore.KindSession, session, session != ""
+	}
+	if role, found := strings.CutPrefix(subject, contracts.RoleTopicPrefix); found {
+		return graphstore.KindRole, role, role != ""
+	}
+	return "", "", false
+}
+
+// deliveredItem is the node an event delivered, as the store holds it today: a comment, whose
+// id its payload carries. An event about anything else reaches its destinations all the same,
+// and the tuple that records that waits for the child which makes issues, asks and messages
+// nodes (dispatch://INFRA-1253, dispatch://INFRA-1152).
+func deliveredItem(event model.Event) (kind, id string, ok bool) {
+	if !strings.HasPrefix(event.Type, "comment.") {
+		return "", "", false
+	}
+	id = payloadString(event.Payload, "id")
+	return "comment", id, id != ""
 }
 
 // resolveDestinations gives every event of a batch that has an owner and can be read its envelope
@@ -804,7 +1015,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) e
 		}
 		event.item = item
 		resolvable = append(resolvable, event)
-		_, _, _ = eventDestinations(event.event, item.Topic, event.routing, want)
+		_, _ = eventDestinations(event.event, item.Topic, event.routing, want)
 	}
 	// The lookups' statements run one after another, and the gate is held from the first to the
 	// last (lanes.statement), so no other batch's statement is run between two of them.
@@ -817,7 +1028,9 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) e
 		return err
 	}
 	for _, event := range resolvable {
-		event.destinationsOf, event.mentionPending, event.resolveErr = eventDestinations(event.event, event.item.Topic, event.routing, found)
+		to, err := eventDestinations(event.event, event.item.Topic, event.routing, found)
+		event.destinationsOf, event.mentionPending = to.list, to.mentionPending
+		event.deliveredByMention, event.resolveErr = to.sentMentions(), err
 		event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
 		var unanswered *unansweredRecipients
 		event.incomplete = errors.As(event.resolveErr, &unanswered)
@@ -834,6 +1047,14 @@ type destinations struct {
 	seen           map[string]struct{}
 	mentions       mentionDeliveries
 	mentionPending bool
+}
+
+// sentMentions are the sessions some attempt of this comment's mentions already reached, in
+// session order so one batch writes them the same way whenever it is read again. Each is a
+// delivery the record writes (deliveredGraph) and no destination of the event: the mention
+// delivered the comment, so the outbox sends it nothing.
+func (d *destinations) sentMentions() []string {
+	return slices.Sorted(maps.Keys(d.mentions.sent))
 }
 
 func (d *destinations) add(subject, label, id string) {
@@ -877,18 +1098,21 @@ func (d *destinations) leftToMention(sessionID string) bool {
 // eventDestinations lists event's destinations in the order they are sent and recorded: its
 // owner's topic (ownerTopic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
-// its follower routes and the previous claimant's notice. mentionPending reports a session's copy
-// held back for a mention still being sent (destinations.leftToMention). The mention deliveries of
-// a new comment whose mentions resolved to a session are read before anything else, so a lookup of
-// them that fails leaves the event with no destination. Any other lookup that fails, or a route
-// that does not parse, ends the list there: the destinations before it are returned with the
-// error, which backs the event off once they are sent. So a recipient read the batch has no answer
-// for (unansweredRecipients) still lets the owner topic, the route and the claimant go first.
-func eventDestinations(event model.Event, ownerTopic string, routing routing, look lookup) (list []destination, mentionPending bool, err error) {
+// its follower routes and the previous claimant's notice. It answers the whole reading: the list,
+// a session's copy held back for a mention still being sent (destinations.leftToMention), and the
+// sessions a mention already delivered the comment to (destinations.sentMentions), which are the
+// batch's deliveries without a send of its own. The mention deliveries of a new comment whose
+// mentions resolved to a session are read before anything else, so a lookup of them that fails
+// leaves the event with no destination. Any other lookup that fails, or a route that does not
+// parse, ends the list there: the destinations before it are returned with the error, which backs
+// the event off once they are sent. So a recipient read the batch has no answer for
+// (unansweredRecipients) still lets the owner topic, the route and the claimant go first.
+func eventDestinations(event model.Event, ownerTopic string, routing routing, look lookup) (*destinations, error) {
 	d := &destinations{seen: map[string]struct{}{}}
+	var err error
 	if event.Type == "comment.created" && len(payloadMentionedSessions(event.Payload)) > 0 {
 		if d.mentions, err = look.mentionDeliveries(payloadString(event.Payload, "id")); err != nil {
-			return nil, false, err
+			return d, err
 		}
 	}
 	d.add(ownerTopic, "publish owner topic", ownerTopic)
@@ -897,22 +1121,22 @@ func eventDestinations(event model.Event, ownerTopic string, routing routing, lo
 	if event.Notify && !targeted {
 		if !suppressesCurrentRoute(event.Payload, routing.route, d) {
 			if err := addRoute(d, routing.route); err != nil {
-				return d.list, d.mentionPending, err
+				return d, err
 			}
 		}
 		addClaimantRoute(event, routing.claimant, d)
 		if err := addPrimaryDocumentAuthors(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, err
+			return d, err
 		}
 		if err := addAuthorRoutes(event, look, d); err != nil {
-			return d.list, d.mentionPending, err
+			return d, err
 		}
 	}
 	if err := addFollowerRoutes(event, look, d); err != nil {
-		return d.list, d.mentionPending, err
+		return d, err
 	}
 	addPreviousClaimant(event, d)
-	return d.list, d.mentionPending, nil
+	return d, nil
 }
 
 // addRoute adds the owner's route: a session route is the session's own subject, and a role route

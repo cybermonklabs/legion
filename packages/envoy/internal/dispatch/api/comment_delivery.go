@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -978,6 +979,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "comment", reply.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Who wrote the reply, as the node and tuple store holds it: a session answering a mention
+	// is the first write that records that session, so its node is made here (graphstore.Authored).
+	if err := graphstore.Authored(r.Context(), tx, "comment", reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
