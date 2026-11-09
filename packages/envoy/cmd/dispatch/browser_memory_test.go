@@ -2454,6 +2454,14 @@ const (
 	// build documents at it and fail unless their stored histories hold within 4,096 of it
 	// (requireAtTheDecodeCap).
 	maxUpdateItemsForTest = 1 << 20
+
+	// nearTheStateCapStructs is how much of the long-edited fixture the room padded to the state
+	// cap is built from: few enough structs that the room's state term decides its charge rather
+	// than its struct term (room_prices.go), so a room at the state cap costs the budget what its
+	// bytes cost and not what a million keystrokes' structs do. Sixteen thousand structs are
+	// charged 20,160,000 by the struct term against the 570,425,344 the state cap's own bytes
+	// charge, so the state decides it by a factor of 28.
+	nearTheStateCapStructs = 16_000
 	// worstCaseLoadSlotBytesForTest is what the pod's load concurrency may hold at once:
 	// loadSlotsForTest slots of loadSlotBytesForTest each, the sum the heaviest-apply drive adds
 	// to the room budget and the cold reads' cache to weigh its worst case against the Go limit.
@@ -2700,10 +2708,34 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	// state a room may hold, and so the heaviest whole-state handoff a browser of such a room
 	// can send; four of those frames fit the floor, which is what the cap is derived to make
 	// true.
+	// The room at the state cap is padded by BYTES rather than by structs, and there is one of
+	// it rather than two, because the room price's struct term decides a struct-dense room's
+	// charge and leaves this drive's fixtures no room in the budget at all: two rooms at the
+	// state cap built from a million keystrokes are charged 1,316,044,800 bytes each, which is
+	// 2,632,089,600 together, 484,605,952 past the whole 2,147,483,648-byte budget they are
+	// weighed against; one of them still leaves 831,421,208, against the 1,321,205,760 the
+	// agent-rewritten document is charged, so the step this drive ends on - the budget admitting
+	// one browser of that document and refusing the next - could not happen either. Padded from a
+	// document of few structs, the same state cap is charged by its state at 570,425,344 and the
+	// drive's whole set fits, with room for one agent-rewritten document and not two
+	// (room_prices.go, dispatch://INFRA-179 departures 35 and 39).
+	//
+	// Nothing of what the drive proves moves with it. The heaviest apply there is is a
+	// whole-state handoff of maxRoomStateBytes, which is a byte bound: a room at the cap makes
+	// that handoff whatever its structs, and three browsers of one such room hand back three of
+	// them as two rooms did.
+	//
+	// What did move is the pod's own reading, and it is worth keeping rather than tidying away:
+	// with these fixtures the heaviest step peaks at 1,699 MiB of the pod's 4,096 where the
+	// struct-dense set peaked at 3,427 MiB, because the budget is filled to its brim by a charge
+	// that now runs up to 3.4 times what a room of cheap structs holds. So the drive still proves
+	// its own sentence - the budget charged to its limit, the heaviest applies and the folds
+	// beside it, all inside the pod - and the distance between that charge and the heap is the
+	// over-charge departure 39 records, not slack in the drive.
 	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
-		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, maxUpdateItemsForTest-4_096)))
+		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
 	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
-	heaviest := memory.storedShape(t, "the long-edited document 4,096 structs short of the decode cap, padded to the room's state cap", stored[1])
+	heaviest := memory.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
 	agent := memory.storedShape(t, "the agent-rewritten document", memory.agentRewrittenDocument(t))
 	requireAtTheDecodeCap(t, longEdited)
 	requireAtTheDecodeCap(t, agent)
@@ -2711,21 +2743,21 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
 	}
 	cached, cacheWeight := memory.readCacheFill(t)
-	heavyRooms := memory.cloneDocuments(t, heaviest.id, 2)
+	heavyRooms := memory.cloneDocuments(t, heaviest.id, 1)
 	typedIDs, _ := memory.smallDocuments(t, 1)
 	typed := memory.storedShape(t, "the ordinary document a person types in", typedIDs[0])
 	typedGrowth := int64(typingKeystrokes * keystrokeChargeForTest)
-	fill := (roomBudgetBytesForTest - 2*heaviest.weight - typed.weight - typedGrowth - agent.weight) / longEdited.weight
-	free := roomBudgetBytesForTest - 2*heaviest.weight - typed.weight - fill*longEdited.weight
-	if fill < 1 || free-typedGrowth < agent.weight || free >= 2*agent.weight {
-		t.Fatalf("two rooms at the state cap, the typed room and %d at the decode cap leave %d of the %d-byte budget, want room for one agent-rewritten document (%d bytes) beside the %d its typing can add, and not for two before any typing",
+	fill := (roomBudgetBytesForTest - heaviest.weight - typed.weight - typedGrowth - agent.weight) / longEdited.weight
+	free := roomBudgetBytesForTest - heaviest.weight - typed.weight - fill*longEdited.weight
+	if fill < 0 || free-typedGrowth < agent.weight || free >= 2*agent.weight {
+		t.Fatalf("the room at the state cap, the typed room and %d at the decode cap leave %d of the %d-byte budget, want room for one agent-rewritten document (%d bytes) beside the %d its typing can add, and not for two before any typing",
 			fill, free, roomBudgetBytesForTest, agent.weight, typedGrowth)
 	}
 	filling := memory.cloneDocuments(t, longEdited.id, int(fill))
 	lastRooms := memory.cloneDocuments(t, agent.id, 2)
 	folded := append(memory.cloneDocuments(t, agent.id, folds/2), memory.cloneDocuments(t, longEdited.id, folds/2)...)
 	worst := int64(roomBudgetBytesForTest) + documentReadBudgetForTest + worstCaseLoadSlotBytesForTest
-	t.Logf("the budget: two rooms at the state cap are charged %d bytes each, the room a person types in %d and up to %d more for its %d keystrokes, and %d rooms at the decode cap %d each, which leaves %d, room for one agent-rewritten document (%d) beside the typing and not two",
+	t.Logf("the budget: the room at the state cap is charged %d bytes, the room a person types in %d and up to %d more for its %d keystrokes, and %d rooms at the decode cap %d each, which leaves %d, room for one agent-rewritten document (%d) beside the typing and not two",
 		heaviest.weight, typed.weight, typedGrowth, typingKeystrokes, fill, longEdited.weight, free, agent.weight)
 	t.Logf("the slots: a handoff of the %d bytes a room at the state cap holds is far over the %d-byte figure at which an apply takes of the pod's load concurrency, and so is a fold of the agent's %d bytes or the long-edited document's %d, so each of them holds its own bytes of the pod's %d-slot pool for its whole run",
 		heaviest.stateBytes, unslottedApplyBytesForTest, agent.stateBytes, longEdited.stateBytes, loadSlotsForTest)
@@ -2754,7 +2786,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	var typing *browser
 	filledPeak := server.peakResident(t, func() {
 		typing = open(t, typedIDs[0])
-		handing = append(handing, open(t, heavyRooms[0]), open(t, heavyRooms[0]), open(t, heavyRooms[1]))
+		handing = append(handing, open(t, heavyRooms[0]), open(t, heavyRooms[0]), open(t, heavyRooms[0]))
 		for _, room := range filling {
 			open(t, room)
 		}
