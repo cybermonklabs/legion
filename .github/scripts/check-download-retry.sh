@@ -244,6 +244,18 @@
 #      ceiling under one of its steps' attempts cuts the step before the step's own budget can
 #      name the site, and the step's margin then buys nothing. A job writing no
 #      `timeout-minutes` is held at GitHub's own default of 360 minutes (JOB_DEFAULT_MINUTES).
+#
+#      A CEILING WRITTEN AS AN EXPRESSION IS A CEILING THIS CHECK DOES NOT READ, and it is
+#      worth stating here rather than leaving for whoever writes the next one. `minutes_of`
+#      takes a whole number and nothing else, so `timeout-minutes: ${{ matrix.timeout_minutes }}`
+#      reads as a job that wrote none and is judged at the 360-minute default, whatever the
+#      matrix row really allows. The instance in this tree is .github/workflows/e2e.yaml's
+#      `proof` job, whose limits are the rows of .github/e2e-scripts.json: those rows are
+#      derived by hand, each against the slowest retried step its own flags select, and that
+#      file says so where they are written. Anyone adding such a row gets no gate, so the
+#      arithmetic has to be written beside it. A step that writes its budget as an expression
+#      is read the same way, which for a step means it is refused as writing none, so no step
+#      of this tree writes one.
 #      This is the rule ci.yaml's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
@@ -360,6 +372,13 @@
 #          budgets derived by hand beside the figure this rule puts on them. ci.yaml's read
 #          of every mirrored row's blob, a loop of ci_tools_curl_status calls, writes its own
 #          sum out for the same reason.
+##        * a `timeout-minutes` written as an expression rather than as a number, which reads
+#          as a budget nobody wrote: a job with one is judged at the 360-minute default and a
+#          step with one is refused as writing none. .github/workflows/e2e.yaml's `proof` job
+#          is this tree's instance, whose ceiling is `${{ matrix.timeout_minutes }}` and whose
+#          real limits are the rows of .github/e2e-scripts.json, derived there by hand against
+#          the slowest retried step each row's own flags select. Rule 8 above says the same
+#          where it states what a job's ceiling is held to.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
