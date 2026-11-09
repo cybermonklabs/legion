@@ -25,6 +25,7 @@ import {
   StringCodec,
 } from "nats";
 import { z } from "zod";
+import { cardLines } from "../test/card-entries";
 
 // How an Envoy card and a person's Send reach the real Oh My Pi (extensions/envoy.ts's card send,
 // and src/card-wake.ts's delivery choice and its wake for a card the host folds): cards come over
@@ -383,6 +384,12 @@ async function startSession(
   rpc.closed.catch((error: unknown) => {
     closed.error = error;
   });
+  // Whether the pane may still be appending to its session file, which decides whether a read of
+  // that file withholds a last line with no newline yet (`cardEntries`).
+  let running = true;
+  void rpc.exited.then(() => {
+    running = false;
+  });
 
   const sid = await until(
     "the session's registration with the listener",
@@ -521,9 +528,7 @@ async function startSession(
     async cardEntries() {
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return (await readFile(file, "utf8"))
-        .split("\n")
-        .filter((line) => line.includes('"custom_message"') && line.includes('"envoy-message"'));
+      return cardLines(await readFile(file, "utf8"), running ? "alive" : "gone");
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,

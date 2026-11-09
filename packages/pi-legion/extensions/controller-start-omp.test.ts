@@ -19,9 +19,9 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { connect, StringCodec } from "nats";
+import { completeLines, writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { connect, NatsError, StringCodec } from "nats";
 import { z } from "zod";
-import { completeLines, writtenLines } from "../test/transcript-entries";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
 // it: both plugins, the controller's environment, and `/legion-controller-start` on the command
@@ -685,13 +685,33 @@ interface ControllerInbound {
   notice(): string;
 }
 
+/**
+ * How long a card's lane receipt is waited for.
+ *
+ * Measured at 0d7edbdb over 20 runs of this file's eight card cases under six busy loops on a
+ * 2-CPU pod: 358 requests, 354 answered with a mean of 125 ms and a worst of 4,752 ms, and four
+ * that reached the old 5,000 ms bound and failed their run. So the bound was below the worst call
+ * it has to allow, and this one is three times that worst call (dispatch://INFRA-2188).
+ *
+ * It is not a NATS round trip that takes seconds: every slow call and every timeout was the first
+ * or second request to a pane that had just started, so what is waited for is an Oh My Pi still
+ * coming up. Waiting for a readiness signal first would be the better fix and there is none left
+ * to wait for: the cases already await the subscription's own registration, the role claim that
+ * follows it and, at the second site, the start turn's model request (the comment above "a card
+ * and a Legion notice that arrive while the start command's claim runs" states that order), and
+ * three of the four timeouts were a repeat sent after a receipt of that same pane had already
+ * been answered. The wait is a hang guard over a busy pane, so it is sized from the measurement
+ * and the case still fails when no receipt ever comes, which the case below holds it to.
+ */
+const RECEIPT_TIMEOUT_MS = 15_000;
+
 async function controllerInbound(nats: string): Promise<ControllerInbound> {
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
   const codec = StringCodec();
   const noticeSubject = legionControllerNoticeSubject(PROJECT);
   const receipt = (sid: string, frame: Uint8Array): Promise<unknown> =>
-    connection.request(`notifications.agent.${sid}`, frame, { timeout: 5_000 });
+    connection.request(`notifications.agent.${sid}`, frame, { timeout: RECEIPT_TIMEOUT_MS });
   return {
     card(sid, label) {
       const summary = `CARD-${label}-${randomUUID().slice(0, 8)}`;
@@ -735,6 +755,37 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     },
   };
 }
+
+// The control for the bound above: `await receipt` is what a case reads as "the session took the
+// frame", so it has to fail when the session took nothing. Both ways of taking nothing are held
+// here — nobody subscribed to the agent subject at all, which NATS answers at once with no
+// responders, and a subscriber that takes the frame and never replies, which runs the bound out.
+// This case needs the NATS server and not the binary, so it runs wherever one is configured. Its
+// name holds no "card", so the `-t card` measurement of the bound does not run it: it fails two
+// requests deliberately, which that measurement counts.
+test.skipIf(natsUrl === undefined && !onActions)(
+  "a lane receipt nobody answers fails, so awaiting one proves the session took the frame",
+  async () => {
+    const inbound = await controllerInbound(natsUrl ?? "");
+    const unheard = inbound.card(`nobody-${randomUUID()}`, "control");
+    await expect(unheard.receipt).rejects.toThrow(NatsError);
+
+    const silent = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => silent.close());
+    const sid = `silent-${randomUUID()}`;
+    const subscription = silent.subscribe(`notifications.agent.${sid}`);
+    void (async () => {
+      for await (const _message of subscription) {
+        // Taken and never answered, which is the shape the bound exists for.
+      }
+    })();
+    await silent.flush();
+    const started = Date.now();
+    await expect(inbound.card(sid, "control").receipt).rejects.toThrow("TIMEOUT");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(RECEIPT_TIMEOUT_MS);
+  },
+  RECEIPT_TIMEOUT_MS + 60_000
+);
 
 test.skipIf(skip)(
   "the start turn runs after startup and the TUI shows it",

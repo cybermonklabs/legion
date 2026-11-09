@@ -1,34 +1,10 @@
-// How a case reads a transcript the pane it drives is still writing. Every reader here is pure or
-// reads a file; nothing starts a pane, so `transcript-entries.test.ts` drives all of it in
-// milliseconds and without the Oh My Pi binary.
+// How a case reads the transcript of a pane it drives, under this package's own shape: one
+// `.jsonl` under a sessions directory. The withholding rule itself is
+// `@legion/test-fixtures/transcript-lines`, shared with packages/pi-envoy. Nothing here starts a
+// pane, so `transcript-entries.test.ts` drives all of it in milliseconds and without the binary.
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
-
-/** Whether something may still be appending to the file being read. */
-export type Writer = "alive" | "gone";
-
-/**
- * Every line the writer has finished: the lines before the last newline, empties dropped. A
- * trailing fragment with no newline yet is a line a write has not finished, so it is left for the
- * next read and a poll answers "not yet" rather than throwing on half an object
- * (dispatch://INFRA-2188). A line that is complete and malformed is returned, so parsing it still
- * throws: that is a defect in whatever wrote it. The harness's own RPC frame reader buffers to a
- * newline for the same reason (`@legion/pi-shared/test/omp-harness`).
- */
-export function completeLines(text: string): string[] {
-  const end = text.lastIndexOf("\n");
-  return (end === -1 ? "" : text.slice(0, end)).split("\n").filter(Boolean);
-}
-
-/**
- * The lines of `text` a reader may parse now. While the writer is alive an unfinished last line is
- * withheld; once it is gone every line is parsed, so a record written last is never withheld for
- * ever and a fragment that will never be finished throws where it is written rather than timing
- * out a poll.
- */
-export function writtenLines(text: string, writer: Writer): string[] {
-  return writer === "alive" ? completeLines(text) : text.split("\n").filter(Boolean);
-}
+import { type Writer, writtenLines } from "@legion/test-fixtures/transcript-lines";
 
 /** The one `.jsonl` under `sessions`, or `undefined` when the directory does not hold exactly one. */
 async function soleTranscript(sessions: string): Promise<string | undefined> {

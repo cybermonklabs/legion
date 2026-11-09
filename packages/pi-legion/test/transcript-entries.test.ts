@@ -2,13 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  awaitSettled,
-  completeLines,
-  transcriptEntries,
-  transcriptSettled,
-  writtenLines,
-} from "./transcript-entries";
+import { awaitSettled, transcriptEntries, transcriptSettled } from "./transcript-entries";
 
 const KIND = "legion.stall-watch";
 
@@ -59,7 +53,6 @@ test("a last line the writer has not finished is withheld while the writer is al
 
 test("the same fragment is handed on once the writer is gone, so parsing it throws", async () => {
   const dir = await sessions(`${entry(KIND, 1)}\n{"customType":"${KIND}",`);
-  expect(writtenLines(`${entry(KIND, 1)}\n{"cus`, "gone")).toEqual([entry(KIND, 1), '{"cus']);
   await expect(transcriptEntries(dir, KIND, "gone")).rejects.toThrow(/JSON Parse error/);
 });
 
@@ -75,13 +68,6 @@ test("a directory that does not hold exactly one transcript reads as empty", asy
   const two = await sessions(`${entry(KIND, 1)}\n`);
   await writeFile(path.join(two, "second.jsonl"), `${entry(KIND, 2)}\n`);
   expect(await transcriptEntries(two, KIND, "alive")).toEqual([]);
-});
-
-test("completeLines keeps every finished line and nothing after the last newline", () => {
-  expect(completeLines("")).toEqual([]);
-  expect(completeLines("{}")).toEqual([]);
-  expect(completeLines("{}\n")).toEqual(["{}"]);
-  expect(completeLines('{"a":1}\n\n{"b":2}\n{"c"')).toEqual(['{"a":1}', '{"b":2}']);
 });
 
 test("a transcript is settled unless it ends mid-line; an empty or absent one is settled", async () => {
