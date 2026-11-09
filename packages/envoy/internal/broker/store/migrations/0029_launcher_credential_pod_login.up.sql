@@ -79,7 +79,9 @@
 --     caller's row, which after the drop makes a row of its own; and, in
 --     enroll/pod_self_enroll_test.go,
 --     TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount.
---     Each states the shipped schema in its prose and in its name as well.
+--     All three state the shipped schema in their prose, and the first and the third in their
+--     names as well; the race test's name,
+--     TestALauncherProofEndsNothingUnderAKeyTheRowNoLongerHolds, does not.
 --   - two that state the fact and the drop leaves passing, so the suite will not raise them:
 --     enroll/machine_credential_test.go, where the login is a machine's and so bound to no pod,
 --     which keeps one row per subject on either schema, and
