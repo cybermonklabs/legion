@@ -110,7 +110,7 @@ func (w BlockIndexWrite) Caused(ctx context.Context, tx pgx.Tx, event int64) err
 // '#' and the block's id.
 func blockNodeAddress(refKey, blockID string) string { return refKey + "#" + blockID }
 
-// maxBlockNodeBytes bounds a block's address in the store. graph_nodes keys a node by
+// MaxBlockNodeBytes bounds a block's address in the store. graph_nodes keys a node by
 // (kind, id) in a B-tree, and graph_tuples_once, the repeat key of a relation, keys the
 // addresses of both of its ends at once, so two block addresses and their kinds have to fit
 // the roughly 2,704 bytes a B-tree entry holds. A block's address holds its document's
@@ -118,13 +118,18 @@ func blockNodeAddress(refKey, blockID string) string { return refKey + "#" + blo
 // hash-indexes document_blocks.node_id for the same reason), so a long-named document's
 // blocks can pass that on their own. Half the bound every reference target takes leaves both
 // ends and their kinds well inside it.
-const maxBlockNodeBytes = text.MaxTargetBytes / 2
+//
+// It is exported because the census of the store against its projections and the backfill of
+// the rows written before the store existed (internal/dispatch/graphcensus) read the same
+// bound: a block past it carries no node here, so a census holding such a row to one would
+// report a difference this writer made on purpose.
+const MaxBlockNodeBytes = text.MaxTargetBytes / 2
 
 // blockNodeFits is whether a block's address is inside that bound. A block past it is no node
 // of the store, as a block whose id is past text.MaxBlockIDBytes is no graph node: its row
 // carries no node address, nothing is stated about it, and a block it holds reaches the
 // nearest block above it that is a node, or the document.
-func blockNodeFits(address string) bool { return len(address) <= maxBlockNodeBytes }
+func blockNodeFits(address string) bool { return len(address) <= MaxBlockNodeBytes }
 
 // blockAddresses is each block's address, whether that address fits the store's key, and how
 // many of them do not.
@@ -231,7 +236,7 @@ func IndexBlocks(
 	addresses, fits, unaddressable := blockAddresses(refKey, nodes)
 	if unaddressable > 0 {
 		slog.Warn("dispatch: block addresses past the bound are no nodes of the store; their rows carry no node address and the pass states no fact about them",
-			"artifact", artifactID, "version", version, "blocks", unaddressable, "ref_key_bytes", len(refKey), "bound_bytes", maxBlockNodeBytes)
+			"artifact", artifactID, "version", version, "blocks", unaddressable, "ref_key_bytes", len(refKey), "bound_bytes", MaxBlockNodeBytes)
 	}
 
 	// The blocks whose text this version changed (new, changed or restored), and those it deleted.
@@ -312,7 +317,7 @@ func IndexBlocks(
 				changed_version = excluded.changed_version,
 				changed_at = excluded.changed_at
 			returning block_id, created_at, xmax = 0
-		`, artifactID, version, versionAt, ids, types, sums, excerpts, BlockNodeKind, maxBlockNodeBytes))
+		`, artifactID, version, versionAt, ids, types, sums, excerpts, BlockNodeKind, MaxBlockNodeBytes))
 		if err != nil {
 			return nil, false, BlockIndexWrite{}, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
 		}
@@ -1050,7 +1055,7 @@ func replaceBlockRefs(
 		on conflict (artifact_id, block_id, to_kind, to_id, kind) do update set to_types = excluded.to_types
 		where block_refs.to_types is distinct from excluded.to_types
 		returning block_id, kind, to_kind, to_id, created_at, source_seq, xmax = 0
-	`, artifactID, blockIDs, kinds, toKinds, toIDs, version, versionAt, firstIndexing, toTypes, BlockNodeKind, maxBlockNodeBytes))
+	`, artifactID, blockIDs, kinds, toKinds, toIDs, version, versionAt, firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes))
 	if err != nil {
 		return nil, nil, fmt.Errorf("record the block mentions of version %d of %s: %w", version, artifactID, err)
 	}

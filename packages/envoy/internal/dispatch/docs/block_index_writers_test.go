@@ -344,14 +344,23 @@ var indexPasses = map[string]indexPass{
 	"api/comment_delivery.go#replyComment":           {input: "the reply a delivery recorded"},
 	"cmd/dispatch-seed/write_items.go#writeComments": {input: "the seed's own plan"},
 	"docs/block_index.go#stampVersionEvent":          {input: "the event that recorded the version"},
-	"graphstore/arms.go#nodeArm":                     {input: "the nodes its caller states"},
-	"graphstore/arms.go#claimArms":                   {input: "the claims its caller states"},
-	"graphstore/arms.go#tupleInsert":                 {input: "the tuples its caller states"},
-	"graphstore/write.go#writeNodes":                 {input: "the nodes its caller states"},
-	"refs/blocks.go#IndexBlocks":                     {input: "the version's render"},
-	"refs/blocks.go#reconcileBlockParents":           {input: "the version's render"},
-	"refs/blocks.go#replaceBlockRefs":                {input: "the version's render"},
-	"refs/refs.go#Stamp":                             {input: "the event that recorded the write"},
+	// The backfill of the rows written before the store existed. Each pass reads the rows of
+	// its own kind and nothing else: a row's own content - its time, its author, the
+	// document it is in, its own source_seq - is what it writes into the store, and the
+	// store holds nothing about those rows for it to read. That is what makes it a writer
+	// and no repair: it never reads one side of a projection to decide what to put in the
+	// other, and a row whose node is already written it leaves alone rather than mending.
+	"graphcensus/backfill.go#writeBlockBatch":    {input: "each pre-store document_blocks row's own content"},
+	"graphcensus/backfill.go#writeBlockRefBatch": {input: "each pre-store block_refs row's own content"},
+	"graphcensus/backfill.go#writeCommentBatch":  {input: "each pre-store comments row's own content"},
+	"graphstore/arms.go#nodeArm":                 {input: "the nodes its caller states"},
+	"graphstore/arms.go#claimArms":               {input: "the claims its caller states"},
+	"graphstore/arms.go#tupleInsert":             {input: "the tuples its caller states"},
+	"graphstore/write.go#writeNodes":             {input: "the nodes its caller states"},
+	"refs/blocks.go#IndexBlocks":                 {input: "the version's render"},
+	"refs/blocks.go#reconcileBlockParents":       {input: "the version's render"},
+	"refs/blocks.go#replaceBlockRefs":            {input: "the version's render"},
+	"refs/refs.go#Stamp":                         {input: "the event that recorded the write"},
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

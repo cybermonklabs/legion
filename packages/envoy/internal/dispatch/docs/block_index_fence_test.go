@@ -343,14 +343,20 @@ func requireThePassWaitsAtTheOwedRow(t *testing.T, database *store.Store, artifa
 	markdown, blocks := flattenedPass(t, database, artifactID)
 	answered := make(chan error, 1)
 	go func() {
-		tx, err := passConn.Begin(ctx)
-		if err != nil {
-			answered <- err
-			return
-		}
-		defer tx.Rollback(ctx)
-		_, _, _, err = refs.IndexBlocks(ctx, tx, artifactID, 99, time.Now(), markdown, blocks, nil, nil)
-		answered <- err
+		// The send is the last thing this goroutine does, and the rollback has already run by
+		// then: the caller closes passConn as soon as it reads this channel, and a rollback
+		// still in flight on that same connection races that close (pgx answers it "BUG: slow
+		// write timer already active"). Deferring the rollback inside the inner function is
+		// what orders the two.
+		answered <- func() error {
+			tx, err := passConn.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback(ctx)
+			_, _, _, err = refs.IndexBlocks(ctx, tx, artifactID, 99, time.Now(), markdown, blocks, nil, nil)
+			return err
+		}()
 	}()
 	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, fenceWait); early {
 		t.Fatalf("the pass answered %v without ever waiting on the owed row", answer)

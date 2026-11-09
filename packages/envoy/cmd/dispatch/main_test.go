@@ -1185,11 +1185,11 @@ func TestRunSubcommandRefusesAnUnknownSubcommand(t *testing.T) {
 func TestCensusSubcommandExitCodes(t *testing.T) {
 	ctx := context.Background()
 	var out, errOut bytes.Buffer
-	if code := census(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
+	if code := census(ctx, nil, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
 		t.Errorf("no URL: exit %d, stderr %q", code, errOut.String())
 	}
 	errOut.Reset()
-	if code := census(ctx, "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=1", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "census: connect") {
+	if code := census(ctx, nil, "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=1", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "census: connect") {
 		t.Errorf("unreachable: exit %d, stderr %q", code, errOut.String())
 	}
 	if out.Len() != 0 {
@@ -1198,7 +1198,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 	database := storetest.Open(t)
 	out.Reset()
 	errOut.Reset()
-	if code := census(ctx, database.Pool.Config().ConnString(), &out, &errOut); code != 0 {
+	if code := census(ctx, nil, database.Pool.Config().ConnString(), &out, &errOut); code != 0 {
 		t.Fatalf("migrated database: exit %d, stderr %q, stdout %q", code, errOut.String(), out.String())
 	}
 	if !strings.Contains(out.String(), "no pending migration") || !strings.HasSuffix(strings.TrimSpace(out.String()), "census: ok") {
@@ -1211,7 +1211,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
-	if code := census(context.Background(), database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
+	if code := census(context.Background(), nil, database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errOut.String())
 	}
 	const want = "census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither schema_migrations nor any table, and the runner can create neither; name an existing schema in the search_path\n"
@@ -1241,7 +1241,7 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		t.Fatalf("seed a database at 52 with a row 0053 refuses: %v", err)
 	}
 	var out, errOut bytes.Buffer
-	if code := census(ctx, database.Pool.Config().ConnString(), &out, &errOut); code != 1 {
+	if code := census(ctx, nil, database.Pool.Config().ConnString(), &out, &errOut); code != 1 {
 		t.Fatalf("exit %d, want 1; stderr %q, stdout:\n%s", code, errOut.String(), out.String())
 	}
 	for _, want := range []string{
