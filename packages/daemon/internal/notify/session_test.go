@@ -125,9 +125,12 @@ func TestDeleteSessionTellsAnAlreadyGoneSessionFromARefusal(t *testing.T) {
 }
 
 // The read before the stop is one GET of the session's registry entry, with the listener's bearer
-// and the session id escaped into the path, and it asks include=unresponsive: a dead role's last
-// registration is past the live window exactly when the stop matters, and without the selector
-// the route answers 404 for a record it still holds. What it answers is the entry's own client
+// and the session id escaped into the path, and it asks for both selectors. view=registration is
+// the registration-only answer, which a listener carrying it gives from the session bucket alone
+// — no claims view and no interest record, so no read that the stop does not need can refuse it.
+// include=unresponsive is what a listener predating that selector needs in order to answer a
+// record past its live window at all, which is every record the stop is owed for: it ignores the
+// unknown selector and answers the full row. What the read answers is the entry's own client
 // instance and its last registration.
 func TestReadSessionRegistrationAsksTheRegistryForTheEntrysInstance(t *testing.T) {
 	var method, path, query, bearer string
@@ -149,8 +152,8 @@ func TestReadSessionRegistrationAsksTheRegistryForTheEntrysInstance(t *testing.T
 	if method != http.MethodGet || path != "/v1/registry/ses/dead" || bearer != "Bearer envoy-bearer" {
 		t.Fatalf("%s %s with %q, want a GET of the session's registry entry with the listener's bearer", method, path, bearer)
 	}
-	if query != "include=unresponsive" {
-		t.Fatalf("query = %q, want the unresponsive record asked for too", query)
+	if query != "include=unresponsive&view=registration" {
+		t.Fatalf("query = %q, want both the unresponsive record and the registration view asked for", query)
 	}
 }
 
@@ -173,11 +176,11 @@ func TestReadSessionRegistrationReadsA404AsNoRegistration(t *testing.T) {
 	}
 }
 
-// The registry answers the whole session row — its topics, its roles, its capabilities — and
-// nothing bounds how many topics a long-lived session subscribes to, so the entry is read from
-// the stream rather than through refusalBodyLimit, which bounds an error body. A row cut off at
-// that limit would not decode, and the stop of the busiest session would be reported as a
-// listener that did not answer and send no delete at all.
+// A listener predating the view selector answers the whole session row — its topics, its roles,
+// its capabilities — and nothing bounds how many topics a long-lived session subscribes to, so
+// the entry is read within registrationReadBodyLimit rather than refusalBodyLimit, which bounds
+// an error body. A row cut off at that limit would not decode, and the stop of the busiest
+// session would be reported as a listener that did not answer and send no delete at all.
 func TestReadSessionRegistrationReadsAnEntryPastTheRefusalBodyLimit(t *testing.T) {
 	topics := make([]string, 0, 400)
 	for i := range 400 {

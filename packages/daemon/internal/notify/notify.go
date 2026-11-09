@@ -281,22 +281,39 @@ type SessionRegistration struct {
 	LastSeen         int64
 }
 
+// registrationReadBodyLimit bounds the body ReadSessionRegistration decodes an entry from. It is
+// deliberately not refusalBodyLimit, which bounds an error body: a listener that predates the
+// view selector ignores it and answers the whole session row here — its topics, its roles, its
+// capabilities — and nothing bounds a long-lived session's topic count, so a row cut off at
+// 4 KiB would fail to decode and the stop of exactly the busiest sessions would be reported as a
+// read that failed and send no delete at all. It is bounded at all because the read drains the
+// body, so the connection is reused for the delete that follows rather than dropped mid-answer,
+// and an unbounded read of a body this daemon did not write is memory it cannot refuse. 1 MiB is
+// far past the largest row the listener writes and far short of a body that could cost the
+// daemon anything.
+const registrationReadBodyLimit = 1 << 20
+
 // ReadSessionRegistration reads what the listener's registry holds for session, the read the
 // daemon's clean stop makes before it deletes anything: the delete it then sends names the
 // client instance the entry carries, so it can only take that process's registration and never
 // its successor's (DeleteSession).
 //
-// The read asks include=unresponsive because the stop matters exactly when the session's last
-// registration is already past the listener's live window — its process is gone, so nothing
-// refreshes it — and without that selector the route answers 404 for a record it still holds
-// and the stop that is owed would never be sent.
+// The read asks include=unresponsive and view=registration together: view=registration is what a
+// listener carrying it answers from the session bucket alone, cheaply and whatever state the
+// record is in, while include=unresponsive is what a listener predating the selector needs in
+// order to answer a record past its live window at all — it ignores the unknown selector and
+// answers the full row, which carries no client_instance_id, so against that listener the stop
+// rests on the moment alone. The stop matters exactly when the session's last registration is
+// already past the live window, its process being gone, so without include=unresponsive such a
+// listener would answer 404 for a record it still holds and the stop that is owed would never be
+// sent.
 //
 // A 404 is no failure and no error: the registry holds no registration to stop, which is the
 // outcome the stop wanted, and Registered is false. Every other status is an error naming what
 // the listener said, as a refused delete is, since a stop sent on a registration this daemon
 // could not read would rest on the moment alone.
 func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
-	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive", p.baseURL, url.PathEscape(session))
+	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
@@ -311,17 +328,18 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusOK:
-		// Decoded from the stream rather than from a capped read: this body is the whole
-		// session row (sessionInfo, packages/envoy/cmd/listener/api.go) — its topics, its
-		// roles, its capabilities — and nothing bounds a long-lived session's topic count,
-		// where refusalBodyLimit bounds an error body. A row cut off at that limit would
-		// fail to decode, and this stop would then be reported as a listener that did not
-		// answer and send no delete, losing the clean stop of exactly the busiest sessions.
+		// Read whole within registrationReadBodyLimit and then unmarshalled, rather than
+		// decoded off the stream: the read drains the body, so this connection is reused
+		// for the delete that follows.
+		body, err := io.ReadAll(io.LimitReader(response.Body, registrationReadBodyLimit))
+		if err != nil {
+			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		}
 		var entry struct {
 			ClientInstanceID string `json:"client_instance_id"`
 			LastSeen         int64  `json:"last_seen"`
 		}
-		if err := json.NewDecoder(response.Body).Decode(&entry); err != nil {
+		if err := json.Unmarshal(body, &entry); err != nil {
 			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 		}
 		return SessionRegistration{Registered: true, ClientInstanceID: entry.ClientInstanceID, LastSeen: entry.LastSeen}, nil
