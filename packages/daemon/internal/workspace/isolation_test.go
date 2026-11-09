@@ -24,7 +24,8 @@ import (
 // — the tmux runtime's, which name the token file in their environment — must never obey. On tmux
 // that is defence, not a boundary (config.go); a pod's boundary, two init containers — three with
 // a skills_repository — of which only the ones that touch no tree volume hold the token, is
-// proven by internal/runtime/sandbox/boundary_test.go.
+// proven by internal/runtime/sandbox/boundary_test.go, and with a skills_repository by
+// TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite (manifest_test.go).
 
 // gitHooks is every hook githooks(5) names; a planted script under each name records whether git
 // ran it.

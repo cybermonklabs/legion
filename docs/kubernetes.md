@@ -2765,7 +2765,7 @@ architect, planner, implementer, tester, reviewer, merger):
    — the disk is created with the pod, so every provision is the issue's first.
    The workspace starts at whatever commit GitHub holds the issue's branch, `legion/<KEY>`, at:
    the daemon's `issue_branch` row creates it at the issue's base branch, the default branch as GitHub names it (`default_branch`, `release/v7.1` as readily as `main`), and moves no branch GitHub has,
-   so whoever wants work to start at another commit creates `legion/<KEY>` at that commit first, for a root before the issue is admitted, and for a child before its tree's design gate opens;
+   so whoever wants work to start at another commit creates `legion/<KEY>` there first, for a root before the issue is admitted, for a child before its first phase starts, after the tree's gate opens;
    with no such branch it starts at that default branch, which the pod's command names (`--default-branch`), and its log says which (`workspace-init: <dir> on legion/<KEY> from <default branch>`).
    Before any git or jj runs it removes every git lock file (`<file>.lock`) in the clone's git directory and in the issue's own worktree entry of it, and logs each with its path and age (`RemoveStaleGitLocks`, `internal/workspace/stalelock.go`):
    the kubelet retries a failed init container on the pod it failed in, so a first attempt killed mid-fetch leaves its locks on the same disk the retry works on, and every later write of a locked file fails on it

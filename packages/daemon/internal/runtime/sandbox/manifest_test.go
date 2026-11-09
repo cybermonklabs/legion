@@ -123,10 +123,11 @@ func podQOS(spec corev1.PodSpec) corev1.PodQOSClass {
 // which is the kubelet's rule for the Guaranteed class — judged over every container of the pod,
 // the init containers included — and each is bounded on the node's disk, an ephemeral-storage
 // request under its limit. An issue pod's one container and its two init containers — three where
-// the deployment names a `skills_repository` — carry the issue pod's reservation, whichever role's
-// launch creates it; the controller's pod carries the controller's on its one container; and the
-// image probe's one container carries the probe's own, which the daemon hands it. A deployment
-// with no `resources` block therefore runs only Guaranteed pods.
+// the deployment names a `skills_repository`, which TestASkillsRepositoryAddsTheSkillsInitContainer
+// proves — carry the issue pod's reservation, whichever role's launch creates it; the controller's
+// pod carries the controller's on its one container; and the image probe's one container carries
+// the probe's own, which the daemon hands it. A deployment with no `resources` block therefore runs
+// only Guaranteed pods.
 func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {

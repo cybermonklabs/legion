@@ -117,8 +117,9 @@ ask for that command rather than run it, because you edit no repository and push
 root, whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
 daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
 branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
-the issue is admitted, and a child's before its tree's design gate opens. Read the branch back
-before you `set_status` the root to `todo`:
+the issue is admitted, and a child's before the child starts its first phase, which it can do as
+soon as its tree's design gate opens and nothing holds it. Read the branch back before you
+`set_status` the root to `todo`:
 `gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`. The issue's own spec tells its worker
 which branch to open the pull request against; nothing else carries that.
 

@@ -539,8 +539,9 @@ func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T)
 			if local := commitOf(t, working.Dir, `bookmarks(exact:"legion/WIDGETS-42")`); local != orphan {
 				t.Errorf("the local legion/WIDGETS-42 is %q, want the remote's %s", local, orphan)
 			}
-			// What makes this fixture the disjoint shape, and what the neighbouring test's fixture
-			// cannot be: on the remote, git reaches the orphan commit from main's tip not at all.
+			// What the neighbouring test's fixture cannot be: on the remote, main's tip is no
+			// ancestor of the issue branch. That the two share no commit at all is
+			// pushOrphanBranch's root commit.
 			ancestry := exec.Command("git", "--git-dir="+run.remote, "merge-base", "--is-ancestor", onMain, orphan)
 			ancestry.Dir = req.StateDir
 			ancestry.Env = setupEnvironment()
