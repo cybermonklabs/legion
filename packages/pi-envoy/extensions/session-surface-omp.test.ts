@@ -526,10 +526,14 @@ function contextFrames(seen: readonly SeenFrame[]): Reading[] {
     }));
 }
 
+/** One `message` frame the session published, and when this test read it. */
+interface SeenMessage {
+  readonly at: number;
+  readonly message: Record<string, unknown>;
+}
+
 /** The `message` frames among `seen`: what the session published about its conversation. */
-function messageFrames(
-  seen: readonly SeenFrame[]
-): { readonly at: number; readonly message: Record<string, unknown> }[] {
+function messageFrames(seen: readonly SeenFrame[]): SeenMessage[] {
   return seen
     .filter((each) => each.frame.kind === "message")
     .map((each) => ({ at: each.at, message: each.frame.message as Record<string, unknown> }));
@@ -539,6 +543,29 @@ function messageFrames(
 function frameText(message: Record<string, unknown>): string {
   const parts = Array.isArray(message.parts) ? message.parts : [];
   return parts.map((part: { readonly text?: string }) => part.text ?? "").join("");
+}
+
+/**
+ * The frames the session published for `message`, once at least one of them is here.
+ *
+ * The session publishes a `!command`'s frame and posts its Dispatch reply in the same run, but
+ * the frame reaches this test over the NATS server and the reply over the stand-in, so the frame
+ * can arrive after the reply: a row that reads the frames the moment the reply arrives is reading
+ * a race. Measured in this pod, the `!exit 3` row read no frame at all once, and an earlier row's
+ * frame once. The wait ends on this message's first frame, so a second frame the session should
+ * not have published is still there for the row's own count to fail on.
+ */
+async function framesFor(
+  session: SurfaceSession,
+  message: Sent,
+  what: string
+): Promise<SeenMessage[]> {
+  return await session.until(what, () => {
+    const published = messageFrames(session.frames).filter(
+      (each) => each.message.dispatchMessageId === message.messageID
+    );
+    return published.length > 0 ? published : undefined;
+  });
 }
 
 /** The context session, booted once: the `ENVOY_CONTEXT_FRAME_INTERVAL_MS` the check names, and a
@@ -814,7 +841,6 @@ test.skipIf(skip)(
   "a Send of `!printf hi` is run by the session, and all three answers carry it",
   async () => {
     const session = await shellSession();
-    const from = session.frames.length;
     const turnsBefore = session.turns.length;
 
     const sent = await session.send("!printf hi");
@@ -822,11 +848,10 @@ test.skipIf(skip)(
     expect(reply).toBe("!printf hi\n\n```\nhi\n```");
 
     // The live view: one user message, keyed on the Dispatch message it answers.
-    const published = messageFrames(session.frames.slice(from));
+    const published = await framesFor(session, sent, "the frame of `!printf hi`");
     expect(published).toHaveLength(1);
-    const message = published[0]?.message as Record<string, unknown>;
+    const message = published[0]?.message ?? {};
     expect(message.role).toBe("user");
-    expect(message.dispatchMessageId).toBe(sent.messageID);
     expect(frameText(message)).toBe("!printf hi\n\n```\nhi\n```");
 
     // No turn ran for it, and the model reads the command with the next turn.
@@ -864,14 +889,11 @@ test.skipIf(skip)(
   "a Send of `! printf hi` keeps the space after the mark in the reply and in the frame",
   async () => {
     const session = await shellSession();
-    const from = session.frames.length;
     const sent = await session.send("! printf hi");
     const reply = await session.reply(sent, "the reply to `! printf hi`");
     expect(reply).toStartWith("! printf hi\n\n");
     expect(reply).toBe("! printf hi\n\n```\nhi\n```");
-    const published = messageFrames(session.frames.slice(from)).filter(
-      (each) => each.message.dispatchMessageId === sent.messageID
-    );
+    const published = await framesFor(session, sent, "the frame of `! printf hi`");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("! printf hi\n\n```\nhi\n```");
   },
@@ -966,14 +988,13 @@ test.skipIf(skip)(
   "an Aside of `!printf hi` behaves as the Send does",
   async () => {
     const session = await shellSession();
-    const from = session.frames.length;
     const turnsBefore = session.turns.length;
 
     const sent = await session.send("!printf aside", { mode: "aside" });
     expect(await session.reply(sent, "the reply to the person's Aside")).toBe(
       "!printf aside\n\n```\naside\n```"
     );
-    const published = messageFrames(session.frames.slice(from));
+    const published = await framesFor(session, sent, "the frame of the Aside's command");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\n```\naside\n```");
     expect(session.turns.length).toBe(turnsBefore);
@@ -1002,14 +1023,11 @@ test.skipIf(skip)(
   "a Send of a command printing a NUL is answered with the NUL dropped",
   async () => {
     const session = await shellSession();
-    const from = session.frames.length;
     const sent = await session.send("!printf 'a\\0b'");
     expect(await session.reply(sent, "the reply to the command printing a NUL")).toBe(
       "!printf 'a\\0b'\n\n```\nab\n```"
     );
-    const published = messageFrames(session.frames.slice(from)).filter(
-      (each) => each.message.dispatchMessageId === sent.messageID
-    );
+    const published = await framesFor(session, sent, "the frame of the command printing a NUL");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("!printf 'a\\0b'\n\n```\nab\n```");
   },
@@ -1020,16 +1038,11 @@ test.skipIf(skip)(
   "a Send of `!exit 3` names the status in the frame and in the reply",
   async () => {
     const session = await shellSession();
-    const from = session.frames.length;
     const sent = await session.send("!exit 3");
     const answer =
       "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
     expect(await session.reply(sent, "the reply to `!exit 3`")).toBe(answer);
-    // Every row here shares one session, so a frame of an earlier row published after this row
-    // took its snapshot would be counted too: keep only the frames of the message sent above.
-    const published = messageFrames(session.frames.slice(from)).filter(
-      (each) => each.message.dispatchMessageId === sent.messageID
-    );
+    const published = await framesFor(session, sent, "the frame of `!exit 3`");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe(answer);
   },
@@ -1079,18 +1092,11 @@ test.skipIf(skip)(
   "a Send whose command prints 20000 characters is cut at 8000 in the frame and the model's copy",
   async () => {
     const session = await shellSession();
-    const from = session.frames.length;
     const command = "!printf 'a%.0s' $(seq 1 20000)";
     const sent = await session.send(command);
     const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
     expect(await session.reply(sent, "the reply to the long command")).toBe(cut);
-    // This send's own frames, not every frame since: the row before it stops a command at the
-    // limit, and under load that command's own frame can land after this row has read the
-    // length it starts from. One frame for this message is the claim either way, since the
-    // plugin tags each with the Dispatch message it answers.
-    const published = messageFrames(session.frames.slice(from)).filter(
-      (each) => each.message.dispatchMessageId === sent.messageID
-    );
+    const published = await framesFor(session, sent, "the frame of the long command");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe(cut);
 
