@@ -133,11 +133,13 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 // counts the issues at work and the tree's one root slot no longer carries its children.
 //
 // The promotion writes everything but the tasks in the fact's own transaction: the root's new
-// generation and Dispatch status, each child's branch row, and a task-less start of every role
-// of every member but the one whose phase it stands in (startMidPhaseMembers), so each member's
-// other sessions come back and answer while its work waits. Each child then owes exactly one
-// start, the phase worker's, which carries that phase's task and is held unclaimable until the
-// child holds a slot, and nothing names its worker as a claim nothing will wake.
+// generation and Dispatch status, each child's branch row, and a task-less start of each role of
+// a member that holds a claim row, the durable record that the role has run (startMidPhaseMembers),
+// so the sessions a member has are brought back and answer while its work waits. Each child of
+// this fixture has run one role, the one whose phase it stands in, so no task-less start is
+// written for either of them. Each child then owes exactly one start, the phase worker's, which
+// carries that phase's task and is held unclaimable until the child holds a slot, and nothing
+// names its worker as a claim nothing will wake.
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
 // and the rule is the re-admission's. A resume hands the worker the phase it is already on, so it
@@ -201,13 +203,8 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		if len(owed) != 1 || owed[0].role != role || owed[0].task == "" || owed[0].claimable {
 			t.Fatalf("%s owes %+v, want the %s one start, carrying its resume task and runnable by nobody while it holds no slot", child, owed, role)
 		}
-		if len(taskless) != len(claim.Roles)-1 {
-			t.Fatalf("%s has the task-less start rows %+v, want one for each of its %d roles but the one whose phase it stands in", child, taskless, len(claim.Roles))
-		}
-		for _, row := range taskless {
-			if row.role == role || row.task != "" || !row.claimable {
-				t.Fatalf("the task-less start row %+v of %s, want another role's, carrying no task and runnable at once", row, child)
-			}
+		if len(taskless) != 0 {
+			t.Fatalf("%s has the task-less start rows %+v, want none: the only role of it that has run is the one whose phase it stands in, and that start carries its task", child, taskless)
 		}
 	}
 	for token, state := range claimStates(t, pool) {

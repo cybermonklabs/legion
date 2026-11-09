@@ -238,8 +238,10 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // with no task leaves the resumed agent holding its old transcript with nothing asked of it.
 //
 // A child in accepting waits on the tree's architect, which the promotion starts, so no task is
-// queued for it; its branch row is, because every member past admitted gets one and every role
-// of it is brought back by a task-less start, which these effects leave out.
+// queued for it; its branch row is, because every member past admitted gets one. No child here
+// holds a claim row, the durable record that a role has run, so no role of any of them is brought
+// back by a task-less start — and such a start, which these effects leave out, would not be
+// counted here anyway.
 func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

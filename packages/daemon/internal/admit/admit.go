@@ -1913,9 +1913,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 	return own
 }
 
-// startMidPhaseMembers brings back every role of every member of the tree promotion has just
-// opened, and gives the one role whose phase the member stands in the task that carries that
-// phase on. A hand-over turns a child into that root while preserving its phase, so its phase
+// startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
+// has just opened, and gives the one role whose phase the member stands in the task that carries
+// that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
 // role needs the same resume start ordinary mid-phase children receive (workflow.ResumeTask,
 // which tells a carried merger its carried approved head). A root promoted held, which only a
 // hand-over leaves (every other re-admission starts its root at admitted), starts no worker, and
@@ -1927,13 +1927,29 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // since the old tree's linger disarmed the pull request (beginLinger) and only a new READY,
 // whose merge the daemon submits, arms it again.
 //
-// It brings back every role a member can hold rather than the phase's owner alone, because the
-// admission cap counts the issues at work now: the one start that waits for a slot is the phase
-// worker's, which carries that phase's task (workflow.StartOrOwe), and the live sessions of a
-// member's other roles are exactly what the design keeps so that a person can still talk to any
-// of them. Those other roles' rows carry no task, so a role with nothing to do comes back and
-// is told nothing. The roles are enumerated as every other sweep of them does, over claim.Roles
-// (the engine's everyClaim).
+// It brings back a member's other roles beside the phase's own, because the admission cap counts
+// the issues at work now: the one start that waits for a slot is the phase worker's, which carries
+// that phase's task (workflow.StartOrOwe), and the live sessions of a member's other roles are
+// exactly what the design keeps so that a person can still talk to any of them. Those rows carry
+// no task and wait for no slot, so each is claimable at once and a role with nothing to do comes
+// back and is told nothing.
+//
+// Such a role comes back only where it holds a claim row, which is the durable record that the
+// role has run: a re-admission clears the generation's facts — clearGeneration touches
+// pull_requests, design_gates, phases and issues, never claims — and a claim's token carries no
+// generation (claim.NewToken), so the row outlives the generation that wrote it. A role that has
+// never run holds none and is started by nothing here: its session would come up with no
+// transcript and nothing asked of it, and only a message could ever wake it. The rows of every
+// role of every member are read in one batched record.RoleRuns call, the read resumeSlottedWorkers
+// makes of its own slots, rather than one read per role.
+//
+// The phase's own role is the exception, gated by workflow.StartFor alone: a member whose phase
+// worker never started before the tree left the workflow holds no claim row for it, which is the
+// ordinary case of a phase still to be worked, so gating that start on a claim row would mean the
+// phase never runs again.
+//
+// The roles are enumerated as every other sweep of them does, over claim.Roles (the engine's
+// everyClaim).
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
@@ -1948,6 +1964,22 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			return err
 		}
 	}
+	type roleToken struct {
+		role  claim.Role
+		token claim.Token
+	}
+	type midPhaseMember struct {
+		issue record.Issue
+		// owner is the role whose phase the member stands in, empty where that phase is the
+		// tree architect's.
+		owner claim.Role
+		roles []roleToken
+	}
+	// The first pass resumes each member's phase and names every role run the second pass judges;
+	// the one read of them stands between the two, so no row is written on a reading of the claims
+	// half of it made.
+	var members []midPhaseMember
+	var keys []record.RoleRunKey
 	for _, member := range issues {
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			continue
@@ -1972,41 +2004,71 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if owner == claim.RoleArchitect {
 			owner = ""
 		}
-		if member.Key != root.Key {
-			if err := a.enqueue(ctx, tx, member.Key, record.IssueBranch{Generation: member.Generation}, now); err != nil {
-				return err
-			}
-		}
+		standing := midPhaseMember{issue: member, owner: owner}
 		for _, role := range claim.Roles {
 			// The tree's architect is promotion's own start, with the task that hands it its
 			// tree; a member's own sub-architect is no phase worker and comes back with the rest.
 			if claim.IsTreeArchitect(role, member.Key, member.Tree) {
 				continue
 			}
-			if role != owner {
-				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: role,
+			token, err := claim.NewToken(project, member.Key, role)
+			if err != nil {
+				// An issue whose key yields no claim token holds no claim row at all, so no role
+				// of it has ever run and none of the roles this brings back is started, as the
+				// slot repair passes over such an issue rather than failing the whole fact
+				// (resumeSlottedWorkers). The phase's own role is the member's work rather than
+				// a session brought back, and its token's refusal stays the fact's, as it was.
+				if role != owner {
+					continue
+				}
+				return err
+			}
+			standing.roles = append(standing.roles, roleToken{role: role, token: token})
+			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: role, Generation: member.Generation})
+		}
+		members = append(members, standing)
+	}
+	// A member whose key yields no claim token names no role run, and its branch row is still
+	// the promotion's to queue, so the read is skipped rather than the pass.
+	var runs map[claim.Token]record.RoleRun
+	if len(keys) > 0 {
+		read, err := a.store.RoleRuns(ctx, tx, keys)
+		if err != nil {
+			return err
+		}
+		runs = read
+	}
+	for _, standing := range members {
+		member := standing.issue
+		if member.Key != root.Key {
+			if err := a.enqueue(ctx, tx, member.Key, record.IssueBranch{Generation: member.Generation}, now); err != nil {
+				return err
+			}
+		}
+		for _, held := range standing.roles {
+			run := runs[held.token]
+			if held.role != standing.owner {
+				// No claim row, so the role has never run: there is no session to bring back and
+				// no task this start could carry, and the one it would make could only ever be
+				// woken by a message.
+				if run.Claim == nil {
+					continue
+				}
+				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: held.role,
 					Generation: member.Generation, Phase: member.Phase}, now); err != nil {
 					return err
 				}
 				continue
 			}
-			token, err := claim.NewToken(project, member.Key, role)
-			if err != nil {
-				return err
-			}
-			run, err := a.store.RoleRun(ctx, tx, token, member.Key, role, member.Generation)
-			if err != nil {
-				return err
-			}
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			task, err := workflow.ResumeTask(ctx, a.store, tx, member, role)
+			task, err := workflow.ResumeTask(ctx, a.store, tx, member, held.role)
 			if err != nil {
 				return err
 			}
 			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, true, now); err != nil {
+				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, true, now); err != nil {
 				return err
 			}
 		}

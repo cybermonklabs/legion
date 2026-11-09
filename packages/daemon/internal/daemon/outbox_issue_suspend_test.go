@@ -854,6 +854,24 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 				t.Fatalf("%s after the linger closed the tree = %s with session file %q, want it retired with its session kept", tok, got.State, got.SessionFile)
 			}
 		}
+		// The supervisor of this door keeps its claims in a stand-in store of its own
+		// (outboxClaimStore), so the two roles that ran leave no claim row behind. The record is
+		// written here, in the state the close left each of them: the claim row is the durable
+		// record that a role has run, which a re-admission reads to decide which of a member's
+		// sessions to bring back (admit's startMidPhaseMembers), and it survives the close and
+		// the new generation.
+		for _, tok := range []claim.Token{worker, earlier} {
+			role := claim.RoleImplementer
+			if tok == earlier {
+				role = claim.RolePlanner
+			}
+			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
+				values ($1, 'legion', $2, $3, $4, $5, $6, $7, 'retired', 0, 0, 0, 0, $5)`,
+				string(tok), root.Tree, member.Key, string(role), int64(member.Generation), "ses-"+string(role), "/tmp/"+string(role)+".jsonl"); err != nil {
+				t.Fatalf("record the retired claim of the member's %s: %v", role, err)
+			}
+		}
 
 		// The person sets the closed root back to todo. It is a queued root again
 		// (record.QueuedRoot), and its promotion opens the tree and starts its members.
@@ -871,8 +889,11 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// wrote a start of it here: the phase's own role, the implementer, through
 		// workflow.StartOrOwe, which writes one row carrying the phase's resume task
 		// (workflow.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
-		// slot — and every other role one start of its own with no task at all, since a role with
-		// nothing to do comes back and is told nothing.
+		// slot — and, beside it, one start with no task at all for each other role of the member
+		// that has run, since a role with nothing to do comes back and is told nothing. The
+		// planner is the one such role here: the claim row it kept through the close is the
+		// durable record that it ran, and the tester, the reviewer, the merger and the member's
+		// own sub-architect hold none, so the re-admission starts no session for them at all.
 		resume := workflow.ResumePhaseTask(*carried)
 		taskless := map[claim.Role]bool{}
 		var owed *record.SuperviseRequest
@@ -889,10 +910,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			}
 			owed = &row
 		}
-		for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-			if !taskless[role] {
-				t.Fatalf("the re-admission wrote no task-less start of the member's %s, want every role of the member brought back", role)
-			}
+		if len(taskless) != 1 || !taskless[claim.RolePlanner] {
+			t.Fatalf("the re-admission wrote the task-less starts %v of the member, want the planner's alone: it is the only role beside the phase's own that has run", taskless)
 		}
 		if owed == nil || owed.Task != resume || !owed.ResumeTask || !owed.NeedsSlot {
 			t.Fatalf("the member's start row = %+v, want the one StartOrOwe writes: the phase's resume task %q, held for the member's slot", owed, resume)
