@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  The controller's `legion` tool gains a third operation beside `read_state` and `set_status`:
+  `fresh_session (issue, role)`. It has one claim leave the session it runs in behind and start
+  again in a new one — the daemon stops the agent if it runs, forgets the session, and starts the
+  claim — which is what a session a provider keeps refusing needs, and it also puts that claim's
+  run of provider-error turns back to zero, so the controller can be told a second time. A phase
+  worker that comes back owing no task is started through its issue's current phase, so the new
+  session is handed that phase's work rather than nothing. When the workflow refuses that phase's
+  restart, the answer carries `phaseNotRestarted` rather than being empty: the claim is back in a
+  new session owing no task, the sentence says why nothing restarted its phase, and the
+  controller asks again once that cause is gone. It is the
+  same daemon operation `legion claims retry --fresh-session` runs for an operator, called through
+  the controller's own grant. A new session loses everything the old one held, and the daemon
+  refuses a claim it records as working, which may be in a turn, and one left working over a
+  process the daemon's last report of it found gone, whose relaunch has not run and which is in
+  no turn
+  (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, and one
+  left working under a relaunch the wake pacing parked
+  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which
+  takes the first of those two codes where the daemon records it working and the second where it
+  does not; and the role `controller`. Each refusal says what the claim is doing when it is
+  given and which operation reaches each state, and names no turn, hold, report or relaunch to
+  come.

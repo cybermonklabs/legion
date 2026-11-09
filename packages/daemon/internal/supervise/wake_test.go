@@ -36,19 +36,26 @@ const (
 	thirdToken  claim.Token = "legion-LEGION-209-reviewer"
 )
 
-// pacedHarness is a harness whose machines reserve from one limiter of rate wakes a minute in
-// bursts of one, every paced release spread by half an interval. A rate of zero is the pacing
-// off, and the machines are handed no Reserve at all, which is what the daemon hands them at that
-// rate rather than a limiter that paces nothing (the daemon's run, openSupervision): a harness
-// that handed one would take a path production never takes, and the line its wakes write would
-// say paced=true of a pacing that is off (reserveWake, wakeRan).
+// pacedDeps sets a machine's pacing to one limiter of rate wakes a minute in bursts of one,
+// every paced release spread by half an interval. A rate of zero is the pacing off, and the
+// machine is handed no Reserve at all, which is what the daemon hands it at that rate rather
+// than a limiter that paces nothing (the daemon's run, openSupervision): a harness that handed
+// one would take a path production never takes, and the line its wakes write would say
+// paced=true of a pacing that is off (reserveWake, wakeRan).
+func pacedDeps(rate int) func(*Deps) {
+	return func(d *Deps) {
+		d.WakePace = WakePace{Rate: rate, Burst: 1}
+		if rate > 0 {
+			d.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+		}
+	}
+}
+
+// pacedHarness is a harness whose machines reserve from one such limiter (pacedDeps).
 func pacedHarness(t *testing.T, rate int) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	h.deps.WakePace = WakePace{Rate: rate, Burst: 1}
-	if rate > 0 {
-		h.deps.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
-	}
+	pacedDeps(rate)(&h.deps)
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		t.Fatal(err)
@@ -949,17 +956,18 @@ func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 // One death is charged once, however many reports of it arrive. A claim whose relaunch waits its
 // turn still records the process it found dead, so a second report of that same incarnation
 // reaches the judgement every report passes through — the runtime's own sweep makes one every
-// interval — and before this guard that second report ran the whole death again: another death
-// and another launch failure charged, and the waiting relaunch replaced by a fresh token at the
-// back of the queue. In a wave a claim with work outstanding then failed after two real deaths
-// rather than at launch_failure_limit, and the claim behind it lost the turn the queue had
-// already given it. The four other paths that report a process to that judgement — a closed
-// connection, the boot interval, the probe interval and the registration deadline — have a test
-// of their own below.
+// interval — and before this guard that second report ran the whole death again: another launch
+// failure charged, and the waiting relaunch replaced by a fresh token at the back of the queue.
+// In a wave a claim with work outstanding then failed after two real deaths rather than at
+// launch_failure_limit, and the claim behind it lost the turn the queue had already given it.
+// The death itself is charged once wherever its report is judged, on a record of its own
+// (died). The four other paths that report a process to that judgement — a closed connection,
+// the boot interval, the probe interval and the registration deadline — have a test of their
+// own below.
 //
 // The negative control is the guard reverted (judge's launchWaits): the budgets then read two
-// deaths and two launch failures, and the claim behind waits a turn longer, both of which this
-// test reads.
+// launch failures against the one death, and the claim behind waits a turn longer, both of
+// which this test reads.
 func TestASecondReportOfTheOneDeathOverAWaitingRelaunchChargesNothing(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	behind := h.machineFor(wakeClaim(secondToken, StateQueued))
@@ -1348,6 +1356,177 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 	h.wantBudgets(Budgets{PromptFailures: 1})
 	if p := h.pending(); p.ID == acked || p.DeliveredAt.IsZero() {
 		t.Fatalf("the task is %+v, want it back under a new id with its read mark, past the bound of prompt %s", p, acked)
+	}
+}
+
+// workingOverTheProcessItsRefusedRelaunchKept is the claim both tests below read: one working
+// for a turn whose process the runtime found gone, whose relaunch the pacing parked, and whose
+// turn the store could not answer the lifecycle recheck of (unansweredCheckLaunchStore). The
+// refusal keeps the dead process and the wake is spent, so the claim stands stored working
+// over a process nothing is replacing, and what the runtime last reported of that process is
+// the one fact that tells it from a claim in a turn (Claim.ProcessGone, reportedProcess).
+//
+// The store answers again before it returns, so what each path below does to that fact is the
+// path's own and not a second refusal's.
+func workingOverTheProcessItsRefusedRelaunchKept(t *testing.T) (*harness, runtime.Locator) {
+	t.Helper()
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store}
+	h.m.deps.Store = store
+
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	store.failing = true
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	store.failing = false
+
+	h.wantState(StateWorking)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", held)
+	}
+	if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+		t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+			got.Locator, got.ProcessGone, dead)
+	}
+	return h, dead
+}
+
+// The claim a refused relaunch leaves working over a dead process is told from a claim in a
+// turn by what the runtime last reported of the process it records, and by nothing else: its
+// state, the compaction it is not in, the suspension nothing holds over it and the wake it no
+// longer has all read as a claim in a turn reads (api's refuseState, freshSession). The record
+// is the verdict that raised the relaunch, kept where every verdict is judged
+// (reportedProcess), so the refusal writes nothing for it.
+//
+// The negative control is the record reverted (reportedProcess's gone verdict dropped): both
+// recovery doors then answer such a claim "is in a turn", which it is not, in the one window
+// those recoveries exist for.
+func TestARelaunchRefusedAtItsTurnLeavesTheClaimRecordingWhatBecameOfItsProcess(t *testing.T) {
+	h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+
+	view := h.m.View()
+	if !view.ProcessGone {
+		t.Fatal("the refused claim reports nothing of its process, want the gone verdict that raised the relaunch")
+	}
+	if view.Compacting || view.SuspensionHeld || view.WakeWaiting != nil || view.State != StateWorking {
+		t.Fatalf("the claim is %s reporting Compacting %v, a suspension held %v and wake %+v; want the four a claim in a turn reads",
+			view.State, view.Compacting, view.SuspensionHeld, view.WakeWaiting)
+	}
+	if got := view.Locator; got == nil || *got != dead {
+		t.Fatalf("the claim records %+v, want the dead process the refusal kept, %+v", got, dead)
+	}
+}
+
+// Every path that changes what the runtime last reported of the process a refused relaunch
+// left the claim over. The record is about one process, so it goes when that process goes
+// (letGo) and it is written again by every report the machine judges of it: a verdict that
+// found the process running clears it, and a runtime that could not answer leaves the last
+// answer standing (judge, reportedProcess). A record that outlived any of them would refuse a
+// claim "its process is gone" over a process that is running, or over one the claim no longer
+// records at all.
+//
+// The negative control is each clearing dropped in turn: the row's claim then reports its
+// process gone while the runtime has just found it alive, at a stale address, or replaced by
+// the launch the row's turn ran.
+func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesIt(t *testing.T) {
+	for _, path := range []struct {
+		name string
+		// run takes the refused claim to the path's end, and want is what the claim reports of
+		// its process there.
+		run  func(t *testing.T, h *harness, dead runtime.Locator)
+		want bool
+	}{
+		{"the relaunch the next report of the process raises", func(t *testing.T, h *harness, _ runtime.Locator) {
+			// The sweep reports the dead process again, which raises the relaunch the refusal
+			// left owing; its turn starts the process that replaces it (letGo, launchNow).
+			h.observe(runtime.Gone)
+			waiting := h.wantWaitingWake(WakeLaunch)
+			h.advance(waiting.At.Sub(h.clock.Now()))
+			h.relaunched()
+		}, false},
+		{"a report that finds the process alive after all", func(t *testing.T, h *harness, _ runtime.Locator) {
+			h.observe(runtime.Alive)
+		}, false},
+		{"a report that finds it at a stale address", func(t *testing.T, h *harness, dead runtime.Locator) {
+			// The process is running, holding an address a process launched now is not handed,
+			// so the claim is relaunched over a live process and that launch waits its turn
+			// (repoint, reserveWake). Nothing let the process go, so the record is the report's
+			// own doing.
+			h.observe(runtime.StaleAddress)
+			h.wantWaitingWake(WakeLaunch)
+			if got := h.claim().Locator; got == nil || *got != dead {
+				t.Fatalf("the claim records %+v, want the process the repoint's launch replaces at its turn, %+v", got, dead)
+			}
+		}, false},
+		{"a runtime that could not answer", func(t *testing.T, h *harness, _ runtime.Locator) {
+			h.observe(runtime.Uncertain)
+		}, true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+
+			path.run(t, h, dead)
+
+			if got := h.claim().ProcessGone; got != path.want {
+				t.Fatalf("the claim reports ProcessGone %v, want %v", got, path.want)
+			}
+		})
+	}
+}
+
+// A verdict the sweep gives while a launch waits its turn decides nothing, but it is still
+// what the runtime last reported of the process the claim records: the guard reads the one
+// and not the other (judge, reportedProcess). The window that turns on it is a park a stale
+// address raised — that verdict found the process alive, so it cleared the record — over a
+// process that then dies. If the park's own turn is refused, the claim is left stored working
+// over a dead process, and this record is the whole of what tells it from a claim in a turn
+// (Claim.ProcessGone, api's refuseState and freshSession).
+//
+// The negative control is the record put back behind the guard (judge's launchWaits): the
+// claim then reports its process running after a death the park dropped, and both recovery
+// doors answer it "in a turn" until the next sweep.
+func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store}
+	h.m.deps.Store = store
+
+	// The process is alive at a stale address, so its relaunch is raised over a live process
+	// and parked, and the verdict clears the record (repoint, reportedProcess).
+	h.observe(runtime.StaleAddress)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	if h.claim().ProcessGone {
+		t.Fatal("the claim reports its process gone after a verdict that found it alive at a stale address")
+	}
+
+	// The process dies under the park. Nothing is acted on — the launch's turn replaces that
+	// process either way — and what the claim records of it is this verdict.
+	h.observe(runtime.Gone)
+
+	if !h.claim().ProcessGone {
+		t.Fatal("the claim reports nothing of the process that died under the park, want the gone verdict recorded")
+	}
+	if got := h.m.View().WakeWaiting; got == nil || got.Kind != WakeLaunch {
+		t.Fatalf("the claim's waiting wake is %+v, want the parked relaunch the death did not touch", got)
+	}
+
+	// The park's turn comes and the store cannot answer its lifecycle recheck, so the relaunch
+	// is refused and the claim keeps the dead process with no launch coming for it (runWake,
+	// relaunchRefused).
+	store.failing = true
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	store.failing = false
+
+	h.wantState(StateWorking)
+	if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+		t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+			got.Locator, got.ProcessGone, dead)
+	}
+	if got := h.m.View().WakeWaiting; got != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", got)
 	}
 }
 
@@ -1789,6 +1968,70 @@ func TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch(t *testing.T) {
 	h.wantState(StateLaunching)
 	h.wantStarts(h.token, 2)
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
+}
+
+// The same park, over a claim that owes the task a provider error took back. Nothing works that
+// task, the ladder's next step can be ten minutes away and a run of errors has no end of its
+// own, so a newer task does not wait behind it: the owed task is retired and the newer one takes
+// its place (replaceable, queue, dispatch://INFRA-956 R2). A task the claim takes this way is a
+// task a person is waiting on, exactly as one it takes over no delivery at all, so the launch
+// parked above the process that task would reach runs where it arrives rather than at a paced
+// turn tens of minutes away in a wave (runParkedLaunchNow).
+//
+// The owed task is replaced before that launch runs, because the launch takes the ladder's wait
+// with the claim's timers (letGo), and that wait is the whole of what makes the owed task
+// replaceable: queue, reading the claim the launch leaves, would find a task no newer one may
+// replace and answer the operator "a delivery is already pending", having just replaced a live
+// process for a request that was answered with nothing.
+//
+// The negative control is the guard reverted (runParkedLaunchNow's pending delivery): the
+// operator's task then replaces the owed one and waits out the paced turn, which this test
+// reads at the state and the runtime's starts.
+func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *testing.T) {
+	const task = "look at the production check"
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	replaced := h.locator()
+
+	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	owed := h.pending()
+	if !h.m.replaceable(&owed) {
+		t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this test needs the ladder's wait", owed)
+	}
+
+	h.observe(runtime.StaleAddress)
+	h.wantWaitingWake(WakeLaunch)
+
+	// The task arrives part of the way into the wait, as a person's does.
+	h.advance(wakePart)
+	h.must(RequestDeliver{Claim: h.token, Task: task})
+
+	h.wantState(StateLaunching)
+	h.wantStarts(h.token, 2)
+	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
+		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
+			resume.Previous, replaced)
+	}
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
+	}
+	if p := h.pending(); p.Task != task || p.ID == owed.ID || p.ProviderErrorRetries != 0 {
+		t.Fatalf("the task is %+v, want the operator's %q queued in place of the owed one, with a ladder of its own", p, task)
+	}
+	if _, armed := h.m.timers[TimerPromptRetry]; armed {
+		t.Error("the ladder's wait is still armed for a task the claim no longer holds")
+	}
+	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
+
+	// Only the owed task was ever prompted; the operator's goes at the ready of the process this
+	// launch started.
+	h.wantPrompts(1)
+	h.relaunched()
+
+	sent := h.wantPrompts(2)
+	if sent[1].Message != task {
+		t.Fatalf("the prompts are %+v, want the operator's task at the process the launch started", sent)
+	}
 }
 
 // The same park over a dead process, reached by a claim that is ready and holds no task: the
