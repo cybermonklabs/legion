@@ -42,6 +42,7 @@ import {
   seedRequestBaseline,
   seedSpineCases,
   seedTwiceTheNodes,
+  seedUnbrokenChildTitle,
   seedUnbrokenWords,
   seedWholeIssue,
   UNBROKEN_PATH,
@@ -1479,6 +1480,37 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
       await expect(
         page.getByText(UNBROKEN_PATH, { exact: false }).first(),
         `the Spec preset draws none of the requirement's words at ${width} px`
+      ).toBeVisible();
+      await assertPageFits(page);
+    }
+  });
+});
+
+// c-reflow again, on the other surface the same run reaches: a child's own title. The children
+// section draws `{key} · {title}` in a link, and the touch-target floor makes every link a flex
+// box (`web/src/styles.css`), so the link's text is an anonymous flex item whose automatic
+// minimum size is its min-content width - which `overflow-wrap` does not move. Measured at
+// 320 px with the same 118 character path on 2026-11-09 at 454f2a3107a6: 807 px of text in a
+// 288 px box and a page 823 px wide. Below `md` the section opens closed (R6), so this opens
+// it, which is what a reader waiting on a child does.
+test("a child whose title holds an unbroken run keeps the page inside its viewport @phone", async ({
+  browser,
+}) => {
+  await phase(browser, seedUnbrokenChildTitle, async (page, seeded) => {
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      if ((await childRows(page).count()) === 0) await childrenDisclosure(page).click();
+      // The title is on the page before it is measured, so a fit read before the rows draw
+      // cannot pass for the fit of a page that holds them.
+      await expect(
+        childRow(page, seeded.childKey),
+        `the children section draws no row for ${seeded.childKey} at ${width} px`
+      ).toBeVisible();
+      await expect(
+        page.getByText(UNBROKEN_PATH, { exact: false }).first(),
+        `the child's row draws none of its title's words at ${width} px`
       ).toBeVisible();
       await assertPageFits(page);
     }

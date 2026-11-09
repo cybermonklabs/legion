@@ -445,6 +445,35 @@ export async function seedUnbrokenWords(): Promise<PlainIssueSeed> {
   };
 }
 
+/** The issue a reader opens to read that run in a child's own title, and the child that holds
+ *  it. The children section draws `{key} · {title}`, so the run is the title's and not the
+ *  key's. */
+export interface ChildTitleSeed {
+  /** The child whose title holds the run. */
+  readonly childKey: string;
+  /** The parent, which is the issue the page is opened at. */
+  readonly key: string;
+}
+
+/** An issue one of whose children carries that same run in its own title (R17). It is a second
+ *  surface for the one run `UNBROKEN_PATH` already states, and reads it without touching the
+ *  seed the requirement row uses. */
+export async function seedUnbrokenChildTitle(): Promise<ChildTitleSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A child of this issue names a long path",
+  });
+  const child = await createIssue({
+    force: true,
+    parent: issue.key,
+    project: PROJECT,
+    title: `Draw ${UNBROKEN_PATH}`,
+  });
+  return { childKey: child.key, key: issue.key };
+}
+
 export interface BaselineSeed {
   readonly checks: readonly string[];
   readonly children: { readonly blocked: string; readonly done: string; readonly keys: string[] };

@@ -137,8 +137,16 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
       data-child-status={child.status}
       key={child.key}
     >
+      {/* The child's own title can hold a run no space breaks - a path, a key, an address -
+          and the run has to break inside a word here, as the GitHub link's title does
+          (`GitHubLink.tsx`), not merely wrap: the touch-target floor draws every link
+          `inline-flex` (`web/src/styles.css`), so the link's text is an anonymous flex item
+          whose automatic minimum size is its min-content width, and `overflow-wrap` leaves
+          that width alone. Measured at 320 px with a 118 character path: untouched and with
+          `break-words`, 807 px of text in a 288 px box and a page 823 px wide; with
+          `break-all`, 288 px in 288 and a page that fits (R17). */}
       <Link
-        className={`min-w-0 font-medium ${linkText} ${linkHoverText}`}
+        className={`min-w-0 break-all font-medium ${linkText} ${linkHoverText}`}
         to={buildIssuePath({ key: child.key, kind: "issue" })}
         {...referenceTriggerProps({ key: child.key, kind: "issue" })}
         {...authorText}

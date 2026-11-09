@@ -35,8 +35,14 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
       data-covered={gaps.length === 0}
       data-testid="spec-requirement"
     >
+      {/* The requirement's own words are the one part of this line that can hold a run no
+          space breaks - a path, a key, an address - so the flex child gives its width up
+          (`min-w-0`) and the run wraps inside it (`break-words`), the shape the summary
+          sentence and the focused node's facts already take (R17). Without both, a 118
+          character path drew 922 px inside a 264 px card and the whole page scrolled
+          sideways: 950 px in a 320 px viewport. */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className={textPrimaryOnSurface} {...authorText}>
+        <span className={`min-w-0 break-words ${textPrimaryOnSurface}`} {...authorText}>
           {requirement.text}
         </span>
         {gaps.map((gap) => (
