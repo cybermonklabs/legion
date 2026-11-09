@@ -1749,6 +1749,8 @@ Run this with the daemon stopped, before this release's image is pinned:
 delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot';
 ```
 
+This release's own migration runs that statement too (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), and the operator step above remains for the rolling-restart window, where a daemon still on the earlier release can write such a row after the migration has run.
+
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
 ### Pinning a release that drops what a running pod still uses

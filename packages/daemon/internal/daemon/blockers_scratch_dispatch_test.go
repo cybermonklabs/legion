@@ -737,8 +737,17 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	})
 
 	setDispatchStatus(t, baseURL, free, "done")
+	// The hand-over is read off the record, as the tree the child stands in: it becomes a tree of
+	// its own. A place in `admission.waiting` or `admission.active` no longer marks it. The child
+	// re-entered its tree at admitted when a person set it back to todo, and an issue keeps its
+	// admission slot from the moment the daemon starts it until it is done, leaves the workflow or
+	// waits only for its merge (record.KeepsSlot), so it holds the row of that re-entry and stands
+	// in `admission.active` from then until its tree's linger releases it. That list says the
+	// daemon has started the issue, and no longer says it was admitted as a root of its own, so a
+	// predicate reading it would be true before the close of `free` was consumed at all and would
+	// judge the state before the hand-over.
 	state, body = settled(t, d, "hand "+child+" over as a root of its own once "+free+" closed", func(s api.State) bool {
-		return slices.Contains(s.Admission.Waiting, child) || slices.Contains(s.Admission.Active, child)
+		return s.Issues[child].Tree == child
 	})
 	t.Logf("the state once %s closed and its tree finished, handing over %s, held in it on %s:\n%s", free, child, elsewhere, body)
 	checked(child, "once its finished tree handed it over", state, body)

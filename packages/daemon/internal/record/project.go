@@ -664,16 +664,22 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // its own first phase, and the root in accepting, in awaiting_merge or at work waits for
 // nothing. The slot does not say it either: an issue keeps its row from its start until it is
 // done, leaves the workflow or waits only for its merge (KeepsSlot), so a root handed over in
-// accepting carries the row it held in the tree it left while its own tree waits to be opened.
+// accepting may still hold the row it held in the tree it left while its own tree waits to be
+// opened. The tree it leaves usually takes that row back first — its root lingers from its
+// close, and the release reads the linger (NeedsSlot) in the transaction that records the
+// close, before the hand-over writes the root of its own — so the carried row is the case the
+// line is written against rather than the usual one, and the line holds it all the same.
 //
 // An issue holding a slot row is in the line where its promotion needs more than that row: an
-// answered root, whose architect resumes, and a tree's own root at admitted under an open gate,
-// whose first phase starts. Each is promoted without taking a slot, holding one already
-// (admit's slotFor). A row does take an owed start out of the line, because the row is what
-// releases that start (SuperviseRequest.NeedsSlot) and an issue holding one waits for nothing
-// here, and it takes out a queued root, whose promotion opens a tree. An issue whose tree is
-// not live, or whose root lingers, is out of the line too: nothing of a tree that has left the
-// workflow is started again until its re-admission opens it.
+// answered root, whose architect resumes, a tree's own root at admitted under an open gate,
+// whose first phase starts, and a root that arrived from another tree with its row, whose
+// promotion opens the tree of its own. Each is promoted without taking a slot, holding one
+// already (admit's slotFor). A row does take an owed start out of the line, because the row is
+// what releases that start (SuperviseRequest.NeedsSlot) and an issue holding one waits for
+// nothing here, and it takes out a queued root the daemon granted that row in this tree, whose
+// architect is writing the spec and whose second promotion would reopen an open tree. An issue
+// whose tree is not live, or whose root lingers, is out of the line too: nothing of a tree that
+// has left the workflow is started again until its re-admission opens it.
 func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	slotted := make(map[string]struct{}, len(slots))
 	for _, slot := range slots {
@@ -756,7 +762,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		if issue.Answered() {
 			continue
 		}
-		if _, held := slotted[issue.Key]; held {
+		// A queued root holding a row the daemon granted it in this tree is one it has already
+		// started — a root whose architect is writing the spec, which a person set back to todo
+		// — and a second promotion would reopen an open tree and start a second architect. A
+		// root that arrived from another tree carries the row of the tree it left
+		// (HandedOverFrom, the one mark of that arrival, which ran is written over and the
+		// promotion that opens the root's own tree clears), and the tree of its own has still
+		// to be opened, so it belongs in the line: dropped from it, nothing would promote it,
+		// the release would keep its row (NeedsSlot) and no later pass would find it again.
+		if _, held := slotted[issue.Key]; held && issue.HandedOverFrom == "" {
 			continue
 		}
 		if slices.ContainsFunc(issue.Ancestry, func(key string) bool {
@@ -883,8 +897,10 @@ func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 // of the root is running, and a root whose tree ran and ended queues again with that row still
 // standing until its cleanup confirms. The slot does not answer it either: an issue keeps its
 // row from its start until it is done, leaves the workflow or waits only for its merge
-// (KeepsSlot), so a root arriving from another tree in accepting carries the row it held there
-// while the tree of its own has still to be opened.
+// (KeepsSlot), so a root arriving from another tree in accepting may still carry the row it
+// held there while the tree of its own has still to be opened. The linger of the tree it left
+// usually takes that row back first (NeedsSlot), so this is the case the rule is written
+// against rather than the usual one.
 func QueuedRoot(issue Issue, gate TreeGate) bool {
 	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, gate) {
 		return false
