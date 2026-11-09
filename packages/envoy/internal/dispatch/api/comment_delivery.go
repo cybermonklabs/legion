@@ -1183,12 +1183,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
 	turn := thread.replyTurn(actor, nil)
-	// The reply's own id and time, read before the row so its node can be written first.
-	// `created_at` defaults to now(), which is the transaction's own timestamp, so the time
-	// read here is the time the row takes.
+	// The reply's own id and time, read before the row so its node can be written first. The
+	// time is a clock read, as a comment's created_at defaults to clock_timestamp() (migration
+	// 0065), and the insert writes it rather than taking the default, so the row, its node and
+	// the facts it projects all carry one time (comment_create.go says what reads both).
 	var rowID string
 	var createdAt time.Time
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, clock_timestamp()`).Scan(&rowID, &createdAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1204,11 +1205,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		returning `+commentColumns+`
 	`, rowID, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn,
-		block.nodeID(), thread.Answers, commentNodeKind, rowID))
+		block.nodeID(), thread.Answers, commentNodeKind, rowID, createdAt))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -2219,6 +2219,21 @@ Its input is each row's own content: it never reads one side of a projection to 
 It is safe to run again, since a row that already names its node is skipped, so a run interrupted anywhere carries on from where it stopped.
 It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
 
+### The view over the store
+
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and the cutover test on each of the four arms whose relations the store now writes.
+The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`;
+the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
+No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
+The arm answers no row for a node whose current `state` is `gone`, which is how it stays level with a projection row that is really deleted (a block a version no longer holds), and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row, so both arms lose it together.
+
+The switch is per row and by the tuple's own kind: `in_document` is governed by the `block` row of `graph_store_cutover`, a block's pointer kinds by the `block_ref` row, and a comment's two by the `comment` row, while each of the four old arms carries the opposite test as an uncorrelated scalar the planner reads once.
+So the moment the backfill completes a kind, the store answers that kind's rows and the old arm answers none, and the view answers each row exactly once at every instant.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table behind `not complete` and the tuples behind `complete`, so a count and the list behind it cannot disagree across the cutover.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue, and reads the whole view and every backlink count with the cutover rows off and with them on over one seeded database, row for row.
+
 ## Stored-order check
 
 `envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays: folding its `doc_updates` rows in version order must give every row's `content_changed` (measured against the render the rows before it fold to, true when either side does not render) and every version's markdown at its `doc_update_version`, and no row may be stored ahead of one it depends on.

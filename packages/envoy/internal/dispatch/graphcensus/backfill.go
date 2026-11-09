@@ -20,12 +20,10 @@ import (
 // request does.
 const backfillBatch = 200
 
-// backfillEventType is the type of the event the backfill appends for itself, and
-// backfillActor who it records as the writer of every node and tuple it writes. The run is
-// nobody's act: a row written before the store existed has a writer of its own only where the
-// row itself records one, and inventing one from anywhere else would state a fact no row holds.
-const backfillEventType = "graph.backfilled"
-
+// backfillActor is who the run records as the writer of every node and tuple it writes. The
+// run is nobody's act: a row written before the store existed has a writer of its own only
+// where the row itself records one, and inventing one from anywhere else would state a fact no
+// row holds.
 var backfillActor = model.Actor{Kind: "system", ID: "dispatch-backfill-graph-store"}
 
 // commentNodeKind is what the node and tuple store calls a comment, and commentSupertag the
@@ -95,10 +93,17 @@ type BackfillReport struct {
 // over.
 func Backfill(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
 	report := BackfillReport{}
-	event, err := appendBackfillEvent(ctx, database)
-	if err != nil {
-		return report, err
-	}
+	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
+	// reads as "no event recorded this write" and is exactly true of a row written before the
+	// store existed. The run appends no event of its own: events.Broker is the one writer of
+	// that table (api's event-insert guard holds every other writer to it, because the broker
+	// takes the transaction id before the insert draws the event's id, which the safe horizon
+	// rests on), and the broker refuses an event that belongs to no issue, document, project or
+	// session, which a database-wide backfill belongs to none of. Two runs therefore state such
+	// a fact twice, since the repeat keys skip the sentinel, and nothing reads wrong for it: a
+	// current read takes the newest asserting tuple and the census counts nodes and projection
+	// rows rather than tuples.
+	event := graphstore.NoEvent
 	report.Event = event
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", event)
 	for _, kind := range []struct {
@@ -128,27 +133,6 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 func writeKindBackfill(out io.Writer, done KindBackfill) {
 	fmt.Fprintf(out, "backfill-graph-store: kind=%s rows=%d nodes=%d tuples=%d skipped=%d owed=%d remaining=%d cutover=%t\n",
 		done.Kind, done.Rows, done.Nodes, done.Tuples, done.Skipped, done.Owed, done.Remaining, done.Complete)
-}
-
-// appendBackfillEvent writes the run's own event, the cause it gives a fact whose row's own
-// event cannot be found. It names no owner, which the events table allows
-// (events_one_owner is num_nonnulls(...) <= 1), because the run belongs to no issue, document
-// or project; it is published already, so the outbox never claims it, and it notifies nobody.
-func appendBackfillEvent(ctx context.Context, database *store.Store) (int64, error) {
-	actor, err := json.Marshal(backfillActor)
-	if err != nil {
-		return 0, fmt.Errorf("encode the backfill's actor: %w", err)
-	}
-	var id int64
-	err = database.Pool.QueryRow(ctx, `
-		insert into events (seq, type, actor, payload, notify, published_at)
-		values (0, $1, $2, '{}'::jsonb, false, now())
-		returning id
-	`, backfillEventType, actor).Scan(&id)
-	if err != nil {
-		return 0, fmt.Errorf("append the backfill's own event: %w", err)
-	}
-	return id, nil
 }
 
 // blockRow is one document_blocks row the backfill reads: its node's address, the document's

@@ -731,11 +731,17 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// description.
 	turn := threadTarget.replyTurn(actor, input.Turn)
 	// The row's own id and time, read before the row so the comment's node can be written
-	// first. `created_at` defaults to now(), which is the transaction's own timestamp, so the
-	// time read here is the time the row takes.
+	// first. The time is a clock read rather than the transaction's, because a comment's
+	// created_at defaults to clock_timestamp() (migration 0065) and the row, its node and the
+	// facts it projects have to carry one time: the store's census digests the row's created_at
+	// against its node's made_at, and graph_edges answers a comment's edges from the row before
+	// its kind's cutover and from the tuples after it. The read is after the owner row lock this
+	// write already holds, so it keeps 0065's order: an owner's comments are dated as they
+	// commit. The insert writes this value rather than taking the default, so the two cannot
+	// drift.
 	var rowID string
 	var createdAt time.Time
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, clock_timestamp()`).Scan(&rowID, &createdAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -794,11 +800,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	var comment model.Comment
 	if err := tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
-		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, commentNodeKind, rowID).Scan(&comment.CreatedAt); err != nil {
+		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, commentNodeKind, rowID, createdAt).Scan(&comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -726,6 +726,10 @@ var graphViewArms = []graphViewArm{
 	{table: "component_depends", fromKind: "component", kind: "depends_on", toKind: "component"},
 	{table: "issue_component_members", fromKind: "issue", kind: "affects", toKind: "component"},
 	{table: "block_refs", fromKind: "block"},
+	// The store's own arm, which answers each kind it carries once that kind's cutover row
+	// reads true: every select item of it is a column, so it is a mention arm to this test, and
+	// mentionBacklinkArms reads graph_tuples for exactly that reason.
+	{table: "graph_tuples"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -826,7 +830,9 @@ var (
 // per arm. That form puts each top-level UNION ALL on a line of its own with no indentation, and
 // no arm of this view holds a union of its own, so splitting on such a line splits the arms; each
 // arm then opens with ` SELECT <item>,` and one four-space-indented line per further select item,
-// and its `   FROM ` line names the relation it reads first.
+// and its `   FROM ` line names the relation it reads first. An arm whose FROM opens a sub-select
+// is named by the first relation inside it, which is the relation that arm reads first too: the
+// store's own arm reads graph_tuples under a `distinct on`, so the list declares it as that.
 func parseGraphViewArms(t *testing.T, definition string) []graphViewArm {
 	t.Helper()
 	body := strings.TrimSuffix(strings.TrimRight(definition, "\n"), ";")
@@ -846,6 +852,9 @@ func parseGraphViewArms(t *testing.T, definition string) []graphViewArm {
 					t.Fatalf("%s names no relation after its FROM: %q", where, line)
 				}
 				table = fields[0]
+				if table == "(" {
+					table = subSelectRelation(t, where, lines)
+				}
 				break
 			}
 			if !strings.HasPrefix(line, "    ") {
@@ -874,6 +883,26 @@ func parseGraphViewArms(t *testing.T, definition string) []graphViewArm {
 		})
 	}
 	return arms
+}
+
+// subSelectRelation is the first relation a sub-select arm reads: the first FROM inside it,
+// which the catalogue prints indented past the arm's own. An arm whose sub-select names no
+// relation at all fails the parse rather than being read as a table named "(".
+func subSelectRelation(t *testing.T, where string, lines []string) string {
+	t.Helper()
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		if len(line)-len(trimmed) <= len("   ") {
+			continue
+		}
+		if rest, found := strings.CutPrefix(trimmed, "FROM "); found {
+			if fields := strings.Fields(rest); len(fields) > 0 && fields[0] != "(" {
+				return fields[0]
+			}
+		}
+	}
+	t.Fatalf("%s opens a sub-select that names no relation:\n%s", where, strings.Join(lines, "\n"))
+	return ""
 }
 
 // armLiteral is the value a select item writes as a literal, or "" when it selects a column. The
