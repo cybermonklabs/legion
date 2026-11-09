@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
 import { bootLegionClaim, type LegionClaimHost } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
@@ -22,8 +23,10 @@ const registration = {
   pluginContract: 29,
 };
 
-/** A host over a stub daemon whose `register` and `ready` answer as given, recording every step it
- * is asked for, in order, beside the daemon's requests. */
+/** A host over a stub daemon whose `register` and `ready` answer as given, recording every step
+ * it is asked for, in order, beside the daemon's requests. Its first-turn signal is kept rather
+ * than fired: a case fires it with `firstTurn()`, and a case that leaves it unfired is a session
+ * no turn ever started. */
 function claimHost(options: {
   readonly register?: () => Response;
   readonly ready?: () => Response;
@@ -33,6 +36,7 @@ function claimHost(options: {
   const lines: string[] = [];
   const capabilities: ClaimCapability[] = [];
   let regain: ((role: string, reason: string) => Promise<void>) | undefined;
+  let firstTurn: (() => void) | undefined;
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname.replace("/legion/v1/", "");
     steps.push(`${route} ${init?.body ?? ""}`);
@@ -49,6 +53,13 @@ function claimHost(options: {
     claimRole: async (role) => {
       steps.push(`claimRole ${role}`);
     },
+    onFirstTurn: (claim) => {
+      steps.push("onFirstTurn");
+      firstTurn = claim;
+    },
+    // Long enough that no case reaches it by waiting: the cases that drive the bound set their
+    // own, and every other one fires the signal, which disarms it.
+    firstTurnBoundMs: 600_000,
     onRoleRegained: (listener) => {
       steps.push("onRoleRegained");
       regain = listener;
@@ -58,7 +69,14 @@ function claimHost(options: {
     stop: () => steps.push("stop"),
     ...options.overrides,
   };
-  return { host, steps, lines, capabilities, regain: () => regain };
+  return {
+    host,
+    steps,
+    lines,
+    capabilities,
+    regain: () => regain,
+    firstTurn: () => firstTurn,
+  };
 }
 
 const readyBody = () =>
@@ -69,8 +87,8 @@ const readyBody = () =>
     generation: registered.generation,
   });
 
-test("registers, runs afterRegister, records the capability, claims the role, then readies without a capability report, and readies again on a regain of its role", async () => {
-  const { host, steps, lines, capabilities, regain } = claimHost({
+test("registers, runs afterRegister, records the capability, then readies without a capability report, registers the regain listener and readies again on a regain of its role, and claims the role last, at the session's first turn", async () => {
+  const { host, steps, lines, capabilities, regain, firstTurn } = claimHost({
     overrides: {
       afterRegister: async (claim) => {
         steps.push(`afterRegister ${claim.claimToken}`);
@@ -78,15 +96,15 @@ test("registers, runs afterRegister, records the capability, claims the role, th
     },
   });
 
-  await bootLegionClaim(host);
+  const booted = await bootLegionClaim(host);
 
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
     `afterRegister ${claimToken}`,
     "setCapability",
-    `claimRole ${claimToken}`,
     `claims/ready ${readyBody()}`,
     "onRoleRegained",
+    "onFirstTurn",
   ]);
   expect(capabilities).toEqual([
     {
@@ -101,10 +119,14 @@ test("registers, runs afterRegister, records the capability, claims the role, th
     },
   ]);
 
+  firstTurn()?.();
+  await booted.claimed;
+  expect(steps.at(-1)).toBe(`claimRole ${claimToken}`);
+
   // Another role's regain sends nothing; this claim's sends the one ready the boot built.
   await regain()?.("some-other-role", "reclaimed");
   await regain()?.(claimToken, "reregistered");
-  expect(steps.slice(6)).toEqual([`claims/ready ${readyBody()}`]);
+  expect(steps.slice(7)).toEqual([`claims/ready ${readyBody()}`]);
   expect(lines).toEqual([`re-ran claims/ready after role ${claimToken} was reregistered`]);
 });
 
@@ -139,18 +161,30 @@ test("a 5xx at claims/register is logged and rejects without stopping; a request
   expect(unreachable.lines).toEqual([]);
 });
 
-test("a failure after the registration is logged naming the claim token and what stop does, then stops the agent", async () => {
-  const { host, steps, lines } = claimHost({
+test("a claim the listener refuses is logged naming the claim token and what stop does, then stops the agent — after the daemon has been told ready", async () => {
+  const { host, steps, lines, firstTurn } = claimHost({
     overrides: {
       claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
         throw new Error(`Envoy role ${role} is held by live session ses_other`);
       },
     },
   });
-  await bootLegionClaim(host);
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  // The refusal now comes after ready, so the daemon may already have delivered this claim's
+  // task: the relaunch re-sends a delivery that is pending and unconfirmed, the path a death
+  // inside a turn already takes. The failure itself is the one it always was.
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
     "setCapability",
+    `claims/ready ${readyBody()}`,
+    "onRoleRegained",
+    "onFirstTurn",
+    `claimRole ${claimToken}`,
     "stop",
   ]);
   expect(lines).toEqual([
@@ -158,12 +192,124 @@ test("a failure after the registration is logged naming the claim token and what
   ]);
 });
 
-test("a 4xx at claims/ready is not retried: one ready, then the agent stops", async () => {
+test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener, no first-turn signal and no claim", async () => {
   const { host, steps } = claimHost({
     ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
   });
-  await bootLegionClaim(host);
+  const booted = await bootLegionClaim(host);
   expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
   expect(steps.at(-1)).toBe("stop");
   expect(steps).not.toContain("onRoleRegained");
+  expect(steps).not.toContain("onFirstTurn");
+  expect(steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+  // A boot that stopped before the claim step still settles its answer, so a caller that waits
+  // on the claim is not left waiting for a step that is never coming.
+  await booted.claimed;
+});
+
+test("the name is taken at the host's first-turn callback and not before it", async () => {
+  const { host, steps, firstTurn, regain } = claimHost({});
+
+  const booted = await bootLegionClaim(host);
+
+  // Ready has answered and the regain listener is registered, and the role is still unclaimed.
+  // Nothing but the signal can claim it here: this host's bound is ten minutes away, and a
+  // regain of the role — the one other thing that runs between the boot and the first turn —
+  // re-runs ready and claims nothing.
+  expect(steps).toContain(`claims/ready ${readyBody()}`);
+  expect(steps).toContain("onRoleRegained");
+  await regain()?.(claimToken, "reclaimed");
+  expect(steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps.at(-1)).toBe(`claimRole ${claimToken}`);
+});
+
+test("a boot that gets no first turn claims at the bound, and so does a host that supplies no signal at all", async () => {
+  const waiting = claimHost({ overrides: { firstTurnBoundMs: 5 } });
+  const booted = await bootLegionClaim(waiting.host);
+  expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+
+  // Nothing fires the signal: this session was given no task and started no turn, and the bound
+  // is what takes its name anyway, so the lane the listener kept for it is handed over.
+  await booted.claimed;
+  expect(waiting.firstTurn()).toBeDefined();
+  expect(waiting.steps).toEqual([
+    `claims/register ${JSON.stringify(registration)}`,
+    "setCapability",
+    `claims/ready ${readyBody()}`,
+    "onRoleRegained",
+    "onFirstTurn",
+    `claimRole ${claimToken}`,
+  ]);
+
+  const silent = claimHost({ overrides: { onFirstTurn: undefined, firstTurnBoundMs: 5 } });
+  await (await bootLegionClaim(silent.host)).claimed;
+  expect(silent.steps).not.toContain("onFirstTurn");
+  expect(silent.steps.at(-1)).toBe(`claimRole ${claimToken}`);
+});
+
+test("a first turn that started before the boot registered its callback is not lost", async () => {
+  // The host's first turn is already running when the boot registers, so the host calls back
+  // inside the registration itself rather than keeping a signal nobody will fire again.
+  const { host, steps } = claimHost({
+    overrides: {
+      onFirstTurn: (claim) => {
+        claim();
+      },
+    },
+  });
+
+  const booted = await bootLegionClaim(host);
+  await booted.claimed;
+
+  expect(steps).toEqual([
+    `claims/register ${JSON.stringify(registration)}`,
+    "setCapability",
+    `claims/ready ${readyBody()}`,
+    "onRoleRegained",
+    `claimRole ${claimToken}`,
+  ]);
+});
+
+test("two first-turn signals claim once", async () => {
+  const { host, steps, firstTurn } = claimHost({});
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  firstTurn()?.();
+  await booted.claimed;
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([`claimRole ${claimToken}`]);
+});
+
+/** The log the bound's reader warns to, with the warnings it was given. */
+function boundLog(): { readonly warn: (message: string) => void; readonly warnings: string[] } {
+  const warnings: string[] = [];
+  return { warn: (message) => warnings.push(message), warnings };
+}
+
+test("the bound is 30 seconds, moved by one variable, which honours 0 and warns once on anything else", () => {
+  expect(DEFAULT_CLAIM_FIRST_TURN_BOUND_MS).toBe(30_000);
+
+  const read = boundLog();
+  expect(claimFirstTurnBoundMs({}, read)).toBe(DEFAULT_CLAIM_FIRST_TURN_BOUND_MS);
+  expect(claimFirstTurnBoundMs({ LEGION_CLAIM_FIRST_TURN_BOUND_MS: "250" }, read)).toBe(250);
+  // 0 is a value the reader honours: the name is taken as soon as ready has answered.
+  expect(claimFirstTurnBoundMs({ LEGION_CLAIM_FIRST_TURN_BOUND_MS: "0" }, read)).toBe(0);
+  expect(read.warnings).toEqual([]);
+
+  for (const bad of ["", " ", "soon", "1.5", "-1"]) {
+    const refused = boundLog();
+    expect(claimFirstTurnBoundMs({ LEGION_CLAIM_FIRST_TURN_BOUND_MS: bad }, refused), bad).toBe(
+      DEFAULT_CLAIM_FIRST_TURN_BOUND_MS
+    );
+    expect(refused.warnings, bad).toEqual([
+      `legion: LEGION_CLAIM_FIRST_TURN_BOUND_MS is not an integer of 0 or more; using ${DEFAULT_CLAIM_FIRST_TURN_BOUND_MS}`,
+    ]);
+  }
 });
