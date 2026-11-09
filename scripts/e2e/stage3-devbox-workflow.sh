@@ -233,6 +233,14 @@ cleanup() {
   [ -n "${ok:-}" ] || [ "$check" != smoke-main-clean ] || [ -n "$audit_failed" ] ||
     [ -s "$evidence/pane-endpoint-violation.txt" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the close it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
+  # The review App's private key must be gone, whatever else the teardown did: a private key never
+  # expires, and the removal at the head of this trap is the only thing that takes it. Left behind,
+  # it fails the run, as the sandbox proof's remove_app_tokens does with the credential files it
+  # could not remove (claude-backend-sandbox.sh).
+  if [ -e "$work/app-key" ]; then
+    printf "FAIL cleanup: the review App's private key remains in %s\n" "$work/app-key" >&2
+    exit 1
+  fi
   return 0
 }
 trap cleanup EXIT

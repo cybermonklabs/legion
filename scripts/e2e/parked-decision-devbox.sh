@@ -196,6 +196,14 @@ cleanup() {
   [ -n "${ok:-}" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$evidence/model-gateway" "$check_started" "$check" >&2 || true
   [ -n "${ok:-}" ] || printf 'parked decision devbox e2e: FAIL (check %s)\n' "$check" >&2
+  # The review App's private key must be gone, whatever else the teardown did: a private key never
+  # expires, and the removal at the head of this trap is the only thing that takes it. Left behind,
+  # it fails the run, as the sandbox proof's remove_app_tokens does with the credential files it
+  # could not remove (claude-backend-sandbox.sh).
+  if [ -e "$work/app-key" ]; then
+    printf "FAIL cleanup: the review App's private key remains in %s\n" "$work/app-key" >&2
+    exit 1
+  fi
   return 0
 }
 trap cleanup EXIT

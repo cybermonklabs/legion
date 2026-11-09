@@ -879,10 +879,10 @@ echo "wrote"`,
     }
   });
 
-  // The review's first finding: the operator's key command runs once, here on the driver, in the
-  // caller's own environment, and the block the daemon loads names a `cat` of the file it wrote.
-  // So a command that reads the operator's HOME is fine, and the check and the daemon cannot
-  // disagree about it, because both run that same `cat`.
+  // The operator's key command runs once, here on the driver, in the caller's own environment,
+  // and the daemon's own field is a `cat` of the 0600 file that run wrote. So a command that
+  // reads the operator's HOME is fine, and the check and the daemon cannot disagree about it,
+  // because both run that same `cat`.
   test("write_github_apps --key-dir runs the key command once, here, and writes a block that reads the file it wrote", async () => {
     const counter = join(dir, "key-command-runs");
     rmSync(counter, { force: true });
@@ -1036,6 +1036,27 @@ echo wrote`
     expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
   });
 
+  test("a key command carrying a long base64 word is a command, and is taken", async () => {
+    // The guard judges the value's shape, not the characters in it: a command that names a
+    // deployment's own secret version, an opaque base64 word of its own, is still a command. A
+    // guard that refused this would be in the way of the operators it is for.
+    const version = "QUJDREVGR0hJSg".repeat(25);
+    const { code, stdout, stderr, work } = await githubApps(
+      {
+        ...appInputs,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s' ${version} >/dev/null; cat -- ${reviewKeyFile}`,
+      },
+      proveBoth
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(line(stdout, "logins "))).toEqual({
+      implement: "example-implement[bot]",
+      review: "example-review[bot]",
+    });
+    expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
+  });
+
   test("a key pasted as one base64 word is refused by name, with no part of it printed", async () => {
     // The shape an older recipe's GH_REVIEW_APP_PRIVATE_KEY_B64 held. Left to `sh`, it would come
     // back in a `not found` error, into the transcript, past a relay that redacts token forms
@@ -1047,12 +1068,58 @@ echo wrote`
     );
     expect(code).toBe(1);
     expect(stderr).toContain(
-      "LEGION_E2E_REVIEW_APP_KEY_COMMAND is one long word of base64 characters, which is a key pasted where its command goes"
+      "LEGION_E2E_REVIEW_APP_KEY_COMMAND is base64 characters and whitespace alone, which is a key pasted where its command goes"
     );
     expect(stderr).toContain("its value is not printed");
     expect(stderr).not.toContain(pasted.slice(0, 40));
     expect(stdout).not.toContain("logins");
     expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
     holdsNoKey(stdout + stderr, keyIDs);
+  });
+
+  test("a key pasted as the base64 `base64` prints, wrapped at 76 columns, is refused with no line of it printed", async () => {
+    // The shape that defeated a guard which tested the whole value for one word: `base64 key.pem`
+    // wraps at 76 columns by default, and `sh` echoed each of those lines back into the run's
+    // stderr. The value is that command's own output over a real 2048-bit key, not a spelling of
+    // it written here.
+    const made = Bun.spawnSync(["base64", reviewKeyFile]);
+    expect(made.exitCode).toBe(0);
+    const pasted = made.stdout.toString();
+    const lines = pasted.trimEnd().split("\n");
+    expect(lines.length).toBeGreaterThan(20);
+    expect(lines[0]?.length).toBe(76);
+    const { code, stdout, stderr, work } = await githubApps(
+      { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: pasted },
+      proveBoth
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      "LEGION_E2E_REVIEW_APP_KEY_COMMAND is base64 characters and whitespace alone, which is a key pasted where its command goes"
+    );
+    expect(stderr).toContain("its value is not printed");
+    // No line of the wrapped key is anywhere in the run's output, neither whole nor begun.
+    for (const wrapped of lines) expect(stdout + stderr).not.toContain(wrapped.slice(0, 20));
+    expect(stdout).not.toContain("logins");
+    expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+    holdsNoKey(stdout + stderr, keyIDs);
+  });
+
+  test("a PEM pasted behind a leading newline or space is refused by name, with no part of it printed", async () => {
+    // The prefix test reads the value with its whitespace taken out, so the blank line or the
+    // indent a paste carries changes nothing: it is still the key itself.
+    for (const pasted of [`\n${reviewKey}`, `   ${reviewKey}`]) {
+      const { code, stdout, stderr, work } = await githubApps(
+        { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: pasted },
+        proveBoth
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain(
+        "LEGION_E2E_REVIEW_APP_KEY_COMMAND must name a command that prints the review App's private key, not the key itself"
+      );
+      expect(stderr).toContain("its value is not printed");
+      expect(stdout).not.toContain("logins");
+      expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+      holdsNoKey(stdout + stderr, keyIDs);
+    }
   });
 });

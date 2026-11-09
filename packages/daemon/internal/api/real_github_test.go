@@ -88,8 +88,8 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 }
 
 // githubAppsLib is the live proofs' App lib, scripts/e2e/lib/github-apps.sh: the one place this
-// deployment's App pair, the checks on the four inputs that override it, and the token command
-// are written.
+// deployment's App pair, the checks on the three inputs that override it and on the review App's
+// key command, which it requires and no default stands behind, and the token command are written.
 var githubAppsLib = filepath.Join("..", "..", "..", "..", "scripts", "e2e", "lib", "github-apps.sh")
 
 // liveProofAppInputs is the two inputs githubAppsLib reads for the implement role, each

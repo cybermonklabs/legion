@@ -180,6 +180,14 @@ cleanup() {
     [ -z "${ok:-}" ] || { since=$first_soft_since failed=$first_soft_check; }
     [ -z "$failed" ] || bash "$unserved_reader" --notes "$evidence/model-gateway" "$since" "$failed" >&2 || true
   fi
+  # The review App's private key must be gone, whatever else the teardown did: a private key never
+  # expires, the removal at the head of this trap is the only thing that takes it, and this run
+  # keeps $work. Left behind, it fails the run, as the sandbox proof's remove_app_tokens does with
+  # the credential files it could not remove (claude-backend-sandbox.sh).
+  if [ -e "$work/app-key" ]; then
+    printf "FAIL cleanup: the review App's private key remains in %s\n" "$work/app-key" >&2
+    exit 1
+  fi
   return 0
 }
 # github_cleanup closes every proof PR still open, deletes every proof head branch, and deletes the
@@ -597,6 +605,10 @@ for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj ha
 # into $work/app-key, which the daemon reads the key from and cleanup removes.
 declare -F require_app_inputs >/dev/null ||
   fail "ACCEPT_ROOT's scripts/e2e/lib/workflow.sh ($root) predates lib/github-apps.sh: point ACCEPT_ROOT at a checkout that has it"
+# A lib older than --key-dir reads the flag as a role instead, and dies naming a role no operator
+# wrote, so the flag is gated on its own before it is passed.
+[[ "$(declare -f write_github_apps)" == *--key-dir* ]] ||
+  fail "ACCEPT_ROOT's scripts/e2e/lib/github-apps.sh ($root) predates write_github_apps --key-dir: point ACCEPT_ROOT at a checkout that has it"
 require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
