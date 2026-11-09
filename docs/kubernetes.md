@@ -2130,7 +2130,7 @@ capabilities:                   # optional: the deployment capabilities decided 
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
 `runtime.kubernetes.resources` takes exactly two keys:
-`issue`, the one reservation every issue pod's `roles` container and both its init containers carry, and `controller`, the daemon-launched controller's pod's, only under `controller: daemon`.
+`issue`, the one reservation every issue pod's `roles` container and both its init containers carry — the third too, where the deployment names a `skills_repository` — and `controller`, the daemon-launched controller's pod's, only under `controller: daemon`.
 Each takes the six fields `cpu` and `memory` (the limits), `cpu_request` and `memory_request`, `ephemeral_storage` (the limit) and `ephemeral_storage_request`, any of them.
 A limit the file leaves out takes the daemon's default (`config.DefaultResources()`, `packages/daemon/internal/config/kubernetes.go`);
 a `cpu_request` or `memory_request` it leaves out takes the file's limit where it set one, else the default's request (`settledRequest`), so a file that raises `memory` alone is requested in full.
@@ -2885,7 +2885,7 @@ When that reason is `OOMKilled`, each role whose turn the end cut off gets its t
 a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
-the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default).
+the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default), and the third init container, where the deployment names a `skills_repository`, that same reservation.
 At the default every request equals its limit and the pod is `Guaranteed`; a `cpu_request` or `memory_request` below its limit makes the pod `Burstable`.
 The pod is bounded on the node's disk, and Legion sets no affinity on it (GKE Autopilot adds its own, below;
 [Issue sizing](#issue-sizing-one-reservation-per-pod)).
@@ -3973,7 +3973,7 @@ Narrowing the identity to a per-project one is dispatch://INFRA-153's work, not 
 ### Issue sizing: one reservation per pod
 
 Every container of a Legion pod carries a cpu and memory limit with a request no greater than it (`requirements`, `internal/daemon/kubernetes.go`), and an ephemeral-storage limit over a smaller ephemeral-storage request (the node-disk bound, below):
-an issue pod's `roles` container and both its init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
+an issue pod's `roles` container and both its init containers — three where the deployment names a `skills_repository` — the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
 — [Configuration](#configuration)), the controller's launcher the controller's (`runtime.kubernetes.resources.controller`), and the image probe's one container the probe's own fixed 250m / 1Gi, request equal to limit (`probeReservation`, [Configuration](#configuration)).
 At the default an issue pod reserves 3 CPU and 19 GiB, the init containers adding nothing:
 a pod's effective request is the larger of its containers' sum and its largest init container, and they carry the same reservation.

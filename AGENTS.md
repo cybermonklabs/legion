@@ -284,7 +284,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - a release build links a `@sjawhar/pi-legion`/`@sjawhar/pi-envoy` pair into the binary, so its `version` prints a second line, `plugins @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v>` (docs/kubernetes.md "Contract discipline")
 
-  - its `workspace-init` is an issue pod's two init containers
+  - its `workspace-init` is an issue pod's two init containers, three where the deployment names a `skills_repository` (`workspace-init skills --repo <owner>/<repo> --dir <dir>`, which clones that marketplace into the pod's skills volume)
     — `workspace-init fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]` fills the pod's feed on the pod's own disk:
     a fresh feed from the repository's cache alone (`--cache-url`, which defaults to LEGION_REPOSITORY_CACHE_URL, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds with its request for the tar alone;
     the runtime sets both on every issue pod, once the cache's Service is the cache's own), waiting for the cache to be ready, refusing one that names another repository or streams a pack, or a pack index, whose checksums do not hold or a history that is not whole (it takes the index the cache streams with each pack rather than building it again, which costs minutes of a pod's CPU per gigabyte), then fetching from GitHub, by exact name, the default branch GitHub names and the one the daemon recorded for the issue (LEGION_DEFAULT_BRANCH, while GitHub has it), and `refs/heads/legion/*`, after deleting every other branch of the feed that is not exactly GitHub's tip, so every branch it holds is GitHub's or absent, and a feed the disk already holds

@@ -207,7 +207,7 @@ runtime:
     session_dsn_secret: SESSION_DSN    # required with postgres: the key of the providers Secret holding that
                                        # database's postgres:// URL, which every pod mounts
     # resources:                       # two keys, each a pod's reservation: issue, every issue pod's (its one
-    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers), and
+    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers, three with a skills_repository), and
     #   controller: { cpu: 2, memory: 8Gi }  # controller, the daemon-launched controller's pod's (controller:
     #                                  # daemon only, else refused). cpu and memory are the limits, each
     #                                  # requested in full unless cpu_request or memory_request sets less (at most

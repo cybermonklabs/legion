@@ -101,8 +101,8 @@ type Kubernetes struct {
 	// and no role's launch ever clones or fetches anything (dispatch://INFRA-1300). The clone takes
 	// that default branch and no other: a deployment whose skills must come from a branch of
 	// another name needs a repository whose default branch is that one. The zero repository when
-	// the file names none, in which case a pod runs two init containers and no role installs a
-	// skill.
+	// the file names no skills repository, in which case a pod runs two init containers and no
+	// role installs a skill.
 	SkillsRepository ghrepo.Repository
 	// RepositoryCache is `runtime.kubernetes.repository_cache`, settled: the file's members where it
 	// sets them and the defaults (DefaultRepositoryCache) for the rest, field by field.
@@ -198,8 +198,8 @@ type Scheduling struct {
 type Toleration struct{ Key, Operator, Value, Effect string }
 
 // PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers carry Issue, the controller's pod's one
-// container Controller.
+// issue pod's one container and its two init containers carry Issue — its third too, where the
+// deployment names a SkillsRepository — and the controller's pod's one container Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }
