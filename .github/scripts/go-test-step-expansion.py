@@ -36,6 +36,14 @@ Five whole runs in that pod took 648 s, 402 s, 387 s, 461 s and 430 s, and a col
 tens of minutes, for an answer a person needs twice per change (at the head and at the merge
 base) rather than once per run. The checks it serves run by hand, before the merge.
 
+Between those hand runs one backstop holds part of the property, by side effect rather than by
+reading it: an edit to the race step's `-skip` in ci-job-daemon-go.yaml makes
+check-ci-filters.sh refuse, because the generated `!` block of the daemon_go_tests filter stops
+matching the test files that job reads, not because anything there understands a skip. So a
+changed skip is caught in CI, and the way this property really breaks is not: a `-run` list and
+a `-skip` list drifting apart while each stays consistent with the files its job reads is
+invisible to every CI job, and this script is the only thing that sees it.
+
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the
 packages here returns before it starts its database, NATS server, container or Pulumi stack when
