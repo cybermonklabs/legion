@@ -2,7 +2,7 @@
 // a route writing a new ask, comment, reply, issue message, approval request or settled ask
 // block has only queued that row's insert (INFRA-636), so the document its `#id`s resolve
 // against cannot be read back from the row and is handed to the reader instead
-// (refs.PendingScope). Each test writes `#q1` against a settled question block of the issue's
+// (refs.PendingDocument). Each test writes `#q1` against a settled question block of the issue's
 // spec and reads the one edge it must store, or the event that must name the target it moved.
 package api
 

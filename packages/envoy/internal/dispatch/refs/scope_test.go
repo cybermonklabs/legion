@@ -192,7 +192,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 // Every shape a route can write, as the row ScopeOf reads and as the fields that row will hold
 // (PendingSource): the two must answer the same document, and that document must be the one
 // named here. A route's own row is only queued while it indexes the text it writes (INFRA-636),
-// so a `#id` in that text is resolved through PendingScope; were the two to drift - a coalesce
+// so a `#id` in that text is resolved through PendingDocument; were the two to drift - a coalesce
 // order changed on one side, a field the pending shape stops carrying - the edges a new ask,
 // comment, reply or message stores would stop matching the ones its stored row says it should.
 func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
@@ -235,7 +235,7 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 		kind    string
 		pending PendingSource
 		// stored is the row whose fields pending names, written above, whose ScopeOf must be
-		// what PendingScope answers.
+		// what the pending source's document answers.
 		stored string
 		scope  string
 	}{
@@ -274,7 +274,7 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 				returning id::text
 			`), ""},
 	} {
-		pending, err := PendingScope(ctx, tx, shape.kind, shape.pending)
+		pending, err := NewPendingDocument(shape.kind, shape.pending).Scope(ctx, tx)
 		if err != nil {
 			t.Fatalf("pending scope of %s: %v", shape.name, err)
 		}
@@ -290,8 +290,8 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 		}
 	}
 	// A document version is no pending source: every writer of one holds its id already, and
-	// PendingScope takes the three kinds whose rows a route queues.
-	if got, err := PendingScope(ctx, tx, "artifact", PendingSource{IssueKey: &issue}); err != nil || got != "" {
+	// a pending document takes the three kinds whose rows a route queues.
+	if got, err := NewPendingDocument("artifact", PendingSource{IssueKey: &issue}).Scope(ctx, tx); err != nil || got != "" {
 		t.Fatalf("pending scope of a kind it does not take = %q, %v; want none", got, err)
 	}
 }

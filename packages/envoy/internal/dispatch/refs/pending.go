@@ -8,8 +8,11 @@ import "context"
 // the document it seeds, the ask settlement makes for a new question block, the version it writes
 // over a document - answers for that row here, so the reference resolves exactly as it will once
 // the batch has run. It is the ledger's overlays read from this side: docs.Ledger is the one
-// implementation, and every context carrying a ledger carries it (docs.withLedger), so a write
-// registers a row it queues in one place and every read of it answers the same.
+// implementation, and the context a transaction queues its writes on is the context its reads
+// run under (docs.withLedger): a write registers a row it queues in one place, and every read
+// of that transaction answers for it. The callers that hand a ledger over as an argument
+// rather than on a context take their reading context from it (docs.Ledger.ReadContext), so
+// the contract holds whichever context a route passes its indexing helpers.
 //
 // A read with no pending rows - a read-only route, a background pass, a transaction that joined
 // no ledger - sees none of this and reads the stored rows alone.

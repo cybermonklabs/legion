@@ -44,11 +44,12 @@ type Reader struct {
 	// nil for a source that belongs to no document or whose map could not be read.
 	questions map[string]text.Ref
 	asked     bool
-	// document is the document the source's text belongs to when the caller gave it rather than
-	// leaving it to be read from the source's own row (NewReaderInScope, scopeGiven), "" for a
-	// source the caller says belongs to none.
-	document   string
-	scopeGiven bool
+	// pending is the document the source's text belongs to for a source whose row this
+	// transaction has queued, which the caller hands over because no read of that row answers
+	// it (NewReaderInScope); nil for a source whose row is stored, whose document this reader
+	// reads with ScopeOf. Either way the read is made at most once, by Questions, and not at
+	// all for a text that names no question block.
+	pending *PendingDocument
 	// items is the whole id each (kind, scope, prefix) this reader resolved names, "" for one
 	// that names nothing or two items or more, so a body writing the same short id twice is one
 	// query.
@@ -71,16 +72,17 @@ func NewReader(ctx context.Context, q Queryer, fromKind, fromID, serverURL strin
 
 // NewReaderInScope is NewReader for a source whose row the write's own transaction may have
 // queued and not run yet (INFRA-636), so no read of that row answers the document its `#id`s
-// resolve against: the writer hands that document over, as PendingScope answers it from the
-// fields the queued row will hold, and this reader takes it instead of calling ScopeOf. A
-// document of "" is a source that belongs to none, which has no question, exactly as ScopeOf's
-// "" is; a nil document is a source whose row is stored, whose scope this reader reads for
+// resolve against: the writer hands that document over, as PendingDocument answers it from the
+// fields the queued row will hold, and this reader reads it from there instead of from
+// ScopeOf. A nil document is a source whose row is stored, whose scope this reader reads for
 // itself as NewReader's does.
-func NewReaderInScope(ctx context.Context, q Queryer, fromKind, fromID, serverURL string, document *string) *Reader {
+//
+// The document is no more read here than ScopeOf is: both are read by Questions, for a body
+// that holds a `#` candidate and for no other, so a create whose text names no question block
+// sends neither query (PendingDocument).
+func NewReaderInScope(ctx context.Context, q Queryer, fromKind, fromID, serverURL string, document *PendingDocument) *Reader {
 	reader := NewReader(ctx, q, fromKind, fromID, serverURL)
-	if document != nil {
-		reader.document, reader.scopeGiven = *document, true
-	}
+	reader.pending = document
 	return reader
 }
 
@@ -143,25 +145,24 @@ func (r *Reader) Issues(keys []string) (map[string]bool, error) {
 	return answer, nil
 }
 
-// Questions is the question map of the document the source's text belongs to (ScopeOf, then
+// Questions is the question map of the document the source's text belongs to (the scope, then
 // QuestionMap), loaded at most once per reader and not at all unless a body holds a `#`
 // candidate, which is when text.Mentions asks. A source that belongs to no document - a direct
 // message, a reply whose thread names none - has no question, and a text on an issue but on no
-// document resolves against the issue's spec, which ScopeOf answers with. A reader built in a
-// scope reads that document instead of asking ScopeOf for one, which a source whose row is
-// only queued has no row to answer from (NewReaderInScope).
+// document resolves against the issue's spec, which the scope answers with.
+//
+// Both reads the scope costs are paid here and nowhere earlier: a body with no `#` candidate
+// never asks, so a create whose text names no question block sends neither the query a queued
+// row's scope takes nor the one a stored row's does.
 func (r *Reader) Questions() (map[string]text.Ref, error) {
 	if r.asked {
 		return r.questions, nil
 	}
 	r.asked = true
-	document := r.document
-	if !r.scopeGiven {
-		var err error
-		if document, err = ScopeOf(r.ctx, r.q, r.kind, r.id); err != nil {
-			r.failed("read the document a text belongs to", err)
-			return nil, nil
-		}
+	document, err := r.scope()
+	if err != nil {
+		r.failed("read the document a text belongs to", err)
+		return nil, nil
 	}
 	if document == "" {
 		return nil, nil
@@ -173,6 +174,16 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 	}
 	r.questions = questions
 	return r.questions, nil
+}
+
+// scope is the document the source's text belongs to: the one the writer handed over for a row
+// this transaction has only queued (NewReaderInScope), which no read of that row can answer
+// yet, else the one the source's stored row answers (ScopeOf).
+func (r *Reader) scope() (string, error) {
+	if r.pending != nil {
+		return r.pending.Scope(r.ctx, r.q)
+	}
+	return ScopeOf(r.ctx, r.q, r.kind, r.id)
 }
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference

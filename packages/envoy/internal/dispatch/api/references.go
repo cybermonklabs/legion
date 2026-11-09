@@ -30,13 +30,13 @@ import (
 // into beside, the counted changes the same write already holds, so the event it appends names
 // them all. The parts are read with the whole grammar, through a reader of their own
 // (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
-// resolve against for an ask whose insert this transaction has queued (refs.PendingAskScope),
-// nil for an ask already stored, whose row ScopeOf reads.
+// resolve against for an ask whose insert this transaction has queued
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads.
 func (s *server) queueAskParts(
 	ctx context.Context,
 	ledger *docs.Ledger,
 	ask model.Ask,
-	document *string,
+	document *refs.PendingDocument,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {

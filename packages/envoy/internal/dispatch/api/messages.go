@@ -350,7 +350,9 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	referenceChanges, indexMessage, err := s.planItemWrite(ctx, tx, refs.ItemMessage, messageID, input.Body, pending, createdAt, issueKey != nil, nil, nil)
+	// This route runs its own write phase (store.RunWrite) and joins no ledger, so it has none
+	// to hand over and has queued no row a read could miss.
+	referenceChanges, indexMessage, err := s.planItemWrite(ctx, tx, nil, refs.ItemMessage, messageID, input.Body, pending, createdAt, issueKey != nil, nil, nil)
 	if err != nil {
 		return model.Message{}, nil, err
 	}

@@ -555,10 +555,11 @@ func (l *Ledger) RegisterPendingIssue(key string) {
 }
 
 // The ledger is the refs.Pending of the transaction whose writes it queues: every context
-// carrying it carries that too (withLedger), so a reference read made anywhere in the
-// transaction answers for the rows it has queued as it does for the stored ones. Each answer
-// below is the overlay the write that queued the row recorded it in, so a row is registered
-// once and read here.
+// carrying it carries that too (withLedger), and the reads of a write run under the context
+// that write queues on (ReadContext), so a reference read made anywhere in the transaction
+// answers for the rows it has queued as it does for the stored ones. Each answer below is the
+// overlay the write that queued the row recorded it in, so a row is registered once and read
+// here.
 
 // PendingIssue reports whether this transaction writes the issues row of key
 // (RegisterPendingIssue).
@@ -643,18 +644,20 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // statements that write them, and returns the targets they moved merged into beside, what the
 // same write moved elsewhere, so the event the route appends names them all. The route queues the
 // ask's own row write first: every part table references the ask's row, so the index's statements
-// have to follow that write in the batch. The plan runs on this ledger whatever context the
-// caller holds, as QueueVersion does, and it refuses a ledger no caller joined and a sealed one
-// (ErrQueueSealed).
+// have to follow that write in the batch. The plan and the reads it makes run on this ledger
+// whatever context the caller holds (ReadContext), as QueueVersion's write does, and it refuses
+// a ledger no caller joined and a sealed one (ErrQueueSealed).
 //
 // document is the one the parts' `#id`s resolve against for an ask whose insert the route has
-// queued, which no read of that row can answer yet (refs.PendingAskScope); nil for an ask
-// already stored, whose row the reader reads for itself (refs.ScopeOf).
+// queued, which no read of that row can answer yet (refs.PendingAskDocument); nil for an ask
+// already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
+// part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
+// one to both readers, so the two of them read it once.
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
-	document *string,
+	document *refs.PendingDocument,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
@@ -664,11 +667,15 @@ func (l *Ledger) QueueAskParts(
 	if l.sealed {
 		return model.ReferenceChanges{}, ErrQueueSealed
 	}
+	// Every read below runs under this ledger's context, so a `#id` naming a question block
+	// this transaction has only queued resolves to the ask it will name (refs.Pending); the
+	// route's own context carries no ledger where the route passed the request's.
+	ctx = l.ReadContext(ctx)
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
-	changes, parts, err := planAskPartsCounted(withLedger(ctx, l), l.writer, reader, ask, at, beside)
+	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -816,8 +823,31 @@ func (l *Ledger) inTransaction() bool {
 // withLedger marks ctx with the ledger the writes made under it queue on, and with the rows that
 // ledger has queued (refs.Pending), so every reference read made in the transaction resolves a
 // row it creates as it will stand once the write phase has run.
+//
+// The two marks are one mark, and that is the contract: the context a write queues on
+// (write, queueFor) is the context the reads of that write run under, so a read sees exactly
+// the rows its own transaction has queued. Document code is held to it by construction - a
+// write it makes under a context carrying no ledger does not queue at all - and the callers
+// that hand a ledger over as an argument instead, this package's Ledger methods and api's
+// write-queue helpers, are held to it by taking their reading context from that ledger
+// (ReadContext) rather than from whatever the caller passed.
 func withLedger(ctx context.Context, ledger *Ledger) context.Context {
 	return refs.WithPending(context.WithValue(ctx, ledgerContextKey{}, ledger), ledger)
+}
+
+// ReadContext is ctx with this ledger on it: the context the read phase of a write that queues
+// on this ledger reads under, whatever context its caller holds. A route passes the request's
+// context to the helpers that index what it writes, not the one Join returned, so each of them
+// derives its own from the ledger it was handed and no reference read of the transaction can
+// miss the rows that transaction has queued (refs.Pending).
+//
+// A nil ledger is a write outside a route's two phases - a background pass, a transaction that
+// joined nothing - which has queued no row and leaves ctx as it is.
+func (l *Ledger) ReadContext(ctx context.Context) context.Context {
+	if l == nil {
+		return ctx
+	}
+	return withLedger(ctx, l)
 }
 
 func ledgerFrom(ctx context.Context) *Ledger {

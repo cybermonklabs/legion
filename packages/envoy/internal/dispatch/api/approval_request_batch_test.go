@@ -122,11 +122,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most twenty-two round trips,
+// One approval request on a document with no request open costs at most twenty-one round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
 // is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the fourteen after them are the transaction
+// request's transaction opens (approvalCoverage); the thirteen after them are the transaction
 // itself, and all but two of those are reads: this route's writes are queued and sent as one
 // batch before the commit, which is what holds its transaction id to its database work
 // (INFRA-636). In the order it sends them:
@@ -156,24 +156,29 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (docs.OpenApprovalAskForDocuments);
 //  16. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
 //  17. the latest approved review the request carries (docs.LatestApprovedReview);
-//  18. the scope the question's `#id` references resolve against, read over the ask row this
-//     transaction will write rather than over a row (refs.PendingAskScope);
-//  19. the question's references as they stand, which the replacement is planned against
-//     (queueReferences, through refs.PlanReplace);
-//  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
+//  18. the question's references as they stand, which the replacement is planned against
+//     (queueNewAskReferences, through refs.PlanReplace);
+//  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  21. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
+//  20. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
 //     and the part rows of its question and options, the author's follow, the references and
 //     the row the ask owes the grammar's re-index queue, deleted with them
 //     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
 //     issue's last_seq, the reference stamps, and the approval as the request leaves it;
-//  22. commit.
+//  21. commit.
 //
-// The transaction takes its transaction id at the first statement of 21 and gives it up at 22;
+// What it does not send is the document the question's `#id`s would resolve against, which no
+// read of the ask row this transaction has only queued can answer (refs.PendingAskDocument).
+// The question is "Approve <document> (version N)?", with the requester's summary after it when
+// there is one: it holds no `#` candidate, so neither the question nor the parts that carry it
+// ever ask for that document, and the read is not made. A request whose summary writes a `#`
+// pays it once for the two of them.
+//
+// The transaction takes its transaction id at the first statement of 20 and gives it up at 21;
 // the per-route window test measures that window, and this test bounds what the route sends
 // around it. The one-phase route sent thirty-four, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostAtMostTwentyTwoRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostTwentyOneRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -197,8 +202,8 @@ func TestApprovalRequestsCostAtMostTwentyTwoRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the twenty-two go.
-	const ceiling = 22
+	// says where the twenty-one go.
+	const ceiling = 21
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))

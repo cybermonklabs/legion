@@ -31,7 +31,7 @@ const commentOwnScopeJoin = `left join asks k on k.id = c.ask_id ` + askScopeJoi
 // commentScopeSelect reads, of one comment (aliased c), the three things its scope is decided
 // from (scopeStep): the document it names itself, the comment it replies to, and its issue's
 // spec (cs, commentSpecJoin). A comment's row and a pending comment's fields are read through
-// this one select, so the rules are stated once (PendingScope).
+// this one select, so the rules are stated once (pendingScope).
 const commentScopeSelect = `select ` + commentOwnScope + `::text, c.reply_to::text, cs.id::text`
 
 const commentSpecJoin = `left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary`
@@ -56,7 +56,7 @@ const messageScopeJoin = `join artifacts s on s.issue_key = m.issue_key and s.is
 //
 // A reply whose chain of parents loops before any of them names a document has none. ScopeSources
 // is its inverse, and the two must agree on every shape above (TestScopeOfAndScopeSourcesAgree);
-// PendingScope answers the same scope before the source's row is written, and must agree with it
+// pendingScope answers the same scope before the source's row is written, and must agree with it
 // on every shape too (TestPendingScopeAgreesWithScopeOf).
 func ScopeOf(ctx context.Context, q Queryer, kind, id string) (string, error) {
 	id, ok := canonicalUUID(id)
@@ -121,7 +121,7 @@ func commentScopeRow(ctx context.Context, q Queryer, id string) (own, parent, sp
 // scopeStep is the one rule a comment's scope follows, over what its row says (commentScopeRow):
 // the document it names itself, else its parent's scope, else its issue's spec, else none. A
 // comment that names no document and replies to one is not resolved here: next is the parent
-// whose scope it then is, which commentScope walks to and PendingScope reads from the stored
+// whose scope it then is, which commentScope walks to and pendingScope reads from the stored
 // parent.
 func scopeStep(own, parent, spec *string) (scope, next string, resolved bool) {
 	switch {
@@ -151,7 +151,7 @@ func scopeRow(row pgx.Row) (string, error) {
 // PendingSource is one reference source whose row the transaction writing it has queued and not
 // run yet (INFRA-636: a route's write phase sends every statement at once), named by the fields
 // of that row ScopeOf reads. A row nothing has written answers no read, so the writer hands
-// these over and PendingScope answers the document its text's `#id`s resolve against. Each
+// these over and pendingScope answers the document its text's `#id`s resolve against. Each
 // field is what the queued insert binds to the column of that name, nil for a column it leaves
 // null.
 type PendingSource struct {
@@ -197,7 +197,7 @@ const pendingMessageScopeQuery = `
 	with m (issue_key) as (select $1::text)
 	select s.id::text from m ` + messageScopeJoin
 
-// PendingScope is ScopeOf for a source of kind kind whose row is queued and not written yet: the
+// pendingScope is ScopeOf for a source of kind kind whose row is queued and not written yet: the
 // document its text belongs to, answered from the fields that row will hold (PendingSource), or
 // "" when it belongs to none. The kinds are ScopeOf's own, "ask", "comment" and "message"; a
 // document version, which every writer of one has, and any other kind have none here.
@@ -206,7 +206,11 @@ const pendingMessageScopeQuery = `
 // (TestPendingScopeAgreesWithScopeOf): the two read one set of SQL expressions, and what a
 // pending source does not carry - its issue's spec, the scope of the ask or of the parent
 // comment a reply takes - is read from the stored rows that hold it.
-func PendingScope(ctx context.Context, q Queryer, kind string, source PendingSource) (string, error) {
+//
+// It is read through PendingDocument, which reads it only for a text that needs it: every
+// writer of a queued source goes through that, so a body naming no question block costs this
+// read nothing.
+func pendingScope(ctx context.Context, q Queryer, kind string, source PendingSource) (string, error) {
 	switch kind {
 	case "ask":
 		return scopeRow(q.QueryRow(ctx, pendingAskScopeQuery,
@@ -229,11 +233,35 @@ func PendingScope(ctx context.Context, q Queryer, kind string, source PendingSou
 	return "", nil
 }
 
-// PendingAskScope is PendingScope for an ask whose insert a transaction has queued, over the ask
-// as that row will stand: every route that opens one - an issue's or a document's ask, an
-// approval request, the ask settlement opens for a new question block - reads its scope through
-// this one call, so none of them states the fields of that row for itself.
-func PendingAskScope(ctx context.Context, q Queryer, ask model.Ask) (string, error) {
+// PendingDocument is the document a source whose row the writing transaction has queued belongs
+// to, read when a text of that source first asks for it and not before (Reader.Questions, which
+// asks only for a body holding a `#` candidate). A create whose body names no question block -
+// most comments, replies, messages, asks and approval requests - costs the read nothing, and a
+// direct message, whose scope is always none, never sends the query that says so.
+//
+// One of these is the document of one queued row, however many texts that row's writer indexes:
+// an ask's question and its parts are read through readers of their own (NewReaderInScope), and
+// sharing this between them reads the scope once for the write. It is one write's object, as a
+// Reader is, and is used from one goroutine.
+type PendingDocument struct {
+	kind     string
+	source   PendingSource
+	document string
+	err      error
+	read     bool
+}
+
+// NewPendingDocument is the document of a source of kind kind - "ask", "comment" or "message",
+// the kinds pendingScope answers for - whose row source says this transaction has queued.
+func NewPendingDocument(kind string, source PendingSource) *PendingDocument {
+	return &PendingDocument{kind: kind, source: source}
+}
+
+// PendingAskDocument is NewPendingDocument for an ask whose insert a transaction has queued,
+// over the ask as that row will stand: every route that opens one - an issue's or a document's
+// ask, an approval request, the ask settlement opens for a new question block - names its scope
+// through this one call, so none of them states the fields of that row for itself.
+func PendingAskDocument(ask model.Ask) *PendingDocument {
 	source := PendingSource{
 		IssueKey:        ask.IssueKey,
 		ArtifactID:      ask.ArtifactID,
@@ -242,7 +270,19 @@ func PendingAskScope(ctx context.Context, q Queryer, ask model.Ask) (string, err
 	if ask.Anchor != nil {
 		source.AnchorArtifactID = &ask.Anchor.ArtifactID
 	}
-	return PendingScope(ctx, q, "ask", source)
+	return NewPendingDocument("ask", source)
+}
+
+// Scope is the document, read over q on the first call and answered from that read after, its
+// failure included: a reader that swallowed one (Reader.failed) has already left the text
+// indexed as it was written, and a second reader of the same source must not pay the read again
+// to be told the same thing.
+func (d *PendingDocument) Scope(ctx context.Context, q Queryer) (string, error) {
+	if !d.read {
+		d.read = true
+		d.document, d.err = pendingScope(ctx, q, d.kind, d.source)
+	}
+	return d.document, d.err
 }
 
 // scopeSourcesQuery lists, by kind and id, every reference source whose ScopeOf is the document $1.

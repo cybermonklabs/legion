@@ -480,13 +480,9 @@ func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[str
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if pending := pendingOf(ctx); pending != nil {
-		for _, key := range keys {
-			if _, stored := found[key]; !stored && pending.PendingIssue(key) {
-				found[key] = struct{}{}
-			}
-		}
-	}
+	mergePending(ctx, found, keys, func(pending Pending, key string) (struct{}, bool) {
+		return struct{}{}, pending.PendingIssue(key)
+	})
 	return found, nil
 }
 
@@ -531,16 +527,10 @@ func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if pending := pendingOf(ctx); pending != nil {
-		for _, id := range ids {
-			if _, stored := found[id]; stored {
-				continue
-			}
-			if ask, queued := pending.PendingAsk(id); queued {
-				found[id] = model.ChangedReference{Kind: "ask", ID: ask.ID, IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID}
-			}
-		}
-	}
+	mergePending(ctx, found, ids, func(pending Pending, id string) (model.ChangedReference, bool) {
+		ask, queued := pending.PendingAsk(id)
+		return model.ChangedReference{Kind: "ask", ID: ask.ID, IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID}, queued
+	})
 	return found, nil
 }
 
@@ -581,17 +571,40 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if pending := pendingOf(ctx); pending != nil {
-		for _, refKey := range refKeys {
-			if _, stored := found[refKey]; stored {
-				continue
-			}
-			if id, ref, queued := pending.PendingArtifact(refKey); queued {
-				found[refKey] = model.ChangedReference{Kind: "artifact", ID: id, Ref: ref}
-			}
+	mergePending(ctx, found, refKeys, func(pending Pending, refKey string) (model.ChangedReference, bool) {
+		id, ref, queued := pending.PendingArtifact(refKey)
+		return model.ChangedReference{Kind: "artifact", ID: id, Ref: ref}, queued
+	})
+	return found, nil
+}
+
+// mergePending fills the gaps a read of the stored rows leaves. found is what that read
+// answered and keys is what it was asked about: for each key found holds no target for, queued
+// says whether the reading transaction has that row queued and not written yet (Pending), and
+// what it answers goes into found. A stored row wins over a queued one of the same key, since
+// the read already holds what the row says, and a transaction with nothing queued - every read
+// outside a write's two phases - adds nothing.
+//
+// Every resolver that answers for a queued row merges through this one call, so a kind added to
+// Pending is merged the way the kinds before it are.
+func mergePending[Key comparable, Target any](
+	ctx context.Context,
+	found map[Key]Target,
+	keys []Key,
+	queued func(pending Pending, key Key) (Target, bool),
+) {
+	pending := pendingOf(ctx)
+	if pending == nil {
+		return
+	}
+	for _, key := range keys {
+		if _, stored := found[key]; stored {
+			continue
+		}
+		if target, ok := queued(pending, key); ok {
+			found[key] = target
 		}
 	}
-	return found, nil
 }
 
 // ReferencedBy lists Dispatch items and artifacts that mention an artifact reference key or one

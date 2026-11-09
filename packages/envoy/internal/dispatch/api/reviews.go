@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -746,22 +745,11 @@ func (s *server) openApprovalAsk(
 	}); err != nil {
 		return nil, nil, err
 	}
-	// The row holding the request is queued above, so the document the `#id`s of its question
-	// and of its parts resolve against is read from the fields that row will hold
-	// (refs.PendingAskScope) and handed to both readers.
-	document, err := refs.PendingAskScope(ctx, tx, ask)
-	if err != nil {
-		return nil, nil, err
-	}
-	askChanges, err := s.queueReferences(ctx, tx, ledger, "ask", ask.ID, ask.Question, &document)
-	if err != nil {
-		return nil, nil, err
-	}
-	// The request's parts - its question and its two review options - beside its own references,
-	// both named by the ask.opened below. The parts are planned against the ask this route
-	// writes, since the row holding it is queued above, and their statements are queued after
-	// that insert, which the rows of a part reference.
-	askChanges, err = s.queueAskParts(ctx, ledger, ask, &document, ask.CreatedAt, askChanges)
+	// The request's own references and its parts - its question and its two review options -
+	// both named by the ask.opened below. They are planned against the ask this route writes,
+	// since the row holding it is queued above, and their statements are queued after that
+	// insert, which the rows of a part reference.
+	askChanges, err := s.queueNewAskReferences(ctx, tx, ledger, ask)
 	if err != nil {
 		return nil, nil, err
 	}
