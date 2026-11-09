@@ -141,10 +141,7 @@ func TestAnEnrollmentRecordsThePrincipalItsCallerProved(t *testing.T) {
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	machineSubject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
-	machine, err := svc.Credential(ctx, issueMachineCredential(t, svc, machineSubject, "tp-machine"))
-	if err != nil {
-		t.Fatalf("Credential: %v", err)
-	}
+	machine := machineCredentialFor(t, svc, machineSubject, "tp-machine")
 
 	for _, c := range []struct {
 		name string
