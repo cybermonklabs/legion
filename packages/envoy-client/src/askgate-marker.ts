@@ -769,6 +769,11 @@ export type Consumed =
  * sweep at the gate's next mint takes an expired marker, and the store goes with its session. A
  * lost race for a marker (another process unlinked it first) goes on to the next.
  */
+/** Whether a marker's bound digest is this write's, under the current encoding or the first. */
+function binds(bound: string, reviewed: string, prior: string): boolean {
+  return bound === reviewed || bound === prior;
+}
+
 export function consumeMarker(
   stores: readonly string[],
   argv: readonly string[],
@@ -778,6 +783,7 @@ export function consumeMarker(
 ): Consumed {
   const key = argvDigest(argv);
   const reviewed = argsDigest(args);
+  const priorReviewed = digest(priorCanonical(args));
   let changed: FileOperand | undefined;
   let mismatched = false;
   let expired = false;
@@ -815,7 +821,12 @@ export function consumeMarker(
           changed ??= { flag: differs.flag, operand: differs.operand };
           continue;
         }
-        if (marker.files.length !== files.length || marker.args !== reviewed) {
+        // A marker of the first encoding binds the same arguments under another digest. Its
+        // review really did cover this write, so it is honoured rather than refused: refusing
+        // it told the agent "its arguments differ from the ones AskGate reviewed", which is
+        // untrue — only the encoding moved — and a refusal consumes nothing, so the lie
+        // repeated until the sweep took the marker.
+        if (marker.files.length !== files.length || !binds(marker.args, reviewed, priorReviewed)) {
           mismatched = true;
           continue;
         }
@@ -977,14 +988,24 @@ function priorIdentity(
  * installed shim resolves the plugin per invocation — and a verdict that goes unrecognised
  * posts the write it refused.
  */
+const IDENTITY_SCHEME = "2";
+
+/**
+ * Every name this write's verdict may be filed under, the current one first. The name carries
+ * the scheme that produced it (`2-<identity>`), where the first scheme's did not: without that,
+ * the next change to `canonicalText` has the same fail-open behaviour this one did, since a
+ * verdict nobody recognises reads as none and posts. A scheme after this one adds its own
+ * prefix and appends the ones before it here.
+ */
 export function writeIdentities(
   tool: string,
   args: Readonly<Record<string, unknown>>,
   uploadBytes?: Uint8Array
 ): string[] {
-  const now = writeIdentity(tool, args, uploadBytes);
-  const before = priorIdentity(tool, args, uploadBytes);
-  return before === now ? [now] : [now, before];
+  return [
+    `${IDENTITY_SCHEME}-${writeIdentity(tool, args, uploadBytes)}`,
+    priorIdentity(tool, args, uploadBytes),
+  ];
 }
 
 /** `<session>/askgate-verdicts`, where that session's verdicts of no are kept. */

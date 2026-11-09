@@ -608,8 +608,8 @@ and only the blocks with no id are judged, so a re-upload of an unchanged docume
 refused for an ask block it already held.
 
 The rules check runs only on a call the gate reads, which is the literal form above. A call in
-any other form reaches no gate at all: the CLI refuses it in `block` mode and posts it with a
-warning in `warn` mode, and the rules check never sees it. Where such a write carries an ask, the
+any other form reaches no gate at all: the CLI posts it with a warning in either mode, holding
+it only where this session's own review refused that write, and the rules check never sees it. Where such a write carries an ask, the
 Dispatch record below counts it.
 
 A match refuses the call in `warn` mode and in `block` mode, so no part of the call posts and no

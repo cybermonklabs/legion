@@ -265,7 +265,7 @@ import {
   readVerdict,
   uploadIsDocument,
   verdictsUnkeepable,
-  writeIdentity,
+  writeIdentities,
   writeVerdict,
 } from "@legion/envoy-client/askgate-marker";
 import type { DispatchSession } from "../../src/dispatch-session";
@@ -3648,8 +3648,9 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
             // A store that takes no mode leaves the CLI's default, warn.
           }
         }
-        // Only a `bash` call in the literal grammar is read. Any other call runs, and the CLI
-        // refuses a gated write in it, which carries no marker.
+        // Only a `bash` call in the literal grammar is read. Any other call runs, and a gated
+        // write in it carries no marker: the CLI posts it with a warning unless this session's
+        // own review refused that very write (dispatch://INFRA-2079, row 3.5).
         if (event.toolName === "bash") {
           const scoped = scopedCommand(event.input.command);
           if (scoped === undefined) return undefined;
@@ -3920,14 +3921,18 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
         ((reviewed && decision.fields.decision === "allow") ||
           decision.fields.outcome === "rebuttal" ||
           decision.fields.outcome === "breaker");
-      const decided =
+      // Every name this write's verdict may stand under: the current scheme's first, which a
+      // record is written to, and the earlier one, which a clear must also reach so a verdict
+      // an earlier version filed does not outlive the review that replaced it.
+      const names =
         session !== undefined &&
         judged !== undefined &&
         base !== undefined &&
         (refusedByReview || passedByReview)
-          ? writeIdentity(base.tool, judged, dryRun?.bytes)
+          ? writeIdentities(base.tool, judged, dryRun?.bytes)
           : undefined;
-      if (decided !== undefined && session !== undefined) {
+      const decided = names?.[0];
+      if (names !== undefined && decided !== undefined && session !== undefined) {
         try {
           if (refusedByReview)
             writeVerdict(
@@ -3936,7 +3941,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
               decision.fields.deliveredReason ?? decision.fields.reason ?? "no reason was recorded",
               deps.now()
             );
-          else clearVerdict(session, decided);
+          else for (const name of names) clearVerdict(session, name);
         } catch (error) {
           // A verdict the gate reached and could not write down is a no the CLI will never see,
           // so the session is marked and reads absence as unknown from here on. The mark lives
@@ -3953,7 +3958,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
               // A mark already there and readable says everything a new one would: the session
               // reads absence as unknown from here on. Rewriting it is how a verdict store at
               // 0500 beside a mark at 0400 reached the stop although nothing was missing.
-              if (readVerdict(session, [decided]).kind !== "lost")
+              if (readVerdict(session, names).kind !== "lost")
                 markVerdictsLost(session, deps.now());
             } catch (markError) {
               // Neither the verdict nor the mark: the session's directory takes no new file, so

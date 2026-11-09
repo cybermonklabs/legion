@@ -22,6 +22,7 @@ import {
   mintMarker,
   setRecordMode,
   verdictsUnkeepable,
+  writeIdentities,
   writeIdentity,
   writeVerdict,
 } from "../askgate-marker";
@@ -796,7 +797,7 @@ describe("absence is a statement only when the store was read whole", () => {
   const refused = async (reason = "failure 7: say what changed, not that something did") =>
     writeVerdict(
       join(stateDir, "sessions", "ses-1"),
-      writeIdentity("dispatch_message", await dryArgs(MESSAGE)),
+      writeIdentities("dispatch_message", await dryArgs(MESSAGE))[0] ?? "",
       reason,
       Date.now()
     );
@@ -971,7 +972,11 @@ describe("absence is a statement only when the store was read whole", () => {
     writeRecord();
     writeVerdict(
       join(stateDir, "sessions", "ses-1"),
-      writeIdentity("dispatch_artifact", await dryArgs(upload("--path", brief)), Buffer.from(text)),
+      writeIdentities(
+        "dispatch_artifact",
+        await dryArgs(upload("--path", brief)),
+        Buffer.from(text)
+      )[0] ?? "",
       "failure 10: the brief says nothing the issue does not",
       Date.now()
     );
@@ -998,11 +1003,11 @@ describe("absence is a statement only when the store was read whole", () => {
     writeRecord();
     writeVerdict(
       join(stateDir, "sessions", "ses-1"),
-      writeIdentity(
+      writeIdentities(
         "dispatch_artifact",
         await dryArgs(["artifact", "--issue", "DSP-1", "--name", "brief.md", "--path", brief]),
         Buffer.from(text)
-      ),
+      )[0] ?? "",
       "failure 10: the brief says nothing the issue does not",
       Date.now()
     );

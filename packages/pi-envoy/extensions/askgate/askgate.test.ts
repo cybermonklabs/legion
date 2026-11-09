@@ -2158,7 +2158,8 @@ console.log(JSON.stringify(args, null, 2));
     });
   // Outside review of #2159 at 31c5cca3b, finding 1: bash removes a backslash or empty quotes
   // inside the program word and runs `dispatch`. Such a call is outside the literal grammar and
-  // runs unread; the CLI it reaches refuses it, carrying no marker.
+  // runs unread, carrying no marker: the CLI posts its write with a warning that no review saw
+  // it, unless this session's own review refused that write.
   test("F1: a backslash or empty quotes inside the program name leave the call outside the grammar", async () => {
     for (const command of [
       "d\\ispatch comment --issue X-1 --body hi",
@@ -2452,7 +2453,8 @@ console.log(JSON.stringify(args, null, 2));
     expect(g.entries).toHaveLength(0);
   });
   // The attack review at 0cf9f1902: shells, runners and escapes the old scan followed. Each runs
-  // unread now, and the CLI it reaches refuses its write.
+  // unread now, so its write carries no marker and the CLI posts it with a warning, holding it
+  // only where this session's own review refused that write.
   for (const command of [
     `bash -c '"$0" "$1" --issue X-1 --body hi' "$P" "$S"`,
     `printf '%s\\n' '"$D" "$S" --issue X-1 --body hi' | bash`,

@@ -37,8 +37,12 @@ body: |-
   A verdict lookup reads the identity of the previous version as well as the current one, so an
   upgrade does not silently free every write a session had refused: a marker that stops being
   recognised reads as stale and refuses where the session chose block, but a verdict that stops
-  being recognised would read as none and post. Marker incompatibility across the upgrade is
-  accepted, since it fails closed and markers are swept within two hours.
+  being recognised would read as none and post. A marker of the previous encoding is honoured
+  rather than refused: refusing it was fail-closed, but it told the agent its arguments differed
+  from the ones AskGate reviewed, which was untrue — only the encoding moved — and since a
+  refusal consumes nothing the untruth repeated until the sweep. A verdict's filename now
+  carries the scheme that produced it, so the next change to the encoding is a prefix and an
+  appended fallback rather than a second round of this.
   The order-sensitivity fixed here is over argument keys, top level and nested; reordered
   command-line flags still change the marker's argv key and find no marker, as before.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
