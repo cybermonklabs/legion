@@ -41,7 +41,18 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
+// newTestService is a document service that settles a live write in milliseconds, for a test
+// that waits for what settlement writes rather than reading the document before it.
 func newTestService(t *testing.T) (*Service, string) {
+	t.Helper()
+	return newTestServiceSettlingAfter(t, 20*time.Millisecond)
+}
+
+// newTestServiceSettlingAfter is newTestService with a settle window of settle: a test that
+// reads what a settlement writes - the room's unsettled flag, a version - before that settlement
+// has run gives an hour and settles the document itself (SettleNow) where it needs a settlement,
+// since a loaded runner outlasts a window sized to its steps (dispatch://INFRA-1075).
+func newTestServiceSettlingAfter(t *testing.T, settle time.Duration) (*Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -50,7 +61,7 @@ func newTestService(t *testing.T) (*Service, string) {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Settle:    settle,
 	})
 	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service, artifactID

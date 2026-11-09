@@ -45,10 +45,12 @@ func approvalCarryHandler(t *testing.T) http.Handler {
 
 // settlingCarryDocuments serves documents as approvalCarryHandler does, settling settle after a
 // live write, and answers the store and the document service beside the handler, for a test that
-// writes a document as the server's own code does or settles it at once. A test that needs two
-// writes in one version - two humans' answers, an answer and an agent's edit - uses a window wide
-// enough that both land in it, and settles the document at once (docs.SettleNow) wherever it needs
-// no window, rather than waiting each window out.
+// writes a document as the server's own code does or settles it at once. A test no settlement may
+// interleave - one that needs two writes in one version, two humans' answers or an answer and an
+// agent's edit, and one that reads the document between a live write and the settlement it owes -
+// gives an hour rather than a window sized to its steps, since a loaded runner outlasts any such
+// window (dispatch://INFRA-1075), and runs the settlements it does need on its own goroutine
+// (docs.SettleNow, through settledDecisionBlocks, settledVersion and settledWithoutVersion).
 func settlingCarryDocuments(t *testing.T, settle time.Duration) (http.Handler, *store.Store, *docs.Service) {
 	t.Helper()
 	var documentService *docs.Service
@@ -456,7 +458,10 @@ func TestAnAnswerThatIsTheWholeChangeSinceHisApprovalCarriesIt(t *testing.T) {
 // second, still-open block's body, which the comparison leaves out: the version carries.
 func TestAnAnswerCarriesWhenAnAgentEditInsideAnotherBlockLandsInItsVersion(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// The answer stays live until the agent's edit versions it, so the window is an hour rather
+	// than one sized to that step: a loaded runner outlasts any such window, and a settlement
+	// that fired first would version the answer alone (dispatch://INFRA-1075).
+	handler, _, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "Answer beside an edit", "Context\n")
 	insertDecisionMarkdown(t, handler, issue.PrimaryArtifactID, waveAsk+"\n"+regionAsk, 2)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
@@ -494,7 +499,12 @@ func versionMarkdown(t *testing.T, handler http.Handler, artifactID string, numb
 // plus his answer to the second block - carries.
 func TestARewordOfAnAnsweredBlockInTheAnswersVersionDoesNotCarry(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// Nothing here settles on a timer: the answer stays live until the agent's reword versions
+	// it, and the reviews are read between that version and the settlement that writes the
+	// decided wording back. A window sized to those steps is one a loaded runner outlasts
+	// (dispatch://INFRA-1075), so the window is an hour and each settlement runs on this
+	// goroutine (settledDecisionBlocks, settledVersion).
+	handler, _, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "Reword under the answer", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -551,7 +561,15 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
 			t.Parallel()
-			handler, database, documents := settlingCarryDocuments(t, time.Second)
+			// Nothing here settles on a timer: the answer and the forgery stay live until the
+			// agent names version 4, and the reviews are read between that version and the
+			// settlement that writes the row back over the forgery. A window sized to those
+			// steps is one a loaded runner outlasts: under -race, CI job 129133377193 read
+			// settlement's version 5 and the review it carried where this test wants the one
+			// review written before the answer. So the window is an hour, and each settlement
+			// runs on this goroutine (settledDecisionBlocks, settledVersion,
+			// settledWithoutVersion).
+			handler, database, documents := settlingCarryDocuments(t, time.Hour)
 			issue := createInteractionIssue(t, handler, "TEST", "Forged "+tc.attribute+" under the answer", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -870,11 +888,16 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 // carry. Neither the insert's version, showing the block open, nor settlement's carries.
 func TestARestoredBlockAnsweredBeforeTheApprovalCarriesNothing(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
+	// The reviews are read between the insert's version 4 and the settlement that writes the
+	// row's answer back into the restored block, version 5, so no settlement may fire on a
+	// timer between the test's steps: the window is an hour and each settlement runs on this
+	// goroutine (settledVersion), as a loaded runner outlasts any window sized to a step
+	// (dispatch://INFRA-1075).
+	handler, _, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "Restored block answered before the approval", "Context\n\n"+regionAsk)
-	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
+	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
+	settledVersion(t, handler, documents, issue.PrimaryArtifactID, 2)
 	deleted := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops":   []map[string]string{{"op": "delete", "block": "region"}},
@@ -901,7 +924,7 @@ func TestARestoredBlockAnsweredBeforeTheApprovalCarriesNothing(t *testing.T) {
 	}
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
 
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 5)
+	settledVersion(t, handler, documents, issue.PrimaryArtifactID, 5)
 	if markdown := versionMarkdown(t, handler, issue.PrimaryArtifactID, 5); !strings.Contains(markdown, `:::ask{#region urgency="low" multiple="false" state="answered" answered_by="alice"`) {
 		t.Fatalf("version 5 = %s, want settlement to have written his answer back into the restored block", markdown)
 	}
@@ -970,7 +993,10 @@ func TestAnotherHumansAnswerHeApprovedStaysOutOfTheCarrysTest(t *testing.T) {
 // answer and carries nobody's approval.
 func TestTwoHumansAnswersInOneVersionDoNotCarry(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// Both answers must land in one version, before any settlement: the window is an hour rather
+	// than one sized to those two writes, which a loaded runner outlasts, and the settlement
+	// that writes their version runs on this goroutine (settledVersion, dispatch://INFRA-1075).
+	handler, _, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "Two answerers", "Context\n\n"+waveAsk+"\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
 		map[string]string{"wave": "How many regions take the first wave?", "region": "Which region goes first?"})

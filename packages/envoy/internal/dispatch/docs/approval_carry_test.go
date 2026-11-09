@@ -703,16 +703,17 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
 // read. The same version without the repeat carries, so the repeat alone is what refuses.
 //
-// The service settles a minute after a live write, wide enough that no settlement runs between
-// the answer and the named version, as in TestAnApprovedVersionHoldingARepeatedBlockIDCarries
-// Nothing. A settlement in that window versions the answered tree itself, and that version
-// carries the approval as well, so the run would hold two carries where it reads the named
-// version's one. With the window at 20 ms, CI run 42119624087 counted exactly that: reviews = 3,
-// artifact.approved events = 2 (dispatch://INFRA-1075).
+// The service settles an hour after a live write, so no settlement runs between the answer and
+// the named version, as in TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing; the one
+// settlement these steps need, the seed's, runs at once (seededRegionDocument). A settlement
+// between them versions the answered tree itself, and that version carries the approval as well,
+// so the run would hold two carries where it reads the named version's one. With the window at
+// 20 ms, CI run 42119624087 counted exactly that: reviews = 3, artifact.approved events = 2. A
+// window sized to the steps is no cure: a loaded runner outlasts it (dispatch://INFRA-1075).
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
-		database, service, artifactID := seededRegionDocument(t, time.Minute)
+		database, service, artifactID := seededRegionDocument(t, time.Hour)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})

@@ -11,7 +11,10 @@ import (
 // must stay stale; INFRA-1253 R4 inherits this characterization of today's carry.
 func TestACheckWhoseWordsChangedCarriesNoApprovalThoughItsServesDidNot(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	// No settlement runs between these steps: each version here is the edit route's own, and a
+	// settlement of the upload firing between the approval and the reword would move the latest
+	// version on and the reword would name another (dispatch://INFRA-1075).
+	handler, database, _ := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "WORDS", "Check words", ":::requirement{#r1}\nThe read succeeds.\n:::\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", fmt.Sprintf(":::check{#c1 serves=\"dispatch://%s/spec#b-r1\" surface=\"api\" run=\"go test ./x\"}\nThe read returns 200.\n:::\n", issue.Key))
 	id := verification.Artifact.ID

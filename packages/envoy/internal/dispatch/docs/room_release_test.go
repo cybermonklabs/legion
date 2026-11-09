@@ -166,7 +166,10 @@ func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 // seed's author, which the document's settlement attributes its ask blocks to.
 func TestAStateReleasedAsALookupFindsItTakesNoWrite(t *testing.T) {
 	t.Parallel()
-	service, id := newTestService(t)
+	// The state is read for the seed's author and its unsettled flag, which the document's
+	// settlement clears, so no settlement may run between the seed's commit and that read: a
+	// loaded runner outlasts any window sized to those few statements (dispatch://INFRA-1075).
+	service, id := newTestServiceSettlingAfter(t, time.Hour)
 	actor := model.Actor{Kind: "session", ID: "seeding-session"}
 	released := false
 	service.afterStateLookup = func(room string) {
