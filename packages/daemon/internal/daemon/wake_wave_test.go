@@ -440,7 +440,7 @@ func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiti
 // write the state reads it from, and a queue read in that moment names one claim the turns do
 // not. Two equal reads in a row say the fan-out is over, and every caller then advances the
 // clock to the moments this returned.
-func awaitWave(t *testing.T, d *daemon, count int, kind supervise.WakeKind) []api.WakeWaiting {
+func awaitWave(t *testing.T, d *daemon, count int, kind supervise.WakeKind, logged *syncBuffer) []api.WakeWaiting {
 	t.Helper()
 	var waiting, settled []api.WakeWaiting
 	// A pace of its own, and a bound to match. Each ask here is a read of the daemon's whole
@@ -455,7 +455,14 @@ func awaitWave(t *testing.T, d *daemon, count int, kind supervise.WakeKind) []ap
 	// wakes it is made of.
 	//
 	// The wait names what it last saw, so a failure says whether the fan-out never finished or
-	// finished and kept moving: those are different defects and the count tells them apart.
+	// finished and kept moving: those are different defects and the count tells them apart. It
+	// names, besides, every wake the daemon holds and every wake that has already run
+	// (supervise.WakeRanMessage, whose line carries its own claim), because a wave holding its
+	// whole count is neither of those two: either a wake of the wave ran and was armed again, so
+	// the list is of a later generation than the one the count assumes, or the pacing reserved a
+	// future moment for the first wake of the wave with a token to give, which reserveWake says
+	// it does not. The lines tell those apart; the limiter's own token is not reachable from
+	// here, so this does not report it.
 	defer func() {
 		if t.Failed() {
 			t.Logf("the wave last held %d %s wakes, %d of them unchanged since the read before",
@@ -463,6 +470,14 @@ func awaitWave(t *testing.T, d *daemon, count int, kind supervise.WakeKind) []ap
 			for _, wake := range waitingWakes(t, d) {
 				t.Logf("\tthe daemon holds %s %s %s due %s", wake.Kind, wake.Role, wake.Claim, wake.DueAt.Format(time.RFC3339Nano))
 			}
+			ran := 0
+			for _, line := range strings.Split(logged.String(), "\n") {
+				if strings.Contains(line, supervise.WakeRanMessage) {
+					ran++
+					t.Logf("\tand a wake already ran: %s", line)
+				}
+			}
+			t.Logf("\t%d wakes of this daemon had already run when the wait gave up", ran)
 		}
 	}()
 	testwait.WithinPolling(t, 10*time.Minute, 100*time.Millisecond,
@@ -657,7 +672,7 @@ func TestABootWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
 
-	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch, logged)
 	for _, wake := range waiting {
 		if wake.Kind != "launch" || !slices.Contains(tokens, wake.Claim) {
 			t.Fatalf("the state names a waiting wake %+v, want a launch of one of the wave's claims", wake)
@@ -830,7 +845,7 @@ func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
 
-	waiting := awaitWave(t, d, waveSize, supervise.WakePluginTask)
+	waiting := awaitWave(t, d, waveSize, supervise.WakePluginTask, logged)
 	for _, wake := range waiting {
 		if wake.Kind != "plugin-task" || !slices.Contains(tokens, wake.Claim) {
 			t.Fatalf("the state names a waiting wake %+v, want a plugin task of one of the wave's claims", wake)
@@ -1008,7 +1023,7 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 		rt.fake().Emit(runtime.Observation{Locator: *c.Locator, Kind: runtime.Gone, At: origin, Displaced: true})
 	}
 
-	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch, logged)
 	moments := wakeMoments(origin, waiting)
 	assertSpread(t, "the displaced wave's launches", moments, origin)
 	launches := runWave(t, clock, rt, waiting, 1)
@@ -1107,7 +1122,7 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 		o.controllerRetry = 200 * time.Millisecond
 	})
 
-	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch, logged)
 	promised := map[claim.Token]time.Time{}
 	for _, wake := range waiting {
 		promised[wake.Claim] = wake.DueAt
@@ -1204,7 +1219,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
 
-	waiting := awaitWave(t, d, waveSize+len(workers), supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize+len(workers), supervise.WakeLaunch, logged)
 	// What the three events may reach, read from the daemon's own list of claims. An operator's
 	// close ends the whole tree, so it takes one wake only where the tree holds nothing else to
 	// retire (the row below this one pins that), and the roots this row decides on are the ones
@@ -1348,7 +1363,7 @@ func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T)
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
 
-	waiting := awaitWave(t, d, waveSize+len(workers), supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize+len(workers), supervise.WakeLaunch, logged)
 	listed := indexClaims(t, d)
 	inQueue := make(map[claim.Token]bool, len(waiting))
 	for _, wake := range waiting {
@@ -1423,7 +1438,7 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
 
-	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch, logged)
 	running := map[claim.Token]runtime.Locator{}
 	for _, wake := range waiting {
 		c := d.claim(wake.Claim)
@@ -1549,7 +1564,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 	rt := newWaveRuntime(clock)
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
-	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch, logged)
 
 	// A few turns of the wave go out, and the daemon is stopped with the rest still waiting.
 	const before = 3
@@ -1572,7 +1587,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 
 	// The wave the restart finds is exactly the wakes the stop left waiting: the claims already
 	// launched record a process and are re-adopted, never launched again.
-	again := awaitWave(t, second, len(stillWaiting), supervise.WakeLaunch)
+	again := awaitWave(t, second, len(stillWaiting), supervise.WakeLaunch, restartLog)
 	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
 	runWave(t, restartClock, restarted, again, 1)
 
@@ -1614,7 +1629,7 @@ func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
 	rt := newWaveRuntime(clock)
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
-	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch)
+	waiting := awaitWave(t, d, waveSize, supervise.WakeLaunch, logged)
 
 	// The claim the operator drains is the last of the queue, whose turn is the whole wave away.
 	drained := waiting[len(waiting)-1].Claim
@@ -1645,7 +1660,7 @@ func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
 		t.Fatalf("after the restart the drained claim is %s suspended by %q, want %s by the operator",
 			c.State, c.SuspendedBy, supervise.StateSuspended)
 	}
-	again := awaitWave(t, second, waveSize-2, supervise.WakeLaunch)
+	again := awaitWave(t, second, waveSize-2, supervise.WakeLaunch, restartLog)
 	for _, wake := range again {
 		if wake.Claim == drained {
 			t.Fatalf("the restart holds a wake for the drained claim, %+v, want none: it is suspended, not an unfinished launch", wake)
