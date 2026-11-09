@@ -1,0 +1,130 @@
+{
+  "issue": "INFRA-1115",
+  "title": "Issue pods reserve 3 CPU and 19 GiB because builds run inside them: give INFRA workers the build farm route (INFRA-898), then resize the pods from measured use",
+  "capturedAt": "2026-11-09T00:09:43.508Z",
+  "capturedFrom": "dispatch.dispatch.svc.cluster.local:8766",
+  "documents": {
+    "spec": {
+      "artifactId": "6488b94b-e483-4754-916a-88ae41cf8a00",
+      "name": "spec.md",
+      "version": 7,
+      "markdown": "## Summary\n\nEach INFRA issue pod reserves 3 CPU and 19 GiB, and GKE Autopilot bills the reservation. Most of the time a pod uses far less; the reservation is that large because workers run builds and whole test suites inside the pod, and one 9 GB test can fill it. dispatch://INFRA-898 is the design for this: an agent host runs no build, it sends each build to the cluster's build farm or to CI, and it is then resized from its measured load. This change applies that design to the INFRA issue pods: INFRA's workers get the farm's `running-heavy-jobs` route, the worker guides send builds and whole suites to the farm or CI, and after a week of measurement the pod's reservation is set from its measured memory and CPU.\n\n## Problem\n\n- 71 INFRA issue pods run on 2026-11-04 at 17:30Z. Each reserves 3 CPU and 19 GiB, with requests equal to limits (`kubectl get pods -n legion`). At Autopilot's list prices of $0.0445 per vCPU-hour and $0.0049225 per GiB-hour ([GKE pricing](https://cloud.google.com/kubernetes-engine/pricing)), a pod costs $0.227 an hour, 59% of it for CPU.\n- Over the 7 days to 2026-11-04 16:42Z, the pods' memory was 1.96 GiB at the median one-minute sample and 4.92 GiB at p95; over the 7 days to 17:20Z, their CPU was 0.08 at the median and about 2.1 at p95 (dispatch://INFRA-1115/artifact/memory-measurements-md).\n- Large commands in the pod cause the peaks. On INFRA-512, `roles` went from 4.5 to 18.0 GiB in 36 minutes and stopped at 02:44:39Z on 2026-11-04. At about 04:30Z, a Go test binary on INFRA-605 used 9.3 GB, and a bun script on INFRA-635 used 9.1 GB (dispatch://INFRA-1115/comment/84e6c601-c5d2-4758-8d2b-cd64a2e6b924).\n- When a pod reaches its limit, the `roles` container stops and every role's turn ends. In the same 7 days, `roles` containers restarted 39 times in 17 pods, 0.100 restarts per pod-day over 388.5 pod-days.\n- The worker guide sends this work into the pod. `skills/legion-worker/references/tools.md` points workers to `docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`, which runs the whole `docs` and `api` packages of `packages/envoy/internal/dispatch` in the pod.\n- INFRA's workers do not have the farm's route. The worker pods may create Jobs in the `builds` namespace (`kubectl -n builds auth can-i create jobs` answers yes from an INFRA pod), but the `running-heavy-jobs` skill is in the `dev-infra` plugin of the `verification-skills` marketplace, and INFRA's configuration in theorem-labs/agent-infra `legion/Pulumi.prod.yaml` installs no plugin from that marketplace.\n- Under gVisor, the pod reading that Cloud Monitoring gives counts files that a process maps from `/legion`, which the node can reclaim: pod `legion-infra-infra-510` read 22 to 49 GiB against its 19 GiB limit for about 3 hours with no restart. The process memory is the sandbox's `AnonPages`, which dispatch://INFRA-1141 (approved) will record for every worker pod.\n\n## Goals and non-goals\n\n- Goal: an INFRA issue pod runs no build and no whole test suite; workers send them to the build farm or CI.\n- Goal: the reservation follows measured use, as dispatch://INFRA-898 resizes an agent host.\n- Goal: `roles` restarts per pod-day are no more than today's 0.100.\n- Non-goal: changing the sandbox. The issue pods stay in gVisor, as the `builds` farm does.\n- Non-goal: a guard inside the pod.\n- Non-goal: a memory exporter. dispatch://INFRA-1141 builds it, and R5 reads it.\n- Non-goal: sharing nodes and requests below limits. dispatch://INFRA-1117 does that.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** Every role of every INFRA issue pod has the `running-heavy-jobs` skill, through INFRA's configuration installing the `dev-infra` plugin of the `verification-skills` marketplace, and a worker in an INFRA issue pod can submit a Job in `builds` that builds or tests its branch's pushed commit and read the result in the Job's log. From: dispatch://INFRA-898, its requirements that an agent host runs no build and that the route is turnkey.\n:::\n\n:::requirement{#r2}\n**R2.** `skills/legion-worker/references/tools.md`, and its staged copy under `packages/claude-envoy/legion/`, say that an issue pod runs no heavy build and no whole test suite. In the pod a worker compiles and tests the packages its change touches, builds the program that a check of its issue drives, and, in a package whose tests need Postgres, runs only the tests its change touches, by name (`go test -run`). A whole module's build or test run (`go test ./...`, a whole Postgres-backed package such as `packages/envoy/internal/dispatch/docs`, `make -j`, `lake build`) runs in CI on the pull request, and other heavy work goes where the deployment's instructions say. They no longer point to the LEGION-752 note above as the way to run the `docs` and `api` packages. From: dispatch://INFRA-898, and the rule that workers do not run in the pod what CI runs (dispatch://INFRA/artifact/goals-md).\n:::\n\n:::requirement{#r3}\n**R3.** INFRA's deployment instructions (theorem-labs/agent-infra `legion/instructions/infra.md`) name the route for INFRA's workers: a Job of `skill://running-heavy-jobs` in `builds`, submitted with the pod's own `kubectl` and read with `kubectl logs`, for heavy work on a public repository; and CI for a suite that needs Postgres, work on a private repository, and work that needs a real kernel. From: dispatch://INFRA-898, and the rule that a deployment fact belongs in the deployment's configuration (dispatch://INFRA/artifact/goals-md, \"Legion stays generic\").\n:::\n\n:::requirement{#r4}\n**R4.** When an issue pod's `roles` container ends `OOMKilled`, each role whose turn that end cut off is told, with the task the daemon sends it again, that its pod ran out of memory and that heavy work runs as R2 says. From: dispatch://INFRA-898, its requirement that a host names the route at the moment a heavy job fails.\n:::\n\n:::requirement{#r5}\n**R5.** INFRA's `resources.issue` in `legion/Pulumi.prod.yaml` is set from at least 7 days that start once every role of every INFRA issue pod has started with R1 to R4 in place and dispatch://INFRA-1141's series run for those pods. It sets requests equal to limits at: memory 1.25 times the p99 of each pod's daily maximum of `AnonPages`, rounded up to 0.25 GiB; CPU 1.25 times the p95 of the pods' one-minute CPU use in INFRA-1141's series of the kubelet's CPU count, rounded up to 0.25 CPU, within Autopilot's ratio of 1 CPU to between 1 and 6.5 GiB. Before the change, the architect posts as an artifact of this issue: the size, the two figures it came from, the pods and the window, the pod's cost at the list prices above, the `AnonPages` peak before each `OOMKilled` end in the window against the limit, and the pods whose builds or tests used more than 1 GiB in the pod in the window, with the role and the kind of work INFRA-1141's series give. When the 7 days after the change show more than 0.100 `roles` restarts per pod-day, the memory goes up by 1 GiB and those 7 days are measured again. From: dispatch://INFRA-898, which resizes an agent host to its measured p95 load plus 25%; the memory rule is this issue's own, for a limit that is a hard ceiling.\n:::\n\n:::requirement{#r6}\n**R6.** Each change reaches the live pods through the daemon's update rounds, which replace a pod only after each worker in it has pushed and is idle (dispatch://INFRA-484), in the shared INFRA roll that carries it (dispatch://INFRA-1088/artifact/infra-next-roll-md). R1's configuration change goes in the roll that carries R2 and R4, so every role starts with all of them. From: the rule that a pod change never ends a live turn.\n:::\n\n## Verification\n\nThe checks are in dispatch://INFRA-1115/artifact/verification-md.\n\n## Design\n\n1. **The route (R1, R3).** This is the standard batch pattern that dispatch://INFRA-898 builds on: a job states its resources, a scheduler places it, and results come back through storage or logs ([Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)). The `running-heavy-jobs` skill (theorem-labs/verification-skills, `plugins/dev-infra/skills/running-heavy-jobs/SKILL.md`) carries manifests that the `builds` admission policies admit. From an INFRA pod, `kubectl` works with the pod's own credential and no `gcloud`; the pod's Google identity cannot read the bucket `gs://theorem-build-io`, so a Job's result is its log. cybermonklabs/legion is public, so a Job clones the branch's pushed commit; theorem-labs/agent-infra is private, so its work goes to CI. A suite that needs Postgres skips its store tests without one and so passes untested in a Job; it goes to CI. `setup` wraps every role start and opens no update round, which is why R1 rides the roll of R2 and R4.\n2. **The size (R5).** The Vertical Pod Autoscaler sets a request from a percentile of use plus a margin (INFRA-1141 cites VPA and Robusta KRR); that fits a request with room to burst above it. These pods are alone on their nodes, where Autopilot gives little room above a request ([Configure Pod bursting in GKE](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/pod-bursting-gke)), so the memory request equals the limit and the limit is a hard ceiling. A pod-day's maximum is then the right unit, because one pod-day over the limit is one possible restart: at 1.25 times the p99 of daily maximums, about one pod-day in a hundred passes 80% of the limit, well under today's 0.100 restarts per pod-day. CPU follows dispatch://INFRA-898's p95 plus 25%, from GKE's own count, which runs higher than the sandbox's. dispatch://INFRA-1117 later sets requests below limits, once pods share nodes.\n3. **The order.** The cybermonklabs/legion change (R2, R4) is released; the agent-infra change (R1, R3, and the release's pins) rides the shared roll; dispatch://INFRA-1141's sampler (dispatch://INFRA-1208) runs; after the 7 days the size follows. This issue and INFRA-1141 both edit INFRA's block of `legion/Pulumi.prod.yaml`, so each tells the other on Envoy before it changes that block.\n\n## Decisions\n\nThe decisions are in dispatch://INFRA-1115/artifact/decisions-md.\n"
+    },
+    "decisions": {
+      "artifactId": "6738326b-7ac2-41ee-bf77-548e3f3bcac9",
+      "name": "decisions.md",
+      "version": 3,
+      "markdown": "# Decisions of INFRA-1115\n\n## INFRA-898 is the design\n\nThe person named dispatch://INFRA-898 as the intended design (dispatch://INFRA-1115/comment/fbe33548-abd1-4af4-ab4b-f8519001fd86): an agent host runs no build, sends each build to the cluster, and is resized from its measured load. An INFRA issue pod is an agent host, so this issue applies that design to it. Shaped every requirement of dispatch://INFRA-1115/spec.\n\n## The pods stay in gVisor\n\nWith builds out of the pod, the pod runs agents and narrow tests, which gVisor carries, and the `builds` farm also runs in gVisor. Work that needs a real kernel goes to CI. Replaced: the move to microVMs chosen in dispatch://INFRA-1115/ask/d2243640-02eb-4dd3-b6e7-fda919c46112, which needed node billing on a custom ComputeClass and gave up GKE's extended run time; and the in-pod memory guard of spec version 2. Shaped dispatch://INFRA-1115/spec#b-r1.\n\n## The route is the farm's own skill, installed by configuration\n\nINFRA-898's `running-heavy-jobs` skill is the route. It is in the `dev-infra` plugin of the `verification-skills` marketplace, so INFRA's configuration installs `dev-infra`, not the 34 verification skills that BET and OSSV take. Legion itself carries no route of its own (dispatch://INFRA/artifact/goals-md: Legion stays generic). Shaped dispatch://INFRA-1115/spec#b-r1.\n\n## Generic rule in Legion's guide, the route in INFRA's instructions\n\nThe stream's rule is that workers do not run in the pod what CI runs, and that a deployment fact belongs in the deployment's configuration. So `tools.md` states the generic rule, and INFRA's instructions file names the skill, the namespace and the cases that go to CI. `tools.md` points to the LEGION-752 note, which runs the `docs` and `api` packages whole in the pod; `docs.test` reached 9.3 GB on INFRA-605. The notes under `docs/solutions/` are history no role edits, so `tools.md` itself states the rule. Options weighed: the skill's name in `tools.md` (a Theorem-only fact in Legion's public guide). Shaped dispatch://INFRA-1115/spec#b-r2 and dispatch://INFRA-1115/spec#b-r3.\n\n## The route is named when a pod runs out of memory\n\nINFRA-898 has the host name the route when a heavy job fails. Under gVisor the pod's memory stop ends every role at once, so nothing in the pod can print a message; the daemon sees the `OOMKilled` end and adds the message to the task it sends again to each role whose turn the end cut off. A role that was idle loses no work and gets nothing. Shaped dispatch://INFRA-1115/spec#b-r4.\n\n## The size: INFRA-898's CPU rule, and a memory rule of this issue's own\n\nINFRA-898 resizes an agent host to its measured p95 load plus 25%, and CPU follows that, from GKE's own count. INFRA-898 has no memory rule for an agent host: its rule for Jobs keeps the limit at the container cap. Here each pod is alone on its node, where a request below the limit gives little room, so the memory request equals the limit and the limit is a hard ceiling. Memory is therefore taken per pod-day, at 1.25 times the p99 of the daily maximums: one pod-day over the limit is one possible restart. The memory is `AnonPages` from dispatch://INFRA-1141's series, because Cloud Monitoring's gVisor reading counts mapped files the node can reclaim (dispatch://INFRA-1115/artifact/memory-measurements-md). Options weighed: a percentile of use plus a margin, as the Vertical Pod Autoscaler does (fits a request with room to burst); the measured maximum (one stray command sets it for every pod). Shaped dispatch://INFRA-1115/spec#b-r5.\n\nUnsure: if agents still run builds in the pod after the route exists, the measured size stays high; the size artifact names the pods and commands that remain.\n\n## No cost gate\n\nThis issue's first version targeted 40% less cost. INFRA-898 resizes a host to its measurement and names what still runs on it, with no person in the path, and the stream's rules forbid a metric that blocks progress. So the size is applied as measured, and the artifact reports its cost against today's $0.227 an hour. Shaped dispatch://INFRA-1115/spec#b-r5.\n\n## Request equal to limit while pods are alone on nodes\n\nAutopilot lets a pod burst only into the unused requests of the other pods on its node, plus a small buffer. dispatch://INFRA-1117 makes pods share nodes and then sets a request below the limit. Shaped dispatch://INFRA-1115/spec#b-r5.\n\n## How two common jobs are proven\n\nThe person's approval asked that each common job type run on infrastructure the tree provides (dispatch://INFRA-1115/ask/240e49aa-5d10-4773-ac11-d206920a5289). Two cannot run as first written, and neither is a block on normal development. A `pulumi preview` against agent-infra's production state needs a credential no INFRA pod holds, and agent-infra previews production only through its own workflows, a gap dispatch://INFRA-205 owns; so the check previews the program on a local backend and runs its tests (j9). The stage-1 live proof needs `tmux`, which the worker image lacks, and CI's hosted runner carries it; so the pod starts that proof in CI and reads it (j10). Neither substitution changes what the person approved, so no ask goes to the person. The Verification document's approval stays at its version 2: the design gate records the spec alone, and the document is requested again with the spec's next approval request, if any.\n\n## Replaced\n\n### A memory guard in the pod under gVisor\n\nSpec version 2. Replaced by the INFRA-898 design: builds leave the pod.\n\n### microVM pods with a cgroup per command\n\nChosen in dispatch://INFRA-1115/ask/d2243640-02eb-4dd3-b6e7-fda919c46112; replaced by the INFRA-898 design (dispatch://INFRA-1115/comment/fbe33548-abd1-4af4-ab4b-f8519001fd86).\n\n### `singleProcessOOMKill`\n\nUnder gVisor the host kernel sees only the sandbox, so no kubelet setting can stop one process inside it (dispatch://INFRA-1115/comment/8cfce945-0270-40c3-988e-c6d4c63614d4; that reply's second reason, that Autopilot nodes take no kubelet setting, was wrong: a custom ComputeClass can set it).\n"
+    }
+  },
+  "asks": [
+    {
+      "id": "fe9c0167-b4ba-405b-a925-c80322ab2df3",
+      "kind": "approval",
+      "state": "resolved",
+      "question": "Approve spec.md (version 3) and verification.md (version 1)? Approve a memory guard in every Legion issue pod (dry-run by default) that stops the largest command before the kernel stops all six roles, and a lower INFRA pod size set from a week of its measurements, with CPU following memory at 1 CPU per 6.5 GiB; some commands that finish today will be stopped and sent to CI, and a size that does not cut the cost by 40% comes back to you first. Reviews: six rounds of gap and claim reviews; the last found no gap that stops the design, and its four blocking points and two false claims are fixed in this version; neither review shows that the guard works once built.",
+      "options": [
+        {
+          "id": "b2",
+          "label": "Approve",
+          "description": "Approve this version of the document."
+        },
+        {
+          "id": "b3",
+          "label": "Request changes",
+          "description": "Say what must change before it can be approved."
+        }
+      ],
+      "artifactId": null,
+      "blockId": null,
+      "answer": null
+    },
+    {
+      "id": "d2243640-02eb-4dd3-b6e7-fda919c46112",
+      "kind": "question",
+      "state": "answered",
+      "question": "Which sandbox should the INFRA issue pods run in? Today all 71 run in gVisor (kubectl get pods -n legion, 2026-11-04 17:30Z; the daemon sets the runtime class gvisor in packages/daemon/internal/runtime/sandbox/manifest.go). Under gVisor the host kernel sees only the whole sandbox, so one 9 GB test stops all six roles, and the pod's memory numbers count files that the node can reclaim. Recommendation: microVM, because a pod with its own Linux kernel stops the one large command by itself, keeps the agents running and gives true numbers, with isolation at least as strong as gVisor's.",
+      "options": [
+        {
+          "id": "b2",
+          "label": "microVM (GKE Sandbox on Kata Containers), with a cgroup and memory limit for each command",
+          "description": "about 5% more per pod (250 mCPU and 130 MiB). The cluster dispatch runs GKE 1.36.4 (kubectl get nodes, 2026-11-04: 188 nodes at v1.36.4-gke.2046003, 6 at v1.36.4-gke.1391002), and microVM sandboxes need 1.37.0-gke.4713000 or later (GKE Sandbox how-to), so the cluster first moves to 1.37, which replaces every node. A proof on one pod comes first; this version's memory guard is dropped."
+        },
+        {
+          "id": "b3",
+          "label": "No sandbox (runc), with GKE's writable cgroups",
+          "description": "the cheapest, and documented by Google, but Google then requires each pod's requests to equal its limits (writable cgroups), so pods cannot burst into each other's idle capacity, and code that agents run shares the node's kernel."
+        },
+        {
+          "id": "b4",
+          "label": "Stay on gVisor, with this version's memory guard",
+          "description": "no cluster change; a guard that reads memory four times a second chooses what stops, and the memory numbers stay approximate."
+        }
+      ],
+      "artifactId": null,
+      "blockId": "fc7d1e85-6d7b-46dc-9036-2ce9ada42a2e",
+      "answer": {
+        "optionId": "b5",
+        "selected": [
+          "microVM (GKE Sandbox on Kata Containers), with a cgroup and memory limit for each command"
+        ],
+        "text": null,
+        "by": "sami@theorem.dev",
+        "at": "2026-11-04T21:41:39.078284Z"
+      }
+    },
+    {
+      "id": "0192a3e7-f56f-413f-8732-abc3e29dfb94",
+      "kind": "question",
+      "state": "resolved",
+      "question": "Three facts about the microVM sandbox were found after it was chosen in dispatch://INFRA-1115/ask/d2243640-02eb-4dd3-b6e7-fda919c46112. Which sandbox should the INFRA issue pods use?\n\nCost: a microVM pod needs nodes with nested virtualization, and on Autopilot only a custom ComputeClass gives them (nested virtualization). GKE then bills the whole node plus a premium, not the pod's requests (GKE pricing). At today's 19 GiB, a pod on an n4-highmem-4 node costs $0.270 an hour, 19% more than today's $0.227, not about 5% more.\n\nUpgrades: today the INFRA pods carry GKE's extended run time (kubectl get pod legion-infra-infra-1019 -n legion -o json: node affinity cloud.google.com/extended-duration-pods In 3, X, read 2026-11-04 22:06Z), which holds node upgrades off them for 7 days. GKE gives no extended run time to pods on a custom ComputeClass (extended run times, Limitations). Without it, each node upgrade stops the INFRA pods on the upgraded nodes, and an issue's disk and its unpushed work go with its pod, until dispatch://INFRA-1117 lets a pod survive eviction.\n\nCommands: Oh My Pi runs each agent command in a shell built into its own process (packages/daemon/internal/runtime/shellprefix/shellprefix.go), so a cgroup for each command needs a change to Oh My Pi under the first two options.\n\nRecommendation: microVM after dispatch://INFRA-1117. It is the only option that keeps a sandbox and lets each pod's own kernel stop one command. Once pods survive eviction, several can share a larger node and use its idle capacity, which is where node billing saves the most.",
+      "options": [
+        {
+          "id": "b2",
+          "label": "microVM after INFRA-1117",
+          "description": "about $0.135 an hour on an n4-highmem-2 node (about 13 GiB usable, 41% less than today), or about $0.103 on n4-standard-2 (about 5.5 GiB, 55% less). The cluster moves to GKE 1.37, Oh My Pi changes, and this tree waits for INFRA-1117."
+        },
+        {
+          "id": "b3",
+          "label": "No sandbox (runc), with GKE's writable cgroups",
+          "description": "works on the cluster's GKE 1.36 now (kubectl get nodes, 2026-11-04 22:06Z: every node at v1.36.4) and keeps the 7-day protection. If GKE keeps billing it by requests (not yet measured), 8 GiB costs $0.095 an hour (58% less). Requests must equal limits, so pods cannot burst into each other's idle capacity. Code that agents run shares the node's kernel, on a node that holds only that one pod. Oh My Pi changes."
+        },
+        {
+          "id": "b4",
+          "label": "gVisor with the launcher guard of spec version 2",
+          "description": "no cluster change and no Oh My Pi change, billed by requests ($0.095 at 8 GiB). The guard chooses what stops, and memory numbers stay approximate."
+        }
+      ],
+      "artifactId": null,
+      "blockId": "82af8e92-30a9-47e7-94b0-ed2cf6e615d8",
+      "answer": null
+    },
+    {
+      "id": "240e49aa-5d10-4773-ac11-d206920a5289",
+      "kind": "approval",
+      "state": "answered",
+      "question": "Approve spec.md (version 7) and verification.md (version 2)? Approve applying the INFRA-898 design to the INFRA issue pods: they stay in gVisor; INFRA workers get the running-heavy-jobs route to the build farm and send heavy builds and whole suites there or to CI; a pod that runs out of memory tells its cut-off roles that route; after a week of INFRA-1141 measurements the reservation is set from measured memory and CPU, with no in-pod guard and no microVM. Reviews: the gap review found five points in the version before this, all fixed here; the claim review verified every claim but one wrong timestamp, also fixed; neither shows how far the pods will shrink.",
+      "options": [
+        {
+          "id": "b2",
+          "label": "Approve",
+          "description": "Approve this version of the document."
+        },
+        {
+          "id": "b3",
+          "label": "Request changes",
+          "description": "Say what must change before it can be approved."
+        }
+      ],
+      "artifactId": null,
+      "blockId": null,
+      "answer": {
+        "optionId": "b4",
+        "selected": ["Approve"],
+        "text": "Make sure that the implementers and testers who go through this actually try to run all the jobs that the different projects here need. To make sure that they have access to the things that they need when on the remote builders and such, before we consider this acceptance. Like, that's… Yeah. The list out, like, out all the common jobs. Add them to the verification that, you know, an implementer can run a job of that type on some first‑class provided infrastructure that is provided by the agent infra and isn't blocked on doing normal development.",
+        "by": "sami@theorem.dev",
+        "at": "2026-11-04T23:54:17.306146Z"
+      }
+    }
+  ]
+}
