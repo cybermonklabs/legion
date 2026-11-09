@@ -47,6 +47,8 @@ on:
       - 'docs/site/package.json'
       - '.bun-version'
       - '.github/actions/setup-bun/**'
+      - '.github/ci-tools.yaml'
+      - '.github/scripts/ci-tools.sh'
       # ci.yaml's *biome:
       - 'biome.json'
       - '.gitignore'
@@ -225,6 +227,7 @@ on:
       - 'packages/envoy/internal/broker/store/*'
       - 'packages/envoy/internal/broker/store/migrations/**'
       - 'packages/envoy/internal/broker/wake/*'
+      - 'packages/envoy/internal/broker/wire/*'
       - 'packages/envoy/internal/brokertoken/*'
       - 'packages/envoy/internal/buildversion/*'
       - 'packages/envoy/internal/ratelimit/*'

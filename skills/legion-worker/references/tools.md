@@ -478,7 +478,7 @@ something to count.
   later release may have it. A timing test can fail too: `internal/dispatch/pmdoc`'s linearity
   tests time a call by the process's CPU time, which gVisor counts in 10 ms ticks, so a call under
   10 ms can measure 0 s and the test reports `+Inf times`.
-- **`O_NOFOLLOW` guards a leaf and not a component under gVisor.** A lane measured this on
+- **`O_DIRECTORY|O_NOFOLLOW` follows a directory link under gVisor.** A lane measured this on
   2026-11-01, in a pod under gVisor (`uname` 4.19.0-gvisor) against the same probe on an ordinary
   kernel, on two filesystems. Almost everything matches: `O_RDONLY|O_NOFOLLOW` on a symlink to a
   file refuses `ELOOP`, `O_CREAT|O_EXCL|O_NOFOLLOW` on one refuses `EEXIST`, `O_PATH|O_NOFOLLOW`
@@ -486,9 +486,13 @@ something to count.
   on both. One call differs: `openat(dirfd, <a link to a directory>,
   O_DIRECTORY|O_NOFOLLOW|O_RDONLY|O_CLOEXEC)`, which the ordinary kernel refuses `ENOTDIR` and
   gVisor follows with no error. So code that walks a path one component at a time and opens each
-  with `O_NOFOLLOW` is defeated there while every leaf check still passes, and its tests stay
-  green on a developer's kernel. A whole block of such tests failing in a pod is that one
-  property of the environment, not one defect per test. The fix shape holds on both kernels:
+  with `O_DIRECTORY|O_NOFOLLOW` is defeated there while every leaf check still passes, and its
+  tests stay green on a developer's kernel. Dropping `O_DIRECTORY` changes it, because
+  `openat(dirfd, <a link to a directory>, O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)` refuses
+  `ELOOP` under gVisor too, measured on 2026-11-08 and relied on by `openSessionFileBeneath` in
+  `packages/daemon/cmd/legion/sessions.go`, so what the sandbox follows is the `O_DIRECTORY`
+  combination and not `O_NOFOLLOW` itself. A whole block of such tests failing in a pod is that
+  one property of the environment, not one defect per test. The fix shape holds on both kernels:
   the walk cannot trust `O_DIRECTORY|O_NOFOLLOW` there, so it opens each component with
   `O_PATH|O_NOFOLLOW|O_CLOEXEC`, which opens the entry itself on both kernels, and reads the
   kind from fstat of that handle. The repository's own instance is `mountPointBeneath` in

@@ -885,6 +885,7 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 	legionState(t)
 	for _, variant := range []struct{ extra, drop, says string }{
 		{extra: "worker_cap: 3\n", says: "worker_cap"},
+		{extra: "resync_interval_seconds: 600\n", says: "resync_interval_seconds"},
 		{extra: "admission_cap: 0\n", says: "admission_cap"},
 		{extra: "worker_wakes_per_minute: -1\n", says: "worker_wakes_per_minute"},
 		{extra: "worker_wakes_per_minute: 2.5\n", says: "worker_wakes_per_minute"},
@@ -918,6 +919,31 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatalf("%+v: the private_key_command ran (marker stat: %v)", variant, err)
 		}
+	}
+}
+
+// max_fix_attempts is the other kind: a setting that no longer exists and that the daemon accepts
+// all the same, since nothing reads it and a refusal here would stop a deployment over a word in
+// a file. --check-config exits 0, prints the warning after Config OK and before the project's
+// production-check line and the capability gaps, and the warning says what the refusal would
+// have said: the key, that nothing counts fix attempts, that a red CI verdict always sends the
+// work back to the implementer, that the architect decides when to stop, and review_round_cap,
+// the one cap left that blocks a pull
+// request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
+// resync_interval_seconds) are the control that the two kinds stay apart.
+func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
+	legionState(t)
+	config, marker := workflowConfig(t, 13370, "max_fix_attempts: 3\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
 	}
 }
 
@@ -1706,7 +1732,8 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 }
 
 // An operator reading plain `legion state` is told which roots gave their slot up to wait on a
-// person, how many a person answered, and each by key with what it waits on: an unanswered one is
+// person, how many of them a person answered and the daemon's own published waiting line still
+// names, and each by key with what it waits on: an unanswered one is
 // in neither admission list, so without this line the capacity it freed looks idle.
 func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
@@ -1714,6 +1741,7 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 	gate := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"awaiting_person","status":"in_progress",` +
 		`"waitingOn":{"kind":"gate","gateVersion":3,"artifactId":"spec-210","since":"2026-10-25T10:00:00Z"}}`
 	asked := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"awaiting_person","status":"in_progress",` +
+		`"waitingLine":{"place":1,"length":1},` +
 		`"waitingOn":{"kind":"ask","ask":"ask-7","since":"2026-10-25T11:00:00Z","answeredAt":"2026-10-25T12:00:00Z","answeredBy":"reply"}}`
 	for _, tc := range []struct {
 		name, issues, want string
@@ -1721,13 +1749,13 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 		{
 			name:   "two waiting, one answered",
 			issues: `{` + asked + `,` + gate + `}`,
-			want: "roots waiting on a person: 2, 1 answered and waiting for a slot — LEGION-210 waits on spec version 3 of spec-210, unanswered; " +
+			want: "roots waiting on a person: 2, 1 answered and standing in the admission line — LEGION-210 waits on spec version 3 of spec-210, unanswered; " +
 				"LEGION-211 waits on ask ask-7, answered at 2026-10-25T12:00:00Z (reply)\n",
 		},
 		{
 			name:   "one unanswered",
 			issues: `{` + gate + `}`,
-			want:   "roots waiting on a person: 1, 0 answered and waiting for a slot — LEGION-210 waits on spec version 3 of spec-210, unanswered\n",
+			want:   "roots waiting on a person: 1, 0 answered and standing in the admission line — LEGION-210 waits on spec version 3 of spec-210, unanswered\n",
 		},
 		{name: "none", issues: `{}`, want: "roots waiting on a person: none\n"},
 	} {
@@ -1750,6 +1778,62 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
 			}
 		})
+	}
+}
+
+// The `roots waiting on a person` line counts the answered roots the daemon's own published
+// waiting line still names (api.WaitingLineView), not every answered one: a root whose design
+// gate has opened at every gated step resumes at once and takes no slot, so it stands in no line
+// and belongs in no count of one. A daemon below contract 58 serves no place at all, and 0 is
+// the true answer for a caller that cannot see the line.
+//
+// The operator's guide prints this line as its sample and says what the count is, so the sample
+// is built here from the state the guide describes and read back out of the guide. That the
+// guide also names the words of the wait itself is one rule held in one place, workflow's
+// TestTheShippedWordsNameTheWaitingLineNotice, which reads each out of the source that declares
+// it. (INFRA-1100.)
+func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
+	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	const (
+		gateWait   = "LEGION-210 waits on spec version 3 of spec-210, unanswered"
+		askWait    = "LEGION-211 waits on ask ask-7, answered at 2026-10-25T12:00:00Z (reply)"
+		unanswered = "roots waiting on a person: 2, 0 answered and standing in the admission line — "
+	)
+	waiting := api.Issue{WaitingOn: &api.WaitingOnView{Kind: "gate", GateVersion: 3, ArtifactID: "spec-210"}}
+	resumed := api.Issue{WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "ask-7", AnsweredAt: &answered, AnsweredBy: "reply"}}
+	standing := resumed
+	standing.WaitingLine = &api.WaitingLineView{Place: 2, Length: 3}
+	for _, tc := range []struct {
+		name   string
+		issues map[string]api.Issue
+		want   string
+	}{
+		{
+			name:   "an answered root standing in the line",
+			issues: map[string]api.Issue{"LEGION-210": waiting, "LEGION-211": standing},
+			want:   "roots waiting on a person: 2, 1 answered and standing in the admission line — " + gateWait + "; " + askWait,
+		},
+		{
+			name:   "an answered root the line does not name",
+			issues: map[string]api.Issue{"LEGION-210": waiting, "LEGION-211": resumed},
+			want:   unanswered + gateWait + "; " + askWait,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := awaitingSummary(tc.issues); got != tc.want {
+				t.Fatalf("awaitingSummary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
+	body, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatalf("read %s: %v", guide, err)
+	}
+	sample := awaitingSummary(map[string]api.Issue{"WIDGETS-9": {WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "7f3c2a10"}}})
+	if !strings.Contains(string(body), sample) {
+		t.Errorf("running-legion.md does not carry %q", sample)
 	}
 }
 

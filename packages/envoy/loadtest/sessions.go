@@ -176,15 +176,20 @@ func (r *registrar) register(ctx context.Context, i int) error {
 }
 
 // registrationFields is session s's registration with the listener: its directory, title and
-// the topics of the issues it watches. registrar.register adds the delivery field asking for
-// consumer delivery.
+// the topics of the issues it watches. With -mention-frac, it advertises the default mention
+// delivery, so Dispatch delivers a mention of the session. registrar.register adds the delivery
+// field asking for consumer delivery.
 func (st *step) registrationFields(s session) map[string]any {
 	topics := []string{}
 	for _, w := range s.watched {
 		topics = append(topics, st.issueTopic(w))
 	}
+	capabilities := []string{}
+	if st.cfg.mentionFrac > 0 {
+		capabilities = []string{mentionDelivery}
+	}
 	return map[string]any{"session_id": s.id, "dir": "/work/" + s.id, "title": "load " + s.id,
-		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": []string{}}
+		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": capabilities}
 }
 
 // registrationBody is registrationFields encoded, as the listener receives it.

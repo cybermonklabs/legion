@@ -48,6 +48,22 @@ func holdRow(t *testing.T, database *store.Store, holder uuid.UUID) {
 	}
 }
 
+// holdingProcess is the process the publisher hold's row names, whatever its lease says: the
+// identity a test gives a fallback pass it runs outside an Outbox (publishFallbackCopies), since
+// in production the pass runs in the process that took the hold and is given that process's
+// instance (Outbox.serve), and its record is written only while the hold is still that
+// process's (recordFallbackCopies). A test whose pass must find the hold gone passes an identity
+// of its own instead.
+func holdingProcess(t *testing.T, database *store.Store) uuid.UUID {
+	t.Helper()
+	var holder uuid.UUID
+	if err := database.Pool.QueryRow(context.Background(),
+		`select holder from duty_holds where name = $1`, publisherHold).Scan(&holder); err != nil {
+		t.Fatalf("read the process the publisher hold names: %v", err)
+	}
+	return holder
+}
+
 // statementTracer records every statement its pool's connections run, with its arguments.
 type statementTracer struct {
 	mu         sync.Mutex

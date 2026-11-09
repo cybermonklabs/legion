@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/csv"
 	"encoding/hex"
@@ -201,9 +202,10 @@ func (r *relaySessions) handler(ns *natsSessions, session int, agentSubject stri
 			r.duplicates.Add(1)
 		case rec.EventID != 0:
 			agent := rec.Subject == agentSubject
-			key := ev.Type
+			// A payload with no event type is a listener send (a mention), not a Dispatch event.
+			key := cmp.Or(ev.Type, "send")
 			if agent {
-				key = "agent." + ev.Type
+				key = "agent." + key
 			}
 			ns.envelopes.offer(key, m.Data, nonce)
 			ns.receipts.add(receipt{EventID: ev.ID, Recv: now, Agent: agent, Published: rec.StoredAt})

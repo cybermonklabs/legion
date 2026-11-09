@@ -29,6 +29,8 @@ function session(sessionId: string, title: string, lastSeen = NOW - 30_000): Age
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title,
   };
 }

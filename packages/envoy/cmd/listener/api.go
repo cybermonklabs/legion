@@ -705,10 +705,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
-		dedupeKey := "agent." + targetSession + "." + id.New()
-		if body.IdempotencyKey != "" {
-			dedupeKey = "agent." + targetSession + "." + body.IdempotencyKey
+		idempotencyKey := body.IdempotencyKey
+		if idempotencyKey == "" {
+			idempotencyKey = id.New()
 		}
+		dedupeKey := contracts.AgentSendDedupeKey(targetSession, idempotencyKey)
 		item := messageEnvelope(body, contracts.AgentSubject(targetSession), dedupeKey, bodyExpectsReply)
 		record.item = &item
 		if err := item.Validate(); err != nil {
@@ -1103,6 +1104,15 @@ type sessionInfo struct {
 	// With omitempty both are a row with no "delivery" key and the two cannot be told apart, so
 	// the count of core sessions would read as zero on a fleet that never reported one.
 	Delivery string `json:"delivery"`
+	// ClientInstanceID names the client process whose registration this is
+	// (session.SessionEntry.ClientInstanceID): one Oh My Pi Envoy extension instance, one
+	// Claude Code channel-server process, each minting the id at its own start, so it tells
+	// one process's registration from its successor's under the same session id. It is left
+	// out where the entry carries none - a client predating it, or one that states no
+	// instance - as GET /v1/roles/<role> leaves its own client_instance_id out
+	// (roleGetHandler), so a client reads an absent field as "this registration names no
+	// process" rather than as the empty string.
+	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
 // sessionInterestReadTimeout bounds sessionInfoFor's read of one session's interest record from
@@ -1153,22 +1163,23 @@ func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session
 // from one that has stopped without comparing timestamps itself.
 func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 	return sessionInfo{
-		SessionID:      entry.SessionID,
-		State:          entry.State,
-		MachineID:      entry.MachineID,
-		Host:           entry.HostOrMachine(),
-		TmuxPlace:      entry.TmuxPlace,
-		Dir:            entry.Dir,
-		Port:           entry.Port,
-		Title:          entry.Title,
-		Capabilities:   append([]string{}, entry.Capabilities...),
-		SelfSubscribed: entry.SelfSubscribed,
-		Roles:          held,
-		UpdatedAt:      entry.UpdatedAt,
-		LastSeen:       entry.UpdatedAt,
-		Plugin:         entry.Plugin,
-		PluginVersion:  entry.PluginVersion,
-		Delivery:       entry.Delivery,
+		SessionID:        entry.SessionID,
+		State:            entry.State,
+		MachineID:        entry.MachineID,
+		Host:             entry.HostOrMachine(),
+		TmuxPlace:        entry.TmuxPlace,
+		Dir:              entry.Dir,
+		Port:             entry.Port,
+		Title:            entry.Title,
+		Capabilities:     append([]string{}, entry.Capabilities...),
+		SelfSubscribed:   entry.SelfSubscribed,
+		Roles:            held,
+		UpdatedAt:        entry.UpdatedAt,
+		LastSeen:         entry.UpdatedAt,
+		Plugin:           entry.Plugin,
+		PluginVersion:    entry.PluginVersion,
+		Delivery:         entry.Delivery,
+		ClientInstanceID: entry.ClientInstanceID,
 	}
 }
 
@@ -1311,6 +1322,85 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 	}
 }
 
+// sessionRegistrationView is the one value the view selector of GET /v1/registry/<session_id>
+// takes: the registration-only answer writeSessionRegistration writes. Any other value is
+// refused 400 naming the selector, as if_not_registered_after refuses a value it cannot read
+// (deleteSessionHandler), because a caller whose selector was silently dropped would be handed
+// the heavy answer it asked not to have and would read that answer's 503 as its own session's.
+const sessionRegistrationView = "registration"
+
+// sessionRegistration is what GET /v1/registry/<session_id>?view=registration answers: what the
+// session bucket holds for that id, with nothing joined to it. It is a type of its own rather
+// than a sessionInfo because this view reads neither the session's interest record nor the role
+// claims, and a sessionInfo with empty topics and roles would be indistinguishable from a
+// session that holds none. It therefore carries none of the full answer's other fields - no
+// topics, roles, machine_id, host, tmux_place, dir, port, title, capabilities, self_subscribed,
+// plugin or plugin_version - and says only what the registration itself says: which session it
+// is, the state that registration puts it in, when it was written, and which client process
+// wrote it.
+type sessionRegistration struct {
+	SessionID string        `json:"session_id"`
+	State     session.State `json:"state"`
+	// LastSeen and UpdatedAt are both the registration's own write
+	// (session.SessionEntry.UpdatedAt), under the two names the full answer gives it
+	// (sessionInfoWith), so a caller reads this view with the reader it already has for that
+	// one.
+	LastSeen  int64 `json:"last_seen"`
+	UpdatedAt int64 `json:"updated_at"`
+	// ClientInstanceID names the client process whose registration this is
+	// (session.SessionEntry.ClientInstanceID), and is what this view exists to answer. It is
+	// left out where the entry carries none - a client predating the field, or one that states
+	// no instance - as sessionInfo leaves it out, so a reader takes an absent field for "this
+	// registration names no process" rather than for the empty string.
+	ClientInstanceID string `json:"client_instance_id,omitempty"`
+}
+
+// writeSessionRegistration answers GET /v1/registry/<session_id>?view=registration: the stored
+// registration alone, for the caller that names its client instance in a delete that follows
+// (the Legion daemon's clean stop of a dead role). It answers whenever the session bucket
+// answers, because it makes no other read: no claims view is read and no interest record, where
+// the full answer reads both (sessionInfoFor) and so turns a claims view that is still refilling
+// into a 503 and a record this build cannot decode into a 500.
+//
+// The entry is read from the session bucket itself and never from this listener's cache
+// (bucketSessionEntry), for the reason that function's own comment gives: a cached entry can
+// carry a client instance id the session has since replaced, or none where the bucket has one,
+// and the one caller of this view decides a delete on that id. A replaced id would have the
+// listener keep the stop as another client instance's, which is the symptom this view is here to
+// end.
+//
+// No state filter applies: every entry the bucket holds is answered 200 with the state its own
+// record puts it in, gone included, so include=unresponsive decides nothing under this view. The
+// caller is deciding whether to remove a registration, and a registration that exists is one it
+// may remove whatever state it reads; a filter here would withhold exactly the records a stop is
+// owed for.
+//
+// A key NATS refuses (bus.ErrRefused) is tested first, as the full view tests it first and for
+// the same reason: Refresh reports a refused key as a missing one too, and an id NATS will never
+// hold is the caller's own input, answered as the 413 or 400 writeBusUnavailable gives it. The
+// bucket's word that it holds no record is the 404 the full view writes (noLiveSession), with
+// session.Gone as the state a session with no record is in. Every other error is a read that did
+// not answer, the bus-unavailable 503 with Retry-After: 1.
+func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, d *listenerDeps, sessionID string) {
+	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
+	switch {
+	case errors.Is(err, bus.ErrRefused):
+		writeBusUnavailable(w, err)
+	case errors.Is(err, nats.ErrKeyNotFound):
+		writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, session.Gone))
+	case err != nil:
+		writeBusUnavailable(w, err)
+	default:
+		writeJSON(w, http.StatusOK, sessionRegistration{
+			SessionID:        sessionID,
+			State:            d.sessions.EntryState(entry),
+			LastSeen:         entry.UpdatedAt,
+			UpdatedAt:        entry.UpdatedAt,
+			ClientInstanceID: entry.ClientInstanceID,
+		})
+	}
+}
+
 // sessionEntryHandler answers GET /v1/registry/<session_id>, the one question a caller holding a
 // session id asks before it addresses that session: is this session live, and how is it named? The
 // read goes through liveSessionEntry, so a session this listener's cache does not hold yet — the
@@ -1334,6 +1424,10 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 // within sendRequestBudget — is a 503 to retry: never a session a caller may take for ended, nor
 // one with no topics or roles. An interest record this build cannot decode is the 500
 // writeInterestRecordUnreadable writes: the bus answered it.
+//
+// view=registration is answered by writeSessionRegistration, whose comment says what it reads
+// and answers; any other value of view is refused 400 naming the selector, and no view at all is
+// this route's own answer, unchanged in every respect.
 func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1343,6 +1437,18 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 		if sessionID == "" {
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
+			return
+		}
+		switch r.URL.Query().Get("view") {
+		case sessionRegistrationView:
+			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+			defer cancel()
+			writeSessionRegistration(ctx, w, d, sessionID)
+			return
+		case "":
+			// No selector is the full answer this route has always given, built below.
+		default:
+			writeJSONError(w, http.StatusBadRequest, "view must be "+sessionRegistrationView, "view")
 			return
 		}
 		accept := sessionIsLive

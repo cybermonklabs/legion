@@ -45,7 +45,7 @@ const (
 	// registers no more. Only the repair of a session's consumer answers it (repairRegistered),
 	// and that repair runs inside the five-second budget of the act it follows
 	// (sessionConsumerCallTimeout): a clean stop and a reaper pass each delete the record
-	// before the consumer delete the repair after a delete follows (deleteConsumer), and the
+	// before the consumer delete that the repair after a delete follows (deleteConsumer), and the
 	// record a registration wrote is gone to the repair after that registration only where such
 	// a delete ran after that write (confirmRegistered). The fence ends on it by logging what
 	// stands rather than on the line that leaves the filter to the next heartbeat, since this

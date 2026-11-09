@@ -88,7 +88,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **TypeScript** on **Bun** runtime — the version `.bun-version` pins.
   Every job installs it through `.github/actions/setup-bun`, and `packages/daemon/docker/worker.Dockerfile`'s `ARG BUN_VERSION` default must equal it, since no build passes `--build-arg` and its notices stage fetches Bun's licence at that version.
-  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves.
+  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves, with the three `bun-*` rows of `.github/ci-tools.yaml` moving in that second commit beside `.bun-version`.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
 - **bun.lock** — `ci.yaml`'s `lint` job holds the step `Check bun.lock agrees with the workspace manifests`, which runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
@@ -133,6 +133,18 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
+
+- **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
+  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own.
+  `.github/scripts/ci-tools.sh` is the one fetch helper every install goes through: it tries the primary, then the second source, and leaves only bytes of the row's digest behind.
+  A transport failure of the primary sends it to the second source and a digest mismatch does not, because a checksum mismatch is a supply-chain signal rather than an outage, and every exit names the source that served the bytes.
+  Bun's second source is the npm package upstream publishes the same binary in, which needs no copy; crane, changie, mise and jj take a copy in the same package the images live in, addressed by the digest the install checks.
+  `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
+  A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
+  `.github/scripts/check-ci-tools.sh` is the gate, a step of `lint`: it holds each row to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile), refuses a release-asset URL under `.github/actions` or `.github/workflows` of a repository a row already covers, or of `oven-sh/bun`, and an npm URL under a scope a row names, unless the URL is exactly a row's own, and refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob.
+  It does not see a release asset of a repository no row covers, so a new tool installed from a GitHub release with no row and no second source passes it (dispatch://INFRA-1974).
+  `ci.yaml`'s `tool-fallback` job is the live proof: it faults GitHub's release hosts for a whole job, runs the merge base's four installs as the negative control and the head's four beside them, and drives eight corrupted payloads to read every refusal.
+  Raising a tool is one commit, unlike an image: a call site names a row rather than a digest, so a second row of the same tool has no name a call site can use, and a row that disagrees with its pin installs one version and verifies another, which is what the gate refuses; Bun is the exception that takes two, and its three `bun-*` rows move in the second commit, with `.bun-version`; `tool-fallback` needs `ci-images`, so the copy is filled before `tool-fallback` reads it, and the one window left is a raise merged while the asset is down and the copy is still cold, where the tool has the single source it has today
 
 ## Commands
 
@@ -199,10 +211,19 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Stop the registered daemon of the project that file names
 
-- `legion claims retry --operator-token-file <file> (--claim <token> | --failed)`
+- `legion claims retry --operator-token-file <file> (--claim <token> | --failed) [--fresh-session]`
 
   The operator's: relaunch a failed architect on its session with fresh budgets, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
-  `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused (docs/deployment.md "Moving a project onto tmux")
+  `--claim` reaches a claim an operator stopped as well as a failed one, because `legion claims stop` retires the claim it stops, and starts a phase worker on the task of the phase its issue stands in now;
+  `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session, and it reaches a claim whose agent is registered, ready or idle as well as one that is suspended, failed or retired, with no suspension held over it, a root architect included;
+  `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux")
+
+- `legion claims compact --operator-token-file <file> --claim <token>`
+
+  The recovery to try before a fresh session for a claim whose provider keeps refusing its session: the daemon has Oh My Pi write a text summary of that session and then sends the claim whatever task it owed again, so the session, its workspace and everything the worker knows of its issue stay and only the transcript gets shorter;
+  it reaches a claim whose agent is ready or idle, a root architect included, and refuses a suspended, failed or retired claim naming what starts it again, which is `--fresh-session` for a workflow role and, for the project's own controller claim, the daemon's controller keeper, whose resume an operator's own suspension holds, a claim the daemon records as working, which may be in a turn, a claim whose launch is in flight, a claim whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim a suspension is held over, which that hold may stop rather than give back, a claim left working under a relaunch the daemon's wake pacing parked, a claim left working over a process the daemon's last report of it found gone, which is in no turn at all, and a claim whose role runs on Claude Code, which has no Oh My Pi session;
+  each refusal says what the claim is doing and which operation reaches each state `legion claims list` shows, and names no moment to come back at;
+  a compaction Oh My Pi refused or skipped is printed with its reason rather than failing the command, because the claim is back and whatever task it owed has gone again all the same
 
 - `legion restart <team>`
 
@@ -396,24 +417,26 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   LEGION_E2E_MODEL_ROUTE=box-login instead, on the operator's own Oh My Pi login, where the operator allows it (the profile's agent.db a symlink to the operator's, no credential read;
   the operator's global omp build, refused without the refresh-race fix, in place of .omp-pin; one box-login proof at a time) (scripts/e2e/README.md)
 
-- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 bash scripts/e2e/stage3-devbox-workflow.sh`
+- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage3-devbox-workflow.sh`
 
   Stage 3's devbox-only live proof: real OMP panes drive a scratch Dispatch issue through the Go workflow, the design gate, review rounds, the architect's acceptance, the daemon's merge of the READY head and the close it makes, the production check after the close, restart, held worker, pending status write, and pane credentials against sjawhar/legion-smoke;
   SMOKE_UPSTREAM_NATS is the production Envoy NATS the operator's envoy.json names (`envoy.natsUrls`);
   LEGION_E2E_MODEL_ROUTE=key-file `LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>` instead, for a devbox with no Hawk gateway;
   LEGION_E2E_MODEL_ROUTE=box-login instead, on the operator's own Oh My Pi login, as for Stage 2;
   `STAGE3_PRODUCTION_ENVOY_URL=http://<host>.<tailnet>.ts.net:9020` instead of the default http://127.0.0.1:9020, for a devbox with no standing local port-forward to the production Envoy listener's API;
-  the four `LEGION_E2E_*_APP_*` inputs name another deployment's two role Apps (each App's id and the secrets broker `github-app` secret that mints its tokens), this deployment's own by default, and the live proofs that drive the real Apps (this one, stage3-4b13b-acceptance.sh, claude-backend-tmux.sh, parked-decision-devbox.sh, stage4b-sandbox-tree.sh, and stage4a-sandbox-runtime.sh for the implement App alone) prove each secret's token is its id's App (GraphQL's viewer, then GET /apps/<slug>), with the write permission its role needs, before the run's first write (scripts/e2e/README.md, "lib/github-apps.sh")
+  three of the `LEGION_E2E_*_APP_*` inputs are optional and name another deployment's two role Apps in place of this deployment's own (the two Apps' ids and the secrets broker `github-app` secret that mints the implement App's tokens), while `LEGION_E2E_REVIEW_APP_KEY_COMMAND` is required of every run of the proofs that drive the review App, this deployment's own included, and has no default;
+  it is shell text that prints the review App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment (so it may read their HOME, their own gcloud or kubectl configuration and any variable of their shell), into the run's own 0600 key file, since the daemon never runs it and the review App's `private_key_command` is a `cat` of that file (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`);
+  and the live proofs that drive the real Apps (this one, stage3-4b13b-acceptance.sh, claude-backend-tmux.sh, parked-decision-devbox.sh, stage4b-sandbox-tree.sh, and stage4a-sandbox-runtime.sh for the implement App alone) prove each App's token is its id's App (GraphQL's viewer, then GET /apps/<slug>), with the write permission its role needs, before the run's first write (scripts/e2e/README.md, "lib/github-apps.sh")
 
-- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/claude-backend-tmux.sh`
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/parked-decision-devbox.sh   # the devbox proof that a person's decision on a parked tree reaches the controller, and that its next start walks the parked roots (scripts/e2e/README.md)
+- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-tmux.sh`
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/parked-decision-devbox.sh   # the devbox proof that a person's decision on a parked tree reaches the controller, and that its next start walks the parked roots (scripts/e2e/README.md)
 
   The Claude Code backend's devbox-only live proof:
   an implementer `worker_backends` puts on claude registers its transcript, completes its phase through the `legion` MCP tool's handoff_complete with its handoff recorded on the Dispatch issue, and resumes the same Claude Code session after its pane is killed;
   LEGION_E2E_MODEL_ROUTE=key-file `LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>` instead, for a devbox with no Hawk gateway, where that one key file serves the Claude Code pane too;
   with `LEGION_E2E_MODEL_BASE_URL=<gateway base URL>` as well, the key file holds a gateway key and both the Claude Code pane and (under key-file) the Oh My Pi agents call that Anthropic-compatible gateway, so no Anthropic key is needed (scripts/e2e/README.md)
 
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_CLAUDE_MODEL=<model id> LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_SESSION_DB_PORT=<port> bash scripts/e2e/claude-backend-sandbox.sh`
+- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_CLAUDE_MODEL=<model id> LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-sandbox.sh`
 
   The same backend's devbox-only live proof under the Kubernetes runtime:
   the implementer runs `legion claude-bridge -- claude -p …` in its issue pod on the Claude Code its generation's start script installed from the worker image's pin (the image carries the pin and no Claude Code), resumes its own transcript in a replacement pod that installs its own copy, and is reminded when a turn ends with its phase open;
@@ -428,7 +451,7 @@ LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic 
   this is the aws-private-ip/gateway shape
   — LEGION_E2E_PLATFORM=gke-autopilot LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernetes-service-account LEGION_E2E_POD_REACHABILITY=bridge LEGION_E2E_MODEL_ROUTE=key-file (no LEGION_E2E_MODEL_GATEWAY_URL/AUDIENCE) proves the same runtime against a cluster whose pods cannot reach the devbox at all (scripts/e2e/README.md)
 
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> bash scripts/e2e/stage4b-sandbox-tree.sh`
+- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage4b-sandbox-tree.sh`
 
   Stage 4b's live proof, devbox only: the Go daemon drives three real issue trees on the Agent Sandbox runtime in the production cluster (namespace legion), against production Dispatch (project LEGSMOKE), Envoy and NATS, with real agents, every pod keeping its Oh My Pi session in a scratch Postgres of the run's own at `LEGION_E2E_SESSION_DB_PORT` (required, no default:
   the lane's third port) — admission under the cap, specs, the daemon bound to every interface with every pod dialing its advertise_host, issue independence (a root and two of its children at once, each pod on a disk of its own with no affinity, none able to read another's workspace) and a done child's release of its Sandbox, its pod and the disk that pod owned, while its parent runs, the repository-configuration fixture, the whole workflow to done with the review pair and a review round no review decides until the architect asks, then a changes-requested round whose approval does not wait for its thread to resolve, and a READY with every thread resolved, CI going red mid-test starting the implementer at once while the tester's turn, its background job and its session run on untouched, with the tester told on its own role topic that its phase ended, every worker's phase completion answered in the live session it keeps in its first pod until its issue closes, a finished role answering while another phase runs, token rotation, kill and fence, a daemon restart mid-tree relaunching nothing, a restart with only `envoy_url` respelled relaunching every role in its own issue pod and one with the worker stream and API moved replacing every issue pod, the operator's controller, a worker that dies with its task outstanding, a merge that leaves the root open while two children of its tree still run, told to its architect once and closing the root on the last of their parks, each park taking the child's Sandbox, pod and disk, the close suspending every role and taking each pod with its disk, node release, linger close, a re-admission that comes back on a pod and disk of its own with no lost-volume line anywhere in the daemon's log, every pod's shape and reservation, the pod watch, and an audit that the run wrote nothing outside LEGSMOKE;
@@ -533,7 +556,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - Legion OMP plugin — `packages/pi-legion/`
 
-  `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`/`set_status`), the task agents and the Legion skills;
+  `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`, `set_status`, `compact` and `fresh_session`), the task agents and the Legion skills;
   its daemon client, claim boot and phase ops are `@legion/pi-shared`'s.
   See `packages/pi-legion/AGENTS.md`
 
@@ -951,9 +974,9 @@ A close of an item of the wait — a tree question, or an approval request of th
 — moves the wait to what is still with the person, and ends it only when nothing is;
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
-An answered root goes to the front of the waiting line, among the issues whose work came back and ahead of every issue whose first phase has yet to start, oldest answer first, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
+An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
 the resume starts no phase worker, so a root whose design gate has already opened holds no slot and resumes at once however full the cap is, while one whose gate has never opened — its architect still writing the spec, which is work the cap counts — resumes at the next free slot;
-a phase that resume then starts waits for a slot of its own, at the front of the line;
+a phase that resume then starts waits for a slot of its own, the root's own first phase among the issues whose work came back, oldest first, by the moment its design gate opened, and a released child of it behind them, by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.

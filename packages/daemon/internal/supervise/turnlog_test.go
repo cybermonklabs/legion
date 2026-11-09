@@ -167,4 +167,33 @@ func TestTheTurnLogLinesAreWrittenOnEveryPathIntoATurn(t *testing.T) {
 			t.Fatalf("the repaired line carries store %v (present %v), want PutClaim", store, ok)
 		}
 	})
+
+	// A turn Oh My Pi starts under a compaction is no path into working — the claim is already
+	// working for the compaction — but it is a turn all the same, and it writes the pair an
+	// operator counts: the start where the compaction records the turn (turnStartedWhileBusy)
+	// and the end where that turn ends (turnEnded). An end with no start before it says the
+	// daemon never saw the turn begin, and the daemon saw this one.
+	t.Run("a turn that runs under a compaction", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		release := h.conn.HoldCompact()
+		compacted := make(chan error, 1)
+		go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+		waitForCompacting(t, h)
+
+		h.must(StreamTurnStart{Claim: testToken})
+		h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+		release()
+		if err := <-compacted; err != nil {
+			t.Fatalf("compact: %v", err)
+		}
+		h.m.Wait()
+		if starts, ends := h.records.of(startedLine), h.records.of(endedLine); len(starts) != len(ends) {
+			t.Fatalf("the turn under the compaction wrote %d start lines and %d end lines, want them paired",
+				len(starts), len(ends))
+		}
+		wantTurnLine(t, h, startedLine, h.generation(), "")
+		wantTurnLine(t, h, endedLine, h.generation(), "")
+	})
 }
