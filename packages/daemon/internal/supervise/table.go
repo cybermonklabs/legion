@@ -774,6 +774,16 @@ func RunsNothingStates() []ClaimState {
 	return slices.Clone(runsNothing)
 }
 
+// TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
+// the table's own onCompact rows rather than from a second list of them: the api's refusals
+// name the states a compaction reaches, and this is what their test holds those words to
+// (api's compactOp, the onCompact rows below). An ignore is no take, so a state the table
+// names a reason for reads false here, as does a state the table does not cover at all.
+func TakesCompaction(state ClaimState) bool {
+	r, ok := table[key{state, onCompact}]
+	return ok && r.act != nil
+}
+
 const (
 	noProcess     = "no process of this claim is running"
 	noSend        = "no prompt is sent in this state"

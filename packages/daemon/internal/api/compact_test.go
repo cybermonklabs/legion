@@ -309,7 +309,7 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
-				heldSuspensionRefusal(token, freshSessionName, "a compaction"))
+				heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
 			if asked := conn.Compactions(); len(asked) != 0 {
 				t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
 			}
@@ -445,7 +445,7 @@ func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
-		heldSuspensionRefusal(token, freshSessionName, "a compaction"))
+		heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
 	if err := m.StartedBy(h.ctx, 42); err != nil {
 		t.Fatalf("the start run against the held claim: %v", err)
 	}

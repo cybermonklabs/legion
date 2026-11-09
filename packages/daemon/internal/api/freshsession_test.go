@@ -631,7 +631,7 @@ func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
-				heldSuspensionRefusal(token, freshSessionName, "a fresh session"))
+				heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
 				t.Errorf("the refused claim is %s holding %v, want the ready claim with the operator's own hold, still waiting on its retry",

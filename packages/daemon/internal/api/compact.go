@@ -83,12 +83,16 @@ const compactInstructions = "Write the summary as text. " +
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors
 // give: the role `controller` the controller's door may not name (claimCompact), the claim
 // whose turn a compaction would abort, and the states a compaction does reach (refuseState).
-// The type is the two recoveries' own (controllerOp, freshsession.go).
+// Those states are the two the machine itself takes a compaction in, which is all a compaction
+// reaches live, so reaches and liveStates name the same pair here where the fresh session's
+// differ (supervise.TakesCompaction, controllerOp). The type is the two recoveries' own
+// (controllerOp, freshsession.go).
 var compactOp = controllerOp{
 	name:             "a compaction",
 	notTheController: "the controller does not compact its own session",
 	cutsTheTurn:      "a compaction would abort that turn",
 	reaches:          "A compaction reaches a claim whose agent is ready or idle",
+	liveStates:       "ready or idle",
 }
 
 // claimCompact is the controller's door onto the compaction (compact). The effect is the

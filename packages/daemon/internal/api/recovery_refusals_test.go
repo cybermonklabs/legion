@@ -28,10 +28,14 @@ import (
 // hold or relaunch will bring (api's askAgainLater). The states are the sets the two
 // operations act on, in the words `legion claims list` prints them (api's agentRunning,
 // startsAgain, supervise's onCompact rows). The words below are spelled here rather
-// than read off the routes, so a route that changes one of them fails a test.
+// than read off the routes, so a route that changes one of them fails a test. That a route's
+// words are the states its predicates admit is a different question, and a copy like this one
+// cannot answer it: the predicates decide it in reachstates_test.go.
 const (
 	wantCompactionReaches   = "A compaction reaches a claim whose agent is ready or idle"
+	wantCompactionLive      = "ready or idle"
 	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is registered, ready or idle, and one that is suspended, failed or retired"
+	wantFreshSessionLive    = "registered, ready or idle"
 	wantAskAgainLater       = "Ask again later; `read_state` (`legion claims list`) shows its state"
 )
 
@@ -629,12 +633,20 @@ func heldSuspensionCases() []heldSuspensionCase {
 // with the asking operation's own name in it and the door that reaches each state the caller
 // can read of the claim: what starts a suspended, failed or retired claim is the claim's
 // role's — the fresh session for a workflow role, and the daemon's controller keeper for the
-// project's own controller — and the asking operation is what reaches a ready or idle one, the
-// two states both operations reach (api's refuseHeldSuspension, startsAgainName, controllerOp).
-func heldSuspensionRefusal(token claim.Token, startsAgain, operation string) string {
+// project's own controller — and the asking operation is what reaches a live one, in the
+// states that operation's own set holds (api's refuseHeldSuspension, startsAgainName,
+// controllerOp.liveStates).
+//
+// The second sentence is of the claims nothing is held over, because the claim in hand is
+// held: a hold over a ready agent is reached by neither door while it stands, and a sentence
+// that said the asking operation reaches this claim while it is ready would deny the one
+// before it. What the words themselves have to be is checked from the predicates rather than
+// from this copy of them (TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates).
+func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates string) string {
 	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim a " +
-		"suspension waits over. " + startsAgain + " reaches " + string(token) + " while it is suspended, " +
-		"failed or retired, and " + operation + " reaches it while it is ready or idle. " + wantAskAgainLater
+		"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+		startsAgain + " reaches those that are suspended, failed or retired, and " + operation +
+		" reaches those whose agent is " + liveStates + ". " + wantAskAgainLater
 }
 
 // A suspension held over the claim is read ahead of every other window the claim can be in,
@@ -642,10 +654,11 @@ func heldSuspensionRefusal(token claim.Token, startsAgain, operation string) str
 // or a launch's: neither "ask again once it is running" nor "ask again after the turn ends"
 // names a wait that comes for it. The refusal names no end of the hold either, since the end
 // itself differs: an operator's hold lands as a suspension, and a start the daemon runs
-// against the claim drops the daemon's own and leaves it running. It names the two operations
-// by the state each reaches instead, and both recoveries say so of every row (api's
-// refuseHeldSuspension). The code each row takes is the claim's own, so the answer a state was
-// refused with before either door read the hold is the answer it is refused with now.
+// against the claim drops the daemon's own and leaves it running. It names the states each
+// operation reaches instead, of the claims nothing is held over, and both recoveries say so
+// of every row (api's refuseHeldSuspension). The code each row takes is the claim's own, so
+// the answer a state was refused with before either door read the hold is the answer it is
+// refused with now.
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
@@ -656,7 +669,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, freshSessionName, "a compaction"))
+					heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
 			})
 		}
 		for _, door := range freshSessionDoors() {
@@ -667,7 +680,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, freshSessionName, "a fresh session"))
+					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
 				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 				}
@@ -704,7 +717,7 @@ func TestACompactionRefusedUnderAHeldSuspensionOverTheControllerNamesItsKeeper(t
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
 	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
-		heldSuspensionRefusal(token, controllerKeeperName, "a compaction"))
+		heldSuspensionRefusal(token, controllerKeeperName, "a compaction", wantCompactionLive))
 }
 
 // suspensionHeldOverAReadyAgent is the one held claim the machine's own take reaches: the

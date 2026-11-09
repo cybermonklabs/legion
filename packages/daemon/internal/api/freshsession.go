@@ -82,27 +82,38 @@ const freshSessionReason = "a fresh session was asked for"
 // to the project's own controller (controllerClaim), cutsTheTurn is what the refusal of a
 // claim stored working says the operation would do to a turn of that claim that is running
 // (refuseInATurn), and reaches is the states the operation does reach, which every refusal of a
-// claim's state that ends in askAgainLater gives as a sentence of its own, bar the held
-// suspension's, which names both doors' states in its own words (refuseHeldSuspension): it is
-// the one thing a refused caller can act on, since the claim's state is published and this
-// says which door that state belongs to (askAgainLater).
+// claim's state that ends in askAgainLater gives as a sentence of its own: it is the one thing
+// a refused caller can act on, since the claim's state is published and this says which door
+// that state belongs to (askAgainLater).
+//
+// liveStates is the live half of reaches on its own — the states the operation acts on in a
+// claim that runs an agent — for the one refusal that writes its own sentence around it, the
+// held suspension's (refuseHeldSuspension). The two operations take different sets there, so
+// each door carries its own: a registered agent is one the fresh session suspends and the
+// compaction has no session to ask yet (agentRunning, supervise's onCompact rows), and a
+// sentence that named one set for both doors would be short by `registered` at one of them.
+// TestEachDoorNamesTheStatesItsOwnPredicatesReach holds both fields to the predicates that
+// decide them.
 type controllerOp struct {
 	name             string
 	notTheController string
 	cutsTheTurn      string
 	reaches          string
+	liveStates       string
 }
 
 // freshSessionOp is the fresh session in the words its own refusals name it by, which both of
 // its doors give; the compaction's own is compact.go's (compactOp). The states reaches names are
 // the two sets the operation acts on, in the words `legion claims list` prints them: the agent
 // it suspends first (agentRunning), a registered one among them, and the stopped claim it starts
-// where it stands (startsAgain), which is retired where an operator stopped it.
+// where it stands (startsAgain), which is retired where an operator stopped it. liveStates is
+// the first of those two sets alone (agentRunning).
 var freshSessionOp = controllerOp{
 	name:             "a fresh session",
 	notTheController: "its own claim takes no fresh session",
 	cutsTheTurn:      "a fresh session would cut that turn off",
 	reaches:          "A fresh session reaches a claim whose agent is registered, ready or idle, and one that is suspended, failed or retired",
+	liveStates:       "registered, ready or idle",
 }
 
 // controllerTarget is the claim a controller's recovery named, read and authenticated: the
@@ -442,14 +453,19 @@ func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp
 // suspended, failed or retired claim is the claim's role's (startsAgain, startsAgainName): the
 // fresh session for a workflow role, and the daemon's controller keeper for the project's own
 // controller, which only this operation's compaction reaches, since the fresh session refuses
-// the controller at its door. The asking operation is what reaches a ready or idle claim, so
-// the refusal names both (controllerOp).
+// the controller at its door. The live states are the asking operation's own, so the refusal
+// names each door's set rather than the pair both share: the fresh session's names the
+// registered agent it suspends, and the compaction's does not, since the machine takes a
+// compaction in two states and the fresh session suspends three (controllerOp.liveStates,
+// agentRunning, supervise's onCompact rows).
 //
-// Those two states are what both operations reach, and the sentence names no more, because one
-// sentence serves both doors: the fresh session reaches a registered agent as well
-// (agentRunning), and naming the fresh session here would name it in a controller's refusal
-// too, where it reaches nothing at all (freshSession's NOT_THE_CONTROLLER). The claim's own
-// refusal of a registered state is where that state is named (freshSessionOp.reaches).
+// The second sentence is of the claims nothing is held over, and that scope is what keeps it
+// from denying the first. A hold stands over a ready claim whose stop the runtime refused, and
+// that claim is ready and held at once: "a compaction reaches it while it is ready", said of
+// the claim in hand, would contradict the refusal it is written in. Both sentences are present
+// fact — the hold is over this claim now, and each operation takes the states it takes now —
+// and neither says the hold will end or what state would follow it, which is the machine's and
+// no part of this answer (askAgainLater).
 //
 // The code follows the claim rather than the hold, so no caller's answer changes for a state
 // that was refused before this refusal read the hold at all: a claim stored working takes the
@@ -463,8 +479,8 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 		code = claimInATurn
 	}
 	writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
-		"%s has a suspension held over it, and %s reaches no claim a suspension waits over. %s reaches %s while it is suspended, failed or retired, and %s reaches it while it is ready or idle. %s",
-		token, op.name, startsAgainName(role), token, op.name, askAgainLater))
+		"%s has a suspension held over it, and %s reaches no claim a suspension waits over, whatever state it is in. Of the claims with no suspension held over them, %s reaches those that are suspended, failed or retired, and %s reaches those whose agent is %s. %s",
+		token, op.name, startsAgainName(role), op.name, op.liveStates, askAgainLater))
 	return false
 }
 
