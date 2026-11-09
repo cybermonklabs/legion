@@ -199,11 +199,9 @@ included, and its promotion there gives the same architect
 session a task naming what answered it and what is still with you: at once, taking no slot, once
 the root's design gate has opened, and at the next free
 slot while its architect is still writing the first spec. While it waits for that slot,
-`waitingLine` on the issue gives its place in the line and the line's length, and its architect,
-while its session is live and holds its Envoy role, is sent one `waiting-for-slot` notice saying
-where the root stands and that the daemon starts the architect again by itself; neither is
-anything for you to act on, and a root whose architect the daemon released while it waited carries
-the place with no notice beside it. An
+`waitingLine` on the issue gives its place in the line and the line's length. The daemon sends
+its architect nothing about that wait and starts the root again by itself at the next free slot,
+so neither the place nor the wait is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the
 wait began is one the architect already read. Taking the label off, or a person or an outside session
 claiming the root on Dispatch, takes it out of the workflow instead: Legion never resumes work

@@ -176,12 +176,10 @@ Dispatch shows the request back on your turn. While the root waits on a question
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. An approval that opens the last gated step leaves your resume waiting for no slot at
 all: it comes back however full the cap is. Where your root's gate has never opened, the resume
-needs a slot, and while it waits for one you get one `waiting-for-slot` notice saying what
-answered the wait, where your root stands in the admission line then and that the daemon starts
-you again by itself, and your record's `waitingLine` gives the live place and the line's length;
-act on neither.
-You get the notice only while this session holds its Envoy role: a session whose pod the daemon
-released while the root waited is told nothing, and its resume task says what answered the wait.
+needs a slot, and while it waits for one nothing is sent to you: your record's `waitingLine`
+gives the live place in the line and the line's length, your resume task says what answered the
+wait, and you act on neither, because the daemon starts you again by itself at the next free
+slot.
 Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a

@@ -561,8 +561,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
 	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
-	// account of the tree, a waiting-for-slot the wait it was written for, the three spec
-	// decisions the person who decided and the reference, and no other kind carries any of those.
+	// account of the tree, the three spec decisions the person who decided and the reference,
+	// and no other kind carries either of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
 	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
 	//
@@ -607,8 +607,6 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
-		{Kind: "waiting-for-slot", Role: claim.RoleArchitect, Reason: "a person answered the root's ask, and the admission cap has no free slot now",
-			WaitingForSlot: &WaitingForSlot{AnsweredAt: answered}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

@@ -198,12 +198,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// the registration tells it nothing again. Releasing a refused READY changes nothing that
 	// already moved. A root waiting on a person is told by its resume, which says how its spec
 	// stands (answerOpenGates), so it gets no notice now as well. This path writes nothing about a
-	// slot: whether that resume waits for one is admit's slotFor over record.TreeGate.EverOpened,
-	// and where it waits the `waiting-for-slot` notice is admit's tellWaitingForSlot and the
-	// `waitingLine` on its state is the projection's (api.WaitingLineView). An architect reads the
-	// rule in skills/legion-architect/references/acceptance.md and references/design-gate.md. The
-	// members the opening releases are started by admission's own pass over this same fact, which
-	// gives each the slot its first phase needs (record.Waiting's LineFirstPhase).
+	// slot: a root keeps the row it was started with through its whole wait (record.KeepsSlot),
+	// so its resume takes no new one (admit's slotFor), and where it stands in the line is the
+	// `waitingLine` on its own state, which the projection writes (api.WaitingLineView). An
+	// architect reads the rule in skills/legion-architect/references/acceptance.md and
+	// references/design-gate.md. The members the opening releases are started by admission's own
+	// pass over this same fact, which gives each the slot its first phase needs (record.Waiting's
+	// LineFirstPhase).
 	switch {
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
@@ -229,13 +230,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // generation is told the request again, as its architect was not.
 //
 // The notice is work the daemon hands the running architect, so it is a handout whatever slot the
-// root holds: the cap counts the issues at work, and a root whose gate has opened once holds none
-// of its own while its architect revises the spec (record.AtWork). What that architect handed back
-// at or before the review is part of the spec it is now asked to revise, and only a hand-back
-// after the review starts the next wait (record.Store.TakeInThrough). A hand-back newer than the
-// review, applied first, still stands. A review with no sequence cannot be placed, so it takes in
-// everything the record holds (record.Store.StartHandout), as the notice did before hand-backs
-// were placed.
+// root holds: the cap counts the issues the daemon has started, and a root whose gate has opened
+// once keeps the row it was started with while its architect revises the spec
+// (record.KeepsSlot). What that architect handed back at or before the review is part of the
+// spec it is now asked to revise, and only a hand-back after the review starts the next wait
+// (record.Store.TakeInThrough). A hand-back newer than the review, applied first, still stands.
+// A review with no sequence cannot be placed, so it takes in everything the record holds
+// (record.Store.StartHandout), as the notice did before hand-backs were placed.
 //
 // With notify false the review is marked processed and nothing is sent: a root waiting on a person
 // has the review named by the task that resumes it, and the mark keeps a redelivery after that
@@ -883,10 +884,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		}
 		// A root waiting on a person is told the opening by its resume (answerAwaitedGate,
 		// answerOpenGates), which says how its spec stands: a notice as well would say it twice.
-		// This opening writes nothing about a slot: whether that resume waits for one is admit's
-		// slotFor over record.TreeGate.EverOpened, and where it waits the `waiting-for-slot` notice
-		// is admit's tellWaitingForSlot and the `waitingLine` on its state is the projection's
-		// (api.WaitingLineView). An architect reads the rule in
+		// This opening writes nothing about a slot: a root keeps the row it was started with
+		// through its whole wait (record.KeepsSlot), so its resume takes no new one (admit's
+		// slotFor), and where it stands in the line is the `waitingLine` on its own state,
+		// which the projection writes (api.WaitingLineView). An architect reads the rule in
 		// skills/legion-architect/references/acceptance.md and references/design-gate.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).

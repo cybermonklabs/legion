@@ -318,10 +318,9 @@ approval on a deployment that gates no step, or when the last gated step was tak
 among the issues whose work came back, oldest first, and resumes itself there: at once, holding
 no slot, once its design gate has opened at every gated step, and at the next free slot while its
 architect is still writing the first design. While it waits for that slot, `waitingLine` on the
-issue gives its place in the line and the line's length, and its architect, while its session is
-live and holds its Envoy role, is sent one `waiting-for-slot` notice saying where the root stands
-and that the daemon starts it again by itself; neither is anything to act on, and a root whose
-architect the daemon released while it waited carries the place with no notice beside it.
+issue gives its place in the line and the line's length. Nothing is sent to its architect about
+the wait, and the daemon starts the root again by itself at the next free slot, so neither the
+place nor the wait is anything to act on.
 Do not park it or
 start it by hand. Without `answeredAt`, check, in order:
 
