@@ -197,9 +197,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// The gate of this document was already open at this version: the architect was told then, so
 	// the registration tells it nothing again. Releasing a refused READY changes nothing that
 	// already moved. A root waiting on a person is told by its resume, which says how its spec
-	// stands (answerOpenGates), so it gets no notice now as well. The members the opening
-	// releases are started by admission's own pass over this same fact, which gives each the slot
-	// its first phase needs (record.Waiting's LineFirstPhase).
+	// stands (answerOpenGates), so it gets no notice now as well. This path writes nothing about a
+	// slot: whether that resume waits for one is admit's slotFor over record.TreeGate.EverOpened,
+	// and where it waits the `waiting-for-slot` notice is admit's tellWaitingForSlot and the
+	// `waitingLine` on its state is the projection's (api.WaitingLineView). An architect reads the
+	// rule in skills/legion-architect/references/acceptance.md and references/design-gate.md. The
+	// members the opening releases are started by admission's own pass over this same fact, which
+	// gives each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
@@ -879,6 +883,11 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		}
 		// A root waiting on a person is told the opening by its resume (answerAwaitedGate,
 		// answerOpenGates), which says how its spec stands: a notice as well would say it twice.
+		// This opening writes nothing about a slot: whether that resume waits for one is admit's
+		// slotFor over record.TreeGate.EverOpened, and where it waits the `waiting-for-slot` notice
+		// is admit's tellWaitingForSlot and the `waitingLine` on its state is the projection's
+		// (api.WaitingLineView). An architect reads the rule in
+		// skills/legion-architect/references/acceptance.md and references/design-gate.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()

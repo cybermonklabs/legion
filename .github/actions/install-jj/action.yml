@@ -1,17 +1,28 @@
 name: Install jj
 description: >-
   Installs the jj the worker image ships, the fork pinned by `ARG JJ_TOOL` in
-  packages/daemon/docker/worker.Dockerfile, with the mise that file pins, as the image does: the
-  binary itself at ~/.local/bin/jj, never a mise shim. Provisioning's tests give jj a fresh
-  XDG_CONFIG_HOME, as a pod's init container has, and a shim looks its version up in the mise
+  packages/daemon/docker/worker.Dockerfile, with the mise .github/ci-tools.yaml pins, as the image
+  does: the binary itself at ~/.local/bin/jj, never a mise shim. Provisioning's tests give jj a
+  fresh XDG_CONFIG_HOME, as a pod's init container has, and a shim looks its version up in the mise
   configuration under it ("No version is set for shim: jj"). mise stays at ~/.local/bin/mise, on
-  PATH for later steps. Needs the repository checked out.
+  PATH for later steps. Needs the repository checked out, and an x86_64 runner: those are the
+  builds .github/ci-tools.yaml holds a row for.
 
-  mise itself installs from its GitHub release tarball, checked against the `ARG MISE_SHA256` the
-  Dockerfile pins next to `ARG MISE_VERSION` before anything extracts or runs it — not mise.run's
-  `curl | sh`, which runs the installer unverified. That step reads no token. Bumping mise is one
-  edit, in the Dockerfile: both this action and the worker image's own `tools` stage read the same
-  pair.
+  mise itself comes through .github/scripts/ci-tools.sh, so this action names no URL and no digest
+  of its own: the `mise` row of .github/ci-tools.yaml holds both, and .github/scripts/check-ci-tools.sh
+  holds that row's digest to the `ARG MISE_SHA256` the Dockerfile pins, so both this action and the
+  worker image's own `tools` stage install the one mise. That step reads no token.
+
+  The jj binary's own sha256 is checked against the `jj` row of .github/ci-tools.yaml whichever
+  path installed it, so a jj that mise fetched from the GitHub release asset is held to the same
+  literal as one the second source served. That second source is a copy of the binary itself in
+  the package .github/ci-tools.yaml names, read when mise cannot reach the release asset.
+  Both source words come from that row too, through `ci_tools_source_name`, so this action writes
+  none of its own and a row that moves to another second source moves every line that names it.
+
+  A refusal leaves no tool behind: the check runs on the binary where mise or the second source
+  put it, and ~/.local/bin/jj — which is on PATH for every later step of the job — is written
+  only after it passes.
 runs:
   using: composite
   steps:
@@ -19,21 +30,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        dockerfile=packages/daemon/docker/worker.Dockerfile
-        mise_version=$(sed -n 's/^ARG MISE_VERSION=//p' "$dockerfile")
-        mise_sha256=$(sed -n 's/^ARG MISE_SHA256=//p' "$dockerfile")
-        if [ -z "$mise_version" ] || [ -z "$mise_sha256" ]; then
-          echo "$dockerfile names no ARG MISE_VERSION or ARG MISE_SHA256" >&2
+        machine=$(uname -m)
+        if [ "$machine" != x86_64 ]; then
+          echo "this action installs the x86_64 build alone, and .github/ci-tools.yaml holds no row for a $machine runner" >&2
           exit 1
         fi
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
         dir="$RUNNER_TEMP/mise-install"
         mkdir -p "$dir"
-        archive="mise-${mise_version}-linux-x64.tar.gz"
-        curl -fsSLo "$dir/$archive" \
-          "https://github.com/jdx/mise/releases/download/${mise_version}/${archive}"
-        printf '%s  %s\n' "$mise_sha256" "$dir/$archive" > "$dir/SHA256SUMS"
-        sha256sum --check --strict "$dir/SHA256SUMS"
-        tar -xzf "$dir/$archive" -C "$dir"
+        archive="$dir/$(basename "$(ci_tools_field mise primary)")"
+        ci_tools_fetch mise "$archive"
+        tar -xzf "$archive" -C "$dir"
         mkdir -p "$HOME/.local/bin"
         install -m 0755 "$dir/mise/bin/mise" "$HOME/.local/bin/mise"
         rm -rf "$dir"
@@ -46,12 +54,35 @@ runs:
         MISE_GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
         dockerfile=packages/daemon/docker/worker.Dockerfile
         jj_tool=$(sed -n 's/^ARG JJ_TOOL=//p' "$dockerfile")
         if [ -z "$jj_tool" ]; then
           echo "$dockerfile names no ARG JJ_TOOL" >&2
           exit 1
         fi
-        install -m 0755 "$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')" "$HOME/.local/bin/jj"
+        if "$HOME/.local/bin/mise" install "$jj_tool"; then
+          # mise fetched the bytes from the GitHub release asset, so that is the source named.
+          source=$(ci_tools_source_name jj primary)
+          # The binary is held to the row where mise put it, and copied to ~/.local/bin/jj only
+          # after that passes. ~/.local/bin is on $GITHUB_PATH from the step above, so a binary
+          # written there before the check is one a later step of this job runs whatever this
+          # step then exits with.
+          installed=$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')
+          echo "mise installed $jj_tool at $installed"
+          ci_tools_verify jj "$installed" "$source"
+          install -m 0755 "$installed" "$HOME/.local/bin/jj"
+        else
+          echo "mise did not install $jj_tool; reading the second source .github/ci-tools.yaml names"
+          source=$(ci_tools_source_name jj second)
+          # ci_tools_fetch_fallback verified the digest before it put the bytes at this path and
+          # leaves nothing there when it refuses, so this check reads what that fetch allowed and
+          # the copy to ~/.local/bin/jj again happens only after it passes.
+          ci_tools_fetch_fallback jj "$RUNNER_TEMP/jj"
+          ci_tools_verify jj "$RUNNER_TEMP/jj" "$source"
+          install -m 0755 "$RUNNER_TEMP/jj" "$HOME/.local/bin/jj"
+          rm -f "$RUNNER_TEMP/jj"
+        fi
         echo "$jj_tool: $HOME/.local/bin/jj"
         "$HOME/.local/bin/jj" --version

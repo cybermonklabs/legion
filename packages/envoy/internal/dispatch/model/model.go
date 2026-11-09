@@ -230,7 +230,10 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 
 // AnchorInput selects document text by quote or identifies a browser-owned mark.
 type AnchorInput struct {
-	Artifact   string  `json:"artifact"`
+	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
+	// api.resolveAnchor). The tag is read by the OpenAPI emitter, which requires a field of a
+	// request body only where the handler refuses a body without it (api/openapi.go).
+	Artifact   string  `json:"artifact" required:"true"`
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
@@ -513,7 +516,9 @@ type IssueSummaryPage struct {
 // An issue owner carries Key, Title and Status; a document owner carries Project, Slug,
 // ArtifactID and Name.
 type SearchOwner struct {
-	Kind       string `json:"kind"`
+	// Kind is "issue" or "document": scanSearchRows reads the column the search query writes as
+	// `case when r.owner_artifact_id is null then 'issue' else 'document' end` (search.go).
+	Kind       string `json:"kind" enum:"issue,document"`
 	Key        string `json:"key,omitempty"`
 	Title      string `json:"title,omitempty"`
 	Status     string `json:"status,omitempty"`
@@ -543,7 +548,9 @@ type SearchIssue struct {
 // document settlement retracted while it was answered, and nil when nobody answered.
 // Answer.Selected is an empty list, never null, when the answer chose no option.
 type SearchAsk struct {
-	State      string         `json:"state"` // "open" | "answered" | "resolved"
+	// State is "open", "answered" or "resolved": it is the asks row's own state, which
+	// asks_state_check holds to those three (migration 0007_ask_resolution).
+	State      string         `json:"state" enum:"open,answered,resolved"`
 	Answer     *AskAnswer     `json:"answer,omitempty"`
 	Resolution *AskResolution `json:"resolution,omitempty"`
 }
@@ -2509,7 +2516,10 @@ type EditPreconditionMismatch struct {
 
 // EditOp is one agent document editing operation.
 type EditOp struct {
-	Op         string          `json:"op"`
+	// Op is required: an operation naming no op is refused (400 INVALID_OP, the default arm of
+	// the switch docs.applyOperation ends on), as every request body's field the OpenAPI
+	// emitter requires is (api/openapi.go).
+	Op         string          `json:"op" required:"true"`
 	Find       string          `json:"find,omitempty"`
 	With       string          `json:"with,omitempty"`
 	Occurrence *int            `json:"occurrence,omitempty"`

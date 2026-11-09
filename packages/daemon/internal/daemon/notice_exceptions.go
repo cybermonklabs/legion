@@ -411,7 +411,7 @@ func (r *outbox) issueTree(ctx context.Context, issue string) (root string, ling
 // nobody claimed, so the superseded one's decisions are its own to hand over rather than leave
 // with its row (the outbox's notice, workflow.HandOverKept).
 func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *record.Issue) bool {
-	if claimTookRole(held.State) && held.Generation > catchUp.Launch {
+	if supervise.TookRole(held.State) && held.Generation > catchUp.Launch {
 		return true
 	}
 	return root != nil && root.Generation > catchUp.Generation
@@ -421,7 +421,7 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *recor
 // claim as this daemon supervises it (the zero Claim when it does not), resends, the copies of the
 // notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
 // holder) names. A copy is due at once when the architect's agent has taken its role and said it
-// is ready (claimTookRole), and it is the first copy or its report names a session other than the
+// is ready (supervise.TookRole), and it is the first copy or its report names a session other than the
 // one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
 // copy due, and every later notice to the architect would wait behind it. The first covers a
 // relaunch that took its role inside the receipt window; a later copy that failed on another
@@ -432,7 +432,7 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *recor
 // while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
 // keeps the notice for the whole schedule instead of spending its copies in seconds.
 func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
-	if !claimTookRole(held.State) {
+	if !supervise.TookRole(held.State) {
 		return false
 	}
 	return resends == 0 || recipient != "" && recipient != held.Session
