@@ -7,44 +7,27 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
-import type {
-  ArtifactUploadResponse,
-  Issue,
-  Message,
-  SearchResponse,
-  SearchResultsPage,
-} from "../../api/types";
+import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
+import { searchAnswer } from "./search-fixture";
 
 const words = "the sextant rota is nowhere written down";
 
-/** No hit at all, which is what makes the bar offer the words as a new issue. */
-function noHits(): SearchResponse & SearchResultsPage {
-  return { limit: 20, offset: 0, reachable: 0, results: [], took_ms: 1, total: 0 };
-}
-
 /** The search catching up with a press: it now matches the issue that press just made, which
  *  is what the pause's own search does when it lands after the create. */
-function theMadeIssue(): SearchResponse & SearchResultsPage {
-  return {
-    limit: 20,
-    offset: 0,
-    reachable: 1,
-    results: [
-      {
-        href: "/issues/CORE-7",
-        id: "CORE-7",
-        kind: "issue",
-        owner: { key: "CORE-7", kind: "issue", status: "todo", title: words },
-        rank: 1,
-        snippet: words,
-      },
-    ],
-    took_ms: 1,
-    total: 1,
-  };
+function theMadeIssue() {
+  return searchAnswer([
+    {
+      href: "/issues/CORE-7",
+      id: "CORE-7",
+      kind: "issue",
+      owner: { key: "CORE-7", kind: "issue", status: "todo", title: words },
+      rank: 1,
+      snippet: words,
+    },
+  ]);
 }
 
 function issue(key: string): Issue {
@@ -83,7 +66,8 @@ interface Stubs {
 /** The bar over a project page, its search answering nothing, with the deployment's two
  *  settings as given and every write it could make stubbed. */
 function openBar(settings: { label: string; session: string }): Stubs {
-  const search = spyOn(api, "search").mockResolvedValue(noHits());
+  // No hit at all, which is what makes the bar offer the words as a new issue.
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue(settings);
   const createIssue = spyOn(api, "createIssue").mockResolvedValue(issue("CORE-7"));
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(

@@ -13,7 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { Project, SearchOperator, SearchResult, SearchResultKind } from "../../api/types";
+import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
@@ -55,13 +55,19 @@ import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
 import { SEND_TO_AGENT_GROUP_ID, useSendToAgentOffer } from "./SendToAgentOffer";
 import { type SearchBarFilters, searchRequest } from "./search-filters";
-import { groupResults, kindLabel, optionId, stepActive } from "./search-model";
+import {
+  groupResults,
+  kindLabel,
+  optionId,
+  searchOperators,
+  searchResultKind,
+  stepActive,
+} from "./search-model";
 import { useBarScope } from "./useBarScope";
 import { useTieredSearch } from "./useTieredSearch";
 
 const emptyResults: SearchResult[] = [];
 const emptyProjects: Project[] = [];
-const emptyOperators: SearchOperator[] = [];
 const ACTIONS_GROUP_ID = "search-group-actions";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
@@ -223,6 +229,9 @@ function ResultOption({
   const source = segments.map((segment) => segment.text).join("");
   const snippet = searchSnippetMarkdown(source);
   const hits = segments.flatMap((segment) => (segment.mark ? [segment.text] : []));
+  // The route table carries the kind as a plain string; a kind this build has no icon or label
+  // for keeps its own word and draws no icon, rather than borrowing another kind's.
+  const kind = searchResultKind(result.kind);
 
   return (
     <PaletteOption
@@ -236,9 +245,9 @@ function ResultOption({
           muted ? textMutedOnSelectedCard : textSecondaryOnSurface
         }`}
       >
-        <SearchResultIcon kind={result.kind} />
+        {kind === undefined ? null : <SearchResultIcon kind={kind} />}
         <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {kindLabel(result.kind)}
+          {kind === undefined ? result.kind : kindLabel(kind)}
         </span>
         {result.artifact === undefined ? null : (
           <span className="truncate">{result.artifact.name}</span>
@@ -461,7 +470,7 @@ function PaletteDialog({
   // What search made of the words, read from its own answer rather than parsed a second time
   // here, and whether meaning search ran at all. A Dispatch that predates either field answers
   // neither, so the bar marks no operator and says nothing about meaning search.
-  const operators = search.data?.query?.operators ?? emptyOperators;
+  const operators = searchOperators(search.data?.query?.operators);
   const degraded = search.data?.degraded !== undefined;
   const groups = groupResults(results);
   // An action whose label the query starts (every action, while the query is empty) is the one

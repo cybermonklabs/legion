@@ -57,6 +57,16 @@ func (s *server) getNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, s.configuredNewIssue())
 }
 
+// newIssueSettingsInput is POST /api/v1/settings/new-issue/_test's body. It carries the same two
+// fields the read answers and is a type of its own because the two directions cannot share one
+// schema: a request body requires what its fields tag required, a response what Go always
+// writes, and the emitter refuses a Go type reflected as both (routes_shapes.go, openapi.go).
+// Both are required here, since the hook sets the pair and clearing one is sending it empty.
+type newIssueSettingsInput struct {
+	Label   string `json:"label" required:"true"`
+	Session string `json:"session" required:"true"`
+}
+
 // setNewIssueSettings is POST /api/v1/settings/new-issue/_test, {label, session}: from now on
 // this process answers GET /api/v1/settings/new-issue with these two values in place of the ones
 // its environment set, so a browser test can read the bar with a label and a session configured
@@ -67,7 +77,7 @@ func (s *server) setNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input newIssueSettings
+	var input newIssueSettingsInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

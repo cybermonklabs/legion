@@ -14,17 +14,13 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
-import type {
-  IssueReferenceSummary,
-  SearchResponse,
-  SearchResult,
-  SearchResultsPage,
-} from "../../api/types";
+import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
 import { SearchPalette } from "./SearchPalette";
+import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
 
 const results: SearchResult[] = [
@@ -54,18 +50,6 @@ const results: SearchResult[] = [
     snippet: "Discuss the <mark>astrolabe</mark> diagram.",
   },
 ];
-
-/** The server's answer when these hits are every match: one page holding the whole list. */
-function searchAnswer(hits: SearchResult[]): SearchResponse & SearchResultsPage {
-  return {
-    limit: 20,
-    offset: 0,
-    reachable: hits.length,
-    results: hits,
-    took_ms: 1,
-    total: hits.length,
-  };
-}
 
 /** The last argument of every search the bar makes: React Query's own abort signal, which the
  *  bar hands the client so a search it has moved on from is dropped rather than waited for. */

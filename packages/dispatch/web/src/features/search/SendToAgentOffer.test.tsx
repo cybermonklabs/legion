@@ -7,16 +7,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type {
-  IssueClaim,
-  IssueDetails,
-  Message,
-  SearchResponse,
-  SearchResultsPage,
-} from "../../api/types";
+import type { IssueClaim, IssueDetails, Message } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SearchPalette } from "./SearchPalette";
+import { searchAnswer } from "./search-fixture";
 import { handoffBody } from "./send-to-agent";
 
 const words = "find out why the rota is empty and write it up";
@@ -25,24 +20,17 @@ const issueKey = "CORE-7";
 
 /** One hit, so the words answer to something and the new-issue offer is not in the list beside
  *  this one: this row is about the agent, not about what the search found. */
-function oneHit(): SearchResponse & SearchResultsPage {
-  return {
-    limit: 20,
-    offset: 0,
-    reachable: 1,
-    results: [
-      {
-        href: `/issues/${issueKey}`,
-        id: issueKey,
-        kind: "issue",
-        owner: { key: issueKey, kind: "issue", status: "in_progress", title: "The rota" },
-        rank: 1,
-        snippet: "The <mark>rota</mark> is empty.",
-      },
-    ],
-    took_ms: 1,
-    total: 1,
-  };
+function oneHit() {
+  return searchAnswer([
+    {
+      href: `/issues/${issueKey}`,
+      id: issueKey,
+      kind: "issue",
+      owner: { key: issueKey, kind: "issue", status: "in_progress", title: "The rota" },
+      rank: 1,
+      snippet: "The <mark>rota</mark> is empty.",
+    },
+  ]);
 }
 
 const sessionClaim: IssueClaim = {
@@ -64,6 +52,7 @@ function issueDetails(
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
     created_at: "2026-11-07T05:00:00Z",
     created_by: { id: "alice", kind: "user" },
+    decisions_artifact_id: "",
     external_links: [],
     holder_state: holderState,
     key: issueKey,
@@ -73,6 +62,7 @@ function issueDetails(
     number: 7,
     open_asks: [],
     parent: null,
+    plan_artifact_id: "",
     primary_artifact_id: "artifact-1",
     priority: null,
     progress: { children: null, tasks: null },
@@ -89,6 +79,7 @@ function issueDetails(
     takeable_at: null,
     title: "The rota",
     updated_at: "2026-11-07T06:00:00Z",
+    verification_artifact_id: "",
   };
 }
 

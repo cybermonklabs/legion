@@ -60,7 +60,7 @@ export async function sendToAgent(
       bounds
     );
   const message = await press(writes, `“${words}” to the agent on ${issue}`, write);
-  const attempt = message?.deliveries.at(-1);
+  const attempt = message?.deliveries?.at(-1);
   if (attempt === undefined || attempt.state !== "failed") {
     return undefined;
   }
