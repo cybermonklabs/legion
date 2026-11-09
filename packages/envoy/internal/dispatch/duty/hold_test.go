@@ -1,4 +1,4 @@
-package duty
+package duty_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -18,9 +19,9 @@ const holdName = "dispatch-outbox"
 
 // mustTakeHold takes holdName for holder on db and fails the test when it is refused. The hold is
 // released when the test ends.
-func mustTakeHold(t *testing.T, db Holds, holder uuid.UUID, opts HoldOptions) *Hold {
+func mustTakeHold(t *testing.T, db duty.Holds, holder uuid.UUID, opts duty.HoldOptions) *duty.Hold {
 	t.Helper()
-	hold, err := TryHold(context.Background(), db, holdName, holder, opts)
+	hold, err := duty.TryHold(context.Background(), db, holdName, holder, opts)
 	if err != nil {
 		t.Fatalf("take the hold: %v", err)
 	}
@@ -32,7 +33,7 @@ func mustTakeHold(t *testing.T, db Holds, holder uuid.UUID, opts HoldOptions) *H
 }
 
 // holdRow reads holdName's row: its holder, token and expiry, on the database's clock.
-func holdRow(t *testing.T, db Holds) (holder uuid.UUID, token string, expiresAt time.Time) {
+func holdRow(t *testing.T, db duty.Holds) (holder uuid.UUID, token string, expiresAt time.Time) {
 	t.Helper()
 	if err := db.QueryRow(context.Background(),
 		`select holder, token, expires_at from duty_holds where name = $1`, holdName).Scan(&holder, &token, &expiresAt); err != nil {
@@ -42,7 +43,7 @@ func holdRow(t *testing.T, db Holds) (holder uuid.UUID, token string, expiresAt 
 }
 
 // waitLost waits up to within for hold's Lost to close and fails the test when it does not.
-func waitLost(t *testing.T, hold *Hold, within time.Duration) {
+func waitLost(t *testing.T, hold *duty.Hold, within time.Duration) {
 	t.Helper()
 	select {
 	case <-hold.Lost():
@@ -56,11 +57,11 @@ func waitLost(t *testing.T, hold *Hold, within time.Duration) {
 func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
 	first := uuid.New()
 	mustTakeHold(t, database.Pool, first, opts)
 
-	refused, err := TryHold(context.Background(), second.Pool, holdName, uuid.New(), opts)
+	refused, err := duty.TryHold(context.Background(), second.Pool, holdName, uuid.New(), opts)
 	if err != nil {
 		t.Fatalf("try the live hold from the second process: %v", err)
 	}
@@ -81,10 +82,10 @@ func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 	database := storetest.Open(t)
 	dying := storetest.SecondProcess(t, database)
-	opts := HoldOptions{TTL: 2 * time.Second, Renew: 300 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 2 * time.Second, Renew: 300 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 
-	first, err := TryHold(ctx, dying.Pool, holdName, uuid.New(), opts)
+	first, err := duty.TryHold(ctx, dying.Pool, holdName, uuid.New(), opts)
 	if err != nil || first == nil {
 		t.Fatalf("take the hold on the first process: hold %v, error %v", first, err)
 	}
@@ -93,20 +94,20 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 	_, _, lapse := holdRow(t, database.Pool)
 
 	standby := uuid.New()
-	if refused, err := TryHold(ctx, database.Pool, holdName, standby, opts); err != nil || refused != nil {
+	if refused, err := duty.TryHold(ctx, database.Pool, holdName, standby, opts); err != nil || refused != nil {
 		t.Fatalf("the standby's try before the lapse: hold %v, error %v; want neither", refused, err)
 	}
-	remaining, held, err := Expiry(ctx, database.Pool, holdName)
+	remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
 	if err != nil || !held || remaining <= 0 {
 		t.Fatalf("Expiry before the lapse = %s, held %v, error %v; want a positive remainder of a held name", remaining, held, err)
 	}
 	time.Sleep(remaining)
-	var taken *Hold
+	var taken *duty.Hold
 	for give := time.Now().Add(3 * time.Second); taken == nil; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(give) {
 			t.Fatal("the standby did not take the hold within 3 s of its expiry")
 		}
-		if taken, err = TryHold(ctx, database.Pool, holdName, standby, opts); err != nil {
+		if taken, err = duty.TryHold(ctx, database.Pool, holdName, standby, opts); err != nil {
 			t.Fatalf("the standby's try: %v", err)
 		}
 	}
@@ -133,7 +134,7 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 	holder := uuid.New()
 	hold := mustTakeHold(t, database.Pool, holder, opts)
@@ -179,7 +180,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 
 	listener, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())
@@ -187,7 +188,7 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 		t.Fatalf("open the listening connection: %v", err)
 	}
 	defer func() { _ = listener.Close(context.Background()) }()
-	if _, err := listener.Exec(ctx, `listen `+HoldReleasedChannel); err != nil {
+	if _, err := listener.Exec(ctx, `listen `+duty.HoldReleasedChannel); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
@@ -200,7 +201,7 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 	default:
 		t.Error("Lost is open after Release")
 	}
-	if _, held, err := Expiry(ctx, database.Pool, holdName); err != nil || held {
+	if _, held, err := duty.Expiry(ctx, database.Pool, holdName); err != nil || held {
 		t.Fatalf("Expiry after Release: held %v, error %v; want no row", held, err)
 	}
 
@@ -210,8 +211,8 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wait for the release notification: %v", err)
 	}
-	if notice.Channel != HoldReleasedChannel || notice.Payload != holdName {
-		t.Fatalf("notification on %q with %q, want %q with %q", notice.Channel, notice.Payload, HoldReleasedChannel, holdName)
+	if notice.Channel != duty.HoldReleasedChannel || notice.Payload != holdName {
+		t.Fatalf("notification on %q with %q, want %q with %q", notice.Channel, notice.Payload, duty.HoldReleasedChannel, holdName)
 	}
 
 	mustTakeHold(t, second.Pool, uuid.New(), opts)
@@ -223,7 +224,7 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := HoldOptions{TTL: 10 * time.Second, Renew: 200 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 10 * time.Second, Renew: 200 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 	hold := mustTakeHold(t, database.Pool, uuid.New(), opts)
 
@@ -250,7 +251,7 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 // holder has taken changes nothing and reports the loss.
 func TestHoldTokenReadsBack(t *testing.T) {
 	database := storetest.Open(t)
-	opts := HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.first"}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.first"}
 	ctx := context.Background()
 	hold := mustTakeHold(t, database.Pool, uuid.New(), opts)
 
@@ -267,7 +268,7 @@ func TestHoldTokenReadsBack(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `update duty_holds set holder = $2 where name = $1`, holdName, uuid.New()); err != nil {
 		t.Fatalf("take the row over for another holder: %v", err)
 	}
-	if err := hold.SetToken(ctx, "deliver.third"); !errors.Is(err, ErrHoldLost) {
+	if err := hold.SetToken(ctx, "deliver.third"); !errors.Is(err, duty.ErrHoldLost) {
 		t.Fatalf("SetToken on another holder's row = %v, want ErrHoldLost", err)
 	}
 	if _, token, _ := holdRow(t, database.Pool); token != "deliver.second" {
@@ -294,15 +295,15 @@ func TestHoldTokenReadsBack(t *testing.T) {
 func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	opts := HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
 
-	if _, held, err := Expiry(ctx, database.Pool, holdName); err != nil || held {
+	if _, held, err := duty.Expiry(ctx, database.Pool, holdName); err != nil || held {
 		t.Fatalf("Expiry with no row: held %v, error %v; want not held", held, err)
 	}
 
 	mustTakeHold(t, database.Pool, uuid.New(), opts)
 	before := databaseNow(t, database)
-	remaining, held, err := Expiry(ctx, database.Pool, holdName)
+	remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
 	if err != nil || !held {
 		t.Fatalf("Expiry of a live hold: held %v, error %v", held, err)
 	}
@@ -344,7 +345,7 @@ func lapsedExpiry(t *testing.T, database *store.Store) {
 		holdName, uuid.New()).Scan(&wrote); err != nil {
 		t.Fatalf("rewrite the row as lapsed: %v", err)
 	}
-	remaining, held, err := Expiry(ctx, database.Pool, holdName)
+	remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
 	if err != nil || !held {
 		t.Fatalf("Expiry of a lapsed row: held %v, error %v; want held", held, err)
 	}
@@ -361,13 +362,13 @@ func lapsedExpiry(t *testing.T, database *store.Store) {
 // Options under which no renewal could be confirmed before the loss deadline are refused before
 // any statement is sent.
 func TestHoldRefusesOptionsNoRenewalCouldBeConfirmedUnder(t *testing.T) {
-	for _, opts := range []HoldOptions{
+	for _, opts := range []duty.HoldOptions{
 		{TTL: 6 * time.Second, Renew: 4 * time.Second, Margin: 2 * time.Second},
 		{TTL: 2 * time.Second, Renew: time.Second, Margin: 2 * time.Second},
 		{TTL: 6 * time.Second, Renew: 0, Margin: 2 * time.Second},
 		{TTL: 6 * time.Second, Renew: time.Second, Margin: -time.Second},
 	} {
-		if hold, err := TryHold(context.Background(), nil, holdName, uuid.New(), opts); err == nil || hold != nil {
+		if hold, err := duty.TryHold(context.Background(), nil, holdName, uuid.New(), opts); err == nil || hold != nil {
 			t.Errorf("TryHold with %+v = hold %v, error %v; want a refusal", opts, hold, err)
 		}
 	}
