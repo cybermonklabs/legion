@@ -1,17 +1,20 @@
 /** Where the application's own routing takes a reader: the issue tabs and their addresses, the
- *  page a missing issue draws after the reads it is allowed, and the dialog the rail's New issue
- *  button opens.
+ *  page a missing issue draws after the reads it is allowed, the dialog the rail's New issue
+ *  button opens, and the Inbox badge a phone draws twice.
  *
- *  Both rows read only what the page draws over fixed answers, so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The two
- *  rows of `nav.e2e.ts` stayed there because they carry `@phone`, and the `iphone` project runs
- *  no stubbed row.
+ *  Every row reads only what the page draws over fixed answers, so each runs against a
+ *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  The phone row runs under `stub-phone`, which is the one project that takes the `@phone` tag
+ *  here. The sidebar row of `nav.e2e.ts` stayed there: it is read in the desktop configuration
+ *  as well as the phone's, and a stubbed row runs in one of the two.
  */
 import { expect, type Page } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { createIssue, createProject } from "./api";
+import { createAsk, createIssue, createProject } from "./api";
 import { stubbed } from "./stub/stub-test";
+
+const session = { actor: { id: "e2e-nav", kind: "session" as const }, as: "agent" as const };
 
 // ARC sorts first in the project list the create dialog falls back to, so only the route's own
 // project can make that dialog's selector read CORE.
@@ -21,6 +24,14 @@ const test = stubbed(async () => {
   const issue = await createIssue({ project: "CORE", title: "Ship the release" });
   await createIssue({ parent: issue.key, project: "CORE", title: "Child task" });
   return { issueKey: issue.key, issueTitle: issue.title, project: "CORE" };
+});
+
+/** One open ask, which is the count both badges carry. */
+const badgeTest = stubbed(async () => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Badge colour" });
+  await createAsk(issue.key, { question: "Which colour?" }, session);
+  return { asks: 1, issueKey: issue.key };
 });
 
 /** Counts the reads of `path` the page made and the answers to them it took that were not ok.
@@ -129,3 +140,25 @@ test("the rail's New issue button opens the create dialog, preselecting the page
   await expect(dialog.getByRole("textbox", { name: "Title" })).toBeFocused();
   await expect(dialog.getByRole("combobox", { name: "Project" })).toHaveValue(scene.project);
 });
+
+// One count, one colour: the Inbox badge means the viewer must act, and a reader who learns it
+// in the drawer must recognise it in the top bar.
+badgeTest(
+  "the Inbox count is the same badge in the phone top bar and the drawer @phone @pr",
+  async ({ page, scene }) => {
+    await page.goto("/");
+    const fill = (locator: ReturnType<Page["getByText"]>) =>
+      locator.evaluate((element) => getComputedStyle(element).backgroundColor);
+    const topBar = page.locator("header").first().getByText(`Inbox ${scene.asks}`, { exact: true });
+    await expect(topBar).toBeVisible();
+    const topBarFill = await fill(topBar);
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    // In the drawer the count is a badge of its own inside the Inbox entry.
+    const drawer = page
+      .getByRole("navigation", { name: "Navigation" })
+      .getByRole("link", { name: /^Inbox/ })
+      .getByText(String(scene.asks), { exact: true });
+    await expect(drawer).toBeVisible();
+    expect(topBarFill).toBe(await fill(drawer));
+  }
+);

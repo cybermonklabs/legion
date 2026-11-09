@@ -1,27 +1,10 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import {
-  createAsk,
-  createComment,
-  createIssue,
-  createProject,
-  getInbox,
-  patchIssue,
-  requestApproval,
-  withOpenedAsk,
-} from "./api";
+import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
+import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
-  assigneeFilter,
-  assigneeOptions,
-  clearAssigneeFilter,
-  closeAssigneeFilter,
-  openAssigneeFilter,
-  pickAssignee,
-} from "./inbox-filter";
-import {
-  askControls,
   hasReadingPane,
   inboxList,
   inboxPane,
@@ -36,30 +19,27 @@ import {
   seedCommentThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import {
+  askIdOf,
+  goToRow,
+  markFromKeyboard,
+  openInbox,
+  openPane,
+  rowSnooze,
+  seedInbox,
+  seedPane,
+  session,
+} from "./keyboard-inbox";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-const session = {
-  actor: { kind: "session" as const, id: "e2e-keyboard-inbox" },
-  as: "agent" as const,
-};
-
-/** Three asks on three issues, so each row's `Select <owner>` checkbox has its own name. */
-async function seedInbox(): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
-  for (const title of ["First", "Second", "Third"]) {
-    const issue = await createIssue({ project: "CORE", title });
-    await createAsk(issue.key, { question: `${title} decision` }, session);
-  }
-}
-
-// The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until
-// `/auth/whoami` answers), so a key pressed before the page renders reaches no handler.
-async function openInbox(page: Page, rows = 3): Promise<void> {
-  await page.goto("/");
-  await expect(page.locator("[data-inbox-row]")).toHaveCount(rows);
-  await page.locator("body").focus();
-}
+/**
+ * The Inbox's keyboard, in the rows whose claim reaches the server: a bulk snooze written and
+ * read back, the refusals a pick in flight comes back with, the order the server serves, and
+ * the thread row `e` dismisses. What the page draws over one fixed answer - marks, focus,
+ * Escape, the names a row's controls carry and the reading pane's own keys - is in
+ * `keyboard-inbox.stub.e2e.ts`.
+ */
 
 function snoozeRequest(page: Page, askId: string) {
   return page.waitForRequest(
@@ -67,41 +47,6 @@ function snoozeRequest(page: Page, askId: string) {
       request.method() === "PUT" &&
       new URL(request.url()).pathname === `/api/v1/me/asks/${askId}/snooze`
   );
-}
-
-async function askIdOf(page: Page, index: number): Promise<string> {
-  const id = await page.locator("[data-inbox-row]").nth(index).getAttribute("data-inbox-row");
-  expect(id).not.toBeNull();
-  return id as string;
-}
-
-/**
- * Marks the rows the reader walks from the keyboard, starting where the Inbox left them.
- *
- * `x` marks the row the reader is on: with the reading column that is the row the column is
- * showing, which the Inbox selects for them when it opens, so the walk starts there; without
- * it, it is the row holding the focus, which `j` has to reach first.
- */
-async function markFromKeyboard(page: Page, count: number): Promise<void> {
-  for (let index = 0; index < count; index += 1) {
-    if (index > 0 || !hasReadingPane(page)) await page.keyboard.press("j");
-    await page.keyboard.press("x");
-  }
-}
-
-/** Puts the reader on a row: the focus on it and, with the reading column on, the selection the
- *  column follows, which is what `x` and `h` act on there. */
-async function goToRow(page: Page, index: number): Promise<void> {
-  const row = page.locator("[data-inbox-row]").nth(index);
-  await selectRow(page, await askIdOf(page, index));
-  await row.focus();
-}
-
-/** The Snooze the reader reaches for one question: the row's own control, or - with the
- *  reading column on, where the row carries none - the column head's, the column being given
- *  that row first. */
-async function rowSnooze(page: Page, askId: string): Promise<Locator> {
-  return (await askControls(page, askId)).locator("[data-inbox-snooze]");
 }
 
 test.beforeEach(async () => {
@@ -347,47 +292,6 @@ test.describe("inbox selection", () => {
     }
   });
 
-  // Two rows can fail for two reasons; the bar names the first and says there are others rather
-  // than flattening a sign-out and a validation refusal into one sentence.
-  test("a bulk snooze refused two different ways names the first reason and says so", async ({
-    browser,
-  }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page);
-      const first = await askIdOf(page, 0);
-      const second = await askIdOf(page, 1);
-
-      await page.route(`**/api/v1/me/asks/${first}/snooze`, (route) =>
-        route.fulfill({
-          body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
-          contentType: "application/json",
-          status: 400,
-        })
-      );
-      await page.route(`**/api/v1/me/asks/${second}/snooze`, (route) =>
-        route.fulfill({
-          body: JSON.stringify({ code: "UNAUTHENTICATED", error: "sign in again" }),
-          contentType: "application/json",
-          status: 401,
-        })
-      );
-
-      await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
-
-      await expect(bar).toContainText(
-        "Could not snooze 2 of 2: snoozed_until must be a moment, and 1 other reason."
-      );
-      await expect(bar).toContainText("2 selected");
-    } finally {
-      await context.close();
-    }
-  });
-
   // In a view that lists only what is waiting on the reader, the optimistic snooze takes every
   // marked row off the list at once, so the bar's own selection empties while its write is still
   // in the air. The refusal that comes back has to survive that.
@@ -454,285 +358,6 @@ test.describe("inbox selection", () => {
       await expect(bar).toContainText("1 selected");
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", refusedAsk.id);
-    } finally {
-      await context.close();
-    }
-  });
-
-  // Ticking a box with the pointer leaves focus on the `<input>`, and the registry's editable
-  // policy decides whether the next key is a shortcut or typing. A checkbox takes no text.
-  test("keys still work with a pointer-ticked checkbox holding focus", async ({ browser }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page);
-      const rows = page.locator("[data-inbox-row]");
-      await rows.nth(0).getByRole("checkbox").check();
-      await rows.nth(1).getByRole("checkbox").check();
-      await expect(rows.nth(1).getByRole("checkbox")).toBeFocused();
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await expect(bar).toContainText("2 selected");
-
-      // `h` from the box the reader just ticked is the flow the pointer leaves them in: it
-      // reaches the bulk picker with no roving in between.
-      await page.keyboard.press("h");
-      const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
-      await expect(picker).toBeFocused();
-      await page.keyboard.press("Escape");
-
-      // j moves off the ticked row, and h reaches the picker from there too. A tick marks its
-      // row and moves nothing else, so the reading column is still on the row the Inbox opened
-      // on and the step from there is the second row; without the column j roves from the box
-      // holding the focus and lands on the third.
-      await page.keyboard.press("j");
-      if (hasReadingPane(page)) {
-        await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", await askIdOf(page, 1));
-      } else {
-        await expect(rows.nth(2)).toBeFocused();
-      }
-      await page.keyboard.press("h");
-      await expect(picker).toBeFocused();
-    } finally {
-      await context.close();
-    }
-  });
-
-  // Escape is always one level out. The per-row picker honours it through `back`; the bulk picker
-  // has no row ancestor, so it needs its own way back to the list.
-  test("Escape leaves the bulk picker for the row it was opened from, keeping the marks", async ({
-    browser,
-  }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page);
-      const rows = page.locator("[data-inbox-row]");
-
-      // Control: the Snooze the reader reaches for the row they are on, which already returns
-      // to that row.
-      await goToRow(page, 0);
-      const rowPicker = await rowSnooze(page, await askIdOf(page, 0));
-      await page.keyboard.press("h");
-      await expect(rowPicker).toBeFocused();
-      await page.keyboard.press("Escape");
-      await expect(rows.nth(0)).toBeFocused();
-
-      // The bulk picker does the same, and leaves the selection alone on the way.
-      await goToRow(page, 1);
-      await page.keyboard.press("x");
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await expect(bar).toContainText("1 selected");
-      await page.keyboard.press("h");
-      const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
-      await expect(picker).toBeFocused();
-      await page.keyboard.press("Escape");
-      await expect(rows.nth(1)).toBeFocused();
-      await expect(bar).toContainText("1 selected");
-
-      // And from the row, Escape is the two levels it always was: off the row, then the marks.
-      await page.keyboard.press("Escape");
-      await page.keyboard.press("Escape");
-      await expect(bar).toHaveCount(0);
-    } finally {
-      await context.close();
-    }
-  });
-
-  // Escape is one level out, and while the assignee popover is open it is the innermost level:
-  // it closes, and the selection the same key would otherwise clear stays made. Two undos for
-  // one press is what the page's binding stands down for (`clear-selection`'s `!filterOpen`).
-  test("Escape inside the assignee popover closes it and clears nothing", async ({ browser }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page);
-      const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await markFromKeyboard(page, 1);
-      await expect(bar).toContainText("1 selected");
-      // No row focused, so the page's Escape is the Clear the popover now stands in front of.
-      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-
-      await openAssigneeFilter(page);
-      await expect(page.getByRole("combobox", { name: "Search people" })).toBeFocused();
-      await page.keyboard.press("Escape");
-      await expect(assigneeOptions(page)).toHaveCount(0);
-      await expect(assigneeFilter(page)).toBeFocused();
-      await expect(bar).toContainText("1 selected");
-      await expect(rows.nth(0).getByRole("checkbox")).toBeChecked();
-
-      // With the popover shut, the same key clears the selection, as it always did.
-      await page.keyboard.press("Escape");
-      await expect(bar).toHaveCount(0);
-      await expect(rows.nth(0).getByRole("checkbox")).not.toBeChecked();
-    } finally {
-      await context.close();
-    }
-  });
-
-  // Two asks on one issue are two different questions, and a control named after the issue alone
-  // says the same thing twice.
-  test("each row's controls are named after its own ask", async ({ browser }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const twins = await createIssue({ project: "CORE", title: "Two asks on one issue" });
-    // Two questions that agree far past any cut: only the position tells these two apart.
-    await createAsk(
-      twins.key,
-      { question: "Which of the two long-running migration strategies should we adopt: A?" },
-      session
-    );
-    await createAsk(
-      twins.key,
-      { question: "Which of the two long-running migration strategies should we adopt: B?" },
-      session
-    );
-    const alone = await createIssue({ project: "CORE", title: "Release checklist" });
-    await createAsk(alone.key, { question: "Ship it?" }, session);
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page, 3);
-      const rows = page.locator("[data-inbox-row]");
-      const named = async (attribute: string) =>
-        rows.evaluateAll(
-          (items, selector: string) =>
-            items.map((item) => item.querySelector(selector)?.getAttribute("aria-label") ?? "none"),
-          attribute
-        );
-
-      // An issue with one listed ask keeps the short name; the twins carry their position.
-      const checkboxes = await named("input[type=checkbox]");
-      expect(checkboxes).toContain("Select CORE-2: Ship it?");
-      expect(checkboxes.filter((name) => name.startsWith("Select CORE-1")).sort()).toEqual([
-        "Select CORE-1, ask 1 of 2: Which of the two long-running migration strategi…",
-        "Select CORE-1, ask 2 of 2: Which of the two long-running migration strategi…",
-      ]);
-      expect(new Set(checkboxes).size).toBe(checkboxes.length);
-
-      // Snooze is named from the same place, so the two controls of a row agree. Without the
-      // reading column every row carries its own Snooze, so the names tell the twins apart by
-      // their position exactly as the checkboxes do. With the column one Snooze is on the page
-      // - the head's, for the row the column is showing - so it names that question without
-      // the position, which is only there to tell two controls on one page apart.
-      const pickers: string[] = [];
-      for (const askId of await rows.evaluateAll((items) =>
-        items.map((item) => item.getAttribute("data-inbox-row") ?? "")
-      )) {
-        const picker = await rowSnooze(page, askId);
-        pickers.push((await picker.getAttribute("aria-label")) ?? "none");
-      }
-      if (hasReadingPane(page)) {
-        expect(pickers).toEqual(
-          checkboxes.map((name) =>
-            name.replace(/^Select /, "Snooze ").replace(/, ask \d+ of \d+/, "")
-          )
-        );
-      } else {
-        expect(pickers).toContain("Snooze CORE-2: Ship it?");
-        expect(new Set(pickers).size).toBe(pickers.length);
-        expect(pickers.map((name) => name.replace(/^Snooze /, "")).sort()).toEqual(
-          checkboxes.map((name) => name.replace(/^Select /, "")).sort()
-        );
-      }
-    } finally {
-      await context.close();
-    }
-  });
-
-  // The bar speaks for the rows this list holds. A mark made with the filter cleared must not
-  // follow the reader into their own list, where its row is not on screen and a bulk snooze
-  // would write unseen.
-  test("a mark made under a wider filter neither counts nor snoozes once its row is out of the list", async ({
-    browser,
-  }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const mine = await createIssue({ project: "CORE", title: "Mine to answer" });
-    await patchIssue(mine.key, { assignee: "alice" });
-    await createAsk(mine.key, { question: "Ship it?" }, session);
-    const theirs = await createIssue({ project: "CORE", title: "Bob answers this" });
-    await patchIssue(theirs.key, { assignee: "bob" });
-    const hidden = await createAsk(theirs.key, { question: "Hold it?" }, session);
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await page.goto("/?assignee=everyone");
-      const rows = page.locator("[data-inbox-row]");
-      await expect(rows).toHaveCount(2);
-      await page.locator("body").focus();
-      const bar = page.getByRole("group", { name: "Selected rows" });
-
-      const hiddenRow = page.locator(`[data-inbox-row="${hidden.id}"]`);
-      await hiddenRow.getByRole("checkbox").check();
-      await expect(bar).toContainText("1 selected");
-
-      let wrote = false;
-      await page.route(`**/api/v1/me/asks/${hidden.id}/snooze`, (route) => {
-        wrote = true;
-        return route.fallback();
-      });
-      // Narrowing to the reader alone, through the control: the Inbox stays mounted, so the
-      // mark is still made while its row is off the list. The tick also selected that row
-      // where the reading column is on, and the list keeps the row it is showing, so the
-      // reader moves on first - the mark is what this test follows, not the hold.
-      if (hasReadingPane(page)) await page.keyboard.press("j");
-      await pickAssignee(page, "alice");
-      await closeAssigneeFilter(page);
-      await expect(rows).toHaveCount(1);
-      await expect(hiddenRow).toHaveCount(0);
-      await expect(bar).toHaveCount(0);
-
-      // Nothing is marked here, so `h` reaches the Snooze of the row the reader is on, not a
-      // bulk write.
-      const onlyPicker = await rowSnooze(page, await askIdOf(page, 0));
-      await goToRow(page, 0);
-      await page.keyboard.press("h");
-      await expect(onlyPicker).toBeFocused();
-      expect(wrote).toBe(false);
-    } finally {
-      await context.close();
-    }
-  });
-
-  // The `?agent=` chip narrows the list the same way the assignee filter does, and the Inbox
-  // stays mounted across it: the chip's clear link and the browser's own Back are client-side
-  // moves.
-  test("a mark made outside the agent filter does not count inside it", async ({ browser }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Two agents, one issue" });
-    await patchIssue(issue.key, { assignee: "alice" });
-    const other = {
-      actor: { id: "e2e-other-agent", kind: "session" as const },
-      as: "agent" as const,
-    };
-    const fromOther = await createAsk(issue.key, { question: "From another agent?" }, other);
-    const fromSession = await createAsk(issue.key, { question: "Ship it?" }, session);
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await page.goto(`/?agent=${other.actor.id}`);
-      const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await expect(rows).toHaveCount(1);
-      await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", fromOther.id);
-
-      await page.getByRole("link", { name: "Clear agent filter" }).click();
-      await expect(rows).toHaveCount(2);
-      await page.locator(`[data-inbox-row="${fromSession.id}"]`).getByRole("checkbox").check();
-      await expect(bar).toContainText("1 selected");
-
-      // Let go of the row first: a row under the reader's hand is held on screen even when the
-      // list stops carrying it, which is the Inbox's own rule and not what this test is about.
-      await page.mouse.move(0, 0);
-      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-
-      // Back into the filter: the marked ask is not one of its rows, so nothing counts here.
-      await page.goBack();
-      await expect(rows).toHaveCount(1);
-      await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", fromOther.id);
-      await expect(bar).toHaveCount(0);
     } finally {
       await context.close();
     }
@@ -892,102 +517,6 @@ test.describe("inbox selection", () => {
       release?.();
       await expect(bar).toHaveCount(0);
       expect(writes.length).toBe(2);
-    } finally {
-      await context.close();
-    }
-  });
-
-  // The keyboard raised the refusal, so the keyboard dismisses it - even once the reader has
-  // unticked the rows it named and the bar is counting nothing.
-  test("Escape dismisses a refusal the reader has already unticked", async ({ browser }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page);
-      await page.route("**/api/v1/me/asks/*/snooze", (route) =>
-        route.fulfill({
-          body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
-          contentType: "application/json",
-          status: 400,
-        })
-      );
-
-      await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
-      await expect(bar).toContainText("Could not snooze 2 of 2");
-
-      const rows = page.locator("[data-inbox-row]");
-      await rows.nth(0).getByRole("checkbox").uncheck();
-      await rows.nth(1).getByRole("checkbox").uncheck();
-      await expect(bar).toContainText("0 selected");
-      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-      await page.mouse.move(0, 0);
-
-      await page.keyboard.press("Escape");
-      await expect(bar).toHaveCount(0);
-    } finally {
-      await context.close();
-    }
-  });
-
-  // `h` with a selection live still starts from the list: a reader answering an ask is not in it.
-  test("h does not pull the reader out of an ask they are answering", async ({ browser }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const marked = await createIssue({ project: "CORE", title: "Marked" });
-    await createAsk(marked.key, { question: "Which release?" }, session);
-    const answering = await createIssue({ project: "CORE", title: "Answering" });
-    await createAsk(
-      answering.key,
-      { options: [{ label: "Ship" }, { label: "Hold" }], question: "Which way?" },
-      session
-    );
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
-      await markFromKeyboard(page, 1);
-      await expect(bar).toContainText("1 selected");
-
-      const hold = page.getByRole("radio", { name: "Hold" });
-      await hold.click();
-      await expect(hold).toBeFocused();
-      await page.keyboard.press("h");
-      await expect(hold).toBeFocused();
-      await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).not.toBeFocused();
-    } finally {
-      await context.close();
-    }
-  });
-
-  // Reaching the picker with the pointer leaves no `h` behind it, so Escape must not send the
-  // reader to whatever row an earlier `h` happened to be on.
-  test("Escape from a pointer-opened bulk picker goes to the list, not a stale row", async ({
-    browser,
-  }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await openInbox(page);
-      const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
-
-      // An `h` from the first row records that row, then the reader leaves and marks row 3.
-      await goToRow(page, 0);
-      await page.keyboard.press("x");
-      await page.keyboard.press("h");
-      await page.keyboard.press("Escape");
-      await expect(rows.nth(0)).toBeFocused();
-      await page.keyboard.press("x");
-      await rows.nth(2).getByRole("checkbox").check();
-      await expect(bar).toContainText("1 selected");
-
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).focus();
-      await page.keyboard.press("Escape");
-      await expect(rows.nth(2)).toBeFocused();
     } finally {
       await context.close();
     }
@@ -1163,60 +692,6 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
 // tag: on a phone there is no pane to step into. Every fixture here is made up.
 // ---------------------------------------------------------------------------
 
-/** A document taller than the pane: 80 paragraphs run several screens past the bottom of the
- *  column, so every scrolling key below has somewhere to go. */
-const handoverLines = Array.from(
-  { length: 80 },
-  (_, index) =>
-    `Handover note ${index + 1}: the ledger and the mirror each keep a clock of their own.`
-);
-const handoverSpec = ["# Ledger handover", "", ...handoverLines.flatMap((line) => [line, ""])].join(
-  "\n"
-);
-const RETRY_QUESTION = "Should the mirror keep retrying after a refused lease?";
-
-interface PaneSeed {
-  /** The approval request the pane draws as a document, which is the taller one. */
-  approvalAskId: string;
-  /** The question in no document, which the pane draws as a card. */
-  cardAskId: string;
-}
-
-/** Two questions, in the order the Inbox lists them (the issue's priority first): a request to
- *  approve a long document, and a question in no document. */
-async function seedPane(): Promise<PaneSeed> {
-  await createProject({ key: "PANE", name: "Pane keyboard" });
-  const handover = await createIssue({
-    project: "PANE",
-    spec: handoverSpec,
-    title: "Ledger handover",
-  });
-  await patchIssue(handover.key, { priority: 0 });
-  const approval = withOpenedAsk(
-    await requestApproval(handover.primary_artifact_id, { summary: "The handover draft." }, session)
-  );
-  const retry = await createIssue({ project: "PANE", title: "Retry budget" });
-  await patchIssue(retry.key, { priority: 1 });
-  const card = await createAsk(
-    retry.key,
-    { options: [{ label: "Yes" }, { label: "No" }], question: RETRY_QUESTION },
-    session
-  );
-  return { approvalAskId: approval.ask.id, cardAskId: card.id };
-}
-
-/** Opens the Inbox on both seeded rows with the pane beside them. The assignee filter is
- *  cleared, so a request to approve a document nobody holds is listed like any other question. */
-async function openPane(page: Page, seed: PaneSeed): Promise<void> {
-  await page.goto("/?assignee=everyone");
-  const rows = page.locator("[data-inbox-row]");
-  await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
-  await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", seed.cardAskId);
-  await expect(paneScroller(page)).toBeVisible();
-  await page.locator("body").focus();
-}
-
 test("l moves the focus into the reading pane, the keyboard scrolls the document there, and Escape returns to the row l was pressed on", async ({
   browser,
 }) => {
@@ -1274,146 +749,6 @@ test("l moves the focus into the reading pane, the keyboard scrolls the document
     await page.keyboard.press("Escape");
     await expect(rows.nth(0)).toBeFocused();
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.cardAskId);
-  } finally {
-    await context.close();
-  }
-});
-
-test("l focuses the pane and Escape returns from it where the pane draws the question as a card", async ({
-  browser,
-}) => {
-  const seed = await seedPane();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await openPane(page, seed);
-    const rows = page.locator("[data-inbox-row]");
-    await goToRow(page, 1);
-    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.cardAskId);
-
-    // The scroller is the pane frame's, so a question in no document is drawn in the same box
-    // the document was: one focus stop, whatever the pane is showing.
-    const scroller = paneScroller(page);
-    await expect(scroller.getByTestId(`ask-${seed.cardAskId}`)).toContainText(RETRY_QUESTION);
-    await page.keyboard.press("l");
-    await expect(scroller).toBeFocused();
-    await expect(inboxPane(page).getByRole("region", { name: "Question body" })).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(rows.nth(1)).toBeFocused();
-  } finally {
-    await context.close();
-  }
-});
-
-test("l moves no focus below 1280 px, where the Inbox draws no reading pane", async ({
-  browser,
-}) => {
-  const seed = await seedPane();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(`${error.name}: ${error.message}`));
-
-    // One pixel below the pane's width the Inbox is the list of cards it has always been: no
-    // pane, no scroller, and nothing for `l` to step into.
-    await page.setViewportSize({ height: 900, width: 1279 });
-    await page.goto("/?assignee=everyone");
-    const rows = page.locator("[data-inbox-row]");
-    await expect(rows).toHaveCount(2);
-    await expect(inboxPane(page)).toHaveCount(0);
-    await expect(paneScroller(page)).toHaveCount(0);
-
-    await rows.nth(0).focus();
-    await page.keyboard.press("l");
-    await expect(rows.nth(0)).toBeFocused();
-    await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
-    expect(errors).toEqual([]);
-  } finally {
-    await context.close();
-  }
-});
-
-test("l moves no focus with an empty list, where no row is selected", async ({ browser }) => {
-  // `test.beforeEach` empties the database and this row seeds nothing, so the Inbox lists
-  // nothing: with no row selected there is no pane at all, and `l` has nothing to focus.
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(`${error.name}: ${error.message}`));
-
-    await page.goto("/");
-    await expect(page.getByText("Nothing needs you")).toBeVisible();
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
-    await expect(inboxPane(page)).toHaveCount(0);
-
-    await page.locator("body").focus();
-    await page.keyboard.press("l");
-    expect(await page.evaluate(() => document.activeElement?.tagName ?? null)).toBe("BODY");
-    expect(errors).toEqual([]);
-  } finally {
-    await context.close();
-  }
-});
-
-test("j from inside the reading pane leaves the focus on a row, not on the body", async ({
-  browser,
-}) => {
-  const seed = await seedPane();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await openPane(page, seed);
-    const rows = page.locator("[data-inbox-row]");
-    await goToRow(page, 0);
-    await page.keyboard.press("l");
-    await expect(paneScroller(page)).toBeFocused();
-
-    // The step out of the pane comes back to the list first, so the focus lands on a row rather
-    // than falling to the body when the pane swaps the document for a card.
-    await page.keyboard.press("j");
-    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.cardAskId);
-    await expect(rows.nth(0)).toBeFocused();
-    expect(await page.evaluate(() => document.activeElement?.tagName ?? null)).not.toBe("BODY");
-
-    // And Escape is still answered from there: it clears the row it is on, as it does for any
-    // row the reader walked to.
-    await page.keyboard.press("Escape");
-    await expect(rows.nth(0)).not.toBeFocused();
-    expect(await page.evaluate(() => document.activeElement?.tagName ?? null)).toBe("BODY");
-  } finally {
-    await context.close();
-  }
-});
-
-test("? lists l for the reading pane and f for the search box under Inbox alone", async ({
-  browser,
-}) => {
-  await seedInbox();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await openInbox(page);
-
-    await page.keyboard.press("?");
-    const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts" });
-    await expect(dialog).toBeVisible();
-    const inboxScope = dialog.getByRole("region", { exact: true, name: "Inbox" });
-    const globalScope = dialog.getByRole("region", { exact: true, name: "Global" });
-    await expect(globalScope).toBeVisible();
-
-    // Both bindings are the Inbox's own, so each is listed once, under Inbox and nowhere else.
-    for (const [label, keys] of [
-      ["Move the focus into the reading pane", ["l"]],
-      ["Search asks", ["f"]],
-    ] as const) {
-      const inInbox = inboxScope.getByRole("listitem").filter({ hasText: label });
-      await expect(inInbox).toHaveCount(1);
-      await expect(inInbox.locator("kbd")).toHaveText(keys);
-      await expect(globalScope.getByRole("listitem").filter({ hasText: label })).toHaveCount(0);
-      await expect(dialog.getByRole("listitem").filter({ hasText: label })).toHaveCount(1);
-    }
   } finally {
     await context.close();
   }

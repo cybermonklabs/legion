@@ -1,0 +1,290 @@
+{
+  "alpha": {
+    "key": "CORE-1",
+    "project": "CORE",
+    "number": 1,
+    "title": "Alpha",
+    "status": "triage",
+    "priority": null,
+    "rank": "U",
+    "labels": [],
+    "parent": null,
+    "blocked_by": [],
+    "assignee": "alice",
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "alice"
+    },
+    "created_at": "2026-11-09T03:24:20.978552Z",
+    "updated_at": "2026-11-09T03:24:20.978552Z",
+    "closed_at": null,
+    "primary_artifact_id": "6e2b82f5-5dcc-48ad-bb69-1bde5bdfdf66",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 1,
+    "advice": {
+      "issue_status": "triage",
+      "session_writes_since_human": 0,
+      "your_open_asks": [],
+      "suggestions": {
+        "outcome": "none",
+        "search": "keywords_only",
+        "search_note": "meaning search is off on this server",
+        "related": []
+      }
+    }
+  },
+  "bravo": {
+    "key": "CORE-2",
+    "project": "CORE",
+    "number": 2,
+    "title": "Bravo",
+    "status": "triage",
+    "priority": null,
+    "rank": "V",
+    "labels": [],
+    "parent": null,
+    "blocked_by": [],
+    "assignee": "alice",
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "alice"
+    },
+    "created_at": "2026-11-09T03:24:21.064412Z",
+    "updated_at": "2026-11-09T03:24:21.064412Z",
+    "closed_at": null,
+    "primary_artifact_id": "d0ab120a-1d0f-431a-91bd-f01ae42b23ca",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 1,
+    "advice": {
+      "issue_status": "triage",
+      "session_writes_since_human": 0,
+      "your_open_asks": [],
+      "suggestions": {
+        "outcome": "none",
+        "search": "keywords_only",
+        "search_note": "meaning search is off on this server",
+        "related": []
+      }
+    }
+  },
+  "charlie": {
+    "key": "CORE-3",
+    "project": "CORE",
+    "number": 3,
+    "title": "Charlie",
+    "status": "triage",
+    "priority": null,
+    "rank": "W",
+    "labels": [],
+    "parent": null,
+    "blocked_by": [],
+    "assignee": "alice",
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "alice"
+    },
+    "created_at": "2026-11-09T03:24:21.123295Z",
+    "updated_at": "2026-11-09T03:24:21.123295Z",
+    "closed_at": null,
+    "primary_artifact_id": "9e6059a4-11b5-41fa-91e8-60a57a41116c",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 1,
+    "advice": {
+      "issue_status": "triage",
+      "session_writes_since_human": 0,
+      "your_open_asks": [],
+      "suggestions": {
+        "outcome": "none",
+        "search": "keywords_only",
+        "search_note": "meaning search is off on this server",
+        "related": []
+      }
+    }
+  },
+  "delta": {
+    "key": "CORE-4",
+    "project": "CORE",
+    "number": 4,
+    "title": "Delta",
+    "status": "triage",
+    "priority": null,
+    "rank": "X",
+    "labels": [],
+    "parent": null,
+    "blocked_by": [],
+    "assignee": "alice",
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "alice"
+    },
+    "created_at": "2026-11-09T03:24:21.176607Z",
+    "updated_at": "2026-11-09T03:24:21.176607Z",
+    "closed_at": null,
+    "primary_artifact_id": "572f8f87-f629-4113-9330-d2f4f526d62f",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 1,
+    "advice": {
+      "issue_status": "triage",
+      "session_writes_since_human": 0,
+      "your_open_asks": [],
+      "suggestions": {
+        "outcome": "none",
+        "search": "keywords_only",
+        "search_note": "meaning search is off on this server",
+        "related": []
+      }
+    }
+  },
+  "echo": {
+    "key": "CORE-5",
+    "project": "CORE",
+    "number": 5,
+    "title": "Echo",
+    "status": "triage",
+    "priority": null,
+    "rank": "Y",
+    "labels": [],
+    "parent": null,
+    "blocked_by": [],
+    "assignee": "alice",
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "alice"
+    },
+    "created_at": "2026-11-09T03:24:21.219437Z",
+    "updated_at": "2026-11-09T03:24:21.219437Z",
+    "closed_at": null,
+    "primary_artifact_id": "f61237a6-3309-4f58-83b6-89a873cb4cbc",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 1,
+    "advice": {
+      "issue_status": "triage",
+      "session_writes_since_human": 0,
+      "your_open_asks": [],
+      "suggestions": {
+        "outcome": "none",
+        "search": "keywords_only",
+        "search_note": "meaning search is off on this server",
+        "related": []
+      }
+    }
+  },
+  "foxtrot": {
+    "key": "CORE-6",
+    "project": "CORE",
+    "number": 6,
+    "title": "Foxtrot",
+    "status": "triage",
+    "priority": null,
+    "rank": "Z",
+    "labels": [],
+    "parent": null,
+    "blocked_by": [],
+    "assignee": "alice",
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "alice"
+    },
+    "created_at": "2026-11-09T03:24:21.26176Z",
+    "updated_at": "2026-11-09T03:24:21.26176Z",
+    "closed_at": null,
+    "primary_artifact_id": "acc4965e-d93d-4671-b825-eb7348d233c8",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 1,
+    "advice": {
+      "issue_status": "triage",
+      "session_writes_since_human": 0,
+      "your_open_asks": [],
+      "suggestions": {
+        "outcome": "none",
+        "search": "keywords_only",
+        "search_note": "meaning search is off on this server",
+        "related": []
+      }
+    }
+  }
+}

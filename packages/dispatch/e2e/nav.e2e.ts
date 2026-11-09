@@ -1,14 +1,14 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 import { createAsk, createIssue, createProject } from "./api";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 /**
- * What the navigation shows, in the two configurations the `iphone` project is part of. Both
- * rows carry `@phone`, so neither can be a stubbed row: the `stub` project is one desktop
- * browser, and a stubbed file is ignored by every other project. The rest of this family - the
- * issue tabs and the create dialog - is in `nav.stub.e2e.ts`.
+ * What the navigation shows in the two configurations the `iphone` project is part of. The row
+ * below is read on a desktop and in the phone drawer, and a stubbed row runs in one
+ * configuration only - `stub` or `stub-phone`, never both - so it stays here. The rest of this
+ * family, the phone badge among it, is in `nav.stub.e2e.ts`.
  */
 
 const session = { actor: { id: "e2e-nav", kind: "session" as const }, as: "agent" as const };
@@ -81,38 +81,6 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     // the navigation's one read stands alone.
     await expect.poll(() => issueRequests).toEqual(["?pinned=true"]);
     await page.screenshot({ path: testInfo.outputPath("projects-sidebar.png"), fullPage: true });
-  } finally {
-    await context.close();
-  }
-});
-
-// One count, one colour: the Inbox badge means the viewer must act, and a reader who learns it
-// in the drawer must recognise it in the top bar.
-test("the Inbox count is the same badge in the phone top bar and the drawer @phone", async ({
-  browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the compact top bar exists below the xl rail");
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Badge colour" });
-  await createAsk(issue.key, { question: "Which colour?" }, session);
-
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.goto("/");
-    const fill = (locator: ReturnType<Page["getByText"]>) =>
-      locator.evaluate((element) => getComputedStyle(element).backgroundColor);
-    const topBar = page.locator("header").first().getByText("Inbox 1", { exact: true });
-    await expect(topBar).toBeVisible();
-    const topBarFill = await fill(topBar);
-    await page.getByRole("button", { name: "Open navigation" }).click();
-    // In the drawer the count is a badge of its own inside the Inbox entry.
-    const drawer = page
-      .getByRole("navigation", { name: "Navigation" })
-      .getByRole("link", { name: /^Inbox/ })
-      .getByText("1", { exact: true });
-    await expect(drawer).toBeVisible();
-    expect(topBarFill).toBe(await fill(drawer));
   } finally {
     await context.close();
   }
