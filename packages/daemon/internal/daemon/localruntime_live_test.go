@@ -151,7 +151,7 @@ func (r *localRuntime) killEverything() {
 	for _, pane := range started {
 		select {
 		case <-pane.done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(arrivalBound(t)):
 			r.t.Errorf("the worker of %s (pid %d) did not end after SIGKILL; its log is %s", pane.spec.Claim, pane.pid, pane.log)
 		}
 	}

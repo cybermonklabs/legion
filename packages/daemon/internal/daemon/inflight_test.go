@@ -177,7 +177,7 @@ func superviseMany(t *testing.T, cfg config.Config, o overrides, rt *stallingRun
 			Detail: "pod " + string(token) + " Failed: init container workspace-init terminated (Error, exit code 1)"})
 	}
 	waiting := map[claim.Token]bool{}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(arrivalBound(t))
 	for len(waiting) < relaunching {
 		select {
 		case token := <-rt.entered:

@@ -400,7 +400,7 @@ func (d *scratchDispatch) stop() {
 		if err != nil {
 			d.t.Errorf("scratch Dispatch stopped: %v\n%s", err, d.output.String())
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(d.t)):
 		_ = command.Process.Kill()
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")

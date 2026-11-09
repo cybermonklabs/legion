@@ -83,7 +83,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(15 * time.Second):
+			case <-time.After(arrivalBound(t)):
 				t.Error("the Envoy listener did not stop")
 			}
 		})

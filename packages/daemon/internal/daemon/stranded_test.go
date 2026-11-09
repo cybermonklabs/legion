@@ -385,7 +385,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(arrivalBound(t)):
 			t.Error("run did not return after the report lock released")
 		}
 	})

@@ -537,7 +537,7 @@ func (r *idleWakeRig) stopDaemon() {
 		if err != nil {
 			r.t.Errorf("run: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(arrivalBound(r.t)):
 		r.t.Error("the daemon did not stop")
 	}
 }

@@ -215,7 +215,7 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), 10*time.Second)
 
 	waiting := map[claim.Token]runtime.SpawnSpec{}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(arrivalBound(t))
 	for len(waiting) < len(tokens) {
 		select {
 		case spec := <-rt.entered:

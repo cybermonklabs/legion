@@ -172,7 +172,7 @@ func TestDefaultBranchesSharesOneReadInFlight(t *testing.T) {
 			answers <- got.DefaultBranch
 		})
 	}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(arrivalBound(t))
 	for github.reads.Load() == 0 {
 		select {
 		case <-deadline:

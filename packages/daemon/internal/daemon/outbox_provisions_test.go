@@ -69,7 +69,7 @@ func TestProvisionsOfTwoIssuesOverlapAndTheirStoreStepsDoNot(t *testing.T) {
 			}
 			select {
 			case <-overlapped:
-			case <-time.After(20 * time.Second):
+			case <-time.After(arrivalBound(t)):
 				return workspace.Workspace{}, fmt.Errorf("the provision of %s never overlapped another's", request.Issue)
 			}
 			storeStep(t, request, &inStore, &worst)
