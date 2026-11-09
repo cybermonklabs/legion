@@ -3804,8 +3804,10 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 }
 
 // newListenerDeliveryHarnessOn is newListenerDeliveryHarness over client, a listener's connection
-// to a server the test chose (one whose grant it sets, say).
-func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client) listenerDeliveryHarness {
+// to a server the test chose (one whose grant it sets, say), with sessionOptions on the session
+// registry it opens: a test that must cross a session window without waiting it out passes its
+// own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
+func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -3816,7 +3818,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client) listenerDeli
 	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
 	// registered in that window would be missing from what Match and Lookup answer.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

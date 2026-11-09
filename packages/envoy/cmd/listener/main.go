@@ -1093,6 +1093,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The session consumer sweep's period, the bound on how long a session that ended without
+	// deregistering keeps its consumer (startSessionConsumerSweep, session_consumer_sweep.go).
+	// It is neither reaper's: what it waits for is the state the session registry answers, and a
+	// pass of it frees a slot of the stream's consumer cap rather than taking anything away from
+	// a session.
+	sessionConsumerSweepInterval, err := envconf.PositiveDuration(logger.Slog(), os.LookupEnv, "ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL", defaultSessionConsumerSweepInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
 	sessions, err := session.OpenSessionRegistry(
 		client.Conn,
 		session.WithSessionReplicas(cfg.NATSReplicas),
@@ -1379,6 +1388,21 @@ func main() {
 	// pass as the listener starts. It costs one stream read a pass while no role has a kept lane
 	// (startKeptRoleSweep, role_keep_sweep.go).
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, 5*time.Minute))
+
+	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
+	// holds. The deregistration route deletes the consumer of a registration it removed, and a
+	// session whose pane closed or whose box went deregisters nothing: this is the bound under
+	// which such a consumer goes, one pass after the session registry answers gone. It is also
+	// what retires the consumers a hub already holds from before the sweep existed. A pass that
+	// found a cold or stale copy of the session bucket would read the whole fleet as gone, so it
+	// runs only on the task holding this machine's durable binding and only over a copy that is
+	// ready, servable and needs no read (startSessionConsumerSweep, session_consumer_sweep.go).
+	kvLoopsDone = append(kvLoopsDone, startSessionConsumerSweep(kvLoopsCtx, &sessionConsumerSweep{
+		delivery: delivery,
+		sessions: sessions,
+		relays:   relays,
+		logger:   logger,
+	}, sessionConsumerSweepInterval))
 
 	// Phase 6b1: Collect the interest bucket's delete markers, which the reaper above leaves one of
 	// per dead session on a key that is never reused and which nothing else removes, so every

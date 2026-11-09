@@ -30,7 +30,9 @@ type sessionConsumerRig struct {
 	consumers *bus.SessionConsumers
 }
 
-func newSessionConsumerRig(t *testing.T) *sessionConsumerRig {
+// newSessionConsumerRig is the rig on a server of its own, its session registry opened with
+// sessionOptions beside the harness's own (newListenerDeliveryHarnessOn).
+func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
@@ -38,12 +40,12 @@ func newSessionConsumerRig(t *testing.T) *sessionConsumerRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newSessionConsumerRigOn(t, client, url)
+	return newSessionConsumerRigOn(t, client, url, sessionOptions...)
 }
 
-func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string) *sessionConsumerRig {
+func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
-	harness := newListenerDeliveryHarnessOn(t, client)
+	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
 	delivery := connectSessionDelivery([]string{url}, harness.config.logger)
 	t.Cleanup(delivery.close)
 	if delivery.consumers == nil {
