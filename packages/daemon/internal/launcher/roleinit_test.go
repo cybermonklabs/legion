@@ -1197,10 +1197,13 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 	}
 }
 
-// TestTheStatusPipeReadsTheWidthItCarries pins both ends of role-init's status pipe: every wait
-// status reportStatus can write — it writes the 32 bits of a syscall.WaitStatus, so from zero to
-// the largest of them — reads back as itself, and a line the writer could never have produced is
-// no status at all rather than one truncated into a role exit that never happened.
+// TestTheStatusPipeReadsTheWidthItCarries pins the reading end of role-init's status pipe, which
+// is parseStatus and nothing else: every line reportStatus can write — it writes the 32 bits of a
+// syscall.WaitStatus as a decimal, so from zero to the largest of them — reads back as itself,
+// and a line that writer could never have produced is no status at all rather than one truncated
+// into a role exit that never happened. What the writer prints is not checked here: reportStatus
+// lives in roleinit_linux.go, runs inside the re-exec stage and writes to an inherited
+// descriptor, so a test of it is a test of that stage rather than of this function.
 func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
 	for _, tc := range []struct {
 		name string

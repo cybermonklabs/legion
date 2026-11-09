@@ -4,8 +4,12 @@
 // by hand into a unit file, a pod's environment or a shell, so an address ending in more than
 // one slash is a typo rather than a shape to refuse; two clients that trimmed differently would
 // post `//v1/...` and `/v1/...` for the same configuration. Go's half is
-// `brokerclient.WithoutTrailingSlashes`. The scenario scripts under `packages/pi-legion/scripts`
-// and `scripts/e2e` still carry trims of their own.
+// `brokerclient.WithoutTrailingSlashes`.
+//
+// Four trims stand outside that set and are none of this function's business: the source text of
+// the child script `packages/envoy-client/src/slack-post.ts` writes, which has no import of its
+// own, the two scenario scripts under `packages/pi-legion/scripts`, and
+// `scripts/e2e/lib/app-logins.ts`.
 
 /**
  * `url` without the slashes it ends in, counted from the right.

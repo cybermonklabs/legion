@@ -375,19 +375,26 @@ var describableSchemes = []string{"Bearer", "Basic", "Digest", "DPoP", "Negotiat
 // The first word of a header is the scheme only when the sender wrote one. A sender that wrote
 // none sends the credential as that first word, with a trailing space or a second word after it
 // as readily as alone, so a word this package does not know by name is counted rather than
-// printed. A scheme it does know is answered with the spelling in the list above, whatever case
-// the sender used, since HTTP reads a scheme without regard to case.
+// printed, in bytes, which is what a reader of a failure can compare against what it sent.
+//
+// A scheme the package knows is answered with the spelling in the list above, and a header that
+// spells it in another case is said to do so: HTTP reads a scheme without regard to case, but
+// the checks that call this read `Bearer ` exactly, so `bearer x` fails a check whose text would
+// otherwise name the very scheme the sender appears to have used.
 func DescribeAuthorization(header string) string {
 	if header == "" {
 		return "no Authorization header"
 	}
 	first, _, _ := strings.Cut(header, " ")
 	for _, scheme := range describableSchemes {
-		if strings.EqualFold(first, scheme) {
+		if first == scheme {
 			return fmt.Sprintf("the %q scheme", scheme)
 		}
+		if strings.EqualFold(first, scheme) {
+			return fmt.Sprintf("the %q scheme spelled in another case", scheme)
+		}
 	}
-	return fmt.Sprintf("a header of %d characters whose first word is no scheme this fake knows", len(header))
+	return fmt.Sprintf("a header of %d bytes whose first word is no scheme this fake knows", len(header))
 }
 
 // verifyAppJWT checks the bearer is an RS256 JWT that verifies against the fake's public key and
