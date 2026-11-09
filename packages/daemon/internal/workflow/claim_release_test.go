@@ -228,8 +228,9 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 	return issues
 }
 
-// queuedKinds counts every queued row by kind, with the relaunch half of a phase-worker start left
-// out as the package's other outbox assertions leave it out (assertOutboxCount).
+// queuedKinds counts every queued row by kind, with every task-less start left out: a phase
+// worker's start is one row, which carries the task (StartOrOwe), and a start with none asks
+// its role nothing.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select kind from outbox

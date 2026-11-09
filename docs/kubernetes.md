@@ -1692,13 +1692,16 @@ The earlier release's `line` passes over a root that already holds a slot, and i
 With the cap full, which is the normal state, that strands every root waiting in the line.
 
 **The outbox rows the earlier release refuses must go, with or without a dump.**
-This release writes two marks into every phase worker's start — `needsSlot` on the row that carries the task, `relaunch` on the row that brings the worker's session back (`record.SuperviseRequest`, written by `workflow.StartOrOwe`) — and two notice kinds, `children-first` and `waiting-for-slot`.
+This release writes one mark into a phase worker's start — `needsSlot`, on the one row that start is (`record.SuperviseRequest`, written by `workflow.StartOrOwe`) — and two notice kinds, `children-first` and `waiting-for-slot`.
+A start a daemon that ran before INFRA-1573 wrote carries a second mark, `relaunch`, on the task-less row of the pair a start was then;
+this release writes that mark nowhere and acts on it nowhere, but such a row can still be queued when the rollback runs, so the statement below strips it too.
 The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), its `validNoticeKind` knows neither kind, and its `execute` returns the decode error, which is a permanent refusal for neither kind of row: every such row still queued fails and is retried on its backoff for ever, so the worker it was written for is never started again and the notice reaches nobody.
 A notice row left there costs that daemon more than its own notice: while it waits on its backoff it is one of the rows `WaitingNotices` returns, the state source reads every one of them through `pacedCatchUps`, and the decode fails there too, so `GET /legion/v1/state` fails for the whole project — `legion state`, every role's `read_record` and the controller's state reads with it — and the release of an architect's waiting notices (`releaseWaiting`) fails the same way.
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
--- The marks this release writes into the pair of rows a phase worker's start is.
+-- The marks a phase worker's start carries: needsSlot, which this release writes, and relaunch,
+-- which an earlier build of it wrote onto the task-less row of a pair.
 update outbox set payload = payload - 'needsSlot' - 'relaunch'
  where kind = 'supervise' and (payload ? 'needsSlot' or payload ? 'relaunch');
 -- The notice kinds the earlier release does not know.
@@ -1707,10 +1710,11 @@ delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slo
 ```
 
 A start that was waiting for its issue's slot loses the mark that held it unclaimable, so the earlier release claims it as soon as it is due and delivers its task: that worker starts under the earlier release's own cap, which counts the trees holding a slot and not the issues at work, and the slot statements above are what keep that cap honest.
-The relaunch row beside it becomes an ordinary start of the same role carrying no task, which brings the claim back and delivers nothing, so for a claim that holds no task of its own the pair starts one worker and hands it one task between them.
-One case hands that worker the same task twice: the architect's or the operator's retry of a held phase, whose pair carries `ResumeTask` on neither row (`restart` → `started`, `internal/workflow/effects.go`), where the claim failed still holding the task of the phase being retried.
-Stripped of its mark, the relaunch row no longer leaves that failed claim to the task row behind it: the earlier release retries the claim as a plain start does, and the retry sends it the task it kept.
-The task row then fails the earlier release's guard against a second copy, which holds only for a row marked `ResumeTask` or a claim still failed (`internal/daemon/outbox.go` on that release), so the row's own copy waits while the kept task is pending and is delivered after it, a second prompt for the phase the worker is already on.
+A phase worker's start is one row, so nothing stands beside it to bring the session back on its own: the row the earlier release claims starts the worker and delivers that worker's task.
+A row still carrying `relaunch` is the task-less half of a pair a daemon that ran before INFRA-1573 wrote, and stripped of both marks it is an ordinary start of the same role carrying no task, which brings the claim back and delivers nothing, so for a claim that holds no task of its own that pair starts one worker and hands it one task between them.
+One case hands that worker the same task twice: the architect's or the operator's retry of a held phase, whose start carries `ResumeTask` nowhere (`restart` → `started`, `internal/workflow/effects.go`), where the claim failed still holding the task of the phase being retried.
+The earlier release retries that failed claim as a plain start does, and the retry sends it the task it kept.
+The start row then fails the earlier release's guard against a second copy, which holds only for a row marked `ResumeTask` or a claim still failed (`internal/daemon/outbox.go` on that release), so the row's own copy waits while the kept task is pending and is delivered after it, a second prompt for the phase the worker is already on.
 It is one worker still, told the same work twice, and no other part of the rollback turns on it.
 A deleted `children-first` notice is told to nobody, and nothing of the earlier release keeps the wait it named: that release starts a parent's own first phase whatever the Dispatch children under it are doing.
 A deleted `waiting-for-slot` notice is told to nobody either, and the whole of its cost is the sentence nobody reads: it says that a person answered the root's wait, where that root stood in the admission line and that the daemon starts its architect again at the next free slot, and the earlier release does that last thing without saying it.

@@ -79,9 +79,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		t.Fatalf("gate = latest %d approved %v, want version 4 open", latest, approved)
 	}
 
-	// The relaunch half of the planner's start is left out, as every other assertion of the
-	// outbox's shape leaves it out (assertOutboxKinds): a start is two rows now, and this is
-	// about the one that carries the task.
+	// Every start that carries no task is left out: a phase worker's start is one row, which
+	// carries the task (StartOrOwe), and the starts with none are the tree architect's own and
+	// the roles admission brings back beside a phase worker's. This is about the row with the
+	// task on it.
 	rows, err := pool.Query(ctx, `select kind, payload from outbox
 		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
 		order by id`)

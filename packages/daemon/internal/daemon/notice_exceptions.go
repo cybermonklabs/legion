@@ -420,15 +420,15 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *recor
 // copyDueAtOnce says whether the next copy of a notice is due at once, given held, the architect's
 // claim as this daemon supervises it (the zero Claim when it does not), resends, the copies of the
 // notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
-// holder) names. A copy is due at once when the architect's agent has taken its role and said it
-// is ready (supervise.TookRole), and it is the first copy or its report names a session other than the
+// holder) names. A copy is due at once when the architect's agent has said it is ready
+// (supervise.TookRole), and it is the first copy or its report names a session other than the
 // one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
 // copy due, and every later notice to the architect would wait behind it. The first covers a
-// relaunch that took its role inside the receipt window; a later copy that failed on another
+// relaunch that reported ready inside the receipt window; a later copy that failed on another
 // session went where the role no longer is. A later copy whose report names no session (the
 // listener names none for no_holder, or when it could not read the holder) says nothing about
 // where the role went. It waits its delay, as does a later copy that failed on the claim's own
-// ready session and every copy while the claim has not taken its role, so a claim that reads live
+// ready session and every copy while the claim has not reported ready, so a claim that reads live
 // while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
 // keeps the notice for the whole schedule instead of spending its copies in seconds.
 func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {

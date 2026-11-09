@@ -40,8 +40,8 @@ func (r *startMidRead) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pg
 }
 
 // TraceQueryEnd fires behind the first of the read's two statements, whichever of them the read
-// sends first: what this test holds is that neither order of the two can report the pair the stop
-// rule reads as a worker nothing is starting again.
+// sends first: what this test holds is that neither order of the two can report a claim older
+// than the rows beside it.
 func (r *startMidRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
 	if r.fired || !strings.Contains(r.sql, "from outbox where kind") && !strings.Contains(r.sql, "from claims c") {
 		return
@@ -58,19 +58,21 @@ func (r *startMidRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tra
 
 // RoleRuns reads a role's claim and its queued supervise rows as two statements, and under a
 // READ COMMITTED transaction — which every fact handler's is, and this test's with it — a
-// writer commits between them. Admission's stop rule reads three terms of that one answer: the
-// claim is retired, no other start of it is queued, and it works no task of the row it is
-// weighing (admit's stopOutlivedStart). The pair "retired beside no queued start" is what that
-// rule reads as a stopped worker nothing is starting again, and it ends the row that carries
-// the worker's task.
+// writer commits between them. The rows are read first and the claims last, so every claim in
+// the answer is at least as new as the rows beside it. Admission's stop rule stands on that
+// order: it weighs the claim's mark of the newest start run against it (LastStartRow) against
+// the id of the row it holds, and a claim read before those rows could report a mark older than
+// the read that said the row was still owed, which would read a row the daemon has just run as
+// a start still to come (admit's stopOutlivedStart).
 //
-// The run of that claim's own start commits the two halves of that pair one after the other: the
-// claim's new state first, the delete of the start row second. A read that took the claim before
-// the first commit and the rows after the second would report exactly that pair for a worker the
-// daemon is at that moment starting again, and the start that carries its task would go.
-// Reading the rows first is what rules it out: a read that takes the rows before the delete sees
-// the start, and one that takes them after it takes the claim later still, so it sees the state
-// the delete stands for.
+// The run of a retired claim's own start commits the two halves of that order's one hard case
+// after the other: the claim's new state first, the delete of the start row second. A read that
+// took the claim before the first commit and the rows after the second would report a retired
+// claim with no queued start of it at all — a claim as it stood before its own start ran, beside
+// rows as they stood after — for a worker the daemon is at that moment starting again. That pair
+// is the witness this test reads for, because it can come back from no other order: a read that
+// takes the rows before the delete sees the start, and one that takes them after it takes the
+// claim later still, so it sees the state the delete stands for.
 //
 // This test commits both halves behind the read's own first statement, which is the moment that
 // made the pair reachable, and reads that the pair is not what comes back.
@@ -146,7 +148,7 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 		}
 	}
 	if run.Claim.State == supervise.StateRetired && !queuedStart {
-		t.Fatalf("the run of %s reads retired with no queued start, while the run of its own start was committing: admission's stop rule reads that pair as a stopped worker nothing is starting again, and ends the row that carries its task. The claim and the rows must be read in an order that cannot report it (record's RoleRuns)",
+		t.Fatalf("the run of %s reads retired with no queued start, while the run of its own start was committing: that pair is a claim read before the rows, and admission's stop rule weighs the claim's own start mark against a row it already read as owed. The claim and the rows must be read in an order that cannot report it (record's RoleRuns)",
 			token)
 	}
 }

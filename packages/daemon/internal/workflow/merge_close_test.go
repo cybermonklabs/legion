@@ -707,10 +707,9 @@ func issueOutboxOf(t *testing.T, pool *pgxpool.Pool, issue, kind string) []outbo
 	return got
 }
 
-// superviseRowsOf decodes issue's supervise rows of op, oldest first, with the relaunch half of
-// a phase-worker start left out: a start is two rows (StartOrOwe), one that brings the role's
-// session back carrying no task and one that carries the task and waits for the issue's slot,
-// and it is the second every caller here is about.
+// superviseRowsOf decodes issue's supervise rows of op, oldest first, with every task-less start
+// left out: a phase worker's start is one row, which carries the task and waits for the issue's
+// slot (StartOrOwe), and that row is the one every caller here is about.
 func superviseRowsOf(t *testing.T, pool *pgxpool.Pool, issue, op string) []record.SuperviseRequest {
 	t.Helper()
 	var requests []record.SuperviseRequest

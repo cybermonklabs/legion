@@ -1529,9 +1529,9 @@ func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 // would then silence the telling for ever. Such a root leaves the workflow on this same pass
 // (releaseUnslotted).
 //
-// A root whose architect holds no claim row of its generation, or whose claim has not taken its
-// Envoy role (supervise.TookRole), is told nothing either: there is no session to read the
-// notice, and the pass after that architect takes its role tells it then. The claim is read as
+// A root whose architect holds no claim row of its generation, or whose claim has not said it is
+// ready (supervise.TookRole), is told nothing either: there is no session to read the notice,
+// and the pass after that architect reports ready tells it then. The claim is read as
 // workflow.ReconcileAwaiting reads it, by the architect token of this project. An untold wait
 // costs those reads each pass — the Dispatch claim workflow.Unresumable reads, and one
 // record.Store.RoleRun — and a wait already marked costs none of them.
