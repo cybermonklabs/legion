@@ -38,18 +38,24 @@ export function fakeSearchResponse(
   hits: readonly SearchResult[],
   overrides: SearchResponseOverrides = {}
 ): SearchResponse {
-  const merged = {
+  // Everything `SearchResponse` requires apart from paging, typed rather than cast: a field the
+  // response grows (as `filters` and `query` were grown here) is missing from this binding and
+  // fails to compile with TS2741, instead of slipping silently through the cast below.
+  const body: Omit<SearchResponse, keyof SearchResultsPage> = {
     results: hits as SearchResult[],
-    total: hits.length,
-    reachable: hits.length,
-    limit: 20,
-    offset: 0,
     took_ms: 0,
     // What the route answers for a plain query: no chip narrowed it and no operator form was
     // written in it. The two fields are required of a SearchResponse, so a fake that left them
     // out would be a shape Dispatch never answers.
     filters: {},
     query: { operators: [], broadened: false },
+  };
+  const merged = {
+    ...body,
+    total: hits.length,
+    reachable: hits.length,
+    limit: 20,
+    offset: 0,
     ...overrides,
   };
   const undefinedFields = PAGING_FIELDS.filter((field) => merged[field] === undefined);
@@ -59,5 +65,9 @@ export function fakeSearchResponse(
         "undefined while the rest answered numbers; override all four paging fields together or none."
     );
   }
+  // The cast covers the four paging fields alone: an override may answer each of them an explicit
+  // `undefined` (the legacy pre-paging shape the guard above lets through whole), which
+  // `SearchResponse`'s four required numbers refuse. Every other field `SearchResponse` requires
+  // is `body`'s to check, and `body` refuses one that is missing rather than hiding it here.
   return merged as SearchResponse;
 }
