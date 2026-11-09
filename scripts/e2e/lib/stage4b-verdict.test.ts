@@ -15,6 +15,9 @@ import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./s
 const script = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(script);
 const rigFn = scriptFunctions(join(import.meta.dir, "rig.sh"));
+// The teardown's last check, which the script takes from lib/github-apps.sh rather than writing
+// itself: that library's own function, by name, as the functions above are the script's own.
+const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
 const helperGuard = nameMissingHelpers(script, join(import.meta.dir, "rig.sh"));
 const dir = temporaryDirectory("stage4b-verdict-test");
 const bin = join(dir, "bin");
@@ -223,6 +226,7 @@ ${fn("limit_pending_blocked")}
 ${rigFn("until_true")}
 ${fn("remove_negative_config")}
 ${fn("remove_run_container")}
+${appsFn("app_key_left")}
 ${fn("cleanup")}
 trap cleanup EXIT
 ${tail}
