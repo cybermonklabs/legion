@@ -2795,6 +2795,64 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 	}
 }
 
+// TestNoDocumentKeepsItsWindowMarkerForEver: windows_owed_at is read through a partial index
+// (20261107194001, 20261108070000), so a row that keeps the marker for ever is an entry every
+// later pass of the window arm pays for and that nothing ever removes - the cost the marker was
+// added to take away, growing with the deployment.
+//
+// A document that holds no block at a version of its own is the case that keeps it. IndexBlocks
+// writes its document_block_versions row with the marker set, and then no arm lists it: the
+// block arm does not, since the document is indexed at its version, and
+// refs.DocumentsOwedWindows does not, since its semi-join asks for a row of document_blocks,
+// which such a document has none of. WriteDocumentWindows is the only statement that clears the
+// marker and it runs only for a document the arm listed, so the row stays marked.
+//
+// A document with no block is ordinary rather than contrived: an issue created with no spec
+// gets a spec.md whose markdown is empty. Driven against a Dispatch built from this head, two
+// such rows were left marked, the older for 57 minutes across the three ticks its log recorded
+// (INFRA-988).
+//
+// The property this holds the index to is the one a marker must have, whichever way it is kept:
+// after the arm has run, no owner is left marked that the arm will not list. Either such a
+// document is listed and windowed (its windows being none), or IndexBlocks leaves it unmarked.
+func TestNoDocumentKeepsItsWindowMarkerForEver(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	empty := createOwedDocument(t, database, service, "", "spec", "", "")
+	withBlocks := createOwedDocument(t, database, service, "", "notes", "# Notes\n\nA paragraph.\n", "")
+
+	// Two passes: the first indexes the blocks the documents have, the second has every window
+	// the arm will ever write for them behind it.
+	reconcileBlockIndex(t, service, "")
+	reconcileBlockIndex(t, service, "")
+
+	var marked []string
+	rows, err := database.Pool.Query(ctx, `
+		select v.artifact_id::text || ' (version ' || v.version || ', ' ||
+		       (select count(*) from document_blocks b where b.artifact_id = v.artifact_id) || ' blocks)'
+		from document_block_versions v where v.windows_owed_at is not null order by v.artifact_id
+	`)
+	if err != nil {
+		t.Fatalf("read the documents left marked: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row string
+		if err := rows.Scan(&row); err != nil {
+			t.Fatalf("read the documents left marked: %v", err)
+		}
+		marked = append(marked, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the documents left marked: %v", err)
+	}
+	if len(marked) > 0 {
+		t.Fatalf("the window arm left %d document(s) marked that it will never list: %v\n"+
+			"(the document with no block is %s; the one with blocks is %s)",
+			len(marked), marked, empty, withBlocks)
+	}
+}
+
 // indexCondOnID matches an "Index Cond" that keys the id column of the relation the node scans,
 // which the plan writes unqualified; a condition naming another relation's id writes it with
 // that relation's alias.
