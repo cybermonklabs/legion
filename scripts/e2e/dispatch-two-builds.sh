@@ -75,8 +75,8 @@ envoy_port=${TWO_BUILDS_ENVOY_PORT:-19073}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: the three variables a caller of the
-# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -187,18 +187,11 @@ begin prerequisites
 for tool in go bun curl psql git openssl python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
-# Which host the DSN names, read by libpq itself: the run drops and recreates the database's
-# public schema and both builds migrate it, so it must be this machine's. The guard is
-# scripts/e2e/lib/loopback-dsn.py, whose own section of scripts/e2e/README.md says what it reads
-# and what it refuses.
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-if ! db_host=$(DATABASE_URL=$database_url python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
-  DATABASE_URL "this run resets the database" 2>&1); then
-  fail "$db_host"
-fi
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
   fail "--base-commit '$base_commit' names no commit of this repository"
 for port in "$base_port" "$head_port" "$envoy_port"; do

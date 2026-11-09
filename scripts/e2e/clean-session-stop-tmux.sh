@@ -135,8 +135,8 @@ model_id=${LEGION_E2E_MODEL_ID:-}
 claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
 omp_bin=${LEGION_E2E_OMP_PATH:-}
 claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
-# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
-# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
+# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
@@ -638,13 +638,7 @@ case $pg_dsn in
   postgres://* | postgresql://*) ;;
   *) fail "CLEAN_SESSION_STOP_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-# Which host the DSN names, read by libpq itself: the run creates and drops a database there, so
-# it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py, whose own section of
-# scripts/e2e/README.md says what it reads and what it refuses.
-if ! db_host=$(CLEAN_SESSION_STOP_PG_DSN=$pg_dsn python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
-  CLEAN_SESSION_STOP_PG_DSN "the run creates and drops a database there" 2>&1); then
-  fail "$db_host"
-fi
+require_loopback_dsn db_host CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
 [ -n "$omp_bin" ] || omp_bin=$(command -v omp || true)
 [ -n "$omp_bin" ] || { [ ! -x /opt/omp/bin/omp ] || omp_bin=/opt/omp/bin/omp; }
 [ -n "$omp_bin" ] ||

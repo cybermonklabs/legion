@@ -166,9 +166,8 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# The three variables a caller of the loopback guard clears, and why: scripts/e2e/README.md's
-# lib/loopback-dsn.py section. The `compgen -e` sweep further down makes the session's
-# environment, not this shell's.
+# require_loopback_dsn in lib/rig.sh says why a caller of the loopback guard clears these three.
+# The `compgen -e` sweep further down makes the session's environment, not this shell's.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 
 runs=1
@@ -307,17 +306,11 @@ begin prerequisites
 for tool in bun go git jj psql curl dispatch python3 openssl; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
-# Which host the DSN names, read by libpq itself: this run creates and force-drops databases
-# there, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py, whose own
-# section of scripts/e2e/README.md says what it reads and what it refuses.
 case "$pg_dsn" in
   postgres://* | postgresql://*) ;;
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-if ! db_host=$(LEGION_TEST_PG_DSN=$pg_dsn python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
-  LEGION_TEST_PG_DSN "this run creates and force-drops databases there" 2>&1); then
-  fail "$db_host"
-fi
+require_loopback_dsn db_host LEGION_TEST_PG_DSN "$pg_dsn" "this run creates and force-drops databases there" || fail "$db_host"
 [ -n "$omp" ] || fail "LEGION_OMP_PATH is required: it names the Oh My Pi binary each session runs"
 [ -x "$omp" ] || fail "LEGION_OMP_PATH=$omp is not an executable file"
 [ -n "$gh_path" ] || gh_path=$(command -v gh) ||

@@ -109,6 +109,42 @@ describe.skipIf(skip)("loopback-dsn.py takes a loopback DSN", () => {
       refusal: "",
     });
   });
+
+  // The two DSNs a WHATWG `URL` reads another host from: it ends the user name at the last `@`
+  // and starts the query at the first `?`, so it reads the hosts 10.1.2.3 and evil.example.
+  // libpq ends the user name at the first `@` and starts no query before it, so the host of
+  // both is localhost, and the guard takes them and prints that host. The clients the proofs
+  // then connect with are libpq's own — psql, and the string run_database_url rebuilds below —
+  // so each client agrees with the guard. Measured with psql 18.6: the first names the port
+  // `5432@10.1.2.3`, which psql refuses with `invalid integer value "5432@10.1.2.3" for
+  // connection option "port"` before it connects anywhere, and the second connects to
+  // `localhost (127.0.0.1)` as the user `evil.example?`.
+  test("a second `@` is part of the port, and no second host", () => {
+    expect(guard("postgres://u@localhost:5432@10.1.2.3/db")).toEqual({
+      code: 0,
+      host: "localhost",
+      refusal: "",
+    });
+  });
+
+  test("a `?` right before the `@` starts no query", () => {
+    expect(guard("postgres://evil.example?@localhost/db")).toEqual({
+      code: 0,
+      host: "localhost",
+      refusal: "",
+    });
+  });
+
+  // Host mode writes no value back, so it takes a password libpq reads as no UTF-8 text: libpq
+  // connects with the bytes the DSN gives it, whatever they are. The --dbname mode refuses this
+  // DSN, in the last block below.
+  test("a password that is no UTF-8 text is still a loopback host", () => {
+    expect(guard("postgres://u:p%ffq@localhost/db")).toEqual({
+      code: 0,
+      host: "localhost",
+      refusal: "",
+    });
+  });
 });
 
 describe.skipIf(skip)("loopback-dsn.py refuses the host libpq reads", () => {
@@ -269,6 +305,11 @@ describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own databas
   // of any of the three names another database or parses no more. The helper reads the string
   // back with libpq before it prints it, so a row that passes is a string libpq reads as the
   // DSN's own keywords with this database.
+  // The last three are what a text join of the DSN's parts gets wrong. In the fifth a WHATWG
+  // `URL` reads the host 10.1.2.3 and in the sixth evil.example, where libpq reads localhost in
+  // both; the rebuilt string carries libpq's reading, which is the host the guard printed. The
+  // seventh sets dbname twice over, in its path and in its query, and libpq and pgx both take
+  // the query's: the rebuild carries one dbname, which is the run's own database.
   const rows: [string, string, string][] = [
     [
       "postgres://u?x:p@localhost:5433/db",
@@ -284,6 +325,21 @@ describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own databas
     [
       "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable",
       `dbname='${database}' host='127.0.0.1' port='5433' sslmode='disable' user='legion_test'`,
+      "127.0.0.1",
+    ],
+    [
+      "postgres://u@localhost:5432@10.1.2.3/db",
+      `dbname='${database}' host='localhost' port='5432@10.1.2.3' user='u'`,
+      "localhost",
+    ],
+    [
+      "postgres://evil.example?@localhost/db",
+      `dbname='${database}' host='localhost' user='evil.example?'`,
+      "localhost",
+    ],
+    [
+      "postgres://u@127.0.0.1:5433/postgres?dbname=other&sslmode=disable",
+      `dbname='${database}' host='127.0.0.1' port='5433' sslmode='disable' user='u'`,
       "127.0.0.1",
     ],
   ];
@@ -304,17 +360,19 @@ describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own databas
   });
 
   // libpq decodes a percent sign, so each of these two reaches the rewrite as a password the
-  // rebuilt string cannot carry: the first as bytes that are no UTF-8 text, which a decode that
-  // replaces them would change before psql ever saw them, and the second as a line break, which
-  // a caller's configuration file reads as the end of the value.
+  // rebuilt string cannot carry, and one check refuses both: a character that does not print.
+  // The first is the byte 0xFF, which the decode keeps as the surrogate U+DCFF, and a file
+  // carries no surrogate back to psql. The second is a line break, which a caller's
+  // configuration file reads as the end of the value. Host mode takes the first of the two, in
+  // the first block above: it writes no value back.
   test("a password libpq reads as no UTF-8 text is refused by its keyword", () => {
     const answer = rewrite("postgres://u:p%ffq@localhost/db", database);
     expect(answer.code).toBe(1);
     expect(answer.url).toBe("");
     expect(answer.refusal).toBe(
-      `${variable} gives password bytes libpq reads as no UTF-8 text: this helper writes every` +
-        " value the DSN sets back into a connection string, a byte it cannot read it cannot" +
-        " write back, and this refusal prints no value"
+      `${variable} gives password U+DCFF, a character that does not print: it reaches the` +
+        " rewritten connection string, where a caller writes that string into a file, and this" +
+        " refusal prints no value that holds one"
     );
   });
 

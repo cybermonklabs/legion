@@ -3240,7 +3240,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 
 - **It runs in an issue pod.**
   It needs no docker, tmux, mise or root.
-  It uses `go`, `bun`, `jq`, `curl`, `tar` and `python3`.
+  It uses `go`, `bun`, `jq`, `curl`, `psql`, `tar` and `python3`.
 
 - **Oh My Pi runs in `--mode rpc`, as a Legion pane runs it, not as the TUI in tmux.**
   The command is `omp --extension <pi-envoy> --mode rpc`, with the plugin packed by [`lib/pack-plugin.sh`](#libpack-pluginsh) and unpacked as the worker image unpacks `/opt/legion/pi-envoy`.
@@ -3255,8 +3255,9 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
   A key is needed only for a model of its provider.
 
 - **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`merged-root-waits.sh`](#merged-root-waitssh).
-  The rig creates a database of its own in it and drops it on any exit.
-  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, which it calls before the driver creates that database.
+  The script creates a database of its own in it with `psql` and force-drops it with `psql` on any exit.
+  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/rig.sh`](#librigsh)'s `require_loopback_dsn`, which it calls before it creates that database.
+  Dispatch's `DATABASE_URL` is the connection string `run_database_url` rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so libpq reads the DSN for every client of the run and the driver reads it for none.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
 - **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.10.22, which the rig installs once with `go install`.
@@ -4656,7 +4657,7 @@ The role lane falls back to the machine groups, since that grant carries no shar
 
 | input | default | meaning |
 | :--- | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and drops a database of its own, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it |
+| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and force-drops a database of its own there with `psql`, gives Dispatch the connection string [`lib/rig.sh`](#librigsh)'s `run_database_url` rebuilds for that database, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it |
 | `SESSION_DELIVERY_MODEL_KEY_FILE` | `/var/run/model-gateway-key/key` | the file holding the sessions' model key, handed to Oh My Pi and Claude Code alone as their `ANTHROPIC_API_KEY` and never printed; the default is where every role pod mounts its model gateway's key |
 | `ANTHROPIC_BASE_URL` | unset | when set, passed to Oh My Pi and Claude Code only, beside the key: a model gateway whose key the key file holds; an issue pod has no Anthropic key of its own; its `ANTHROPIC_BASE_URL` names its model gateway, and `/var/run/model-gateway-key/key` holds that gateway's key |
 | `SESSION_DELIVERY_OMP` | `omp` on `PATH`, else `/opt/omp/bin/omp` | the Oh My Pi to run |
@@ -4679,13 +4680,13 @@ Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
 Eight proofs call it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
+Each of the eight calls it in one line, through [`lib/rig.sh`](#librigsh)'s `require_loopback_dsn`, which all eight source:
 
 ```sh
-if ! db_host=$(DATABASE_URL=$database_url python3 scripts/e2e/lib/loopback-dsn.py \
-  DATABASE_URL "this run resets the database" 2>&1); then
-  fail "$db_host"
-fi
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
+
+The rationale is written once, above `require_loopback_dsn` in `lib/rig.sh`: the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
 
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
@@ -4701,26 +4702,30 @@ The host is the one libpq reads, wherever the DSN puts it: `postgres://localhost
 libpq's own parser reads the DSN (`PQconninfoParse`), because a shell pattern and libpq disagree about which text is the host.
 libpq ends the user name at the first `@`, and a `?` does not end it, so the host of `postgres://localhost?sslmode=disable@evil.example/db` is `evil.example`, while a pattern that ends the authority at the first `?` reads `localhost`.
 libpq decodes a percent sign in a parameter key too, so `%68ost=` reaches it as `host=`, and it reads the whole DSN, while a reader that takes the parameters one line at a time reads the first line alone.
+A WHATWG `URL` ends the user name at the last `@` and starts the query at the first `?`, so it reads the host of `postgres://u@localhost:5432@10.1.2.3/db` as 10.1.2.3 and the host of `postgres://evil.example?@localhost/db` as evil.example, where libpq reads `localhost` in both and the helper prints it.
+Measured with psql 18.6: the first names the port `5432@10.1.2.3`, which psql refuses before it connects anywhere, and the second connects to `localhost (127.0.0.1)`.
 
 `loopback-dsn.py NAME WHAT --dbname DATABASE` prints the connection string that gives a run its own database on the host the DSN names.
-The proofs reach it through `run_database_url` in [`lib/rig.sh`](#librigsh), which they already source.
+The proofs reach it through `run_database_url` in [`lib/rig.sh`](#librigsh), which all eight source.
 The string is the keywords libpq reads from the DSN, with DATABASE as `dbname`, written as `dbname='…' host='…'`: the keyword/value form libpq and pgx read wherever they read a URL.
 It is rebuilt and not appended to.
 A `?dbname=` or `&dbname=` appended to the DSN's own text takes its separator from a `?` that can be inside the user name, where it starts no query, and it breaks a DSN whose text ends in a `?`.
+A join of the DSN's server, the database and the DSN's parameters is worse: a `?dbname=other` the caller's DSN carries outranks the path for libpq and for pgx, so the run migrates `other`.
 libpq reads the rebuilt string back before the helper prints it: libpq must read DATABASE as the database, the same host as the DSN names, and every other keyword as the DSN sets it.
-Every value reaches that string as libpq decoded it, so this mode also refuses a value that holds a character that does not print: a newline in a password is a line break in a string the caller writes into a file.
+Every value reaches that string as libpq decoded it, so this mode also refuses a value that holds a character that does not print: a newline in a password is a line break in a string the caller writes into a file, and a byte that is no UTF-8 text is a surrogate (`U+DCFF` for the byte `0xFF`) that no file carries back to psql.
 A refusal names the database, the host, and every keyword libpq does not read back as the DSN sets it.
 
-The refusals are a character that does not print in the DSN (`str.isprintable()` is false for the C0 controls, DEL, the C1 controls and the bidirectional format characters), a keyword whose value libpq reads as no UTF-8 text, a host, `hostaddr` or `service` holding a character that does not print after libpq decodes it, a DSN libpq cannot parse, a DSN with no host, a host list of more than one (libpq connects to the next host when the first does not answer), a `hostaddr` parameter, a `service` parameter (whose entry in `~/.pg_service.conf` can set `hostaddr`, which sends the connection to another address), and a host that is none of the three loopback names.
+The refusals are a character that does not print in the DSN (`str.isprintable()` is false for the C0 controls, DEL, the C1 controls, the bidirectional format characters and the surrogates), a host, `hostaddr` or `service` holding a character that does not print after libpq decodes it, a DSN libpq cannot parse, a DSN with no host, a host list of more than one (libpq connects to the next host when the first does not answer), a `hostaddr` parameter, a `service` parameter (whose entry in `~/.pg_service.conf` can set `hostaddr`, which sends the connection to another address), and a host that is none of the three loopback names.
+The `--dbname` mode refuses one more: any keyword whose value holds such a character, since it writes every value back.
 Each refusal names what libpq read — the host, the hostaddr or the service, or else the keyword alone — and prints no other part of the DSN, because the user name and the password are in it.
 It prints a value only where every character of the value prints, so a refusal is one line and writes no escape sequence to the terminal.
-A value libpq reads as no UTF-8 text is refused without decoding it: this helper writes every value it reads back into the rebuilt string, and a byte it cannot read it cannot write back, so a decode that replaced that byte would change what psql then authenticates with.
+Each value is decoded with `errors="surrogateescape"`, which round-trips every byte, so host mode takes the DSNs libpq takes, whatever bytes a password holds: it writes no value back.
 Where `ctypes.util.find_library("pq")` finds no libpq, every DSN is refused and the refusal names libpq.
 There is no second, weaker check to fall back on.
 
 `loopback-dsn.test.ts` drives the helper with this host's own libpq and asserts the answer it gave, never a pattern of the DSN:
-the DSN a run is given, `localhost` and `::1`, a `host=` parameter, a host name inside the user name, an empty `hostaddr=`, the two forms with a `?` inside the user name, a `%68ost=` key, a Unix-socket directory, a newline before an `&host=`, a percent-encoded newline, a percent-encoded escape sequence and a percent-encoded C1 control in the host, two hosts, a `hostaddr`, a `service`, a remote host, a DSN with no host, a DSN libpq cannot parse, and an unset variable.
-It drives `run_database_url` over four DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, and the DSN a run is given — and pins the string the rewrite answers with, which libpq has read back inside the helper.
+the DSN a run is given, `localhost` and `::1`, a `host=` parameter, a host name inside the user name, an empty `hostaddr=`, the two forms with a `?` inside the user name, a second `@` inside the authority, a `?` right before the `@`, a password of bytes that are no UTF-8 text, a `%68ost=` key, a Unix-socket directory, a newline before an `&host=`, a percent-encoded newline, a percent-encoded escape sequence and a percent-encoded C1 control in the host, two hosts, a `hostaddr`, a `service`, a remote host, a DSN with no host, a DSN libpq cannot parse, and an unset variable.
+It drives `run_database_url` over seven DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, the DSN a run is given, the two a WHATWG `URL` reads another host from, and one whose query sets `dbname` — and pins the string the rewrite answers with, which libpq has read back inside the helper.
 Two more cases pin a refusal of that mode: a password of bytes libpq reads as no UTF-8 text, and a percent-encoded newline in a password.
 
 ## lib/held-port.py
@@ -5322,6 +5327,7 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
+Each of the eight proofs that writes a PostgreSQL server sources it too, for the two helpers below that read the caller's DSN; `envoy-session-delivery.sh` sources it for those two alone and keeps its own `await_port_file` and `keep_port`, which replace the rig's.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
@@ -5340,6 +5346,13 @@ Each item below names a function, then what it does.
   It says what it waits for on entry and every 60 s.
   A poll that never returns would hold the wait, so callers bound their remote calls.
   A guard that writes `$evidence/pane-endpoint-violation.txt` makes the next wait abort, naming the violation
+
+- `require_loopback_dsn VAR NAME DSN WHAT`
+
+  assigns VAR the host libpq reads from DSN, which is `127.0.0.1`, `localhost` or `::1`, and returns 0.
+  For a DSN [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses it assigns VAR that refusal line and returns 1, so each proof ends the run in its own words (`|| fail "$db_host"`, and `|| refuse "$db_host"` in `envoy-session-delivery.sh`).
+  NAME is the environment variable the caller read DSN from, and it starts the refusal; WHAT is what the run does on that server, in a few words.
+  The comment above it in `lib/rig.sh` is the one copy of why every proof asks libpq, and why the clients it then writes the server with are libpq's own
 
 - `run_database_url VAR NAME DSN DATABASE WHAT`
 

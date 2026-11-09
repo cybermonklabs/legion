@@ -11,8 +11,8 @@
 #
 # This script is setup and cleanup only. The checks are lib/dispatch-session-settings.ts's: each
 # prints `== <name>`, what it observed and `ok <name>`, and the first that fails ends the run
-# non-zero naming it. Run it from a checkout on a Linux host with go, bun, jq, curl and python3, no
-# docker, tmux or root needed, as
+# non-zero naming it. Run it from a checkout on a Linux host with go, bun, jq, curl, psql and
+# python3, no docker, tmux or root needed, as
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     ANTHROPIC_API_KEY=… OPENAI_API_KEY=… bash scripts/e2e/dispatch-session-settings.sh
@@ -44,8 +44,8 @@
 # PGHOSTADDR, PGSERVICE or PGSERVICEFILE variable of the caller's shell reaches any process of
 # the run: the rig talks only to its own loopback stack.
 set -euo pipefail
-# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
-# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
+# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
@@ -110,7 +110,8 @@ cleanup() {
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database" ]; then
-    bun "$driver" db-drop "$database" || echo "could not drop database $database; drop it by hand" >&2
+    psql "$LEGION_TEST_PG_DSN" -qtA -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+      echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
   if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
@@ -127,17 +128,10 @@ trap 'exit 143' TERM
 echo "== setup"
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-for tool in go bun jq curl tar python3; do
+for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
-# Which host the DSN names, read by libpq itself: the driver creates a database there and drops
-# it on any exit, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py,
-# whose own section of scripts/e2e/README.md says what it reads and what it refuses. It runs
-# after the tool check above, because it is python3 that runs it.
-if ! db_host=$(python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
-  LEGION_TEST_PG_DSN "the run creates and drops a database there" 2>&1); then
-  fail "$db_host"
-fi
+require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "the run creates and drops a database there" || fail "$db_host"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -203,7 +197,8 @@ until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-database_url=$(bun "$driver" db-create "$database") || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql "$LEGION_TEST_PG_DSN" -qtA -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there"
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&

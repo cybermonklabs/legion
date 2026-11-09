@@ -12,10 +12,11 @@ environment and never from the command line, so no process list holds its passwo
 The helper prints the host and exits 0 when libpq reads one loopback host from the DSN:
 127.0.0.1, localhost or ::1. Every other answer is a refusal: one line on stderr that names what
 libpq read and why, and exit 1. It refuses a DSN with a character that does not print, a DSN
-that gives a keyword bytes libpq reads as no UTF-8 text, a DSN whose host, hostaddr or service
-holds a character that does not print after libpq decodes it, a DSN libpq cannot parse, a DSN
-with no host, a host list of more than one, a `hostaddr` parameter, a `service` parameter, and a
-host that is not one of the three loopback names.
+whose host, hostaddr or service holds a character that does not print after libpq decodes it, a
+DSN libpq cannot parse, a DSN with no host, a host list of more than one, a `hostaddr`
+parameter, a `service` parameter, and a host that is not one of the three loopback names. It
+takes a DSN whose other keywords hold what they like: it writes none of them back, and libpq
+connects with what the DSN says.
 
 The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection. This
 helper reads the DSN alone. psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name an
@@ -32,8 +33,9 @@ it breaks a DSN whose text ends in a `?`. libpq reads the rebuilt string back be
 prints it. libpq must read DATABASE as the database, the same host as the DSN names, and every
 other keyword as the DSN sets it. Every value reaches that string as libpq decoded it, so this
 mode also refuses a value that holds a character that does not print: a newline in a password is
-a line break in a string the caller writes into a file. A refusal names the database, the host,
-and every keyword libpq does not read back as the DSN sets it.
+a line break in a string the caller writes into a file, and a byte that is no UTF-8 text is a
+surrogate (U+DCFF for the byte 0xFF) that no file can carry back to psql. A refusal names the
+database, the host, and every keyword libpq does not read back as the DSN sets it.
 
 libpq's own parser reads the DSN (PQconninfoParse, through ctypes), because a shell pattern and
 libpq disagree about which text is the host:
@@ -108,8 +110,11 @@ def parsed(library, dsn):
     """Return the keywords libpq reads from dsn, each with the value the DSN gives it.
 
     The parse applies no default and reads no environment variable: what comes back is what the
-    DSN itself says. A value is decoded strictly: this helper writes every value it reads back
-    into a connection string, and a byte it reads as no UTF-8 text it cannot write back.
+    DSN itself says. A value is decoded with errors="surrogateescape", which round-trips every
+    byte, so the host this helper prints is the host libpq reads whatever bytes the DSN holds.
+    A byte that is no UTF-8 text becomes a surrogate, U+DCFF for the byte 0xFF, which does not
+    print: the --dbname mode refuses it with every other character it cannot write back, and
+    host mode refuses it in the host, the hostaddr or the service alone.
     """
     message = ctypes.c_char_p()
     options = library.PQconninfoParse(dsn, ctypes.byref(message))
@@ -124,14 +129,7 @@ def parsed(library, dsn):
             value = options[index].val
             if value is not None:
                 keyword = options[index].keyword.decode()
-                try:
-                    read[keyword] = value.decode()
-                except UnicodeDecodeError:
-                    raise Refusal(
-                        f"gives {keyword} bytes libpq reads as no UTF-8 text: this helper writes"
-                        " every value the DSN sets back into a connection string, a byte it"
-                        " cannot read it cannot write back, and this refusal prints no value"
-                    ) from None
+                read[keyword] = value.decode("utf-8", "surrogateescape")
             index += 1
     finally:
         library.PQconninfoFree(options)

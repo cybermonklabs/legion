@@ -162,8 +162,8 @@
 # refused (an input or tool is missing); 130, 143 on SIGINT, SIGTERM.
 # shellcheck disable=SC2317 # cleanup runs from the EXIT trap, the probes from await and wait_until
 set -euo pipefail
-# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
-# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
+# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | LEGION_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE)
@@ -247,12 +247,8 @@ done
 
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-# This pattern reads the URL's shape and not its host: it splits the DSN into the server part and
-# the parameters, and the loopback guard further down is what reads the host libpq reads.
-[[ "$LEGION_TEST_PG_DSN" =~ ^(postgres(ql)?://[^/]+)/([^?]*)(\?.*)?$ ]] ||
-  refuse "LEGION_TEST_PG_DSN is not a postgres:// URL with a database path"
-pg_server=${BASH_REMATCH[1]}
-pg_params=${BASH_REMATCH[4]}
+# The DSN itself is read by libpq alone, further down: require_loopback_dsn reads which host it
+# names, and run_database_url rebuilds it to name this run's own database.
 [ -r "$model_key_file" ] ||
   refuse "the model key file $model_key_file is not readable: both sessions run their turns on it (SESSION_DELIVERY_MODEL_KEY_FILE names another)"
 # Read into a shell variable that is never exported: isolated_exec hands it to the two sessions'
@@ -287,17 +283,15 @@ done
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
-# shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
-. "$repo_root/scripts/e2e/lib/port-file.sh"
+# lib/rig.sh for require_loopback_dsn and run_database_url, the two helpers every proof that
+# writes a PostgreSQL server shares; it reads the checkout as $root and brings lib/port-file.sh
+# with it. This proof calls no other helper of the rig's, and its own await_port_file and
+# keep_port, written for the pid map below, replace the rig's two of those names.
+root=$repo_root
+# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
+. "$repo_root/scripts/e2e/lib/rig.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
-# Which host the DSN names, read by libpq itself: the run creates a database there and
-# force-drops it, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py,
-# whose own section of scripts/e2e/README.md says what it reads and what it refuses. It runs
-# after the tool check above, because it is python3 that runs it.
-if ! db_host=$(python3 "$repo_root/scripts/e2e/lib/loopback-dsn.py" \
-  LEGION_TEST_PG_DSN "this run creates and force-drops a database there" 2>&1); then
-  refuse "$db_host"
-fi
+require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and force-drops a database there" || refuse "$db_host"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
@@ -682,7 +676,7 @@ start_proxy proxy-cc
 
 database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 psql "$LEGION_TEST_PG_DSN" -qtA -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
-database_url="${pg_server}/${database}${pg_params}"
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there"
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 mkdir -p "$web_dist"
