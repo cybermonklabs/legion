@@ -118,7 +118,8 @@ claim once written. `recordDeliveredFor(sessionID, frame)` records the same way 
 frame was delivered in while the host shuts down: it writes while the host's optional
 `writeSessionID()` still names that session, once `sessionID()` already answers none, and the
 ledger holds the frame from the call on (Oh My Pi records every BTW's event id so, before its side
-turn and before any reply is posted).
+turn and before any reply is posted). It answers whether it recorded the frame, so a host that has
+moved on can report what that session's record lost rather than drop it without a word.
 
 The state holds each followed subject's `since` and `after`, or `from_start` on the session's own
 agent subject while its first sweep still owes it from the oldest message the stream holds, the

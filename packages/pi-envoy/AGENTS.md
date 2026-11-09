@@ -196,6 +196,15 @@ the keyed layer, which the client proves by Dispatch's own echo of the key or by
 Every refusal, every error and the timeout (10 s), a Dispatch configuration that no longer
 resolves included, keeps the card and posts nothing.
 
+Every branch of a delivery holds the frame to the one session it was addressed to.
+A `/new`, a `/resume` or a move with no event for it can land in any await before the work, so every branch reads `sessionOpen` again before it acts.
+Those awaits are the acknowledgement, the read of a body the event carried in part, the accept, and the picture load.
+Before the accept nothing is answered: the claim is released, so the listener sends the frame again and it waits for the session it names.
+Accepting it there would spend that person's attempt for the conversation the host moved to.
+After the accept the attempt is spent, so the person is answered instead, in the words the `!` path uses for the same move.
+A typed Send is answered that the message was not sent, since this session is no longer the one open here, and the host is handed nothing.
+A BTW is refused with that sentence before its side turn, which would otherwise be the conversation the host moved to answering a question nobody asked it.
+
 On a host with `pi.sendUserInput` (our Oh My Pi fork, can1357/oh-my-pi#14323) the body runs as if
 typed at the session's terminal (`runTypedInput`), with the Dispatch message id as the host's `tag`
 and `deliverAs: "aside"` for an Aside: a built-in the host runs headless, an extension or custom
@@ -448,7 +457,7 @@ copy of the forward, which the listener's stream keeps on the agent subject, arr
 and is shown once. Nor is a
 frame on the agent subject of a session the host has replaced (a `/new` or resume) that arrives
 once the host has moved its session manager but before a pass closes that subject: it is logged and
-left undelivered (`replacedSessionTopic`), as on the closed subject, so the forward draws no
+left undelivered (`topicAddress`), as on the closed subject, so the forward draws no
 receipt: the publish route forwards again to the role's holder it resolves then, and a role lane
 counts a failed delivery and the daemon re-sends to the role's holder. Any other such frame stays
 in the notification stream instead of being lost: when that session id is resumed within the

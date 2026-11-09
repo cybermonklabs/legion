@@ -34,6 +34,7 @@ import {
   MARKER_MAX_AGE_MS,
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
+import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
@@ -905,8 +906,13 @@ async function bootDirectSession(
      *  delivery reads, or the read of a message the event carried in part (`wholeCarriedBody`),
      *  which the fixture otherwise refuses. A row whose host moves inside such a read answers it
      *  from an async callback, as Dispatch's own answer takes time; undefined leaves the request
-     *  to the registration echo. */
-    readonly dispatch?: (url: URL) => Response | undefined | Promise<Response | undefined>;
+     *  to the registration echo. It answers every other host too, which is how a row stands a
+     *  secrets broker in for this session's Dispatch credential; `init` carries what the request
+     *  was sent with, since a broker trade names its session in the form it posts. */
+    readonly dispatch?: (
+      url: URL,
+      init?: RequestInit
+    ) => Response | undefined | Promise<Response | undefined>;
     /** Runs as the host is handed each delivery, before it takes it, with the text it is handed:
      *  a throw is the host refusing the send. */
     readonly beforeSend?: (content: unknown) => void;
@@ -926,10 +932,17 @@ async function bootDirectSession(
     readonly cwd?: string;
     /** The host's `ctx.runEphemeralTurn`, which answers a BTW; a context without it refuses one. */
     readonly sideTurn?: (prompt: string) => string;
+    /** What this session's Dispatch is written with: a token written for every session by
+     *  default, and the secrets broker where the row says so, which the row then stands in
+     *  (`AGENT_SECRETS_URL`) and which trades one token per session. No token is written there:
+     *  a written one is read before the broker route, and the trade that names the session
+     *  would never happen. */
+    readonly dispatchCredential?: "broker";
   } = {}
 ) {
   process.env.DISPATCH_URL = "http://dispatch.test";
-  process.env.DISPATCH_TOKEN = "dispatch-token";
+  if (options.dispatchCredential === "broker") delete process.env.DISPATCH_TOKEN;
+  else process.env.DISPATCH_TOKEN = "dispatch-token";
   const accepts: {
     readonly path: string;
     readonly authorization: string | null;
@@ -978,11 +991,11 @@ async function bootDirectSession(
         }
         return new Response(JSON.stringify({}), { status: 201 });
       }
-      const read = await options.dispatch?.(url);
+      const read = await options.dispatch?.(url, init);
       if (read !== undefined) return read;
       return new Response(JSON.stringify({ code: "NOT_FOUND" }), { status: 404 });
     }
-    const answered = await options.dispatch?.(url);
+    const answered = await options.dispatch?.(url, init);
     if (answered !== undefined) return answered;
     return responseWithRegistration(input, init, {});
   };
@@ -12878,13 +12891,16 @@ console.log(JSON.stringify(args));
         });
       });
 
-      test("posts a typed picture command's reply under the session that accepted it after a switch during the picture read", async () => {
+      // The pictures load between the accept and the send, so a switch inside that read leaves
+      // the host on another conversation when the line would go to it. Nothing is sent, and the
+      // reply that says so is still the accepting session's, signed as it.
+      test("refuses a typed picture command whose session the host left during the picture read, under the session that accepted it", async () => {
         const slug = "typed-input-picture-reply-session";
         const body = `Look:\n\n![shot.png](dispatch://LEGION-1/artifact/${slug}@v1)`;
         const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 1, 2]);
         const picture = Promise.withResolvers<Response>();
         const requested = Promise.withResolvers<void>();
-        const { agent, delivered, fixture, replied, replies } = await bootDirectSession(
+        const { agent, fixture, inputs, replied, replies } = await bootDirectSession(
           "typed-input-picture-reply-session",
           {
             accept: () => ({ accepted: true, body }),
@@ -12914,20 +12930,23 @@ console.log(JSON.stringify(args));
           sessionContext("ses_after_picture_read")
         );
         picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
-        await delivered(1);
         await replied(1);
 
         expect(replies[0]?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: "This message runs only in the session's own terminal; nothing was sent.",
+          body: "The message was not sent: this session is no longer the one open here.",
         });
+        expect(inputs).toEqual([]);
       });
 
-      test("keeps accept and reply under the session that began a deferred accept after a switch", async () => {
+      // A switch inside the accept leaves the attempt spent and the session gone, so the line
+      // is sent nowhere and the person is answered instead. Both halves still name the session
+      // that began the accept: the accept's actor, and the reply's.
+      test("keeps accept and refusal under the session that began a deferred accept after a switch", async () => {
         const accepted = Promise.withResolvers<AcceptAnswer>();
         const acceptRequested = Promise.withResolvers<void>();
-        const { accepts, agent, delivered, fixture, replied, replies } = await bootDirectSession(
+        const { accepts, agent, fixture, inputs, replied, replies } = await bootDirectSession(
           "typed-input-accept-reply-session",
           {
             accept: () => {
@@ -12942,7 +12961,6 @@ console.log(JSON.stringify(args));
         await acceptRequested.promise;
         await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_accept"));
         accepted.resolve({ accepted: true, body: "/new" });
-        await delivered(1);
         await replied(1);
 
         expect(accepts).toEqual([
@@ -12955,8 +12973,9 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: "/new runs only in the session's own terminal; nothing was sent.",
+          body: "The message was not sent: this session is no longer the one open here.",
         });
+        expect(inputs).toEqual([]);
       });
 
       // On an idle session the host answers only once the run it started ends, which can be
@@ -13145,8 +13164,14 @@ console.log(JSON.stringify(args));
           readonly beforeSend?: (content: unknown) => void;
           /** Answers a Dispatch request the fixture refuses of itself: the read of a message
            *  whose body the event carried in part, which a row whose host moves inside that
-           *  read answers from an async callback. */
-          readonly dispatch?: (url: URL) => Response | undefined | Promise<Response | undefined>;
+           *  read answers from an async callback, and the trade of a row that stands a secrets
+           *  broker in, whose form `init` carries. */
+          readonly dispatch?: (
+            url: URL,
+            init?: RequestInit
+          ) => Response | undefined | Promise<Response | undefined>;
+          /** What this session's Dispatch is written with (`bootDirectSession`). */
+          readonly dispatchCredential?: "broker";
           /** The host's own session id, read live: a row moves it where the host leaves this
            *  session with no event for it. */
           readonly hostSessionID?: () => string;
@@ -13167,6 +13192,9 @@ console.log(JSON.stringify(args));
           ...(options.dispatch !== undefined && { dispatch: options.dispatch }),
           ...(options.hostSessionID !== undefined && { hostSessionID: options.hostSessionID }),
           ...(options.sideTurn !== undefined && { sideTurn: options.sideTurn }),
+          ...(options.dispatchCredential !== undefined && {
+            dispatchCredential: options.dispatchCredential,
+          }),
         });
         natsState.controls
           .get("agentstream.ses_delivery.control")
@@ -13499,12 +13527,12 @@ console.log(JSON.stringify(args));
       // and then the Dispatch accept, and a host that leaves inside that window is already on
       // another conversation when the command starts. This row expected the command to run and
       // the agent's copy alone to be withheld; the architect's ruling of 2026-11-09T14:17Z made
-      // it a refusal. The session the message was addressed to is not the one open here by
-      // either half of `sessionOpen` - this instance's own id and the host's live one - and the
-      // directory the command would run in is `activeSessionContext`'s, the other
-      // conversation's. So nothing runs: the person is told, and the conversation the host
-      // moved to is handed nothing.
-      test("hands the agent no copy when the host moved on before the command was asked", async () => {
+      // it a refusal. The half of `sessionOpen` that fails here is the host's live id: no
+      // session event fired, so this instance's own `sessionID`, and the `sessionDirectory` it
+      // recorded beside it, both still read ses_delivery. The command is the addressed
+      // session's and that session is open nowhere, so nothing runs: the person is told, and
+      // the conversation the host moved to is handed nothing.
+      test("refuses the command when the host moved on before the command was asked", async () => {
         let live = "ses_delivery";
         const { agent, fixture, replied, replies, sends } = await bootShellSession(
           "shell-command-host-moved-first",
@@ -13620,14 +13648,17 @@ console.log(JSON.stringify(args));
       // every other step between the acknowledgement and the capture runs without awaiting
       // anything the fixture can answer late.
       //
-      // What each row reads is the session each step names: the accept's actor, the `session`
-      // the whole-body read carries, the reply's actor, the directory the command would run in,
-      // the stream the frame would go to, the conversation the agent's copy would reach, and
-      // the transcript the delivery is recorded in. The credential each request presents is not
-      // among them: this Dispatch answers one URL and one token for every session (DISPATCH_URL
-      // and DISPATCH_TOKEN, written once at the boot) and a session name reaches the wire only
-      // on a broker route, which it has none of, so both rows pass whether the credential is
-      // traded for the addressed session or for the one open here.
+      // Both windows stand before the accept, and there the delivery takes nothing at all: the
+      // session the frame names is not the one open here, so the claim goes back unspent and
+      // the listener's next send of the frame reaches that session rather than this
+      // conversation. So what each row reads is the `session` the whole-body read carries and
+      // then the absence of every later step: no accept, no reply, no command in either
+      // directory, no frame on either stream, no copy in the conversation the host moved to,
+      // and no ledger record. The credential each request presents is not among them: this
+      // Dispatch answers one URL and one token for every session (DISPATCH_URL and
+      // DISPATCH_TOKEN, written once at the boot) and a session name reaches the wire only on a
+      // broker route, which it has none of, so both rows pass whether the credential is traded
+      // for the addressed session or for the one open here.
       /** The directory the conversation the host moves to is in: a command run there leaves the
        *  file it writes behind, which these rows read. */
       const otherSessionDirectory = (): string => {
@@ -13661,8 +13692,9 @@ console.log(JSON.stringify(args));
       // inside that publish. The switch it starts there is still running when the delivery
       // reaches the whole-body read, and this row holds that read until it has settled: from
       // there on every live read of the session names ses_after_shell, and the message is
-      // ses_delivery's.
-      test("answers as the addressed session when the host left at the acknowledgement", async () => {
+      // ses_delivery's. Nothing is accepted and nothing is answered: the claim goes back, so
+      // the frame comes again and reaches ses_delivery when ses_delivery is open.
+      test("takes nothing and holds the frame when the host left at the acknowledgement", async () => {
         const other = otherSessionDirectory();
         const inbox = "_INBOX.shell-ack-gap";
         // The `session` each whole-body read named, which is the session the message is read as.
@@ -13674,7 +13706,7 @@ console.log(JSON.stringify(args));
         let switched: Promise<void> | undefined;
         const move: { fire?: () => Promise<void> } = {};
         try {
-          const { accepts, agent, fixture, replied, replies, sends, work } = await bootShellSession(
+          const { accepts, agent, fixture, replies, sends, work } = await bootShellSession(
             "shell-command-switched-at-ack",
             {
               accept: () => ({ accepted: true, body: "!touch ran" }),
@@ -13704,33 +13736,23 @@ console.log(JSON.stringify(args));
             }),
             inbox
           );
-          await replied(1);
+          await until(
+            () => warnings.some((warning) => warning.includes("the session it names is closed")),
+            "the delivery the moved host did not take to be reported"
+          );
           // The acknowledgement went out and started the move, so the window this row is about
           // is the one the move landed in.
           expect(switched).toBeDefined();
           await switched;
 
-          // The accept names the session the person wrote to, not the one the host moved to.
-          expect(accepts.map((accept) => accept.body)).toEqual([
-            expect.objectContaining({ actor: { id: "ses_delivery", kind: "session" } }),
-          ]);
-          // So does the read of the message itself. This one holds before the fix as well: the
-          // read's own id is taken as the read is made, and the move started at the
-          // acknowledgement settles only inside it.
+          // The read of the message names the session the person wrote to. This one holds
+          // before the fix as well: the read's own id is taken as the read is made, and the
+          // move started at the acknowledgement settles only inside it.
           expect(reads).toEqual(["ses_delivery"]);
-          // The command is the addressed session's, that session is open nowhere now, so
-          // nothing ran - in neither directory - and the person is told so, on their own
-          // message, by the session they wrote to.
-          expect(replies).toEqual([
-            {
-              body: {
-                actor: { id: "ses_delivery", kind: "session" },
-                attempt: 1,
-                body: "!touch ran\n\nThe command was not run: this session is no longer the one open here.",
-              },
-              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
-            },
-          ]);
+          // Nothing after it: the session the message names is open nowhere, so the attempt is
+          // not spent and the person is answered nothing, since their message still stands.
+          expect(accepts).toEqual([]);
+          expect(replies).toEqual([]);
           expect(existsSync(join(other, "ran"))).toBe(false);
           expect(existsSync(join(work, "ran"))).toBe(false);
           // Nothing of it reached the conversation the host moved to: no frame on its stream,
@@ -13745,17 +13767,8 @@ console.log(JSON.stringify(args));
               delivery.content.includes("A person ran this shell command")
             )
           ).toEqual([]);
-          // The delivery belongs in ses_delivery's transcript, and this process writes
-          // ses_after_shell's now, so the record cannot be made: it is said plainly rather than
-          // written under the other session (`recordDeliveredFor`'s own gate would drop it
-          // while the claim settled all the same).
-          await until(
-            () =>
-              warnings.some((warning) =>
-                warning.includes("was not recorded in the session it was addressed to")
-              ),
-            "the delivery the moved host could not record to be reported"
-          );
+          // Nothing is recorded either, so the frame is still the addressed session's to be
+          // shown: a sweep of that session finds it unrecorded.
           expect(ledgerRecords(fixture.entries)).not.toContain(
             "dispatch-shell-command-switched-at-ack"
           );
@@ -13768,8 +13781,9 @@ console.log(JSON.stringify(args));
       // event carried in part is read through Dispatch before anything is captured, and a
       // `/new` whose `session_switch` lands inside that read has moved the plugin's own
       // `sessionID`, and its directory, before the delivery reads either. The message is still
-      // ses_delivery's.
-      test("answers as the addressed session when the host left inside the whole-body read", async () => {
+      // ses_delivery's, so nothing is accepted and nothing is answered: the claim goes back and
+      // the frame comes again for that session.
+      test("takes nothing and holds the frame when the host left inside the whole-body read", async () => {
         const other = otherSessionDirectory();
         const reads: (string | null)[] = [];
         const warnings: string[] = [];
@@ -13779,7 +13793,7 @@ console.log(JSON.stringify(args));
         let switched = false;
         const move: { fire?: () => Promise<void> } = {};
         try {
-          const { accepts, agent, fixture, replied, replies, sends, work } = await bootShellSession(
+          const { accepts, agent, fixture, replies, sends, work } = await bootShellSession(
             "shell-command-switched-in-body-read",
             {
               accept: () => ({ accepted: true, body: "!touch ran" }),
@@ -13802,25 +13816,17 @@ console.log(JSON.stringify(args));
               bodyTruncated: true,
             })
           );
-          await replied(1);
+          await until(
+            () => warnings.some((warning) => warning.includes("the session it names is closed")),
+            "the delivery the moved host did not take to be reported"
+          );
           // The read happened and the move was made inside it, so the window this row is about
           // is the one the move landed in.
           expect(switched).toBe(true);
           expect(reads).toEqual(["ses_delivery"]);
 
-          expect(accepts.map((accept) => accept.body)).toEqual([
-            expect.objectContaining({ actor: { id: "ses_delivery", kind: "session" } }),
-          ]);
-          expect(replies).toEqual([
-            {
-              body: {
-                actor: { id: "ses_delivery", kind: "session" },
-                attempt: 1,
-                body: "!touch ran\n\nThe command was not run: this session is no longer the one open here.",
-              },
-              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
-            },
-          ]);
+          expect(accepts).toEqual([]);
+          expect(replies).toEqual([]);
           expect(existsSync(join(other, "ran"))).toBe(false);
           expect(existsSync(join(work, "ran"))).toBe(false);
           expect(movedSessionFrames()).toEqual([]);
@@ -13833,13 +13839,6 @@ console.log(JSON.stringify(args));
               delivery.content.includes("A person ran this shell command")
             )
           ).toEqual([]);
-          await until(
-            () =>
-              warnings.some((warning) =>
-                warning.includes("was not recorded in the session it was addressed to")
-              ),
-            "the delivery the moved host could not record to be reported"
-          );
           expect(ledgerRecords(fixture.entries)).not.toContain(
             "dispatch-shell-command-switched-in-body-read"
           );
@@ -13858,13 +13857,13 @@ console.log(JSON.stringify(args));
       // ses_after_shell by the time the reply is posted, while the plugin's own `sessionID`
       // still reads ses_delivery, so the live read a reply once made (`currentSessionID`, in
       // `currentDispatchConfig`) resolves this reply's Dispatch for the session the host moved
-      // to. What this fixture cannot show is that it does: its Dispatch answers one URL and one
-      // token for every session (DISPATCH_URL and DISPATCH_TOKEN, written once at the boot),
-      // and a session name reaches the wire only on a broker route, which this Dispatch has
-      // none of. So this row passes whether the configuration is resolved for the session open
-      // here or for the session the message was addressed to (`dispatchConfigFor`); what it
-      // holds is that a move in this window changes neither the message the reply answers nor
-      // the session it names.
+      // to. What this row's Dispatch cannot show is which session it resolved for: it answers
+      // one URL and one token for every session (DISPATCH_URL and DISPATCH_TOKEN, written once
+      // at the boot), and a session name reaches the wire only on a broker trade. So this row
+      // passes whether the configuration is resolved for the session open here or for the
+      // session the message was addressed to (`dispatchConfigFor`); what it holds is that a
+      // move in this window changes neither the message the reply answers nor the session it
+      // names. The row below stands a broker in and holds the session that reply is signed as.
       test("answers the addressed session's message when the host leaves as the command ends", async () => {
         let live = "ses_delivery";
         let switched: Promise<unknown> | undefined;
@@ -13924,6 +13923,138 @@ console.log(JSON.stringify(args));
             .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
             .filter((frame) => frame.kind === "message")
         ).toEqual([]);
+      }, 20_000);
+
+      // The same window, read on the credential rather than on the actor: the row above holds
+      // the session the reply names, and this one the session it is signed as.
+      //
+      // Where no bearer is written, a session's Dispatch credential is this machine's own
+      // identity traded at the secrets broker (`AGENT_SECRETS_URL`, stood in as
+      // `packages/envoy-client/src/__tests__/broker-credential.test.ts` stands one in), and a
+      // trade writes under one session: the broker records the minted token against it and
+      // Dispatch reads it back there. That trade is the one place a session name reaches the
+      // wire, so the broker below mints `token-for-<session>` and every Dispatch request of
+      // this row says which session resolved it. The listener keeps a written token
+      // (ENVOY_TOKEN), so every trade here is Dispatch's own and the registration of the
+      // session the host moves to adds none.
+      //
+      // The command is accepted, run and answered for ses_delivery while the host leaves as it
+      // ends, and both halves present the token the broker minted for ses_delivery. A reply
+      // resolved for the session open when it goes out (`currentSessionID`) would be signed
+      // `token-for-ses_after_shell`, and the person's own message would be answered under the
+      // credential of the conversation they never wrote to.
+      test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
+        const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
+        workDirectories.push(secrets);
+        // A pod's projected service-account token, which is the identity this machine trades.
+        const identityFile = join(secrets, "projected-token");
+        writeFileSync(identityFile, "projected.service.account.token\n");
+        /** The session each trade the stub broker was asked wrote its token under. */
+        const traded: string[] = [];
+        /** The credential each Dispatch request presented, by the route it was made to. */
+        const presented: { readonly authorization: string | null; readonly path: string }[] = [];
+        const restore = captureEnvironment([
+          "AGENT_SECRETS_URL",
+          "AGENT_SECRETS_MACHINE_IDENTITY",
+          "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+          "DISPATCH_TOKEN",
+          "ENVOY_TOKEN",
+        ]);
+        try {
+          process.env.AGENT_SECRETS_URL = "http://broker.test";
+          process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+          process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = identityFile;
+          process.env.ENVOY_TOKEN = "listener-token";
+          let live = "ses_delivery";
+          let switched: Promise<unknown> | undefined;
+          const { accepts, agent, fixture, replied, replies } = await bootShellSession(
+            "shell-command-broker-signed-reply",
+            {
+              accept: () => ({ accepted: true, body: "!printf hi" }),
+              beforeSend: (content) => {
+                // The report, not a notice the move itself sends: the move is made once, and
+                // the cards the switch sends afterwards leave it alone.
+                if (switched !== undefined) return;
+                if (!String(content).includes("A person ran this shell command")) return;
+                // The host moves its own id first and fires the event after, as it does on a
+                // `/new`: from here the session the message was addressed to is open nowhere,
+                // and `DISPATCH_SESSION_ID` names the conversation the host moved to.
+                live = "ses_after_shell";
+                switched = fixture.handlers.get("session_switch")?.(
+                  { reason: "new" },
+                  sessionContext("ses_after_shell")
+                );
+              },
+              dispatch: async (url, init) => {
+                if (url.origin !== "http://broker.test") return undefined;
+                // The broker's token endpoint: the trade's form names the session its token is
+                // written under, and the token this one mints names it back.
+                const session =
+                  new URLSearchParams(await new Response(init?.body ?? null).text()).get(
+                    "session"
+                  ) ?? "";
+                traded.push(session);
+                return Response.json({
+                  access_token: `token-for-${session}`,
+                  expires_in: 600,
+                  issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                  token_type: "DPoP",
+                });
+              },
+              dispatchCredential: "broker",
+              hostSessionID: () => live,
+            }
+          );
+          // What each Dispatch request was signed with: the accept keeps its own in `accepts`,
+          // and the reply's reaches nothing the fixture records.
+          const answered = globalThis.fetch;
+          globalThis.fetch = async (input, init) => {
+            const url = new URL(input.toString());
+            if (url.host === "dispatch.test") {
+              presented.push({
+                authorization: new Headers(init?.headers).get("Authorization"),
+                path: url.pathname,
+              });
+            }
+            return await answered(input, init);
+          };
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-broker-signed-reply"));
+          await replied(1);
+          // The hand-over happened, so the move was made in the window this row is about and
+          // not after the reply had gone out.
+          expect(switched).toBeDefined();
+          await switched;
+
+          // One reply, on the person's own message, answering as the session that message was
+          // addressed to and carrying what the command printed.
+          expect(replies).toEqual([
+            {
+              body: {
+                actor: { id: "ses_delivery", kind: "session" },
+                attempt: 1,
+                body: "!printf hi\n\n```\nhi\n```",
+              },
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          // And signed as that session: the reply and the accept both presented the token the
+          // broker minted for ses_delivery, and the broker was asked for no other session.
+          expect(presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
+            {
+              authorization: "DPoP token-for-ses_delivery",
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          expect(accepts.map((accept) => accept.authorization)).toEqual([
+            "DPoP token-for-ses_delivery",
+          ]);
+          expect(traded).toEqual(["ses_delivery"]);
+        } finally {
+          restore();
+          // A token this process traded is held under its session for the life of the process.
+          forgetBrokerClients();
+        }
       }, 20_000);
 
       /** The sentence a report carries when the agent of the session the command was asked of
@@ -14154,6 +14285,180 @@ console.log(JSON.stringify(args));
       }, 20_000);
     });
 
+    // The windows the `!` rows above hold, on the two other branches of a delivery: a typed
+    // Send, which the host is handed, and a BTW, which the model answers. The frame names one
+    // session, and every await before the work - the acknowledgement, the read of the body
+    // whole, the accept, the picture load - is a window a `/new` or a `/resume` lands in. The
+    // conversation the host moved to must neither run a person's line nor answer for it
+    // (dispatch://INFRA-812, the architect's ruling of 2026-11-09T17:28Z).
+    describe("a delivery whose session the host leaves", () => {
+      /** The sentence each branch refuses with, the `!` path's own with the person's message in
+       *  place of their command (`MOVED_SESSION_REFUSAL`, in `extensions/envoy.ts`). */
+      const notSent = "The message was not sent: this session is no longer the one open here.";
+      const replyPath = `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`;
+      const actor = { id: "ses_delivery", kind: "session" };
+      /** Moves the host to a fresh conversation, as a `/new` does. */
+      const moveHost = async (fixture: PiFixture, to: string): Promise<void> => {
+        await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext(to));
+      };
+
+      // Before the accept: the read of the body whole. The accept would spend the person's
+      // attempt for a conversation they never wrote to, so nothing is accepted and the claim
+      // goes back. This row sends the frame again, to the session that is open once more, and
+      // the person's line reaches the host there: a claim still held would have dropped that
+      // copy as a repeat of a frame this session was shown.
+      test("accepts nothing for a typed Send whose session the host left before the accept, and takes the frame again once that session is open", async () => {
+        const warnings: string[] = [];
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
+        });
+        const move: { fire?: () => Promise<void> } = {};
+        let moved = false;
+        try {
+          const { accepts, agent, context, fixture, inputs, replies } = await bootDirectSession(
+            "typed-send-left-before-accept",
+            {
+              dispatch: async (url) => {
+                if (url.pathname !== `/api/v1/messages/${DIRECT_MESSAGE_ID}`) return undefined;
+                if (!moved) {
+                  moved = true;
+                  await move.fire?.();
+                }
+                return response({
+                  message: { body: DIRECT_MESSAGE_BODY, id: DIRECT_MESSAGE_ID },
+                  replies: [],
+                });
+              },
+              sendUserInput: async () => ({ handled: "prompt" }),
+            }
+          );
+          move.fire = () => moveHost(fixture, "ses_after_send");
+          const frame = directDispatchEnvelope("steer", "typed-send-left-before-accept", {
+            bodyTruncated: true,
+          });
+
+          agent.push(frame);
+          await until(
+            () =>
+              accepts.length > 0 ||
+              warnings.some((warning) => warning.includes("the session it names is closed")),
+            "the delivery to be accepted or reported as not taken"
+          );
+
+          // Nothing was accepted, so Dispatch still holds the attempt to send; nothing reached
+          // the host, and the person was told nothing, since their message still stands.
+          expect(moved).toBe(true);
+          expect(accepts).toEqual([]);
+          expect(inputs).toEqual([]);
+          expect(fixture.userMessages).toEqual([]);
+          expect(replies).toEqual([]);
+          expect(
+            fixture.entries.filter((entry) => entry.customType === "envoy-dispatch-handled-attempt")
+          ).toEqual([]);
+
+          // The session the message names is open again, and the copy the listener sends again
+          // is taken: accepted as that session, and run as the person typed it.
+          await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
+          await until(
+            () => natsState.controls.get("notifications.agent.ses_delivery") !== agent,
+            "the resumed session's agent subject to be subscribed again"
+          );
+          natsState.controls.get("notifications.agent.ses_delivery")?.push(frame);
+          await until(() => inputs.length === 1, "the person's line to reach the host");
+
+          expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
+          expect(inputs).toEqual([
+            { options: { tag: DIRECT_MESSAGE_ID }, text: DIRECT_MESSAGE_BODY },
+          ]);
+        } finally {
+          stopSink();
+        }
+      });
+
+      // Between the accept and the send: the accept itself. The attempt is spent by the time
+      // Dispatch answers it, so this one is no release - a re-send of a taken message is
+      // refused - and the person is answered instead. The host is handed nothing: the line
+      // would run as the conversation it moved to, and that conversation's answer would be
+      // posted under the name of the session the person wrote to.
+      test("answers a typed Send whose session the host left inside the accept, and hands the host nothing", async () => {
+        const move: { fire?: () => Promise<void> } = {};
+        const { accepts, agent, fixture, inputs, replied, replies, sends } =
+          await bootDirectSession("typed-send-left-in-accept", {
+            accept: async () => {
+              await move.fire?.();
+              return { accepted: true };
+            },
+            sendUserInput: async () => ({ handled: "terminal-only" }),
+          });
+        move.fire = () => moveHost(fixture, "ses_after_send");
+
+        agent.push(directDispatchEnvelope("steer", "typed-send-left-in-accept"));
+        await replied(1);
+
+        expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
+        expect(replies).toEqual([{ body: { actor, attempt: 1, body: notSent }, path: replyPath }]);
+        expect(inputs).toEqual([]);
+        expect(fixture.userMessages).toEqual([]);
+        expect(sends.filter((send) => String(send.content).includes(DIRECT_MESSAGE_BODY))).toEqual(
+          []
+        );
+      });
+
+      // Before the side turn: the read of the body whole again, which a BTW does before it asks
+      // the model. The side turn reads the context the host has now, so the conversation it
+      // moved to would answer a question nobody asked it, under the name of the session the
+      // person wrote to. Nothing is asked, and the refusal's released claim puts the BTW back
+      // for the session it names.
+      test("refuses a BTW whose session the host left before its side turn, and asks neither conversation", async () => {
+        const prompts: string[] = [];
+        const move: { fire?: () => Promise<void> } = {};
+        let moved = false;
+        const { agent, fixture, replied, replies } = await bootDirectSession(
+          "btw-left-before-side-turn",
+          {
+            dispatch: async (url) => {
+              if (url.pathname !== `/api/v1/messages/${DIRECT_MESSAGE_ID}`) return undefined;
+              if (!moved) {
+                moved = true;
+                await move.fire?.();
+              }
+              return response({
+                message: { body: "Can this ship?", id: DIRECT_MESSAGE_ID },
+                replies: [],
+              });
+            },
+            sideTurn: (prompt) => {
+              prompts.push(`ses_delivery:${prompt}`);
+              return "This session's answer.";
+            },
+          }
+        );
+        // The conversation the host moves to answers a side turn of its own, so a BTW that
+        // reached it would be answered rather than refused for want of a host that can.
+        move.fire = async () => {
+          await fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            {
+              ...sessionContext("ses_after_btw"),
+              runEphemeralTurn: async ({ promptText }: { readonly promptText: string }) => {
+                prompts.push(`ses_after_btw:${promptText}`);
+                return { replyText: "The other conversation's answer." };
+              },
+            }
+          );
+        };
+
+        agent.push(
+          directDispatchEnvelope("btw", "btw-left-before-side-turn", { bodyTruncated: true })
+        );
+        await replied(1);
+
+        expect(moved).toBe(true);
+        expect(replies).toEqual([{ body: { actor, attempt: 1, error: notSent }, path: replyPath }]);
+        expect(prompts).toEqual([]);
+      });
+    });
+
     // A host without `pi.sendUserInput` would hand a command to the model as words, so the
     // session refuses it with a reply naming its own version; any other text is sent as before.
     test("refuses a slash command on a host that cannot run typed input, naming the host", async () => {
@@ -14176,17 +14481,18 @@ console.log(JSON.stringify(args));
       ]);
     });
 
-    // `sendUserMessage` sends into whichever session is live once the pictures load, so the turn's
-    // note and its shown picture belong to that session: the session the message lands in must tie
-    // it to its Dispatch message, or Legion takes it for the daemon's assignment.
-    test("notes a picture Send under the session it is sent into after a switch during the picture read", async () => {
+    // `sendUserMessage` would send into whichever session is live once the pictures load, which
+    // after a switch in that read is another conversation. The send is refused instead: neither
+    // session is noted a turn, and the picture stays unshown in both, so a later delivery of it
+    // carries it again.
+    test("sends a picture Send into no session when the host left during the picture read, and answers the person", async () => {
       const slug = "untyped-host-picture-switch";
       const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
       const body = `Look:\n\n![shot.png](${address})`;
       const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
       const picture = Promise.withResolvers<Response>();
       const requested = Promise.withResolvers<void>();
-      const { agent, delivered, fixture } = await bootDirectSession(slug, {
+      const { agent, fixture, replied, replies } = await bootDirectSession(slug, {
         accept: () => ({ accepted: true, body }),
         dispatch: ((url: URL) => {
           if (url.pathname === `/api/v1/issues/LEGION-1/artifacts/${slug}`) {
@@ -14209,12 +14515,17 @@ console.log(JSON.stringify(args));
       await requested.promise;
       await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_picture_read"));
       picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
-      // The switch's own notice is the first delivery; the Send is the second.
-      await delivered(2);
-      expect(fixture.userMessages).toHaveLength(1);
+      await replied(1);
+      expect(replies[0]?.body).toEqual({
+        actor: { id: "ses_delivery", kind: "session" },
+        attempt: 1,
+        body: "The message was not sent: this session is no longer the one open here.",
+      });
+      expect(fixture.userMessages).toEqual([]);
       const message = { content: [{ text: body, type: "text" }], role: "user", timestamp: 10 };
-      expect(matchInjectedUserTurn("ses_after_picture_read", message)).toBe(DIRECT_MESSAGE_ID);
-      expect(shownPictures("ses_after_picture_read").has(address)).toBe(true);
+      expect(matchInjectedUserTurn("ses_after_picture_read", message)).toBeUndefined();
+      expect(matchInjectedUserTurn("ses_delivery", message)).toBeUndefined();
+      expect(shownPictures("ses_after_picture_read").has(address)).toBe(false);
       expect(shownPictures("ses_delivery").has(address)).toBe(false);
     });
   });

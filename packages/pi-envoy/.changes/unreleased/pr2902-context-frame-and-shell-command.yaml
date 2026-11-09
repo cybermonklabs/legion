@@ -34,4 +34,5 @@ body: |-
   the host has moved to since: the reply, its actor, the Dispatch it is posted with, the live
   view's frame and the agent's copy are that session's; a command whose session has moved runs
   nowhere; and a delivery the moved host cannot write to that session's transcript is reported
-  in the log rather than dropped without a word.
+  in the log rather than dropped without a word, as is the entry for an attempt it handled, which
+  only the conversation the host is on can be written to.

@@ -1638,10 +1638,12 @@ describe("the ledger", () => {
 
     // Shutting down: no new work starts, but the session's record is still written.
     host.session = undefined;
-    await engine.recordDeliveredFor(SESSION, { event_id: refused.event_id });
-    // A write persisting to another session's record records nothing for this one.
+    expect(await engine.recordDeliveredFor(SESSION, { event_id: refused.event_id })).toBe(true);
+    // A write persisting to another session's record records nothing for this one, and says so.
     host.writeSession = "ses_other";
-    await engine.recordDeliveredFor(SESSION, { event_id: "evt-not-this-session" });
+    expect(await engine.recordDeliveredFor(SESSION, { event_id: "evt-not-this-session" })).toBe(
+      false
+    );
 
     expect(host.writes.flatMap((write) => write.delivered.map((entry) => entry.event_id))).toEqual([
       refused.event_id,

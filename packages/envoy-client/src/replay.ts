@@ -382,9 +382,10 @@ export interface ReplayEngine {
    * shutting down: it records only while the host's `writeSessionID()` names `sessionID` and no
    * `restore` has moved the engine since, and the write goes ahead even once `sessionID()` answers
    * none. The ledger holds the frame from the call on, so a sweep passes it over before the write
-   * lands. It never rejects.
+   * lands. Answers whether it recorded: false says the host has moved and that session's record
+   * lost the frame, which is the caller's to report. It never rejects.
    */
-  recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<void>;
+  recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<boolean>;
   /**
    * The host failed to show a live frame on the followed subject `followed`, which it received at
    * `receivedAt` (the engine's clock, `Date.now` unless `now` is given): shows its failure notice
@@ -1128,9 +1129,10 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
     },
     async recordDeliveredFor(sessionID, frame) {
       const alive = bindTo(sessionID, writeSession)?.alive;
-      if (alive === undefined) return;
+      if (alive === undefined) return false;
       record(replayLedgerIdentity(frame));
       await flush(alive);
+      return true;
     },
     async liveFailed(followed, envelope, error, receivedAt) {
       const started = cursorStarts.get(followed);
