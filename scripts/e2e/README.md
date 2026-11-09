@@ -1243,11 +1243,16 @@ runs, and every process stopped by its exact pid on exit:
 - [`lib/recording-proxy.ts`](lib/recording-proxy.ts), in front of the model route's own endpoint:
   every model call of the run, the agents' (`/tag/agents`), Claude Code's (`/tag/claude-<store>`)
   and the daemon's loop's (`/tag/daemon-<store>`), goes through it, and each request and response
-  body is a line of `model-calls.jsonl` in the evidence, the key redacted. A hold file per label
+  body is a line of `model-calls.jsonl` in the evidence, the key redacted. A label's ordinal counts
+  every request it proxies, and not all of them are model calls: Claude Code sends a
+  `HEAD /api/hello` reachability preflight as each session starts and an Oh My Pi agent a
+  `GET /v1/models`, both with no body. A check that waits for an agent's next model call, or reads
+  the request it sent, counts and selects the requests that carry a `messages` body (`proxy_count`,
+  `first_request_after`); a hold names an ordinal (`proxy_ordinal`). A hold file per label
   stops a label's calls past a given ordinal (`<label>.held` names each waiting one), which is how
   A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply; a
-  stand-in file answers one label with a reply of the proof's own (A12's malformed reply, the one
-  model step no real model gives on demand).
+  stand-in file answers one label with a reply of the proof's own: A12's reply out of form and its
+  first reply that calls the `gh` tool, the two model steps no real model gives on demand.
 - [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts): the inbox of the run's two stand-in sessions, a core
   NATS subscriber (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each). It
   watches the asker's own subject, `notifications.agent.<asker>`, and both passes' controller
@@ -1413,7 +1418,13 @@ land in `inbox.jsonl` under the stand-in controller's session.
 - A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime: the
   first request's effort equals the transcript's last `effort`, every thinking signature in the
   transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >
-  0`, and the resumed reviewer's first request holds both exchanges once. Compaction leg: a
+  0`, and the resumed reviewer's first model call holds both exchanges once — its first call, not
+  its first proxied request, which is the reachability preflight Claude Code sends as it starts
+  and which holds nothing. The second question is asked once the first answer is posted and ten
+  seconds after that, since a cache entry is not always readable the moment it is written (in the
+  run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s
+  earlier), and the cache-read clause judges the loop's cache policy, not the provider's
+  propagation delay. Compaction leg: a
   person's `/compact` from the architect's conversation page (`POST /agents/{session}/messages`,
   delivery `steer`) puts a `"type":"compaction"` entry in its conversation; a question then is
   answered from the compacted conversation, and the resumed architect's first request holds that
@@ -1421,16 +1432,25 @@ land in `inbox.jsonl` under the stand-in controller's session.
   (dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19).
 - A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`,
   `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`): each ends with
-  `answers: question passed to the controller` naming the fault and the daemon's own reply.
-- A14: every `answers: answered` line's `costUSD` recomputes from its tokens at the configured
-  prices, cache writes included.
+  `answers: question passed to the controller` naming the fault and the daemon's own reply. Two of
+  the five legs are answered by a stand-in reply of the proof's own, each a model step no real
+  model gives on demand: the reply out of form, and the `model_calls` leg's first reply, which
+  calls the `gh` tool, so the one model call that bound allows still called a tool and its
+  `answers: answered` line carries `fault` `model_calls` after `calls` 1. A question cannot be
+  trusted to reach that bound — the loop's prompt tells the model its last call offers no tool and
+  must be the reply, and the `go.mod` question these legs ask is one the planner answered earlier
+  in the run, which the loop answered again from the conversation in one call with no tool.
+- A14: every `answers: answered` line of the run — every boot of it, since A12 restarts the daemon
+  five times before this check and its own boot has answered nothing — has a `costUSD` that
+  recomputes from its tokens at the configured prices, cache writes included.
 - A15: the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of the
   smoke repository read with `gh`; the `answers: gh` line names the review App and owner `sjawhar`,
   and each conversation holds the call.
 - A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as
   the implement App) posts the asked comment there as the implement App with its session's footer,
-  logged with App and owner; the pre-change reviewer asked to write to the second owner's
-  repository gets GitHub's refusal and says so.
+  logged with App and owner; the rig reads the comment back with a read-only implement-App token of
+  its own (**GitHub** below), the one GitHub read its own `gh` cannot make. The pre-change reviewer
+  asked to write to the second owner's repository gets GitHub's refusal and says so.
 - A18: the proxy holds the loop's model call after the comment's `gh` call; the daemon is killed
   and restarted (one comment, one answer), and in a second run the claim is resumed there (the
   question is forwarded with the call, one comment, no reply from the loop).
@@ -1445,7 +1465,8 @@ land in `inbox.jsonl` under the stand-in controller's session.
   session leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s. Then
   the stopped reviewer approves with its `gh` tool: the review App's single approval of the head
   carries its session's footer, the phase leaves `reviewing`, and `review_seen` is that review's
-  id.
+  id. The rig reads the approvals back as the implement App, as A17 reads the comments
+  (**GitHub** below).
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it; the branch's
   listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an
   `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to
@@ -1513,7 +1534,12 @@ holds it), `a3/<store>/` (the conversation-page leg's screenshots: the Collabora
 conversation it led to, the question sent and the answer, or the step that failed), and
 `a13/{branch,base}/<store>/` (the bodies A13 compares).
 
-**GitHub.** The run reads the smoke repository. Its writes there are A17's, A18's and A19's: the
+**GitHub.** The run reads the smoke repository, and reads it as the implement App: it mints a
+read-only installation token of its own for each read (`smoke_gh`, the token command
+`mint_provision_token` runs) and hands it to the compiled `gh`, since the rig's own `gh` reads
+nothing there — in a Legion pane the first `gh` on `PATH` is the `legion gh` wrapper, and the
+pane's token is narrowed to its own owner, so either answers `{"message":"Not Found",…}`, whose
+body is no array of comments and reads as none. Its writes there are A17's, A18's and A19's: the
 pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App,
 the comments the stopped implementer posts, and A19's approvals; each pull request and comment is
 recorded by id and closed (with its branch) or deleted as the implement App on exit. Each of those

@@ -741,6 +741,10 @@ stop_daemon() {
 }
 # boot_log prints the current boot's daemon log lines, JSON only.
 boot_log() { tail -c "+$((boot_offset + 1))" "$daemon_log" | jq -c -R 'fromjson? // empty'; }
+# run_log prints every line of this store's daemon log, JSON only: the whole run, every boot of it,
+# which is what a check judges when another check restarted the daemon before it (A14 after A12's
+# five restarts, whose own boot holds no answer at all).
+run_log() { jq -c -R 'fromjson? // empty' "$daemon_log"; }
 
 legion_cmd() { "$daemon_bin" "$@" --config "$daemon_config"; }
 claims_cmd() {
@@ -1449,19 +1453,48 @@ soft_wait() {
   return 1
 }
 
-# proxy_count LABEL: how many model calls of LABEL the recording proxy has finished.
-proxy_count() { jq -s --arg l "$1" '[.[] | select(.label == $l)] | length' "$evidence/model-calls.jsonl" 2>/dev/null || printf '0\n'; }
+# proxy_count LABEL: how many model calls of LABEL the recording proxy has finished. A model call
+# is a request whose body holds a messages array: the proxy records every request of a label, and
+# two of them are no call of the model — Claude Code's `HEAD /api/hello` reachability preflight,
+# which it sends as each session starts, and an Oh My Pi agent's `GET /v1/models`, both with no
+# body at all. (A10 counted those too, so the resumed Claude Code reviewer's "first request" was
+# the preflight, which holds no question.)
+proxy_count() {
+  jq -s --arg l "$1" '[.[] | select(.label == $l and (.request_body | type) == "object" and (.request_body.messages | type) == "array")] | length' \
+    "$evidence/model-calls.jsonl" 2>/dev/null || printf '0\n'
+}
+# proxy_ordinal LABEL: the ordinal LABEL has reached, every request the proxy recorded for it
+# counted, model call or not, which is what a hold names (hold_at, held, hold_after_tool).
+proxy_ordinal() { jq -s --arg l "$1" '[.[] | select(.label == $l)] | length' "$evidence/model-calls.jsonl" 2>/dev/null || printf '0\n'; }
 # hold_at LABEL N lets LABEL's calls through up to ordinal N and holds the next (recording proxy);
 # held LABEL N: the call of ordinal N is waiting.
 hold_at() { printf '%s\n' "$2" >"$work/proxy-hold/$1"; }
 held() { grep -qx "$2" "$work/proxy-hold/$1.held" 2>/dev/null; }
 release() { rm -f "$work/proxy-hold/$1"; }
 
+# smoke_gh ARG...: one gh call on the smoke repository as the implement App, printing gh's own
+# output. The rig's own gh reads nothing there: in a Legion pane the first gh on PATH is the
+# `legion gh` wrapper, and the pane's own token is narrowed to another owner, so either answers
+# `{"message":"Not Found",...}` (A17 read that body and found none of the comments the implementer
+# had just posted). So the rig mints a read-only installation token of its own, as provisioning
+# does (mint_provision_token), and runs the compiled gh with it; the token is printed nowhere and
+# is removed again.
+smoke_gh() {
+  local token_file=$work/gh-read-token code=0
+  rm -f "$token_file"
+  mint_provision_token "$token_file" >&2 || return 1
+  GH_TOKEN=$(cat "$token_file") timeout 60 "$work/realbin/gh" "$@" || code=$?
+  rm -f "$token_file"
+  return "$code"
+}
+
 # pr_comments NUMBER MARKER prints the smoke repository's comments on the pull request that hold
-# MARKER, as {id, user, body}.
+# MARKER, as {id, user, body}. GitHub's error body is an object, not the array of comments, and so
+# is no comment: it prints [], as a gh call that printed nothing does.
 pr_comments() {
-  timeout 60 gh api "repos/$repo/issues/$1/comments?per_page=100" 2>/dev/null |
-    jq -c --arg m "$2" '[.[]? | select(.body | contains($m)) | {id, user: .user.login, body}]' || printf '[]\n'
+  smoke_gh api "repos/$repo/issues/$1/comments?per_page=100" 2>/dev/null |
+    jq -s -c --arg m "$2" '(.[0] // []) | if type == "array" then [.[] | select(.body | contains($m)) | {id, user: .user.login, body}] else [] end' 2>/dev/null ||
+    printf '[]\n'
 }
 
 check_a1() {
@@ -1812,7 +1845,7 @@ check_a7() {
     return 0
   fi
   appended_before=$(appended_exchanges architect)
-  n=$(proxy_count "$label")
+  n=$(proxy_ordinal "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask session "${agent[$store:architect.session]}" in-order-2)
   event=${sent#* }
@@ -1970,9 +2003,11 @@ check_a8() {
   fi
 }
 
-# first_request_after LABEL N prints the request body of LABEL's first model call after ordinal N.
+# first_request_after LABEL N prints the request body of LABEL's first model call after its first
+# N, counted as proxy_count counts them: the preflight and the model listing the proxy records for
+# the label are no model call of it, and neither is the body a check reads here.
 first_request_after() {
-  jq -s -c --arg l "$1" --argjson n "$2" '[.[] | select(.label == $l and .ordinal > $n)] | sort_by(.ordinal) | (.[0].request_body // null)' "$evidence/model-calls.jsonl" 2>/dev/null || printf 'null\n'
+  jq -s -c --arg l "$1" --argjson n "$2" '[.[] | select(.label == $l and (.request_body | type) == "object" and (.request_body.messages | type) == "array")] | sort_by(.ordinal) | (.[$n].request_body // null)' "$evidence/model-calls.jsonl" 2>/dev/null || printf 'null\n'
 }
 # occurrences TEXT NEEDLE: how many times NEEDLE occurs in TEXT.
 occurrences() { grep -oF -- "$2" <<<"$1" | wc -l || true; }
@@ -2004,7 +2039,7 @@ check_a9() {
   counts="question 1 $(occurrences "$request" "in-order-1 of run $run_tag, A9"), question 2 $(occurrences "$request" "in-order-2 of run $run_tag, A9"), exchange 1 $(appended_exchanges architect "$q1"), exchange 2 $(appended_exchanges architect "$q2")"
   reply=$(conversation_text architect | jq -R -r 'fromjson? | select(.type == "message" and .message.role == "assistant") | [.message.content[]? | .text? // empty] | join(" ")' | tail -1)
   note "the first reply on the asker's topic answers question 1: $(grep -qF "In Reply To: $e1" <<<"$first" && echo yes || echo no)"
-  note "the resumed architect's first request (agents, after ordinal $m) holds each question, and its conversation the exchange appended for each (questions $q1 and $q2): $counts"
+  note "the resumed architect's first request (agents, after its first $m model calls) holds each question, and its conversation the exchange appended for each (questions $q1 and $q2): $counts"
   note "the resumed architect: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   suspend_agent architect || true
   if grep -qF "In Reply To: $e1" <<<"$first" && [ -n "$q1" ] && [ -n "$q2" ] && [ "$counts" = "question 1 1, question 2 1, exchange 1 1, exchange 2 1" ] &&
@@ -2039,6 +2074,13 @@ check_a10() {
   s1=$(envoy_ask_text session "$session" "$t1")
   e1=${s1#* }
   soft_wait 240 "the first answer" inbox_reply "$e1" || true
+  # The second question waits for the first answer to be posted and then ten seconds more. A cache
+  # entry is not always readable the moment it is written: in the run of 2026-11-08 this check's
+  # second call (daemon-files ordinal 35) read 0 tokens of the 2,125 its first (ordinal 34) had
+  # written 2.5 s earlier, while calls of that run further apart did read what an earlier call
+  # wrote (ordinal 20 read the 1,707 ordinal 18 wrote, 5 s before it). The cache-read clause below
+  # judges the loop's cache policy, so it must not turn on the provider's propagation delay.
+  sleep 10
   s2=$(envoy_ask_text session "$session" "$t2")
   e2=${s2#* }
   soft_wait 240 "the second answer" inbox_reply "$e2" || true
@@ -2059,7 +2101,7 @@ check_a10() {
   soft_wait 600 "the resumed reviewer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after "claude-$store" "$m")
   counts="$(occurrences "$request" "A10-1)") $(occurrences "$request" "A10-2)")"
-  note "the resumed Claude Code reviewer's first request (claude-$store, after ordinal $m) holds the two questions: $counts"
+  note "the resumed Claude Code reviewer's first request (claude-$store, after its first $m model calls) holds the two questions: $counts"
   suspend_agent pre_change || true
   if answer_holds pre-change-scan "$(inbox_reply "$e1")" >/dev/null && answer_holds pre-change-scan "$(inbox_reply "$e2")" >/dev/null &&
     [ -n "$want_effort" ] && [ "$effort" = "$want_effort" ] && [ -n "$sigs" ] && [ "$missing" = 0 ] &&
@@ -2095,15 +2137,41 @@ check_a10() {
   fi
 }
 
+# a12_stand_in FAULT writes the recording proxy's stand-in reply for the leg that needs one, the
+# daemon's own label answered with a reply of the proof's own, and removes it for a leg that needs
+# none. Two legs need one, each a model step no real model gives on demand:
+#   malformed — a reply that is not the form the daemon checks;
+#   model_calls — a first reply that calls the gh tool, so the one call the bound allows still
+#   called a tool (agentloop's FaultCalls, "the last of 1 model calls still called a tool", the
+#   daemon's model_calls). A real question cannot be trusted to reach that bound: the loop's own
+#   prompt tells the model its last call offers no tool and must be the reply, and the go.mod
+#   question the other legs ask is one the planner already answered earlier in the run, which the
+#   loop answered again from the conversation in one call with no tool (`calls: 1`, `fault: ""`,
+#   the answer posted) in the run of 2026-11-08. The tool call is never run: the loop reads the
+#   bound off the reply that made it. Both replies report usage, since an answer the provider
+#   meters nothing for is the `unmetered` fault instead.
+a12_stand_in() {
+  local file=$work/proxy-stand-in/daemon-$store.json
+  case "$1" in
+    malformed)
+      jq -n '{type: "message", role: "assistant", content: [{type: "text", text: "not the reply form"}], stop_reason: "end_turn", usage: {input_tokens: 10, output_tokens: 5}}' >"$file"
+      ;;
+    model_calls)
+      jq -n --arg repo "$repo" '{type: "message", role: "assistant", content: [{type: "tool_use", id: "toolu_a12_model_calls", name: "gh", input: {args: ["api", "repos/\($repo)/commits/main"]}}], stop_reason: "tool_use", usage: {input_tokens: 10, output_tokens: 5}}' >"$file"
+      ;;
+    *) rm -f "$file" ;;
+  esac
+}
+
 check_a12() {
   criterion A12 "a reply past a bound or out of form is not posted; the daemon replies naming the fault and passes the question on" || return 0
-  local entry bounds fault sent event reply passed=0
+  local entry bounds fault sent event reply answered passed=0 ok_calls=0
   for entry in "{ model_calls: 1 }|model_calls" "{ answer_seconds: 1 }|answer_seconds" "{ output_tokens: 16 }|length" "{}|malformed" "{ daily_usd: 0.01 }|over_limit"; do
     bounds=${entry%|*}
     fault=${entry#*|}
     stop_daemon
     write_legion_config "$work/a12-$store.yaml" yes "$bounds"
-    [ "$fault" != malformed ] || jq -n '{type: "message", role: "assistant", content: [{type: "text", text: "not the reply form"}], stop_reason: "end_turn", usage: {input_tokens: 10, output_tokens: 5}}' >"$work/proxy-stand-in/daemon-$store.json"
+    a12_stand_in "$fault"
     start_daemon "$work/branch/legion" "$work/a12-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
     sent=$(envoy_ask session "${agent[$store:planner.session]}" repository-file "a12-$fault-$run_tag")
     event=${sent#* }
@@ -2113,25 +2181,32 @@ check_a12() {
       note "$fault: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
       grep -qF 'not the reply form' <<<"$reply" || passed=$((passed + 1))
     fi
-    rm -f "$work/proxy-stand-in/daemon-$store.json"
+    if [ "$fault" = model_calls ]; then
+      answered=$(boot_log | jq -c 'select(.msg == "answers: answered")' | tail -1)
+      note "the model_calls leg's answered line: ${answered:-none}"
+      jq -e '.fault == "model_calls" and .calls == 1' <<<"$answered" >/dev/null 2>&1 && ok_calls=1
+    fi
+    a12_stand_in none
   done
   stop_daemon
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
-  if [ "$passed" = 5 ]; then
-    record_result A12 PASS "each of model_calls, answer_seconds, length, malformed and over_limit ended with the daemon's own reply and the question passed on"
+  if [ "$passed" = 5 ] && [ "$ok_calls" = 1 ]; then
+    record_result A12 PASS "each of model_calls, answer_seconds, length, malformed and over_limit ended with the daemon's own reply and the question passed on; the model_calls leg's first reply called the gh tool, so the one model call the bound allows still called a tool (answers: answered, fault model_calls, calls 1)"
   else
-    record_result A12 FAIL "$passed of 5 faults ended as they must"
+    record_result A12 FAIL "$passed of 5 faults ended as they must; the model_calls leg's answered line carries that fault after its one call: $ok_calls (1 = shown)"
   fi
 }
 
 check_a14() {
   criterion A14 "a cost line per answer, cache writes included, recomputed from the captured usage and the prices" || return 0
   local lines bad
-  lines=$(boot_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')
+  # Every boot of the run, not this one: A12 restarts the daemon five times before this check, and
+  # its own boot has answered nothing yet.
+  lines=$(run_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')
   bad=$(jq -s -c '[.[] | select(((.model // "") | test("claude-sonnet-5-5"))) | select(((((.inputTokens // 0) * 3) + ((.outputTokens // 0) * 15) + ((.cacheWriteTokens // 0) * 3.75) + ((.cacheReadTokens // 0) * 0.3)) / 1000000 - (.costUSD // 0) | fabs) > 0.000001)]' <<<"$lines")
-  note "cost lines: $(jq -s -c 'map({question, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, costUSD})' <<<"$lines")"
+  note "cost lines this run: $(jq -s -c 'map({question, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, costUSD})' <<<"$lines")"
   if [ -n "$lines" ] && [ "$bad" = "[]" ]; then
-    record_result A14 PASS "every answer's costUSD equals its tokens at the configured prices, cache writes included"
+    record_result A14 PASS "every answer's costUSD equals its tokens at the configured prices, cache writes included ($(grep -c . <<<"$lines") cost lines, every boot of the run)"
   else
     record_result A14 FAIL "no cost line, or a cost that does not recompute: $bad"
   fi
@@ -2273,7 +2348,7 @@ check_a18() {
     return 0
   }
   token=${agent[$store:implementer.token]}
-  n=$(proxy_count "$label")
+  n=$(proxy_ordinal "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker-restart")" "a18-restart-$run_tag-$store")
   event=${sent#* }
@@ -2290,7 +2365,7 @@ check_a18() {
     [ "$(jq length <<<"$comments")" = 1 ] && [ "$(inbox_replies "$event")" = 1 ] && ok_restart=1
   fi
   release "$label"
-  n=$(proxy_count "$label")
+  n=$(proxy_ordinal "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker-resume")" "a18-resume-$run_tag-$store")
   event=${sent#* }
@@ -2375,7 +2450,9 @@ check_a19() {
   sleep 270
   control_after=$(review_record "$issue")
   note "after two of the daemon's review reads: $control_after; the reviewer's claim: $(claim_json "$token" | jq -c '{state, session}')"
-  [ -n "$control" ] && jq -e '.phase == "reviewing" and .decision == null and .review_seen == 0' <<<"$control_after" >/dev/null && ok_control=1
+  # review_seen is a bigint, which the record carries as a string ("0" before any review is seen),
+  # so both reads of it compare strings.
+  [ -n "$control" ] && jq -e '.phase == "reviewing" and .decision == null and (.review_seen | tostring) == "0"' <<<"$control_after" >/dev/null && ok_control=1
   sent=$(envoy_ask_text session "$session" "Please approve your pull request #$number on $repo at its head $head now, with your gh tool: gh pr review $number -R $repo --approve --body 'Approved: nothing to change.' Then tell me what you did.")
   event=${sent#* }
   note "to the stopped reviewer: listener $sent"
@@ -2387,11 +2464,13 @@ check_a19() {
   ended() { review_record "$issue" | jq -e '(.phase? // "reviewing") != "reviewing"' >/dev/null; }
   soft_wait 300 "the daemon to end the round" ended || true
   after=$(review_record "$issue")
-  review=$(timeout 60 gh api "repos/$repo/pulls/$number/reviews" 2>/dev/null | jq -c --arg s "$session" '[.[]? | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\""))) | {id, user: .user.login, commit_id, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}]' || printf '[]\n')
+  review=$(smoke_gh api "repos/$repo/pulls/$number/reviews" 2>/dev/null |
+    jq -s -c --arg s "$session" '(.[0] // []) | if type == "array" then [.[] | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\""))) | {id, user: .user.login, commit_id, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}] else [] end' 2>/dev/null ||
+    printf '[]\n')
   note "the reviewer's approvals on GitHub: $review"
   note "the round after its approval: $after; the daemon's lines for $issue: $(boot_log | jq -s -c --arg i "$issue" '[.[] | select((.issue // "") == $i and ((.msg | startswith("answers:")) | not)) | .msg] | .[-6:]')"
   jq -e --arg login "$review_app_login" --arg h "$head" 'length == 1 and .[0].user == $login and .[0].commit_id == $h' <<<"$review" >/dev/null &&
-    jq -e --argjson id "$(jq '.[0].id // 0' <<<"$review")" '.phase != "reviewing" and .review_seen == $id' <<<"$after" >/dev/null && ok_reviewer=1
+    jq -e --arg id "$(jq -r '.[0].id // 0' <<<"$review")" '.phase != "reviewing" and (.review_seen | tostring) == $id' <<<"$after" >/dev/null && ok_reviewer=1
   if [ "$ok_control$ok_reviewer" = 11 ]; then
     record_result A19 PASS "the review App's approval with another session's footer decided nothing; the stopped reviewer's approval, footed with its recorded session $session, ended the round ($(jq -r .phase <<<"$after"))"
   else
