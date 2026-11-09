@@ -323,13 +323,18 @@ root_awaits_gate() {
 }
 # The slot says nothing about either answer below: the root holds its row in awaiting_person and
 # after it alike, so each reads the phase and the wait instead.
+#
+# root_answered is true of any issue outside awaiting_person whatever it waits on, and it is
+# sound only because every caller reaches it through await_gate_wait, which has already asserted
+# that the root stands in that phase.
 root_answered() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
     | ($i.phase == "awaiting_person" and $i.waitingOn.answeredAt != null) or $i.phase != "awaiting_person"'
 }
-# root_holds_slot ISSUE: the root resumed — out of awaiting_person with its wait cleared
+# root_resumed ISSUE: the root resumed — out of awaiting_person with its wait cleared
 # (waitingOn gone, so no answeredAt is left to read) and its architect live in the same session.
-root_holds_slot() {
+# It reads no slot: the root held one throughout the wait.
+root_resumed() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
     | $i.phase != "awaiting_person" and $i.waitingOn == null
       and ($i.architect.session // "") != "" and ($i.architect.state | IN("ready", "working", "idle"))'
@@ -352,29 +357,29 @@ await_gate_wait() {
   timeout_hook=$hook
   note "$issue waits on a person at gate version $(daemon_state | jq -r --arg issue "$issue" '.issues[$issue].waitingOn.gateVersion') holding its admission slot; its architect stays live"
 }
-# await_root_slot ISSUE LABEL [SECONDS] waits for ISSUE to resume, out of awaiting_person with its
-# architect live: phase_seconds unless SECONDS says. The resume takes no slot — the root has held
-# one since the daemon started it — so what the wait covers is the pass that reads the answer.
-await_root_slot() {
+# await_root_resume ISSUE LABEL [SECONDS] waits for ISSUE to resume, out of awaiting_person with
+# its architect live: phase_seconds unless SECONDS says. The resume takes no slot — the root has
+# held one since the daemon started it — so what the wait covers is the pass that reads the answer.
+await_root_resume() {
   local issue=$1 label=$2 limit=${3:-$phase_seconds} hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true "$limit" "$label root $issue to resume out of awaiting_person" root_holds_slot "$issue"
+  until_true "$limit" "$label root $issue to resume out of awaiting_person" root_resumed "$issue"
   timeout_hook=$hook
 }
-# await_answered_slot ISSUE LABEL [SECONDS]: the person's review answered ISSUE's wait, and the root
-# then resumes (await_root_slot's SECONDS).
-await_answered_slot() {
+# await_answered_resume ISSUE LABEL [SECONDS]: the person's review answered ISSUE's wait, and the
+# root then resumes (await_root_resume's SECONDS).
+await_answered_resume() {
   local issue=$1 label=$2 limit=${3:-} hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
   until_true 120 "the person's review to answer $label root $issue (waitingOn.answeredAt, or a root already resumed)" root_answered "$issue"
   timeout_hook=$hook
-  await_root_slot "$issue" "$label" "$limit"
+  await_root_resume "$issue" "$label" "$limit"
 }
 # drive_gate ISSUE LABEL [SECONDS]: the architect registers the gate on its own and its root waits on
 # a person, keeping its slot; the proof's human approves the registered version, the root resumes
-# on the pass that reads the answer (await_answered_slot's SECONDS), and the daemon moves it to planning.
+# on the pass that reads the answer (await_answered_resume's SECONDS), and the daemon moves it to planning.
 drive_gate() {
   local issue=$1 label=$2 limit=${3:-}
   architect_registers_gate "$issue" "$label"
@@ -382,7 +387,7 @@ drive_gate() {
   gate_artifact=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.artifactId')
   gate_version=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.currentVersion')
   dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
-  await_answered_slot "$issue" "$label" "$limit"
+  await_answered_resume "$issue" "$label" "$limit"
   wait_for_phase "$issue" planning
   wait_for_worker "$issue" planner
 }

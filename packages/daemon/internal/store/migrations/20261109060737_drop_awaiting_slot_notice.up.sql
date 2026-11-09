@@ -18,16 +18,20 @@
 -- migration and a database that runs both reach the same shape, and the history of what the
 -- deployment once held stays readable.
 --
--- The order of the four statements is the order Postgres needs, for two reasons. The shape check
--- names many columns, so Postgres refuses to drop awaiting_slot_notice_at while that constraint
--- stands: the constraint comes off first and goes back on, in its 0057 form, once the column is
--- gone. The trigger comes off before either, because the dependency Postgres does track is the
--- trigger on the table and not what the plpgsql body reads: a function body naming a dropped
--- column raises at the next write rather than at the drop, so dropping the trigger and its
--- function by hand is the whole of what removes them.
+-- The order of the four statements is the order this change needs, for two reasons. A bare drop
+-- of the column would take the whole shape check with it and say nothing: ALTER TABLE ... DROP
+-- COLUMN drops a same-table check constraint that names the column automatically, and the
+-- constraint names many columns besides this one. So it comes off by hand and goes back on, in
+-- its 0057 form, once the column is gone. The trigger comes off before either, because the
+-- dependency Postgres does track is the trigger on the table and not what the plpgsql body
+-- reads: a function body naming a dropped column raises at the next write rather than at the
+-- drop, so dropping the trigger and its function by hand is the whole of what removes them.
 --
--- Rolling the image back is safe without touching anything: the earlier daemon's PutIssue names
--- no column this removes, and docs/kubernetes.md says so under its own heading.
+-- Rolling the image back is not free. Every release from legion-v19.45.0 on names
+-- awaiting_slot_notice_at in its PutIssue and scans it in scanIssue, so pinning one of them
+-- after this migration fails every issue read and every issue write until the column is back.
+-- The statement that brings it back, and why nothing else of this migration need come with it,
+-- are in docs/kubernetes.md under its own heading.
 drop trigger issues_carried_slot_notice_cleared on issues;
 drop function issues_carried_slot_notice_cleared();
 alter table issues drop constraint issues_awaiting_shape;

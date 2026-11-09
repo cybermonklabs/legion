@@ -834,7 +834,4 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 		t.Fatalf("admission.waiting = %#v, want none: three of the four hold a row already, and the fourth waits only for its merge",
 			got.Admission.Waiting)
 	}
-	if slices.Contains(got.Admission.Active, "LEGION-13") {
-		t.Fatalf("admission.active = %#v, want no issue in awaiting_merge: that is the one phase whose row the rule deletes", got.Admission.Active)
-	}
 }

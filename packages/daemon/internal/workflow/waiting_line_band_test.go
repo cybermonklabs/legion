@@ -11,21 +11,24 @@ import (
 
 // Where the waiting line puts an issue whose work came back is shipped text, so the fragment is
 // read from the source it is declared in (record.WaitingLineBand) rather than written out again
-// here. The thirteen files below carry the fourteen texts that state it — admit.go carries two
-// of them — and the first loop reads the fragment's presence and nothing else: whether the
-// sentence around it is true is a reader's to judge, never this loop's, so green here is
-// coverage and not correctness. Both loops read a file through one helper that puts its prose on
-// a single line, so a text wrapped across a line break reads as one written out on a single
-// line. (INFRA-1100.)
+// here. The sixteen files below carry the eighteen texts that state it — AGENTS.md and admit.go
+// carry two each — and one loop runs both checks over each file: the fragment's presence, and
+// the ban below. Presence reads the fragment and nothing else: whether the sentence around it
+// is true is a reader's to judge, never this loop's, so green here is coverage and not
+// correctness. The file is read through one helper that puts its prose on a single line, so a
+// text wrapped across a line break reads as one written out on a single line. (INFRA-1100.)
 //
 // The rule those texts keep, and this test with them: a text states the placement,
 // record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate
 // opened, and never the position that placement gives an issue, which depends on what else waits
-// (record.Waiting, record/project.go). The second loop is the ban that rule needed. It runs over
-// the thirteen files of the one list this test holds, which is every file held to the fragment
-// at all: the list of files that named the waiting-line notice went with that notice when
+// (record.Waiting, record/project.go). The ban is what that rule needed. It runs over the
+// sixteen files of the one list this test holds, which is every file held to the fragment at
+// all: the list of files that named the waiting-line notice went with that notice when
 // INFRA-1909 deleted it, since an issue now keeps its admission slot until it is done, leaves
 // the workflow or waits only for its merge, and no answered root waits for a slot to resume.
+// The list grew by the three files that deletion left held to neither check — concepts.md, the
+// architect's acceptance reference and the controller's wakes reference — each of which states
+// the placement and only ever stood in the list that went.
 //
 // Presence alone let a position claim through: AGENTS.md carried record.WaitingLineBand word for
 // word in a sentence about a root's own first phase, two lines below a sentence that claimed a
@@ -87,12 +90,9 @@ func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
 		"packages/daemon/internal/phase/phase.go",
 		"packages/daemon/internal/workflow/awaiting_person.go",
 		"skills/legion-controller/references/admission.md",
-	}
-	for _, file := range band {
-		if !strings.Contains(collapsed(file), record.WaitingLineBand) {
-			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
-				file, record.WaitingLineBand)
-		}
+		"docs/site/src/content/docs/legion/concepts.md",
+		"skills/legion-architect/references/acceptance.md",
+		"skills/legion-controller/references/wakes.md",
 	}
 	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
 	// one of these is banned as the one that carries it mid-sentence is.
@@ -102,10 +102,17 @@ func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
 		"front of the whole line",
 		"never first in",
 	}
+	// One read a file: the collapsed text serves the presence check and the ban alike, so the
+	// failures of one file are reported together rather than the whole list twice.
 	for _, file := range band {
-		text := strings.ToLower(collapsed(file))
+		text := collapsed(file)
+		if !strings.Contains(text, record.WaitingLineBand) {
+			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
+				file, record.WaitingLineBand)
+		}
+		lowered := strings.ToLower(text)
 		for _, phrase := range banned {
-			if !strings.Contains(text, phrase) {
+			if !strings.Contains(lowered, phrase) {
 				continue
 			}
 			t.Errorf("%s says %q, which no file this test lists may say: such a text states where "+

@@ -3705,7 +3705,7 @@ drive_gated_spec() {
   wait_for_architect "$issue"
   until_true 300 "the $issue architect to be given its catch-up notice" notice_delivered "$issue" architect "$(notice_needle catch-up "$issue")"
   until_true 43200 "a human to approve the $issue spec in Dispatch, opening its design gate" gate_open "$issue" "$artifact"
-  await_root_slot "$issue" "the $issue"
+  await_root_resume "$issue" "the $issue"
   waits=$(jq -R -s --arg issue "$issue" '[split("\n")[] | fromjson? | select(.msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)] | length' "$daemon_log")
   note "$issue: it waited on the human $waits times before the approval, holding its admission slot throughout, and has resumed"
   approved=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.approvedVersion')
@@ -5922,8 +5922,11 @@ controller_launched_with_steps() {
 controller_launched_with_steps || fail "no process in $work/controller-state/controller was launched with '$steps_line'"
 note "the controller's Oh My Pi was launched with '$steps_line'"
 # (2) With tree 3 out, a slot stands free (tree 1, in merging, holds the only one taken), so an unlabelled leaf set to
-# todo wakes the controller with `todo on <KEY>`.
-free=$(daemon_state | jq -r '.admission.cap - (.admission.active | length) - (.admission.waiting | length)')
+# todo wakes the controller with `todo on <KEY>`. One issue can stand in both lists — an issue
+# holding a row waits in the line while its work comes back to it — so the waiting issues
+# subtracted here are the ones `admission.active` does not name: subtracting such an issue twice
+# would read a state that does have a free slot as one that has none.
+free=$(daemon_state | jq -r '.admission.cap - (.admission.active | length) - ((.admission.waiting - .admission.active) | length)')
 [ "$free" -gt 0 ] || fail "no admission slot stands free after $tree3 left ($(daemon_state | jq -c .admission)), so no slot wake can be sent"
 unhanded=$(dispatch_human POST issues "$(jq -cn --arg project "$project" --arg title "Stage 4b proof issue nobody hands to Legion ($work)" '{project:$project,title:$title,force:true}')" | jq -er .key) ||
   fail "create the unlabelled issue nobody hands to Legion in $project"

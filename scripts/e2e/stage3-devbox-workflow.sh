@@ -1272,9 +1272,9 @@ else
 fi
 
 # no_change_close: a root whose human decides at the design gate that no change is needed. The
-# no-change root took the slot the first root's close freed, its architect registered its own
-# closed gate, and it has waited on a person since, keeping that slot while its architect stays
-# live. The human requests changes saying no change is needed: that
+# no-change root took the row the first root gave up at its merge, before that root's close; its
+# architect registered its own closed gate, and it has waited on a person since, keeping that row
+# while its architect stays live. The human requests changes saying no change is needed: that
 # answers the wait, and the root resumes at admitted on the next pass, taking no further slot (the
 # held root holds the other one),
 # its architect receives a task naming the changes request. close_root is refused while a root is
@@ -1290,7 +1290,7 @@ no_change_close() {
   artifact=$(daemon_state | jq -er --arg issue "$nochange_issue" '.issues[$issue].designGate.artifactId')
   reason="No change is needed: $repo already has what this issue asks for. Close this issue without a change."
   dispatch_human POST "artifacts/$artifact/reviews" "$(jq -cn --arg reason "$reason" '{state: "changes_requested", reason: $reason}')" >/dev/null
-  await_answered_slot "$nochange_issue" "Stage 3 no-change proof"
+  await_answered_resume "$nochange_issue" "Stage 3 no-change proof"
   wait_for_phase "$nochange_issue" admitted 60
   until_true 300 "the live no-change architect to receive its task once its root has resumed" issue_worker_live "$nochange_issue" architect
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."

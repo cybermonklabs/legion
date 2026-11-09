@@ -2086,7 +2086,7 @@ the revision raises a block; the human answers it;
 and the architect hands the request back, or requests approval again, which opens a new request since Request changes answered the old one.
 It keeps the issue's asks as `<issue>-asks.json`, approval events as `<issue>-events.json`, each requested version as `<issue>-spec-v<N>.json`, and the verdict as `<issue>-gate-verdict.json`.
 While tree 1 waits on the human (its question, or a closed gate it registered) it is in `awaiting_person`, keeping the slot it took at its admission, with its architect live;
-once the gate opens, `spec-posted` waits for the root to resume (`await_root_slot`, which needs no slot of its own, so it comes on the pass that reads the approval) before it waits for planning, and notes how many times the daemon logged the root waiting on the human.
+once the gate opens, `spec-posted` waits for the root to resume (`await_root_resume`, which needs no slot of its own, so it comes on the pass that reads the approval) before it waits for planning, and notes how many times the daemon logged the root waiting on the human.
 
 `LEGION_E2E_POD_FILE` names a JSON file holding a deployment's own worker pod block, the `runtime.kubernetes.pod` value its configuration renders (`service_account`, `env`, `volumes`, `volume_mounts`, in the shape `packages/daemon/internal/config/kubernetes.go` reads).
 The run copies it once, at prerequisites, as `jq -cS .` into its work directory and records the copy's sha256;
@@ -2324,7 +2324,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `admitted-issue-cap`
 
-  the cap counts issues at work, so two roots fill none of a cap of 4: both are admitted at once, in rank order, with `admission.waiting` empty.
+  the cap counts the issues the daemon has started, so two roots fill none of a cap of 4: both are admitted at once, in rank order, with `admission.waiting` empty.
   Tree 3 is filed here and set todo at `issue-independence`, where the cap is full
 
 - `spec-posted`
@@ -5165,8 +5165,8 @@ a correction round, the retro, and planning, whose planner runs its gap analyst 
 `round_correction_pushed ROUND` accepts the round's line only as an addition in `smoke_file`'s patch, never in a notes file that quotes it.
 
 With the design gate armed (`gates.design: root-issues`), a root whose architect registers a closed gate while no worker of its tree runs waits on a person:
-`drive_gate ISSUE LABEL [SECONDS]` runs `architect_registers_gate`, then `await_gate_wait` (the root in `awaiting_person` with `waitingOn.kind` `gate` and no `answeredAt`, holding its `.slot` and named by `admission.active`, while its architect stays live within `phase_seconds`), approves the registered version as the proof human, then `await_answered_slot`:
-the answer (`waitingOn.answeredAt`, or the root already out of `awaiting_person`) within 120 s, then `await_root_slot`, the root resumed out of `awaiting_person` with its wait cleared and its architect live, within `SECONDS` (`phase_seconds` by default;
+`drive_gate ISSUE LABEL [SECONDS]` runs `architect_registers_gate`, then `await_gate_wait` (the root in `awaiting_person` with `waitingOn.kind` `gate` and no `answeredAt`, holding its `.slot` and named by `admission.active`, while its architect stays live within `phase_seconds`), approves the registered version as the proof human, then `await_answered_resume`:
+the answer (`waitingOn.answeredAt`, or the root already out of `awaiting_person`) within 120 s, then `await_root_resume`, the root resumed out of `awaiting_person` with its wait cleared and its architect live, within `SECONDS` (`phase_seconds` by default;
 Stage 3's first root passes 1800, which is slack now that a resume takes no slot and waits for no other root).
 A timeout in any of them prints the root's phase, slot, `waitingOn` and architect state and the admission state.
 Only then does it wait for planning.

@@ -124,13 +124,14 @@ tree: a tree of four started issues holds four slots. An issue takes its slot wh
 starts it and keeps it
 until it is done, leaves the workflow or waits only for its merge,
 so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
-roots of the live trees. The free slots are `admission.cap` minus the issues in
-`admission.active`, which is every issue holding a slot. Count no issue of `admission.waiting` a
-second time: an issue that holds a slot stands in that line too while its work comes back to it,
-an answered root among them, and the issues of the line that hold none are what take the free
-slots, less the ones in `admission.blocked`, which wait on a blocker rather than on a
-slot. Every move to `todo` you make is one of
-these:
+roots of the live trees. The free slots are `admission.cap`, less every issue in
+`admission.active`, which is every issue holding a slot, and less again each issue of
+`admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
+daemon counts a slot a waiting issue will take as taken already, and an issue in
+`admission.blocked` waits on a blocker rather than on a slot. Count no issue twice. One issue
+stands in both lists — an answered root, whose work comes back to it on the row it kept — and
+subtracting it a second time would hide a slot that is free. Every move to `todo` you make is
+one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);

@@ -443,7 +443,7 @@ gate_send() {
 }
 # gate_finish ISSUE: the root waits on a person at its closed gate, keeping the slot it took at
 # its admission, while its architect stays live (await_gate_wait); the proof human approves, and
-# the root resumes on the pass that reads the answer (await_answered_slot), taking no further
+# the root resumes on the pass that reads the answer (await_answered_resume), taking no further
 # slot, and only then reaches planning. admission_cap 5 counts the issues the daemon has started,
 # roots and children alike, so the three roots hold three of the five throughout and root 1's two
 # children take the rest.
@@ -453,7 +453,7 @@ gate_finish() {
     "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$issue' --arg artifact '$artifact' '.issues[\$issue].designGate.artifactId == \$artifact and .issues[\$issue].designGate.currentVersion > 0'"
   await_gate_wait "$issue" "$issue"
   dispatch_human POST "artifacts/$artifact/reviews" '{"state":"approved"}' >/dev/null
-  await_answered_slot "$issue" "$issue"
+  await_answered_resume "$issue" "$issue"
   wait_for_phase "$issue" planning
   wait_for_worker "$issue" planner
 }

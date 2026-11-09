@@ -642,14 +642,14 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				t.Fatalf("the re-held copy of a published %s notice is refused, so its architect is never told: %v", notice.Kind, err)
 			}
 
-			// Valid is not the same as unchanged. The validation refuses a field a kind requires
-			// and does not hold — a wait with no moment at all — while the daemon compares what
-			// the published row carries against the record exactly (the daemon's
-			// stillWaitsForSlot), so a publish that moved the moment rather than dropping it
-			// would pass every check above and leave the copy unpublishable all the same. The
-			// comparison runs over the wire form the re-hold reads the copy back from, decoded
-			// the way the daemon's exceptionNotice decodes the listener's report, with unknown
-			// fields refused, so a field the publish renames or invents is caught here too.
+			// Valid is not the same as unchanged. The validation refuses only a field a kind
+			// requires and does not hold — a catch-up without its account of the tree — so a
+			// publish that moved a field rather than dropping it would pass every check above
+			// and leave the re-held copy carrying something its architect was never owed. The
+			// comparison below runs over the wire form the re-hold reads the copy back from,
+			// decoded the way the daemon's exceptionNotice decodes the listener's report, with
+			// unknown fields refused, so a field the publish renames or invents is caught here
+			// too.
 			wire, err := json.Marshal(published)
 			if err != nil {
 				t.Fatalf("the published %s notice does not marshal, so no listener could carry it: %v", notice.Kind, err)

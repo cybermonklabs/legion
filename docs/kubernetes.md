@@ -1724,9 +1724,19 @@ Upgrade, and roll back, every daemon of one database in the same change.
 #### Rolling back the release that keeps a slot to the merge
 
 This release's migration `20261109060737_drop_awaiting_slot_notice` takes the column `awaiting_slot_notice_at` off `issues`, drops the trigger `issues_carried_slot_notice_cleared` with the function behind it, and puts `issues_awaiting_shape` back in the form `0057_awaiting_person` wrote.
-Re-pinning the image of the release before this one asks for none of that back.
-That daemon's `PutIssue` names the column in neither its insert nor its on-conflict update, nothing of it reads the column, and the trigger existed only to clear a mark no daemon writes any more, so a rollback meets a shape it writes and reads correctly as it stands.
-There is no statement to run for this step and no dump to restore for it.
+Re-pinning an image asks for part of that back, and which part follows the release.
+Pull request cybermonklabs/legion#2989 added `awaiting_slot_notice_at`, and the commit it merged as, `6c72aaee111c`, is release `legion-v19.45.0`: every release from `legion-v19.45.0` on carries the column.
+The newest, `legion-v19.47.0`, names it three times in `packages/daemon/internal/record/store.go` — in the `issueColumns` select list, in the `PutIssue` insert and its values, and in that insert's `on conflict ... do update set` — and scans it in `scanIssue`.
+So once this migration has dropped the column, pinning any release from `legion-v19.45.0` on fails every issue read and every `PutIssue` with `column "awaiting_slot_notice_at" does not exist`, which is every fact, tick and boot pass that daemon makes, until the column is back.
+Run this with the daemon stopped, before that image is pinned:
+
+```sql
+alter table issues add column if not exists awaiting_slot_notice_at timestamptz;
+```
+
+Nothing else of #2989 need come back.
+That daemon reads and writes the column and asks nothing else of the shape: the trigger only cleared a mark a write had left standing, and the two clauses this migration took out of `issues_awaiting_shape` only refused a mark outside an answered wait, so the constraint without them refuses nothing that daemon writes.
+A rollback to a release before `legion-v19.45.0` needs no statement at all: `legion-v19.44.0` names `awaiting_slot_notice_at` nowhere in `packages/daemon/internal/record/store.go`, so its `PutIssue` names no such column in its insert or its on-conflict update and nothing of it reads one.
 
 What the rollback does bring back is the earlier release's slot rule: an issue gives its row up the moment no worker of it has work, so a root in `accepting`, one waiting on a person and one waiting for its merge hold none again.
 It reads the `slots` rows as it finds them, and this release leaves a row standing for each of those issues, so the earlier release's first admission pass releases them and its cap counts what that release expects.

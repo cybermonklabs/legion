@@ -526,7 +526,7 @@ func AtWork(issue Issue, gate TreeGate) bool {
 
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
 // the moment the daemon starts it until its phase reaches done or awaiting_merge, or Dispatch
-// takes it out of the workflow (OutOfWorkflow). Every phase between keeps the row — admitted,
+// takes it out of the workflow (InWorkflow). Every phase between keeps the row — admitted,
 // the worker phases, merging, accepting, held and awaiting_person — so an issue waiting for a
 // person, for a blocker or for its review keeps its place against the cap and wins none back
 // from the line when the wait ends.
@@ -536,8 +536,12 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // grant (admit's slotFor, which asks it of the state the promotion leaves the issue in). Written
 // apart, one pass could grant a row the next pass takes away, and the issue would queue again
 // for the slot it had just been given.
+//
+// Whether the issue is in the workflow at all is InWorkflow's one statement, which this reads
+// rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
+// the slot rule either, and NeedsSlot asks the tree's own terms beside this.
 func KeepsSlot(issue Issue) bool {
-	return !OutOfWorkflow(issue.Status) && issue.Phase != phase.Done && issue.Phase != phase.AwaitingMerge
+	return InWorkflow(issue) && issue.Phase != phase.AwaitingMerge
 }
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
@@ -723,6 +727,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 			// promotion opens the tree, and the starts of a run it carries are queued then.
 			continue
 		}
+		// An issue that already holds a row waits for nothing here: the row is what releases
+		// the start it owes (SuperviseRequest.NeedsSlot), so its worker is given that task
+		// without the line, and a place in the line would only take a slot from an issue
+		// holding none.
+		if _, held := slotted[issue.Key]; held {
+			continue
+		}
 		// The issue must need a slot where it stands (NeedsSlot), the same question the release
 		// of one asks, so that no issue the release would free is offered one here: an issue
 		// that owes a start its phase has moved past — a run that ended before its slot came,
@@ -731,13 +742,6 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		root, recorded := byKey[issue.Tree]
 		_, running := live[issue.Tree]
 		if !recorded || !NeedsSlot(issue, root, facts.Gates[issue.Tree], running) {
-			continue
-		}
-		// An issue that already holds a row waits for nothing here: the row is what releases
-		// the start it owes (SuperviseRequest.NeedsSlot), so its worker is given that task
-		// without the line, and a place in the line would only take a slot from an issue
-		// holding none.
-		if _, held := slotted[issue.Key]; held {
 			continue
 		}
 		owed, owes := facts.Owed[issue.Key]
