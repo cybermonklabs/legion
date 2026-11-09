@@ -21,10 +21,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -76,8 +79,12 @@ func create(dsn, prefix string) (string, func() error, error) {
 	admin := *base
 	admin.Path = "/postgres"
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin.String())
-	if err != nil {
+	var conn *pgx.Conn
+	if err = OnConnect(func() error {
+		var opened error
+		conn, opened = pgx.Connect(ctx, admin.String())
+		return opened
+	}); err != nil {
 		return "", nil, fmt.Errorf("connect to the admin database: %w", err)
 	}
 	name, err := RandomName(prefix)
@@ -104,6 +111,65 @@ const (
 	dropWindow = 15 * time.Second
 	dropPause  = 200 * time.Millisecond
 )
+
+// connectTries and connectPause bound OnConnect's retry: how many times a connection is opened
+// while the server resets it, and the wait between attempts.
+const (
+	connectTries = 3
+	connectPause = 200 * time.Millisecond
+)
+
+// connectCounts is what every connection this test process opened did, printed beside the drops:
+// a run whose connects all went at the first attempt says the churn costs nothing, and one that
+// needed retries says how many, which is the measurement rather than a guess about the server.
+var connectCounts struct {
+	opened  atomic.Int64
+	retried atomic.Int64
+}
+
+// OnConnect runs open until it answers no error, the server refuses it for a reason a second
+// attempt would meet again, or connectTries attempts are spent.
+//
+// It exists because this package's fixtures open about 790 connections in a run of
+// internal/daemon — a database per test, each with its own admin connection — where the serial
+// suite opened them one at a time, and a connection that the server resets at accept under that
+// churn ended a test at its first statement: measured once in 20 shuffled runs of 2026-11-09 and
+// once in about 90 runs the day before, each time "read: connection reset by peer" at 0.12 s with
+// no assertion reached and the postmaster unrestarted. A retry is the instrument rather than a
+// criterion: the count below says whether the churn is costing connections, where excluding the
+// run from a campaign would say nothing and could hide a defect of this very conversion.
+//
+// Only a reset, a refusal or a closed socket is retried. A server that ANSWERED — a bad password,
+// a database that does not exist — fails at once, because a second attempt meets the same answer
+// and a retry there would turn a defect into a wait (transientConnect).
+func OnConnect(open func() error) error {
+	var err error
+	for try := 1; ; try++ {
+		connectCounts.opened.Add(1)
+		if err = open(); err == nil {
+			if try > 1 {
+				connectCounts.retried.Add(1)
+			}
+			return nil
+		}
+		if try == connectTries || !transientConnect(err) {
+			return err
+		}
+		time.Sleep(connectPause)
+	}
+}
+
+// transientConnect reports whether err is the socket going rather than the server answering: a
+// reset, a refusal, a broken pipe or an end of file, each of which a later attempt may not meet.
+// A *pgconn.PgError is the server's own answer and is never transient, whatever it says.
+func transientConnect(err error) bool {
+	var answered *pgconn.PgError
+	if errors.As(err, &answered) {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
+}
 
 // execer is what Drop needs of a connection or a pool, which pgx.Conn and pgxpool.Pool both are.
 type execer interface {
@@ -176,9 +242,10 @@ func Drop(ctx context.Context, exec execer, name string) error {
 
 // DropLine is one line naming what this process's drops did, for the package Main that prints it.
 func DropLine() string {
-	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s",
+	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s; %d connects, %d needed a retry",
 		dropCounts.drops.Load(), dropCounts.retried.Load(), dropCounts.forced.Load(),
-		time.Duration(dropCounts.longest.Load()).Round(time.Millisecond))
+		time.Duration(dropCounts.longest.Load()).Round(time.Millisecond),
+		connectCounts.opened.Load(), connectCounts.retried.Load())
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

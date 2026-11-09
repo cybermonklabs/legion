@@ -92,6 +92,14 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
 // since Clone registered that cleanup first.
+//
+// The pool's first connection is opened here rather than left to the test's first statement, and
+// it is opened through testdb.OnConnect, so a reset at accept is retried where it would otherwise
+// end the test with nothing run: pgxpool.New establishes nothing, so a server that resets this
+// process's 790th connection of the run answers at the first Acquire, which is inside whatever
+// the test was doing (measured: TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled,
+// "read: connection reset by peer" at 0.12 s, run 16 of 20 on 2026-11-09). Ping is what opens it,
+// and the retry's own count is in testdb.DropLine.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
@@ -99,6 +107,9 @@ func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	if err := testdb.OnConnect(func() error { return pool.Ping(context.Background()) }); err != nil {
+		t.Fatalf("the cloned database's pool opened no connection: %v", err)
+	}
 	return pool
 }
 
@@ -192,6 +203,12 @@ func prepare(dsn string) error {
 	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open the admin pool: %w", err)
+	}
+	// Its first connection, opened here so a reset at accept is retried rather than met by the
+	// first clone of the run (testdb.OnConnect).
+	if err := testdb.OnConnect(func() error { return admin.Ping(ctx) }); err != nil {
+		admin.Close()
+		return fmt.Errorf("the admin pool opened no connection: %w", err)
 	}
 	shared.admin = admin
 
