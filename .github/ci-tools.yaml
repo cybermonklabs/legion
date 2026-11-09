@@ -223,11 +223,13 @@ no_second_source:
       ghcr.io/cybermonklabs/legion/ci and giving the action a row to read, which also means
       moving the version pin out of `ARG UV_VERSION`. dispatch://INFRA-1986 owns that work.
 
-  # The Pulumi docker provider plugin ci.yaml's envoy-infra live tests install. The URL is built
-  # from `const DockerPluginVersion`, so it is declared here as the workflow writes it.
+  # The Pulumi docker provider plugin the envoy-smoke job installs. The URL is built from
+  # `const DockerPluginVersion`, so it is declared here as the workflow writes it. The digest is
+  # in that job's own called file: dispatch://INFRA-1413 moved every job's steps out of ci.yaml,
+  # and this entry names the file the pin is in rather than the router that calls it.
   - url: https://github.com/pulumi/pulumi-docker/releases/download/v$version/pulumi-resource-docker-v$version-linux-amd64.tar.gz
     digest: 4dbcd9defa0fb03999cdfeab50bd461451b7c65e8566927994f63ee956055ffe
-    pinned_in: .github/workflows/ci.yaml
+    pinned_in: .github/workflows/ci-job-envoy-smoke.yaml
     why: >-
       Pulumi publishes its provider plugins as GitHub release assets and serves them to the CLI
       from that same release; its registry publishes the SDK packages and not this binary
