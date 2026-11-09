@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -95,22 +96,37 @@ func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
 // (api.WaitingLineField) and where the line puts an issue whose work came back
 // (record.WaitingLineBand).
 //
-// The first nine files are everything a root's architect and an operator read about a root whose
-// wait a person answered while every slot was taken, with gate.go among them because the daemon's
-// own comment is where the next reader of this path looks. This loop reads presence and nothing
-// else: that each file names the notice and the field, so no shipped text forgot the new words.
-// Whether the sentence around a name is true is a reader's to judge, never this loop's: green
-// here is coverage, never correctness. The thirteen below them carry the fourteen texts that
-// state where the line puts an issue whose work came back — admit.go carries two of them — and
-// the loop over them reads the fragment's presence, again nothing more. That loop and the ban
-// below read a file through one helper that puts its prose on a single line, so a text wrapped
-// across a line break reads as one written out on a single line. (INFRA-1100.)
+// The texts of packages/daemon are read as files; every text outside it is read out of
+// waiting_line_words_extract.txt, the copy of their sentences committed beside this package,
+// and never out of the file itself: a test that reads a shipped text puts that text in this
+// job's filter — a declared read applies to every compiled source file of a run — and an edit
+// of AGENTS.md or a skill page would then start the whole daemon Go lane. A section of that
+// copy is held to what the file it names was held to, so a constant renamed in the daemon
+// fails here whatever those texts say, which is the half of this check that had to stay with
+// the product. What keeps the copy the texts' own, and carries the ban over them, is
+// internal/textcheck's TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay and
+// TestNoShippedTextClaimsAPositionInTheWaitingLine (INFRA-1413).
+//
+// The naming list and the copy's `naming` sections are everything a root's architect and an
+// operator read about a root whose wait a person answered while every slot was taken, with
+// gate.go among them because the daemon's own comment is where the next reader of this path
+// looks. That loop reads presence and nothing else: that each names the notice and the field,
+// so no shipped text forgot the new words. Whether the sentence around a name is true is a
+// reader's to judge, never this loop's: green here is coverage, never correctness. The band
+// list and the `band` sections carry the texts that state where the line puts an issue whose
+// work came back — admit.go carries two of them — and the loop over them reads the fragment's
+// presence, again nothing more. That loop and the ban below read a file through one helper
+// that puts its prose on a single line, so a text wrapped across a line break reads as one
+// written out on a single line; a `band` section is quoted in that same one-line form, since
+// that is the form it answers for. (INFRA-1100.)
 //
 // The rule those texts keep, and this test with them: a text states the placement,
 // record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate
 // opened, and never the position that placement gives an issue, which depends on what else waits
 // (record.Waiting, record/project.go). The third loop is the ban that rule needed, over every
-// file either list names. Presence alone let a position claim through: AGENTS.md carried
+// file of packages/daemon either list names; the texts outside it are the text-check half's,
+// because a ban is a whole-file negative and no excerpt can prove one. Presence alone let a
+// position claim through: AGENTS.md carried
 // record.WaitingLineBand word for word in a sentence about a root's own first phase, two lines
 // below a sentence that claimed a position for an issue whose work came back, and the presence
 // check passed on the neighbouring sentence's words. The ban reads that same one-line text,
@@ -159,21 +175,10 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 	}
 	naming := []string{
 		"packages/daemon/internal/prompts/roles/architect-root.md",
-		"skills/legion-architect/SKILL.md",
-		"skills/legion-architect/references/wake-routing.md",
-		"skills/legion-architect/references/design-gate.md",
-		"skills/legion-architect/references/acceptance.md",
-		"docs/site/src/content/docs/legion/running-legion.md",
-		"docs/site/src/content/docs/legion/troubleshooting.md",
-		"docs/site/src/content/docs/legion/concepts.md",
 		"packages/daemon/internal/workflow/gate.go",
 	}
 	band := []string{
-		"AGENTS.md",
 		"packages/daemon/internal/admit/admit.go",
-		"docs/site/src/content/docs/legion/running-legion.md",
-		"docs/site/src/content/docs/legion/troubleshooting.md",
-		"packages/contracts/src/legion-api.ts",
 		"packages/daemon/cmd/legion/main.go",
 		"packages/daemon/internal/admit/awaiting_person_test.go",
 		"packages/daemon/internal/admit/hold_test.go",
@@ -181,7 +186,6 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 		"packages/daemon/internal/daemon/awaiting_catchup.go",
 		"packages/daemon/internal/phase/phase.go",
 		"packages/daemon/internal/workflow/awaiting_person.go",
-		"skills/legion-controller/references/admission.md",
 	}
 	for _, file := range naming {
 		text := body(file)
@@ -196,6 +200,28 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 		if !strings.Contains(collapsed(file), record.WaitingLineBand) {
 			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
 				file, record.WaitingLineBand)
+		}
+	}
+	// The texts outside packages/daemon, as the copy beside this package quotes them: a file's
+	// sections are held to what the file itself was held to, so a quotation that no longer
+	// carries the constant fails here, which is what catches a renamed constant. The copy is
+	// the text-check half's to keep the texts' own.
+	for _, quoted := range waitingLineWordsQuotations(t) {
+		switch quoted.list {
+		case namingList:
+			if !strings.Contains(quoted.body, string(WaitingForSlotNoticeKind)) {
+				t.Errorf("%s, as %s quotes it, does not name the notice a root waiting for a slot gets (%q)",
+					quoted.path, waitingLineWordsExtract, WaitingForSlotNoticeKind)
+			}
+			if !strings.Contains(quoted.body, api.WaitingLineField) {
+				t.Errorf("%s, as %s quotes it, does not name the %q the root's record carries while it waits",
+					quoted.path, waitingLineWordsExtract, api.WaitingLineField)
+			}
+		case bandList:
+			if !strings.Contains(quoted.body, record.WaitingLineBand) {
+				t.Errorf("%s, as %s quotes it, states where the waiting line puts an answered root "+
+					"without saying it stands %q", quoted.path, waitingLineWordsExtract, record.WaitingLineBand)
+			}
 		}
 	}
 	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
@@ -226,4 +252,64 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The copy of the shipped texts outside packages/daemon, committed beside this package, and the
+// two lists its sections answer for, named as the test above names them.
+const (
+	waitingLineWordsExtract = "waiting_line_words_extract.txt"
+	namingList              = "naming"
+	bandList                = "band"
+)
+
+// wordsSection is one file's quotations in that copy for one of the two lists: the path they
+// were taken from, the list they answer for, the form they are quoted in — the file's own bytes
+// (`raw`) or its prose on one line (`collapsed`) — and the bodies, joined in the copy's order. A
+// file is quoted more than once where the two names it must carry stand a paragraph apart, and
+// the join is what lets the loop above read a file's sections as it reads a whole file.
+type wordsSection struct{ path, list, form, body string }
+
+// waitingLineWordsQuotations reads that copy. A line `# <path> <list> <form>` opens a quotation
+// and every line under it, to the next such line, is that quotation's own bytes; the lines above
+// the first are the file's header, and a `# ` line inside a quotation that opens nothing is the
+// quoted text's own. A marker whose form does not answer for its list is refused rather than
+// read: the form says whether a body is the file's bytes or its one-line form, and the wrong one
+// would hold a group to a text in a shape nobody ships.
+func waitingLineWordsQuotations(t *testing.T) []wordsSection {
+	t.Helper()
+	text, err := os.ReadFile(waitingLineWordsExtract)
+	if err != nil {
+		t.Fatalf("read %s: %v", waitingLineWordsExtract, err)
+	}
+	var quoted []wordsSection
+	at := -1
+	for i, line := range strings.Split(string(text), "\n") {
+		marker, hashed := strings.CutPrefix(line, "# ")
+		parts := strings.Fields(marker)
+		if hashed && len(parts) == 3 && (parts[1] == namingList || parts[1] == bandList) {
+			if (parts[1] == namingList) != (parts[2] == "raw") {
+				t.Fatalf("%s:%d: %s is quoted as `%s %s`: a %q section is the file's own bytes and a "+
+					"%q section its one-line form, which is the form each list is read in",
+					waitingLineWordsExtract, i+1, parts[0], parts[1], parts[2], namingList, bandList)
+			}
+			if at = slices.IndexFunc(quoted, func(s wordsSection) bool {
+				return s.path == parts[0] && s.list == parts[1]
+			}); at < 0 {
+				quoted = append(quoted, wordsSection{path: parts[0], list: parts[1], form: parts[2]})
+				at = len(quoted) - 1
+			}
+			continue
+		}
+		if at < 0 {
+			continue
+		}
+		quoted[at].body += line + "\n"
+	}
+	// An empty copy is this check failing open: the file is still there, the parse matched
+	// nothing, and every text outside packages/daemon would be held to nothing at all.
+	if len(quoted) == 0 {
+		t.Fatalf("%s quotes no text: the shipped texts outside packages/daemon are being held to "+
+			"nothing, and internal/textcheck holds this copy to them", waitingLineWordsExtract)
+	}
+	return quoted
 }

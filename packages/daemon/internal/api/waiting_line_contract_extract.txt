@@ -1,0 +1,91 @@
+# Every passage outside packages/daemon that names the contract the waiting line's place arrived
+# in, copied here verbatim. One section is one window of one file: the 220 bytes on either side
+# of a `contract <N>` or a bare `below <N>` that stands beside `waitingLine` and names neither
+# the retired stranded state nor the stranded report, which is the rule
+# packages/daemon/internal/api's TestTheShippedTextsNameTheWaitingLinesOwnContract reads a text
+# by. The bytes are the file's own, so that scan finds in a section what it found in the file.
+#
+# The check is in two halves, because a test that reads a shipped text puts that text in its
+# job's filter - a declared read applies to every compiled source file of a run - and an edit of
+# a guide page or a changelog fragment would then start the whole daemon Go lane. The product
+# half scans the files of packages/daemon that name the contract and this one beside them, and
+# holds every number it finds to waitingLineContract; packages/daemon/internal/textcheck's
+# TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts recomputes these windows from
+# the seven files themselves and fails when a text and this copy have drifted apart, printing
+# what it computed. Neither half alone is the guarantee: together they are the one the single
+# test used to give.
+#
+# So this file changes in the same commit as the passage it quotes. A window here that no file
+# yields, or a renumbered sentence whose window here is still the old one, fails the text-check
+# half; a number here that is not the daemon's own fails the product half.
+#
+# The format: a line `# <path>` opens one window of that file, and every line under it, to the
+# next such line, is that window's own bytes. A file the rule yields no window for has no
+# section, and docs/site/src/content/docs/legion/troubleshooting.md is that file today - it
+# names the field, and the word contract only of a plugin speaking another one, never a number
+# beside the field. A window it ever gains is one this file must gain with it.
+
+# packages/contracts/src/legion-api.ts
+al(),
+  /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
+   * list names, so a slot holder and every other issue the line does not carry have none, and a
+   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: legionWaitingLineView.optional(),
+  waitingOn: legionWaitingOn.optional(),
+  check: legionCheckView.optional(),
+  /** The memory group of
+
+# packages/pi-legion/AGENTS.md
+it of the one plugin into this package and `@sjawhar/pi-envoy`
+(LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
+number is the one `DaemonAPIVersion` declares, last bumped by contract 58's waiting line
+(INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
+`waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
+an issue the list does
+
+# packages/pi-legion/AGENTS.md
+iting` names carries
+`waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
+an issue the list does not name, a slot holder among them, carries no such key, and a caller
+from a pod below 58 is served every issue without the field), after contract 57's claim step
+record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
+carries `step`, what the daemon last saw that cla
+
+# docs/site/src/content/docs/legion/running-legion.md
+ished line still names — each standing
+  among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
+  with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
+  `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
+  cannot see the line, and a root of another Dispatch project, whose line this daemon does not
+  publish, is count
+
+# docs/site/src/content/docs/legion/running-legion.md
+ce`; and
+  `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
+  `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
+  read; a daemon below contract 58 serves none) and, for a closed
+  issue whose
+  production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
+  the role the check recorded as the one that works it — `looks`,
+  `lookO
+
+# packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml
+kind: Added
+body: 'Daemon API contract 58: each issue the state''s `admission.waiting` names carries `waitingLine`, its `place` in that line, 1 at the front, and the `length` of the line at that read. An issue the list does not name carries none, and a caller f
+
+# packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml
+ue the state''s `admission.waiting` names carries `waitingLine`, its `place` in that line, 1 at the front, and the `length` of the line at that read. An issue the list does not name carries none, and a caller from a pod below 58 is served the state without the field.'
+time: 2026-11-08T07:40:56.665329166Z
+custom:
+    Issue: pr2989
+
+# packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml
+kind: Changed
+body: 'Declares daemon API contract 58, which adds `waitingLine` to each issue the state''s `admission.waiting` names: its place in that line and the line''s length, which `read_record` hands on. A root architect whose answered root waits for an admission sl
+
+# packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml
+kind: Changed
+body: 'Declares daemon API contract 58, which adds `waitingLine` to each issue the state''s `admission.waiting` names: its place in that line and the line''s length.'
+time: 2026-11-08T07:41:11.840481462Z
+custom:
+    Issue: pr2989

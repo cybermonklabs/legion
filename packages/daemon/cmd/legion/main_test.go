@@ -1762,10 +1762,15 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // the true answer for a caller that cannot see the line.
 //
 // The operator's guide prints this line as its sample and says what the count is, so the sample
-// is built here from the state the guide describes and read back out of the guide. That the
-// guide also names the words of the wait itself is one rule held in one place, workflow's
-// TestTheShippedWordsNameTheWaitingLineNotice, which reads each out of the source that declares
-// it. (INFRA-1100.)
+// is built here from the state the guide describes and read back out of awaiting_summary_extract.txt,
+// the copy of those lines committed beside this package. It is read there and never in the guide
+// itself: a test that reads the guide puts the guide in this job's filter — a declared read
+// applies to every compiled source file of a run — and a documentation edit would then start the
+// whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
+// TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
+// file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
+// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineNotice, which reads each
+// out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	const (
@@ -1800,14 +1805,22 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 		})
 	}
 
-	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
-	body, err := os.ReadFile(guide)
+	const extract = "awaiting_summary_extract.txt"
+	body, err := os.ReadFile(extract)
 	if err != nil {
-		t.Fatalf("read %s: %v", guide, err)
+		t.Fatalf("read %s: %v", extract, err)
 	}
+	// The header is the run of `#` lines the copy opens with; what stands under it is the guide's
+	// own bytes, indentation included.
+	quoted := string(body)
+	for strings.HasPrefix(quoted, "#") {
+		_, quoted, _ = strings.Cut(quoted, "\n")
+	}
+	quoted = strings.TrimLeft(quoted, "\n")
 	sample := awaitingSummary(map[string]api.Issue{"WIDGETS-9": {WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "7f3c2a10"}}})
-	if !strings.Contains(string(body), sample) {
-		t.Errorf("running-legion.md does not carry %q", sample)
+	if !strings.Contains(quoted, sample) {
+		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for a "+
+			"state with one unanswered root", extract, sample)
 	}
 }
 

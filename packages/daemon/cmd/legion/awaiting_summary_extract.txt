@@ -1,0 +1,24 @@
+# The `legion state` sample of docs/site/src/content/docs/legion/running-legion.md, the lines an
+# operator reads the waiting-line count in, copied here verbatim. `roots waiting on a person` is
+# the line cmd/legion's awaitingSummary renders, printed here for a state with one unanswered
+# root, and the lines around it are what makes the quotation one passage of that guide rather
+# than a sentence a later page could repeat.
+#
+# The check is in two halves, because a test that reads the guide puts the guide in its job's
+# filter - a declared read applies to every compiled source file of a run - and a documentation
+# edit would then start the whole daemon Go lane. The product half is cmd/legion's
+# TestTheShippedWordsNameTheWaitingLineCount, which builds that line from the state the sample
+# describes and finds it here; packages/daemon/internal/textcheck's
+# TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample holds these lines to the guide
+# itself. Neither half alone is the guarantee: a sample corrected in the guide alone fails the
+# text-check half, and a renderer that stopped printing this line fails the product half.
+#
+# The format: the lines that open with `#` are this header, and everything under the blank line
+# below is the guide's own bytes, indentation included.
+
+  legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
+  admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
+  blocked on Dispatch links: none
+  memory: none
+  roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
+  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z

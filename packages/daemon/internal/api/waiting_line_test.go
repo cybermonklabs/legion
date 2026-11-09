@@ -161,6 +161,16 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // such pair is passed over, so a later text in another file is covered the moment it names the
 // two together.
 //
+// The texts of packages/daemon are read here; every other text is read out of
+// waiting_line_contract_extract.txt, the copy of their windows committed beside this package.
+// It is read there and never in the text itself: a test that reads a shipped text puts that
+// text in this job's filter — a declared read applies to every compiled source file of a run —
+// and an edit of a guide page or a changelog fragment would then start the whole daemon Go
+// lane. The copy holds those windows in their own bytes, so the scan below reads a section as
+// it read the file, and internal/textcheck's
+// TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts is what keeps the copy the
+// texts', in the job whose subject is a file's words (INFRA-1413).
+//
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
 // reads, and it is read by nothing else here. The window is where the sentences that state the
@@ -185,13 +195,8 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		"packages/daemon/internal/api/state.go",
 		"packages/daemon/internal/projection/project.go",
 		"packages/daemon/internal/projection/project_test.go",
-		"packages/contracts/src/legion-api.ts",
-		"packages/pi-legion/AGENTS.md",
-		"docs/site/src/content/docs/legion/running-legion.md",
-		"docs/site/src/content/docs/legion/troubleshooting.md",
-		"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-		"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-		"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+		// The windows of every shipped text outside packages/daemon, in their own bytes.
+		"packages/daemon/internal/api/waiting_line_contract_extract.txt",
 	} {
 		body, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {

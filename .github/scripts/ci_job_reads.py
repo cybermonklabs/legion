@@ -333,6 +333,13 @@ RULES = {
     f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:140 (runtime.Caller :145)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:179 (config.ControllerConfigExample)")),
     f"{DAEMON}/internal/config/kubernetes_test.go": reads(("deploy/kubernetes/operator-route/pod.yml", "internal/config/kubernetes_test.go:1322")),
+    # This row and two of the envoy rows below it - internal/dispatch/outbox/
+    # expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
+    # read every filter gating a job that compiles them already matches. They are here so that a
+    # later narrowing of one of those filters is refused by rule 1 rather than dropping the read
+    # with nobody noticing (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
+        (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/agentmodels_omp_test.go": reads(
         ("packages/pi-legion/agents/**", "internal/daemon/agentmodels_omp_test.go:165 copyDir"),
         ("scripts/pi-plugin-prepack.sh", "internal/daemon/agentmodels_omp_test.go:175 --stage-skills"),
@@ -374,32 +381,78 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
          "internal/textcheck/reclaim_doc_test.go:43 reads the committed copy it holds the guide's paragraph to")),
-    # main's #2989 holds three of the daemon's own tests to the texts that ship the waiting line,
-    # each read from the repository root under `..`, so daemon_go_tests must match them: a docs-only
-    # edit of one breaks the test, and before these rows it merged green.
-    f"{DAEMON}/cmd/legion/main_test.go": reads(
-        ("docs/site/src/content/docs/legion/running-legion.md",
-         "cmd/legion/main_test.go:1803 reads it under ../../../.. and holds awaitingSummary's own line to it")),
-    f"{DAEMON}/internal/api/waiting_line_test.go": reads(
-        ("docs/site/src/content/docs/legion/running-legion.md",
-         "internal/api/waiting_line_test.go:189 reads it under ../../../.."),
-        ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/api/waiting_line_test.go:190 reads it under ../../../.."),
-        ("packages/pi-legion/AGENTS.md", "internal/api/waiting_line_test.go:188 reads it under ../../../.."),
-        ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-         "internal/api/waiting_line_test.go:191 reads that one fragment under ../../../.."),
-        ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-         "internal/api/waiting_line_test.go:192 reads that one fragment under ../../../.."),
-        ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
-         "internal/api/waiting_line_test.go:193 reads that one fragment under ../../../..")),
-    f"{DAEMON}/internal/workflow/waiting_for_slot_notice_test.go": reads(
-        ("AGENTS.md", "internal/workflow/waiting_for_slot_notice_test.go:172 reads it under ../../../.."),
+    f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
+        # The three copies of the shipped texts, each committed beside the package whose own
+        # test is held to it and read here through readExtract.
+        (f"{DAEMON}/internal/api/waiting_line_contract_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:355 reads it as ../api/waiting_line_contract_extract.txt"),
+        (f"{DAEMON}/internal/workflow/waiting_line_words_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:355 reads it as ../workflow/waiting_line_words_extract.txt"),
+        (f"{DAEMON}/cmd/legion/awaiting_summary_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:355 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
+        # The texts those copies are held to, each read under ../../../.. by shippedText: the
+        # seven the contract windows are recomputed from, the twelve the notice's two lists
+        # name, and those twelve again read whole for the ban.
+        ("AGENTS.md", "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/workflow/waiting_for_slot_notice_test.go:167 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/running-legion.md",
-         "internal/workflow/waiting_for_slot_notice_test.go:165,174 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/workflow/waiting_for_slot_notice_test.go:166,175 reads it under ../../../..")),
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("packages/contracts/src/legion-api.ts",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("packages/pi-legion/AGENTS.md",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads that one fragment under ../../../.."),
+        ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads that one fragment under ../../../.."),
+        ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads that one fragment under ../../../.."),
+        ("skills/legion-architect/SKILL.md",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("skills/legion-architect/references/acceptance.md",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("skills/legion-architect/references/design-gate.md",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("skills/legion-architect/references/wake-routing.md",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../.."),
+        ("skills/legion-controller/references/admission.md",
+         "internal/textcheck/waiting_line_texts_test.go:365 reads it under ../../../..")),
+    # The three checks main's #2989 put under packages/daemon read no text outside it any more:
+    # each is held to a copy committed beside its own package, and the row above is what holds
+    # those copies to the texts, in the text-check job, where a documentation edit is the run
+    # that should start (dispatch://INFRA-1413). cmd/legion/main_test.go is left with no row at
+    # all - awaiting_summary_extract.txt stands in its own directory - and what is left of these
+    # two is what each reads of packages/daemon outside its own package, which daemon_go_tests
+    # covers with the module itself.
+    f"{DAEMON}/internal/api/waiting_line_test.go": reads(
+        (f"{DAEMON}/cmd/legion/main.go",
+         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../.."),
+        (f"{DAEMON}/cmd/legion/main_test.go",
+         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../.."),
+        (f"{DAEMON}/internal/projection/project.go",
+         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../.."),
+        (f"{DAEMON}/internal/projection/project_test.go",
+         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../..")),
+    f"{DAEMON}/internal/workflow/waiting_for_slot_notice_test.go": reads(
+        (f"{DAEMON}/cmd/legion/main.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/admit/admit.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/admit/awaiting_person_test.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/admit/hold_test.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/api/state.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/daemon/awaiting_catchup.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/phase/phase.go",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../.."),
+        (f"{DAEMON}/internal/prompts/roles/architect-root.md",
+         "internal/workflow/waiting_for_slot_notice_test.go:151 reads every file of its two lists under ../../../..")),
     # --- envoy
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
@@ -428,6 +481,8 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
+    f"{ENVOY}/internal/dispatch/api/live_events_test.go": reads(
+        (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:845")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
          "internal/dispatch/api/openapi_test.go:189-190 (the path built runtime-relative ../../../../.., then "
@@ -439,10 +494,19 @@ RULES = {
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:478")),
+    f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
+        ("packages/contracts/src/dispatch-api.ts", "internal/dispatch/outbox/expects_reply_never_false_test.go:133")),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
+    # The server.started envelope packages/daemon's intake decodes, which this package's
+    # TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the one read here of a file
+    # of another module, and the one the envoy_go filter had to grow a pattern for, since it
+    # matched no file under packages/daemon and a change to that fixture alone therefore ran the
+    # daemon's jobs and not this one (dispatch://INFRA-1413).
+    f"{ENVOY}/internal/dispatch/startup/started_test.go": reads(
+        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "internal/dispatch/startup/started_test.go:379")),
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -1220,7 +1284,8 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-run-reads.sh", "the script under test"),
         (f"{SCRIPTS}/gh-read.sh",
-         "dispatch-browser-run-reads.sh:79 sources it, and dispatch-browser-run-reads.test.sh:9-12 tests its retry ladder"),
+         "dispatch-browser-run-reads.sh:79 sources it, and the harness drives its retry ladder with a "
+         "stand-in gh that refuses a case's first calls"),
     ]),
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
             f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
@@ -1677,8 +1742,8 @@ GATES = [
          "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
          "could not complete"),
         (".github/scripts/gh-read.sh",
-         "dispatch-browser-run-reads.sh:79 sources it, so the merge job's two reads of its own run "
-         "take its retry ladder"),
+         "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
+         "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
         (".github/playwright-apt-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
          "that name both run .github/scripts/playwright-install.sh, which reads it as the apt list it installs"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),

@@ -1,0 +1,75 @@
+# What the shipped texts outside packages/daemon say about the waiting line, quoted verbatim:
+# the notice a root waiting for a slot gets (workflow.WaitingForSlotNoticeKind) with the name its
+# place carries on the wire (api.WaitingLineField), and the fragment that states where the line
+# puts an issue whose work came back (record.WaitingLineBand).
+#
+# The check is in two halves, because a test that reads a shipped text puts that text in its
+# job's filter - a declared read applies to every compiled source file of a run - and an edit of
+# AGENTS.md or a skill page would then start the whole daemon Go lane. The product half is
+# packages/daemon/internal/workflow's TestTheShippedWordsNameTheWaitingLineNotice, which reads
+# the files of packages/daemon itself and these sections beside them, and holds each to the
+# constant its list is about, so a renamed constant fails there whatever these texts say;
+# packages/daemon/internal/textcheck's TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay
+# holds every section here to the file it was taken from, and carries the ban that no excerpt
+# can prove - that no file of either list claims a position in the line.
+#
+# So this file changes in the same commit as the text it quotes: a sentence reworded there and
+# not here fails the text-check half, and a constant renamed in the daemon fails the product
+# half, which is the one that matters for the words themselves.
+#
+# The format: a line `# <path> <list> <form>` opens one quotation. `<list>` is `naming`, the
+# files that name the notice and the field, or `band`, the files that state the placement, as
+# the product test's two lists are named; `<form>` is `raw`, the file's own bytes, or
+# `collapsed`, its prose put on one line the way that test reads a wrapped fragment (every
+# line's leading whitespace and one `//`, `*` or `#` marker dropped, the words joined by single
+# spaces). Every line to the next such line is the quotation's own bytes in that form. A file
+# may open more than one section: the two names are a paragraph apart in some of these texts,
+# and each section stands on its own in the file it came from.
+
+# skills/legion-architect/SKILL.md naming raw
+While a resume of that root waits for an admission slot, you get one `waiting-for-slot` notice saying what answered the wait, where your root stands in the admission line then, and that the daemon starts you again by itself at the next free slot.
+You get it only while this session holds its Envoy role: a session whose pod the daemon released while the root waited is told nothing, and its resume task says what answered the wait.
+Your record's `waitingLine` gives the live place and the line's length, and you act on neither: the daemon starts you.
+
+# skills/legion-architect/references/wake-routing.md naming raw
+| `waiting-for-slot` | Its `reason` says what answered your root's wait on a person, that your issue needs an admission slot and the cap has none free now, and where your issue stands in the admission line at that moment, the live place and length being `waitingLine` in your own record (the `legion` tool's `read_record`): do nothing, because the daemon starts you again by itself at the next free slot. |
+
+# skills/legion-architect/references/design-gate.md naming raw
+needs a slot, and while it waits for one you get one `waiting-for-slot` notice saying what
+answered the wait, where your root stands in the admission line then and that the daemon starts
+you again by itself, and your record's `waitingLine` gives the live place and the line's length;
+
+# skills/legion-architect/references/acceptance.md naming raw
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval; it brings back no need for a slot to resume, and only a root whose gate has never opened has one: then, while every slot is taken, you get one `waiting-for-slot` notice, and your record carries `waitingLine`, your place in the line and its length.
+
+# docs/site/src/content/docs/legion/running-legion.md naming raw
+  with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
+  `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
+
+# docs/site/src/content/docs/legion/running-legion.md naming raw
+  While an answered root waits for its slot, its architect, while its session is live and holds its
+  Envoy role, is sent one `waiting-for-slot` notice saying what answered the wait, where the root
+
+# docs/site/src/content/docs/legion/troubleshooting.md naming raw
+architect is still writing the first design. While it waits for that slot, `waitingLine` on the
+issue gives its place in the line and the line's length, and its architect, while its session is
+live and holds its Envoy role, is sent one `waiting-for-slot` notice saying where the root stands
+
+# docs/site/src/content/docs/legion/concepts.md naming raw
+`waitingLine` on the issue gives its place in the line and the line's length, and its architect,
+while its session is live and holds its Envoy role, is sent one `waiting-for-slot` notice saying
+
+# AGENTS.md band collapsed
+nothing. An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue
+
+# docs/site/src/content/docs/legion/running-legion.md band collapsed
+answered and the published line still names — each standing among the issues whose work came back, oldest first, until the pass that resumes it — and each by key with what
+
+# docs/site/src/content/docs/legion/troubleshooting.md band collapsed
+the root waited on it. The root stands in `admission.waiting` among the issues whose work came back, oldest first, and resumes itself there: at once, holding no slot, once its
+
+# packages/contracts/src/legion-api.ts band collapsed
+when the root waits in admission's waiting line for its slot, among the issues whose work came back, oldest first. */ const
+
+# skills/legion-controller/references/admission.md band collapsed
+`waitingOn.answeredAt` means the daemon has put it in `admission.waiting`, among the issues whose work came back, oldest first | Nothing: it is not something to admit, label or park, and
