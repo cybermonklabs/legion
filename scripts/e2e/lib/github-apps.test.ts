@@ -39,8 +39,9 @@ const home = join(dir, "home");
 // argv to ARGV_LOG, fails with exit 3 when the `<owner>/<read-only>` it was asked for matches
 // FAIL_MINT, refuses the names UNKNOWN_SECRETS lists as the broker refuses a name it does not
 // serve (`UNKNOWN_SECRET`, exit 1, under the line UNKNOWN_PREFACE gives when it gives one, as the
-// client's own progress lines put it), releases nothing when EMPTY_MINT is set, and streams
-// stdout when OVERSIZED_MINT is set.
+// client's own progress lines put it), writes WAIT_NOTICE to its stderr when that is set, as the
+// client writes the line a grant waiting on a person is approved by, releases nothing when
+// EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
 // The review App's own private key, the one the stand-in GitHub verifies an App JWT against, read
@@ -73,6 +74,7 @@ beforeAll(() => {
     join(fakeBin, "agent-secrets"),
     `#!/bin/sh
 printf '%s\\n' "$*" >>"\${ARGV_LOG:-/dev/null}"
+[ -z "\${WAIT_NOTICE:-}" ] || echo "$WAIT_NOTICE" >&2
 name=$1
 shift
 owner=
@@ -221,23 +223,26 @@ echo "wrote the block"`
     expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
   });
 
-  test("app_key_unsets strips the implement secret, the lib's default name, the two retired review names and every PRIVATE_KEY variable", async () => {
+  test("app_key_unsets strips the implement secret, the lib's default name, the two retired review names, the review App's key command and every PRIVATE_KEY variable", async () => {
     // Each name is exported first, so the strip list has something to remove: without it the
     // child would print them all. The three exported after the call are the lib's own literal
     // entries: its `compgen -e` sweep never saw them, so only the literals can strip them, and a
-    // stale export of either retired review name reaches no process the run starts.
+    // stale export of either retired review name reaches no process the run starts. The review
+    // role's own input is in the list for a reason of its own: a value that holds the key itself
+    // and still runs is taken (a one-line `printf` of a PEM), and no child of the run reads that
+    // input.
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, SOME_OTHER_APP_PRIVATE_KEY_B64: "irrelevant" },
       `export IMPLEMENT_APP=x
 require_app_inputs implement review
 export "$default_implement_app_secret=x" LEGION_REVIEW_APP=x GH_REVIEW_APP_PRIVATE_KEY_B64=x
-names="IMPLEMENT_APP|SOME_OTHER_APP_PRIVATE_KEY_B64|$default_implement_app_secret|LEGION_REVIEW_APP|GH_REVIEW_APP_PRIVATE_KEY_B64"
+names="IMPLEMENT_APP|SOME_OTHER_APP_PRIVATE_KEY_B64|$default_implement_app_secret|LEGION_REVIEW_APP|GH_REVIEW_APP_PRIVATE_KEY_B64|LEGION_E2E_REVIEW_APP_KEY_COMMAND"
 echo "set $(env | grep -c -E "^($names)=")"
 env "\${app_key_unsets[@]}" sh -c "echo \\"left \\$(env | grep -c -E '^($names)=' || true)\\""`
     );
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    expect(stdout).toContain("set 5");
+    expect(stdout).toContain("set 6");
     expect(stdout).toContain("left 0");
   });
 
@@ -1210,10 +1215,42 @@ echo wrote`
     }
   });
 
-  test("the commands operators write are taken, whatever they mention and however many lines they have", async () => {
+  test("a key quoted with `>` before each line is refused, and no line of it is written to the working directory", async () => {
+    // A mail client's quoting slips past the shapes above: with the `> ` in front, no line is
+    // base64 alone. `sh` reads each of those lines as a redirection and creates an empty file
+    // named after it in whatever directory the proof runs from — key text on disk under a name
+    // no relay can mask — so the guard takes a leading `>` off each line before it counts, and
+    // the paste is turned back before the command runs.
+    const quoted = reviewKey
+      .trimEnd()
+      .split("\n")
+      .map((written) => `> ${written}`)
+      .join("\n");
+    const { code, stdout, stderr, work } = await githubApps(
+      { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: quoted },
+      `mkdir -p "$work/run-from"
+cd "$work/run-from"
+require_app_inputs implement review
+write_github_apps --key-dir "$work/app-key" implement review
+echo taken`
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain(linesRefused);
+    expect(stderr).toContain("its value is not printed");
+    expect(stdout).not.toContain("taken");
+    // The directory the run ran from is as it was: `sh` never saw the paste.
+    expect(readdirSync(join(work, "run-from"))).toEqual([]);
+    expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+    holdsNoKey(stdout + stderr, keyIDs);
+    holdsNoKeyLine(stdout + stderr);
+  });
+
+  test("the commands operators write are taken, whatever they mention, however many lines they have and whatever they redirect", async () => {
     // The guard's tolerance, which costs as much as its refusals: each of these reads a key out
     // of a deployment's own store, and a guard that refused one would be in the way of the
-    // operator it is for. They are read for their shape alone here, so none of them runs.
+    // operator it is for. They are read for their shape alone here, so none of them runs. A
+    // redirection is part of a command, the one that opens the last line here included: the
+    // guard takes a leading `>` off a line before it counts that line's base64, and nothing else.
     for (const command of [
       "gcloud secrets versions access latest --secret=legion-review-app-key --project=legion-prod",
       "kubectl -n legion get secret review-app -o jsonpath='{.data.key}' | base64 -d",
@@ -1222,6 +1259,8 @@ echo wrote`
       "op read op://legion/review-app/key.pem",
       "awk '/-----BEGIN/,/-----END/' ~/.config/legion/review-key.pem",
       'project=legion-prod\ngcloud secrets versions access latest \\\n  --secret=review-key --project="$project"',
+      "gpg --quiet --decrypt ~/.legion/review-key.pem.gpg 2>/dev/null",
+      'kubectl -n legion get secret review-app -o jsonpath="{.data.key}" | base64 -d \\\n  > /dev/stdout',
     ]) {
       const { code, stdout, stderr } = await githubApps(
         { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: command },
@@ -1233,11 +1272,12 @@ echo wrote`
     }
   });
 
-  test("a key left where its command goes reaches no output of the run, whatever shape it has and whether or not the guard caught it", async () => {
+  test("a key left where its command goes has its armour and its long lines masked at the sink, caught by the guard or not", async () => {
     // The sink, which is what holds when a shape the guard does not know is pasted: the value is
     // put straight into the variable app_token_mint_key reads, as a guard that missed it would
     // leave it, so every line of it reaches `sh -c`, which echoes back what it cannot run. What
-    // that echo costs the run is one masked line apiece, in the transcript the proof keeps.
+    // that echo costs the run is a masked line apiece for the lines a key is wrapped at — the
+    // relay passes a line of 16 characters or fewer, and the key read below is wrapped at 64.
     for (const [shape, pasted] of pastedKeys()) {
       const { code, stdout, stderr, work } = await githubApps(
         { ...appInputs, PASTED: pasted },
@@ -1285,5 +1325,41 @@ echo done`
     expect(stderr.split("\n")).toContain("[redacted key]");
     holdsNoKey(stdout + stderr, keyIDs);
     holdsNoKeyLine(stdout + stderr);
+  });
+
+  test("a request waiting on a person reaches the operator with its approval link whole, and the key command's relay still masks a key", async () => {
+    // The two relays, one a channel. agent-secrets is the broker's own voice: the line it writes
+    // while a human-tier grant waits on a person carries the link that person approves it by,
+    // and it is the only place that link appears, so the release mint relays the line as it was
+    // written. Nothing of the operator's is echoed back out of that channel.
+    const approval =
+      "agent-secrets: waiting for approval: http://127.0.0.1:40925/approve/4a99c1e2-7b0d-4f6e-9a51-0d3c2e8fb274";
+    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const minted = await githubApps(
+      { ...appInputs, TOKEN_DIR: tokenDir, WAIT_NOTICE: approval },
+      `require_app_inputs implement review
+mint_app_tokens "$TOKEN_DIR" sjawhar
+echo minted`
+    );
+    expect(minted.code).toBe(0);
+    expect(minted.stdout).toContain("minted");
+    // Whole: the operator opens the link and approves the request the run waits on.
+    expect(minted.stderr.split("\n")).toContain(approval);
+    holdsNoToken(minted.stdout + minted.stderr);
+    // The key command's own stderr is the other channel, the one a key can be pasted into, and
+    // there the same run of characters is masked.
+    const body = reviewKey.trimEnd().split("\n")[1];
+    const relayed = await githubApps(
+      { ...appInputs, PASTED: `printf '%s\\n' '${body}' >&2; exit 7` },
+      `review_app_id=202
+review_app_key_command=$PASTED
+app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+echo done`
+    );
+    expect(relayed.code).toBe(0);
+    expect(relayed.stdout).toContain("done");
+    expect(relayed.stderr.split("\n")).toContain("[redacted key]");
+    holdsNoKey(relayed.stdout + relayed.stderr, keyIDs);
+    holdsNoKeyLine(relayed.stdout + relayed.stderr);
   });
 });
