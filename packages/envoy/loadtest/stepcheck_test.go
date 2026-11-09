@@ -316,8 +316,6 @@ func TestStepCheckNamesAMissingR6Measurement(t *testing.T) {
 			"R6 the database's size at the start and the end", []string{"under start_bytes", "61,440 MiB"}},
 		{"no CPU profile", func(f *stepFixture) { f.profile = nil },
 			"R6 Dispatch's CPU profile", []string{"holds no cpu.pprof"}},
-		{"no pool waiter sample", func(f *stepFixture) { f.sum.Resources.PoolAcquireGoroutines = stat{} },
-			"R6 requests waiting for a database connection", []string{"measured no pool acquire waiter"}},
 		{"no listener role", func(f *stepFixture) {
 			for role := range f.cgroup.Roles {
 				if strings.Contains(role, listenerRoleMark) {
@@ -340,6 +338,23 @@ func TestStepCheckNamesAMissingR6Measurement(t *testing.T) {
 				t.Errorf("%d clauses failed, want %q alone:\n%s", failed, c.clause, out)
 			}
 		})
+	}
+}
+
+// TestStepCheckFailsTheCriterionTheMissingPoolSampleIsJudgedOn: the requests waiting for a
+// database connection are both a measurement R6 asks the step to record and the reading
+// criterion (e) is judged on, and the series rule fails a step that sampled none, since a p50 of
+// 0 over no sample is no reading (curves.go, critPool). So that one measurement left out fails
+// two clauses where every other fails its own alone: R6's reading of it, and criterion (e).
+func TestStepCheckFailsTheCriterionTheMissingPoolSampleIsJudgedOn(t *testing.T) {
+	f := newStepFixture()
+	f.sum.Resources.PoolAcquireGoroutines = stat{}
+	out, failed := f.check(t, "2x-no-pool-sample")
+	wantClause(t, out, "R6 requests waiting for a database connection", "FAIL", "measured no pool acquire waiter")
+	wantClause(t, out, "R8 (e) Dispatch's pool acquire waiters p50 = 0", "FAIL",
+		"fail: the sampler measured no pool acquire waiter")
+	if failed != 2 {
+		t.Errorf("%d clauses failed, want R6's pool reading and criterion (e):\n%s", failed, out)
 	}
 }
 

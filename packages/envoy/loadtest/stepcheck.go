@@ -636,21 +636,41 @@ func (sc *stepCheck) sessionClassClause() stepClause {
 }
 
 // notificationCountsClause: the notifications expected, received, lost and received more than
-// once. The step's own totals are the join's (events), and the duplicates are counted per class,
-// since a second receipt is a session's (delivery.go).
+// once. The totals expected and received are the join's own (events), and the loss is the
+// per-class accounting's (events.by_class): each class's lost counts the (write, session) pairs
+// it was owed and no receipt arrived for, which is the figure criterion (g) is judged on.
+// events.missing cannot stand for the loss, since it is expected minus received over the whole
+// step and received counts the receipt of a write that committed on the boundary of a session's
+// life, which no session was owed (delivery.go classify, windowBoundary): on a run of the spec
+// loop it reads below 0 for most steps. It is printed under its own field name, beside the
+// boundary pairs that move it away from the loss, so a reader of summary.json finds it again
+// without reading it as notifications lost.
+//
+// A step with no loop session carries no by_class at all, and its sessions have no window and so
+// no boundary pair: there the shortfall over the step is the loss, and it is printed as 0 rather
+// than as a negative, which would say the step was delivered notifications nobody wrote.
+//
+// The clause judges none of this: a step that lost a notification fails criterion (g) of R8,
+// which reads the same classes, and this line is the measurement R6 asks the step to record.
 func (sc *stepCheck) notificationCountsClause() stepClause {
 	const name = "R6 notifications expected, received, lost and duplicate"
 	e := sc.step.sum.Events
 	if e.commitsUnread() {
 		return failClause(name, "the run's commit rows were not read, so the step counted none")
 	}
-	duplicate := 0
+	lost, boundary, duplicate := 0, 0, 0
 	for _, c := range e.ByClass {
+		lost += c.Lost
+		boundary += c.Boundary
 		duplicate += c.Duplicate
 	}
-	return okClause(name, fmt.Sprintf("expected %s, received %s, lost %s, duplicate %s",
+	if len(e.ByClass) == 0 {
+		lost = max(e.Missing, 0)
+	}
+	return okClause(name, fmt.Sprintf("expected %s, received %s, lost %s, duplicate %s; %s pairs on the boundary of a session's life, events.missing %s",
 		num(float64(e.ExpectedIssueTopicReceipts), 0), num(float64(e.IssueTopicReceipts), 0),
-		num(float64(e.Missing), 0), num(float64(duplicate), 0)))
+		num(float64(lost), 0), num(float64(duplicate), 0),
+		num(float64(boundary), 0), num(float64(e.Missing), 0)))
 }
 
 // rateReadingsClause: the offered and the committed rate of each part of R5. The rates are judged
@@ -883,10 +903,14 @@ func (sc *stepCheck) sizeClause() stepClause {
 }
 
 // r8Clauses: a pass or a fail for each criterion of R8, which is the spec loop's series rule
-// (curves.go loopSeries). A criterion the step's own load makes meaningless - no write offered,
-// no read sent, no loop session - is n/a and no failure; a criterion that is n/a for want of a
-// file the step should hold is a measurement the step lacks, so it fails here even though the
-// curves would draw the step without it.
+// (curves.go loopSeries). A criterion the rule failed is a failed clause, so the verdict line
+// names it, the count holds it and the command exits non-zero: this command and `loadgen curves
+// -series loop` read the same verdicts, and a step the series rule answers "passes no" for is no
+// step the check passes (INFRA-988). A criterion the step's own load makes meaningless - no
+// write offered, no read sent, no loop session - is n/a and no failure; a criterion that is n/a
+// for want of a file the step should hold is a measurement the step lacks, so it fails here even
+// though the curves would draw the step without it. Every clause carries the reading its verdict
+// came from (critReading), so a reader is given the numbers and not the word alone.
 func (sc *stepCheck) r8Clauses() []stepClause {
 	out := make([]stepClause, 0, len(loopSeries.crits)+1)
 	for _, c := range loopSeries.crits {
@@ -896,7 +920,7 @@ func (sc *stepCheck) r8Clauses() []stepClause {
 		case verdictOK:
 			out = append(out, okClause(name, "pass: "+sc.critReading(c)))
 		case verdictFail:
-			out = append(out, okClause(name, "fail: "+sc.critReading(c)))
+			out = append(out, failClause(name, "fail: "+sc.critReading(c)))
 		default:
 			if why, ok := sc.naByLoad(c); ok {
 				out = append(out, naClause(name, why))
