@@ -24,12 +24,12 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
-An upload replaces whatever document the owner already holds under the name being uploaded, so it names the base it replaces.
+An upload replaces whatever document the owner already holds under the name being uploaded, so it names the token of the version it replaces.
 It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
 That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.
 Every attempt of one press sends that one token, because the idempotency key covers the whole request body.
-A first upload of a name names no base, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
-Any other failure of that read ends the upload and says so, rather than uploading with no base: the page does not know what it would be replacing.
+A first upload of a name replaces no version and names no token, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
+Any other failure of that read ends the upload and says so, rather than uploading with no token: the page does not know what it would be replacing.
 
 ## Development
 
@@ -393,19 +393,14 @@ reason, and the line asking the sender to say what changed since it. An agent up
 holding a question, the person answers it, and the agent uploads the body it composed again,
 writing the same question with no `#id`: the uploaded block takes the live block's id, so the
 issue still holds that one answered ask and the settlement writes the answer onto the block
-again. An upload naming a base behind the live document is refused `409 PRECONDITION_FAILED`,
+again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
 whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
-non-zero, nothing is written, and the same upload with the base `dispatch doc-read` prints is
-taken. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
-required here because the review and the answer are a person's writes, and one optional
-`BASE_REQUIRED_DATABASE_URL`: a replacement that names no base is taken while
-`DISPATCH_UPLOAD_BASE_REQUIRED` is off, which is the default every server carries, so the
-refusal of one needs a server with the setting on. Name an empty Postgres database and the
-script builds this checkout's server, starts one of its own on a port of its own and that
-database, drives the `400 PRECONDITION_REQUIRED` against it and stops it by the pid it captured;
-unset, that one check prints a `SKIP: base …` line and the run drives the other half, that such a
-replacement is taken. It writes three issues in `PROJECT` and closes all three, also when a check
-fails. Against `bun run dispatch:local`:
+non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
+taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
+server, under no setting, so that check runs against the one server the rest of the script
+drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
+required here because the review and the answer are a person's writes. It writes three issues in
+`PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
 
 ```bash
 DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \

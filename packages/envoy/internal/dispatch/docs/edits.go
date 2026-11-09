@@ -207,6 +207,13 @@ func (e *ErrInvalidPrecondition) Error() string {
 // ErrPreconditionBusy reports that a room's bounded conditional-edit queue is full.
 var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 
+// ErrPreconditionRequired reports a whole-document upload replacing a document that already
+// exists and naming no token for the version it replaces, which every replacement names. The
+// write read the live tree to decide it and left it untouched. Its caller knows the document by
+// name and tells its reader where that token is printed, so the refusal a client reads is
+// written there (api's uploadBaseAdvice).
+var ErrPreconditionRequired = errors.New("an upload replacing a document must name the token of the version it replaces")
+
 // ErrPreconditionFailed reports a stale document or block token without changing the live tree.
 // CurrentVersion is the number of the newest version the document has, filled in by a caller that
 // has read it beside the write it refused (api's upload); an edit refuses without reading the

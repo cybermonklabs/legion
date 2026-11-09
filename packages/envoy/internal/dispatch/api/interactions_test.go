@@ -54,9 +54,24 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 	return mux, database, deps
 }
 
+// replacementPrecondition is the token a replacement names: the one the document stands at now,
+// which ReplaceText asks of every replacement, and none at all for a document whose live tree is
+// outside the Proof schema, which has no token and which only a replacement can repair.
+func replacementPrecondition(ctx context.Context, documentService docs.API, artifactID string) (*model.EditPrecondition, error) {
+	_, token, err := documentService.TextWithToken(ctx, artifactID)
+	if errors.Is(err, docs.ErrDocOutsideSchema) || errors.Is(err, docs.ErrDocSchema) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &model.EditPrecondition{Document: token}, nil
+}
+
 // replaceDocumentText replaces a document's text as an upload of a new version does: inside a
 // transaction joined with Docs.Join, the only way a document write runs, committed when the
-// replacement succeeds. It returns ReplaceText's own error, which tests assert on.
+// replacement succeeds. It names the token the document stands at now, as every replacement
+// does. It returns ReplaceText's own error, which tests assert on.
 func replaceDocumentText(database *store.Store, documentService docs.API, artifactID, markdown string, actor model.Actor) (string, error) {
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -64,9 +79,13 @@ func replaceDocumentText(database *store.Store, documentService docs.API, artifa
 		return "", err
 	}
 	defer tx.Rollback(ctx)
+	precondition, err := replacementPrecondition(ctx, documentService, artifactID)
+	if err != nil {
+		return "", err
+	}
 	joined, ledger := documentService.Join(ctx, tx)
 	defer ledger.Discard()
-	canonical, err := documentService.ReplaceText(joined, artifactID, markdown, actor, nil)
+	canonical, err := documentService.ReplaceText(joined, artifactID, markdown, actor, precondition)
 	if err != nil {
 		return "", err
 	}
@@ -1361,9 +1380,13 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 		t.Fatalf("begin upload transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	base, err := replacementPrecondition(ctx, documentService, issue.PrimaryArtifactID)
+	if err != nil {
+		t.Fatalf("read the document's token: %v", err)
+	}
 	joined, ledger := documentService.Join(ctx, tx)
 	defer ledger.Discard()
-	uploaded, err := documentService.ReplaceText(joined, issue.PrimaryArtifactID, "First.\n\nSecond, uploaded.\n", alice, nil)
+	uploaded, err := documentService.ReplaceText(joined, issue.PrimaryArtifactID, "First.\n\nSecond, uploaded.\n", alice, base)
 	if err != nil {
 		t.Fatalf("replace the document with the upload: %v", err)
 	}
@@ -1416,8 +1439,9 @@ func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 			path := "/api/v1/issues/" + issue.Key + "/artifacts"
 			upload := func(content string) {
 				t.Helper()
-				if response := dispatchRequest(t, handler, http.MethodPost, path, map[string]string{
+				if response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
 					"name": "notes.md", "content": content,
+					"precondition": uploadBaseNamed(t, handler, path, "notes.md"),
 				}, "bob"); response.Code != http.StatusCreated {
 					t.Fatalf("bob uploads %q: status=%d body=%s", content, response.Code, response.Body.String())
 				}
@@ -1465,8 +1489,9 @@ func TestUploadClearsItsUploaderBeforeNextVersion(t *testing.T) {
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
 	upload := func(content string) {
 		t.Helper()
-		if response := dispatchRequest(t, handler, http.MethodPost, path, map[string]string{
+		if response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
 			"name": "notes.md", "content": content,
+			"precondition": uploadBaseNamed(t, handler, path, "notes.md"),
 		}, "alice"); response.Code != http.StatusCreated {
 			t.Fatalf("upload %q: status=%d body=%s", content, response.Code, response.Body.String())
 		}

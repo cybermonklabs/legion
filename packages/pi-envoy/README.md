@@ -332,11 +332,11 @@ Inline content is stored as a Markdown document, so `--content` and `--content-f
 unchanged, under that name. A document title with a dot near its end takes `--content` once it
 ends in `.md`.
 
-An upload over a document the owner already holds under that name replaces every word of it, so it names the base it replaces.
-The base is the document token `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`.
-A base behind the live document is refused `409 PRECONDITION_FAILED`, which names the live token and the live version number, and nothing is written: read the document again, decide what the new version says, and upload again.
-A first upload of a name has no base to name.
-Whether a replacement that names none is refused at all is the Dispatch server's own `DISPATCH_UPLOAD_BASE_REQUIRED` setting, which is off by default.
+An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
+That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`.
+A token behind the live document is refused `409 PRECONDITION_FAILED`, which names the live token and the live version number, and nothing is written: read the document again, decide what the new version says, and upload again.
+An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
+A first upload of a name replaces no version, so it names no token.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
 handoff on its issue as this session: the file's text, one JSON object, is stored exactly as

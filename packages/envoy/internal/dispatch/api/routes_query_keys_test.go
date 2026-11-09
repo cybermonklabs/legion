@@ -44,6 +44,9 @@ var queryKeyExceptions = map[string]string{
 // pinned rather than described: a new unresolvable read changes it and fails, so the hole stays
 // named and small instead of growing quietly.
 var queryKeysReadThroughAHelper = []string{
+	// multipartJSONField reads one named JSON field of an upload's form: `actor` and
+	// `precondition`, each a field of the multipart body the upload routes declare.
+	`artifacts.go: FormValue(field)`,
 	`delivery.go: Get(name)`,
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,

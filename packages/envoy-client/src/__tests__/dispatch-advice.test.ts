@@ -1151,7 +1151,8 @@ describe("dispatch_ask's standing review", () => {
       // The stored reason is Dispatch's carry sentence, which the line never prints.
       reason:
         "Carried forward from the approval of version 5: the answer to a decision block was the whole change since it.",
-      carried: true,
+      // The version the carry names is what says the review is one, with no second field to
+      // disagree with it.
       carried_from_version: 5,
     });
     const lines = result.text.split("\n");

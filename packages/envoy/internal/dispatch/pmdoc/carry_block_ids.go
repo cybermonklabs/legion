@@ -101,8 +101,10 @@ func (c blockIDCarrier) carryChildren(next, live []*Node) {
 }
 
 // carryKept carries ids for a pair of blocks updateChildren keeps, one for the other: all of them
-// when the pair is unchanged, and otherwise those of its unchanged descendants. A typed block whose
-// id next does not name as live's is another block, however alike, so nothing in it is carried.
+// when the pair is unchanged, and otherwise those of its unchanged descendants. A changed typed
+// block whose id next does not name as live's is another block, however alike, so nothing in it
+// is carried; an unchanged one takes live's id whether it names one or not, as every unchanged
+// block does.
 func (c blockIDCarrier) carryKept(next, live *Node) {
 	if unchangedNode(next, live) {
 		c.carryUnchanged(next, live)

@@ -405,7 +405,7 @@ func TestEveryVersionWriteLeavesItsDocumentIndexed(t *testing.T) {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
 	requireWritten("upload of a new document", notes, "Uploaded paragraph.")
-	if replaced := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("Replaced paragraph.\n"), "alice"); replaced.Code != http.StatusCreated {
+	if replaced := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md", "precondition": uploadBaseField(t, handler, notes)}, "notes.md", "text/markdown", []byte("Replaced paragraph.\n"), "alice"); replaced.Code != http.StatusCreated {
 		t.Fatalf("replace the document: status=%d body=%s", replaced.Code, replaced.Body.String())
 	}
 	requireWritten("upload replacing a document", notes, "Replaced paragraph.")

@@ -63,7 +63,7 @@ func TestAskAdviceNamesThePersonsReviewOfTheCurrentVersion(t *testing.T) {
 			if review.Reason != standingReviewReason {
 				t.Fatalf("standing review reason = %q, want %q", review.Reason, standingReviewReason)
 			}
-			if review.Carried || review.CarriedFromVersion != 0 {
+			if review.CarriedFromVersion != 0 {
 				t.Fatalf("standing review = %#v, want no carry: alice reviewed this version herself", review)
 			}
 			if !review.At.Equal(written.CreatedAt) {
@@ -129,7 +129,7 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	if review == nil {
 		t.Fatal("the question's advice named no review; want the approval carried to version 5")
 	}
-	if !review.Carried || review.CarriedFromVersion != 3 {
+	if review.CarriedFromVersion != 3 {
 		t.Fatalf("standing review = %#v, want a carry naming version 3, the version the newest carry's reason gives", review)
 	}
 	if review.By != "alice" || review.State != "approved" || review.Version != 5 {
@@ -282,31 +282,5 @@ func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
 	}
 	if review != nil {
 		t.Fatalf("standing review = %#v, want none: a plan review is not a person's review", review)
-	}
-}
-
-// carriedApprovalVersion reads the version out of the sentence both carries write
-// (docs.CarriedReviewReasonPrefix) and reports nothing for a reason a person wrote.
-func TestCarriedApprovalVersionReadsTheVersionTheCarrysReasonNames(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		reason  string
-		version int
-		carried bool
-	}{
-		{name: "the answer carry's sentence", reason: carrySentence(2), version: 2, carried: true},
-		{name: "the restore's sentence", reason: restoreSentence(11), version: 11, carried: true},
-		{name: "a reviewer's own reason", reason: standingReviewReason},
-		{name: "no reason at all", reason: ""},
-		{name: "the prefix with no version after it", reason: docs.CarriedReviewReasonPrefix + ": unchanged."},
-		{name: "the prefix later in the reason", reason: "Not " + carrySentence(2)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			version, carried := carriedApprovalVersion(test.reason)
-			if carried != test.carried || version != test.version {
-				t.Fatalf("carriedApprovalVersion(%q) = %d, %t; want %d, %t",
-					test.reason, version, carried, test.version, test.carried)
-			}
-		})
 	}
 }

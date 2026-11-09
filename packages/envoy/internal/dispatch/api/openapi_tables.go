@@ -221,6 +221,11 @@ var openAPIMultipartSchema = map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
 		},
+		"precondition": map[string]any{
+			"type": "string",
+			"description": "the base this upload replaces as one JSON object, as the JSON body's " +
+				"`precondition` field",
+		},
 	},
 	"required": []any{"file"},
 }

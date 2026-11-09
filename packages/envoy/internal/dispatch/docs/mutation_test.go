@@ -182,6 +182,36 @@ func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
 	}
 }
 
+// Every replacement names the token of the version it replaces, so the write refuses one that
+// names none, on the tree it has already read and under its own lock, and leaves the document as
+// it was; one that names the live token is taken. A replacement of a document whose live tree is
+// outside the Proof schema names no token either, and is taken, since such a tree has none for
+// any caller to name (TestRepairingUploadNeedsNoToken in api).
+func TestReplaceTextRefusesAReplacementThatNamesNoToken(t *testing.T) {
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "before\n")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	replace := func(markdown string, precondition *model.EditPrecondition) error {
+		return joinedWrite(service, func(ctx context.Context) error {
+			_, err := service.ReplaceText(ctx, artifactID, markdown, alice, precondition)
+			return err
+		})
+	}
+
+	if err := replace("after\n", nil); !errors.Is(err, ErrPreconditionRequired) {
+		t.Fatalf("a replacement naming no token = %v, want ErrPreconditionRequired", err)
+	}
+	if text := documentText(t, service, artifactID); text != "before\n" {
+		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
+	}
+	if err := replace("after\n", liveDocumentToken(t, service, artifactID)); err != nil {
+		t.Fatalf("a replacement naming the live token: %v", err)
+	}
+	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the document reads %q after the replacement that named its token, want the replacement", text)
+	}
+}
+
 func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# First")
@@ -192,7 +222,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	}
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor, nil); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -371,7 +401,11 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 			return err
 		},
 		"a text replacement": func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, "after", actor, nil)
+			precondition, err := replacementPrecondition(ctx, service, artifactID)
+			if err != nil {
+				return err
+			}
+			_, err = service.ReplaceText(ctx, artifactID, "after", actor, precondition)
 			return err
 		},
 	} {

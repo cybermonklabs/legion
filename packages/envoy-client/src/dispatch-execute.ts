@@ -48,6 +48,7 @@ import type {
   OpenAsksResponse,
   Project,
   SessionAnswersResponse,
+  UploadPrecondition,
   WhoamiResponse,
   WriteAdvice,
 } from "@legion/contracts";
@@ -262,12 +263,13 @@ async function followsAsk(
  * A carried review is Dispatch's own bookkeeping of an earlier approval, so its line says so and
  * prints no reason: the stored reason is Dispatch's sentence, its time is when Dispatch recorded
  * the carry, and the version it names is the one the carry's reason names, which is the version
- * the person read.
+ * the person read. `carried_from_version` is set on a carried review and on no other, so it is
+ * what tells the two apart.
  */
 function standingReviewLines(advice: WriteAdvice | undefined): string[] {
   const review = advice?.standing_review;
   if (review === undefined) return [];
-  const carriedFrom = review.carried === true ? review.carried_from_version : undefined;
+  const carriedFrom = review.carried_from_version;
   if (carriedFrom !== undefined) {
     return [
       `${review.by}'s approval of this issue's spec was carried forward from the approval of version ${carriedFrom}, and Dispatch recorded that carry on ${review.at}.`,
@@ -542,6 +544,15 @@ function optionalBoolean(args: Record<string, unknown>, name: string): boolean |
 function optionalNumber(args: Record<string, unknown>, name: string): number | undefined {
   const value = args[name];
   return typeof value === "number" ? value : undefined;
+}
+
+/** The optimistic-concurrency guard a call carries, under whichever shape its tool takes: an
+ *  edit's `EditPrecondition`, an upload's `UploadPrecondition`. The tool's own schema already
+ *  held the value to that shape, so this only reads it off `args`, which carries an index
+ *  signature a package built with `noPropertyAccessFromIndexSignature` denies a dotted read of. */
+function optionalPrecondition<Guard>(args: Record<string, unknown>): Guard | undefined {
+  const { precondition } = args;
+  return precondition as Guard | undefined;
 }
 
 /** One field of a call's input, or no field at all when the argument was absent. An input whose
@@ -4985,8 +4996,7 @@ export async function executeDispatchTool(
       const resolved = await resolveDocument(documentOwner(), optionalString(args, "artifact"));
       const ops = args.ops as EditOp[];
       const summary = optionalString(args, "summary");
-      const { precondition: rawPrecondition } = args;
-      const precondition = rawPrecondition as EditPrecondition | undefined;
+      const precondition = optionalPrecondition<EditPrecondition>(args);
       await refuseRemovingOpenDecisionBlocks(client, input.tool, resolved, ops);
       const edited = await client.docEdit(resolved.artifact.id, {
         ops,
@@ -5292,12 +5302,9 @@ export async function executeDispatchTool(
       const summary = optionalString(args, "summary");
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
-      // The base this upload replaces, for an upload over a document that already exists; the
-      // server takes the document token alone and refuses a blocks guard. Destructured as
-      // dispatch_doc_edit reads its own, since args carries an index signature and a package
-      // built with noPropertyAccessFromIndexSignature refuses the dotted read.
-      const { precondition: rawPrecondition } = args;
-      const precondition = rawPrecondition as EditPrecondition | undefined;
+      // The base this upload replaces, for an upload over a document that already exists: the
+      // document token alone, which is all the server takes from an upload.
+      const precondition = optionalPrecondition<UploadPrecondition>(args);
       const base = precondition === undefined ? {} : { precondition };
       const artifactInput =
         content === undefined

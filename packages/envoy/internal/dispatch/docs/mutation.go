@@ -576,8 +576,9 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 }
 
 // ReplaceText replaces the entire live document tree so connected clients
-// receive document uploads as a regular server-side transaction. A precondition names the
-// document the caller believes it is replacing, and is checked under the write's own locks.
+// receive document uploads as a regular server-side transaction. The precondition names the
+// token of the version the caller believes it is replacing, which every replacement names, and
+// is checked under the write's own locks.
 func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		return "", errUnjoined
@@ -612,13 +613,17 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		if repairing {
 			current = nil
 		}
-		// The base the upload names is checked here, inside the write's own locks and before the
-		// replacement is parsed, so no other writer can land between the check and the write, as
-		// a conditional edit checks it (ApplyOps). A repair is the one exception: the live tree
-		// is outside the Proof schema, so it renders no markdown and has no token at all, and
-		// this upload is the only way to repair the document, so no caller could ever name the
-		// base this check would compare.
-		if precondition != nil && !repairing {
+		// The token the upload names is checked here, inside the write's own locks and before
+		// the replacement is parsed, so no other writer can land between the check and the
+		// write, as a conditional edit checks it (ApplyOps); a replacement that names none is
+		// refused here, since every replacement says which version it replaces. A repair is the
+		// one exception to both: the live tree is outside the Proof schema, so it renders no
+		// markdown and has no token at all, and this upload is the only way to repair the
+		// document, so no caller could name a token for it.
+		if !repairing {
+			if precondition == nil {
+				return ErrPreconditionRequired
+			}
 			if _, err := checkEditPrecondition(current, *precondition); err != nil {
 				return err
 			}

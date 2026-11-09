@@ -1371,17 +1371,24 @@ export interface AuthenticatedUser {
  *  the act; the person it acts for is `owner`. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
+/** The token of the version a whole-document upload is replacing, which `dispatch doc-read`
+ *  prints as `Document token: sha256:…`. It is not an edit's `EditPrecondition`: an upload
+ *  rewrites the whole tree, so a `blocks` guard says nothing about what it replaces and the
+ *  server refuses one (`400 INVALID_PRECONDITION`, `docs.ValidateUploadPrecondition`). */
+export interface UploadPrecondition {
+  readonly document: string;
+}
+
 interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
-  /** The base a whole-document upload replaces: the token of the document the uploader read,
-   *  which only `document` may name (`blocks` is refused `400 INVALID_PRECONDITION`, since the
-   *  upload rewrites the whole tree). A base behind the live document is refused
+  /** The token of the version this upload is replacing, which `dispatch doc-read` prints. Every
+   *  upload over a document the owner already holds names it, and one that names none is refused
+   *  `400 PRECONDITION_REQUIRED`. A token behind the live document is refused
    *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
-   *  live version number. A first upload under a name, and a file that is no document, name
-   *  none; whether a replacement that names none is refused is the server's
-   *  `DISPATCH_UPLOAD_BASE_REQUIRED` setting, off by default. */
-  readonly precondition?: EditPrecondition;
+   *  live version number. A first upload under a name replaces no version, and a file is no
+   *  document, so neither names one. */
+  readonly precondition?: UploadPrecondition;
   readonly actor?: Actor;
 }
 

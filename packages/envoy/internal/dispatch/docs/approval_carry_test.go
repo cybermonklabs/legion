@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -705,5 +706,33 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	}
 	if reviews, approvals := run(t, true); reviews != 1 || approvals != 0 {
 		t.Fatalf("with the repeat: reviews = %d, artifact.approved events = %d; want alice's approval of version 1 alone and no event", reviews, approvals)
+	}
+}
+
+// CarriedFromVersion reads the version out of the sentence each carry writes, over those very
+// sentences, and reports nothing for a reason a person wrote. It is driven from carryReason and
+// restoreReason themselves, so a change to either that the parser no longer reads fails here
+// rather than leaving every carried review to read as a person's own.
+func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reason  string
+		version int
+		carried bool
+	}{
+		{name: "the answer carry's sentence", reason: fmt.Sprintf(carryReason, 2), version: 2, carried: true},
+		{name: "the restore's sentence", reason: fmt.Sprintf(restoreReason, 11), version: 11, carried: true},
+		{name: "a reviewer's own reason", reason: "The rollback path is named."},
+		{name: "no reason at all", reason: ""},
+		{name: "the prefix with no version after it", reason: CarriedReviewReasonPrefix + ": unchanged."},
+		{name: "the prefix later in the reason", reason: "Not " + fmt.Sprintf(carryReason, 2)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			version, carried := CarriedFromVersion(test.reason)
+			if carried != test.carried || version != test.version {
+				t.Fatalf("CarriedFromVersion(%q) = %d, %t; want %d, %t",
+					test.reason, version, carried, test.version, test.carried)
+			}
+		})
 	}
 }

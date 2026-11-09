@@ -69,8 +69,9 @@ func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
 			f.persistence.holdNextAppend()
 			uploads := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
-				uploads <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]string{
+				uploads <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{
 					"name": f.document.Name, "content": "before\n\nuploaded",
+					"precondition": map[string]string{"document": token},
 				})
 			}()
 			f.persistence.waitHeld(t)

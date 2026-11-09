@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// uploadBase is the base an upload replacing a document names: the token the document carries
+// uploadBase is the token an upload replacing a document names: the one the document carries
 // now, read the way `dispatch doc-read` reads it (GET /api/v1/artifacts/{id}/text). A JSON upload
 // sends the object this returns under `precondition`, a multipart upload its JSON text in the
 // form field of that name (uploadBaseField).
@@ -22,27 +23,56 @@ func uploadBase(t *testing.T, handler http.Handler, artifactID string) map[strin
 	return map[string]string{"document": readDocumentPrecondition(t, handler, artifactID).Token}
 }
 
-// uploadBaseField is uploadBase written as a multipart form field's value.
-func uploadBaseField(t *testing.T, handler http.Handler, artifactID string) string {
+// encodeUploadBase is a token object written as a multipart form field's value.
+func encodeUploadBase(t *testing.T, base map[string]string) string {
 	t.Helper()
-	encoded, err := json.Marshal(uploadBase(t, handler, artifactID))
+	encoded, err := json.Marshal(base)
 	if err != nil {
-		t.Fatalf("encode the upload's base: %v", err)
+		t.Fatalf("encode the token the upload replaces: %v", err)
 	}
 	return string(encoded)
 }
 
-// uploadBaseHandler is a server whose settlement is held back for the test's duration, asking
-// every replacing upload for a base or not as DISPATCH_UPLOAD_BASE_REQUIRED does
-// (Deps.UploadBaseRequired).
-func uploadBaseHandler(t *testing.T, required bool) (http.Handler, *store.Store) {
+// uploadBaseField is uploadBase written as a multipart form field's value.
+func uploadBaseField(t *testing.T, handler http.Handler, artifactID string) string {
 	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, uploadBaseRequired: required})
+	return encodeUploadBase(t, uploadBase(t, handler, artifactID))
+}
+
+// uploadBaseNamed is uploadBase for a document named the way an upload names it - its owner's
+// artifacts path and its name or slug - rather than by id, for a test that holds no id. It
+// answers nil when the owner holds nothing under that name, which is a first upload and names
+// no token. A project's listing carries its issues' documents too, so only a document of the
+// owner the path names is read.
+func uploadBaseNamed(t *testing.T, handler http.Handler, ownerPath, name string) map[string]string {
+	t.Helper()
+	listed := dispatchRequest(t, handler, http.MethodGet, ownerPath, nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list %s: status=%d body=%s", ownerPath, listed.Code, listed.Body.String())
+	}
+	ofTheProject := strings.Contains(ownerPath, "/projects/")
+	for _, artifact := range decodeBody[[]model.Artifact](t, listed) {
+		if ofTheProject == (artifact.IssueKey != nil) {
+			continue
+		}
+		if artifact.Name == name || artifact.Slug == name {
+			return uploadBase(t, handler, artifact.ID)
+		}
+	}
+	return nil
+}
+
+// uploadBaseHandler is a server whose settlement is held back for the test's duration. Every
+// replacement it takes names the token of the version it replaces, which no setting decides.
+func uploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	return handler, database
 }
 
-// uploadPreconditionConflict is the 409 an upload naming a stale base is refused with: the
-// document token and version number the document stands at, and the mismatch that named them.
+// uploadPreconditionConflict is the 409 an upload naming a token the document has moved past is
+// refused with: the document token and version number the document stands at, and the mismatch
+// that named them.
 type uploadPreconditionConflict struct {
 	Error   string `json:"error"`
 	Code    string `json:"code"`
@@ -79,10 +109,9 @@ func seedUploadedDocument(t *testing.T, handler http.Handler, issueKey, name, ma
 	}](t, created).Artifact.ID
 }
 
-// A base that matches the live document is taken, and the version is written. The base is checked
-// whatever DISPATCH_UPLOAD_BASE_REQUIRED says, so this drives the default server.
+// A token that matches the live document is taken, and the version is written.
 func TestUploadReplacingADocumentTakesTheBaseItNames(t *testing.T) {
-	handler, database := uploadBaseHandler(t, false)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 
@@ -108,10 +137,11 @@ func TestUploadReplacingADocumentTakesTheBaseItNames(t *testing.T) {
 	}
 }
 
-// A multipart upload names its base in the form field `precondition`, and one whose field is not
-// the JSON object a base is written as is refused naming the field.
+// A multipart upload names the token of the version it replaces in the form field
+// `precondition`, and one whose field is not the JSON object that token is written as is refused
+// naming the field.
 func TestMultipartUploadNamesItsBaseInItsForm(t *testing.T) {
-	handler, database := uploadBaseHandler(t, false)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	target := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -137,10 +167,55 @@ func TestMultipartUploadNamesItsBaseInItsForm(t *testing.T) {
 	}
 }
 
-// A base the document has moved past is refused, whatever DISPATCH_UPLOAD_BASE_REQUIRED says, and
-// the refusal says where the document stands and how to read its token again.
+// A multipart form's JSON fields are read as strictly as the JSON body is: a member no field of
+// the object names is refused rather than dropped, so a key misspelled in a form is told about
+// rather than silently ignored, and the upload writes nothing. The JSON body of the same upload
+// refuses the same object, which is the parity this holds.
+func TestMultipartUploadRefusesAJSONFieldNamingWhatTheObjectDoesNot(t *testing.T) {
+	handler, database := uploadBaseHandler(t)
+	issue := createArtifactIssue(t, handler)
+	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
+	target := "/api/v1/issues/" + issue.Key + "/artifacts"
+	base := uploadBase(t, handler, artifactID)
+	versionsBefore := uploadedVersionCount(t, database, artifactID)
+	strayBase := fmt.Sprintf(`{"document":%q,"blocks_":[]}`, base["document"])
+
+	for _, test := range []struct{ name, field, value string }{
+		{name: "the base", field: "precondition", value: strayBase},
+		{name: "the actor", field: "actor", value: `{"kind":"session","id":"session-0123456789abcdef","login":"alice"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			refused := multipartRequest(t, handler, target, map[string]string{"name": "notes.md", test.field: test.value},
+				"notes.md", "text/markdown", []byte("# Notes\n\nafter\n"), "alice")
+			code, text := refusalOf(t, refused)
+			if refused.Code != http.StatusBadRequest || code != "INVALID_JSON" || !strings.Contains(text, test.field) {
+				t.Fatalf("multipart %s holding a member it does not name = %d %q %q, want 400 INVALID_JSON naming the field: %s",
+					test.field, refused.Code, code, text, refused.Body.String())
+			}
+			if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
+				t.Fatalf("the refused multipart upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+			}
+		})
+	}
+
+	// The same object in the JSON body is refused too, which is what the form is held to.
+	refused := postUpload(t, handler, issue.Key, map[string]any{
+		"name": "notes.md", "content": "# Notes\n\nafter\n",
+		"precondition": map[string]any{"document": base["document"], "blocks_": []any{}},
+	})
+	if code, _ := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_JSON" {
+		t.Fatalf("a JSON body whose base holds a member it does not name = %d %q, want 400 INVALID_JSON: %s",
+			refused.Code, code, refused.Body.String())
+	}
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
+		t.Fatalf("the refused JSON upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+	}
+}
+
+// A token the document has moved past is refused, and the refusal says where the document stands
+// and how to read its token again.
 func TestUploadNamingABaseBehindTheDocumentIsRefusedAndWritesNothing(t *testing.T) {
-	handler, database := uploadBaseHandler(t, false)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 
@@ -186,57 +261,37 @@ func TestUploadNamingABaseBehindTheDocumentIsRefusedAndWritesNothing(t *testing.
 	}
 }
 
-// A replacement that names no base at all is what DISPATCH_UPLOAD_BASE_REQUIRED decides: with the
-// setting off, which is the default while the fleet's pods still run a `dispatch` that sends no
-// base, the upload is taken as it always was; with it on it is refused and writes nothing.
-func TestUploadReplacingADocumentWithNoBaseFollowsTheSetting(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		required bool
-	}{
-		{"the setting off", false},
-		{"the setting on", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			handler, database := uploadBaseHandler(t, test.required)
-			issue := createArtifactIssue(t, handler)
-			artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
-			current := readDocumentPrecondition(t, handler, artifactID)
-			versionsBefore := uploadedVersionCount(t, database, artifactID)
+// A replacement that names no token at all is refused, and writes nothing: every replacement
+// says which version it replaces.
+func TestUploadReplacingADocumentWithNoTokenIsRefused(t *testing.T) {
+	handler, database := uploadBaseHandler(t)
+	issue := createArtifactIssue(t, handler)
+	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
+	current := readDocumentPrecondition(t, handler, artifactID)
+	versionsBefore := uploadedVersionCount(t, database, artifactID)
 
-			answer := postUpload(t, handler, issue.Key, map[string]any{"name": "notes.md", "content": "# Notes\n\nafter\n"})
-			if !test.required {
-				if answer.Code != http.StatusCreated {
-					t.Fatalf("with the setting off, an upload naming no base = %d (want 201), body=%s", answer.Code, answer.Body.String())
-				}
-				if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
-					t.Fatalf("with the setting off, the upload left %d versions, want %d", after, versionsBefore+1)
-				}
-				return
-			}
-			if answer.Code != http.StatusBadRequest {
-				t.Fatalf("with the setting on, an upload naming no base = %d (want 400), body=%s", answer.Code, answer.Body.String())
-			}
-			code, text := refusalOf(t, answer)
-			if code != "PRECONDITION_REQUIRED" {
-				t.Fatalf("with the setting on, an upload naming no base answered code %q, want PRECONDITION_REQUIRED: %s", code, answer.Body.String())
-			}
-			if !strings.Contains(text, "dispatch doc-read") || !strings.Contains(text, "--precondition-json") {
-				t.Fatalf("the refusal = %q, want it to say the token comes from `dispatch doc-read` and to upload again with it", text)
-			}
-			if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
-				t.Fatalf("the refused upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
-			}
-			if read := readDocumentPrecondition(t, handler, artifactID); read.Token != current.Token {
-				t.Fatalf("document after the refused upload = %s, want the token it had, %s", read.Token, current.Token)
-			}
-		})
+	answer := postUpload(t, handler, issue.Key, map[string]any{"name": "notes.md", "content": "# Notes\n\nafter\n"})
+	if answer.Code != http.StatusBadRequest {
+		t.Fatalf("an upload naming no token = %d (want 400), body=%s", answer.Code, answer.Body.String())
+	}
+	code, text := refusalOf(t, answer)
+	if code != "PRECONDITION_REQUIRED" {
+		t.Fatalf("an upload naming no token answered code %q, want PRECONDITION_REQUIRED: %s", code, answer.Body.String())
+	}
+	if !strings.Contains(text, "dispatch doc-read") || !strings.Contains(text, "--precondition-json") {
+		t.Fatalf("the refusal = %q, want it to say the token comes from `dispatch doc-read` and to upload again with it", text)
+	}
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
+		t.Fatalf("the refused upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+	}
+	if read := readDocumentPrecondition(t, handler, artifactID); read.Token != current.Token {
+		t.Fatalf("document after the refused upload = %s, want the token it had, %s", read.Token, current.Token)
 	}
 }
 
-// A first upload has no base to name, so the setting asks it for none even when it is on.
-func TestFirstUploadOfANameNoArtifactHoldsNeedsNoBase(t *testing.T) {
-	handler, _ := uploadBaseHandler(t, true)
+// A first upload replaces no version, so it names no token.
+func TestFirstUploadOfANameNoArtifactHoldsNeedsNoToken(t *testing.T) {
+	handler, _ := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 
 	created := postUpload(t, handler, issue.Key, map[string]any{"name": "fresh.md", "content": "# Fresh\n"})
@@ -255,11 +310,11 @@ func TestFirstUploadOfANameNoArtifactHoldsNeedsNoBase(t *testing.T) {
 	}
 }
 
-// A first upload replaces nothing, so a base names a document the owner does not hold: the
+// A first upload replaces nothing, so a token names a version the owner does not hold: the
 // caller's belief about what it is replacing is false, which is a failed precondition, and
 // nothing is written.
 func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
-	handler, database := uploadBaseHandler(t, false)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 
 	refused := postUpload(t, handler, issue.Key, map[string]any{
@@ -273,14 +328,24 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	if conflict.Code != "PRECONDITION_FAILED" {
 		t.Fatalf("the refusal's code = %q, want PRECONDITION_FAILED: %s", conflict.Code, refused.Body.String())
 	}
-	// The refusal of a stale base sends the caller to dispatch doc-read for a fresh token. This
-	// one must not: the owner holds no document under that name, so there is no token to read,
-	// and the caller's upload creates the document rather than replacing one.
-	if !strings.Contains(conflict.Error, "replaces nothing: send it again with no base") {
-		t.Fatalf("the refusal reads %q, want it to say the name holds no document and the upload names no base", conflict.Error)
+	// The refusal of a token the document has moved past sends the caller to dispatch doc-read
+	// for a fresh one. This one must not: the owner holds no document under that name, so there
+	// is no token to read, and the caller's upload creates the document rather than replacing
+	// one.
+	if !strings.Contains(conflict.Error, "replaces nothing: send it again naming no token") {
+		t.Fatalf("the refusal reads %q, want it to say the name holds no document and the upload names no token", conflict.Error)
 	}
 	if strings.Contains(conflict.Error, "dispatch doc-read") {
 		t.Fatalf("the refusal reads %q, want it not to send the caller after a token no document has", conflict.Error)
+	}
+	// The refusal is its own and not a stale token's, borrowed: it asserts no mismatch with a
+	// live token it does not hold, and sends no empty `current` where a reader expects a token
+	// its next upload can name.
+	if strings.Contains(refused.Body.String(), `"current"`) || strings.Contains(refused.Body.String(), `"mismatches"`) {
+		t.Fatalf("the refusal body = %s, want neither a current token nor a mismatch: this owner holds no document under the name", refused.Body.String())
+	}
+	if strings.Contains(conflict.Error, "document edit precondition failed") {
+		t.Fatalf("the refusal reads %q, want a sentence of its own: no document of this owner changed", conflict.Error)
 	}
 	var artifacts int
 	if err := database.Pool.QueryRow(context.Background(),
@@ -292,10 +357,10 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	}
 }
 
-// A file holds no document tree and so no token, so a base on one guards nothing: it is refused
+// A file holds no document tree and so no token, so a token on one guards nothing: it is refused
 // rather than taken and dropped, since the caller believes its write was conditional.
 func TestFileUploadNamingABaseIsRefused(t *testing.T) {
-	handler, _ := uploadBaseHandler(t, false)
+	handler, _ := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
 	base := `{"document":"sha256:` + strings.Repeat("a", 64) + `"}`
@@ -310,9 +375,9 @@ func TestFileUploadNamingABaseIsRefused(t *testing.T) {
 	}
 }
 
-// A file is not a document: it is replaced with no base whatever the setting says.
+// A file is not a document: it is replaced naming no token.
 func TestFileUploadNeedsNoBase(t *testing.T) {
-	handler, _ := uploadBaseHandler(t, true)
+	handler, _ := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
 	fields := map[string]string{"name": "diagram.png"}
@@ -333,12 +398,12 @@ func TestFileUploadNeedsNoBase(t *testing.T) {
 }
 
 // A document whose stored tree is outside the Proof schema renders no markdown and has no token,
-// so no caller could name a base for it, and the upload is the only way to repair it: with the
-// setting on it is taken as it is.
-func TestRepairingUploadNeedsNoBase(t *testing.T) {
+// so no caller could name one for it, and the upload is the only way to repair it: it is taken
+// as it is.
+func TestRepairingUploadNeedsNoToken(t *testing.T) {
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
-			handler, database, deps := newTestServer(t, testServerOptions{uploadBaseRequired: true})
+			handler, database, deps := newTestServer(t, testServerOptions{})
 			issue := createArtifactIssue(t, handler)
 			artifact := createCorruptedDocument(t, handler, database, deps, issue.Key, "repair.md", test.Corrupt)
 
@@ -357,10 +422,10 @@ func TestRepairingUploadNeedsNoBase(t *testing.T) {
 
 // Two uploads race for one new name. Once the first has committed, the second is a replacement of
 // the document the first created, which is what the race resolves to: the handler that loses sees
-// a document that exists, so with the setting on it must name the base it replaces. They are
+// a document that exists, so it must name the token of the version it replaces. They are
 // driven in sequence through the one handler, which is that outcome.
 func TestSecondUploadOfARacedNewNameMustNameItsBase(t *testing.T) {
-	handler, database := uploadBaseHandler(t, true)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 
 	first := postUpload(t, handler, issue.Key, map[string]any{"name": "raced.md", "content": "# Raced\n\nfirst\n"})
@@ -385,9 +450,9 @@ func TestSecondUploadOfARacedNewNameMustNameItsBase(t *testing.T) {
 }
 
 // An upload replaces the whole document, so a blocks precondition says nothing about what it
-// replaces and is refused whatever the setting says.
+// replaces and is refused.
 func TestUploadNamingBlocksAsItsBaseIsRefused(t *testing.T) {
-	handler, database := uploadBaseHandler(t, false)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	blocks := readDocumentPreconditionBlocks(t, handler, artifactID)
@@ -413,11 +478,11 @@ func TestUploadNamingBlocksAsItsBaseIsRefused(t *testing.T) {
 }
 
 // A repeat of an upload under the key its first call used is answered by that call's own stored
-// answer, 201 and all, and writes nothing more. That is right even though the base the body names
-// is behind the document by then: the base the client sent is the one its own call replaced, and
-// the repeat is that same call, not a second one.
+// answer, 201 and all, and writes nothing more. That is right even though the token the body
+// names is behind the document by then: the version the client named is the one its own call
+// replaced, and the repeat is that same call, not a second one.
 func TestRepeatedUploadUnderOneKeyIsAnsweredByItsFirstCall(t *testing.T) {
-	handler, database := uploadBaseHandler(t, true)
+	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 
@@ -447,7 +512,7 @@ func TestRepeatedUploadUnderOneKeyIsAnsweredByItsFirstCall(t *testing.T) {
 // projectUploadBaseHandler is uploadBaseHandler with a project to upload documents into.
 func projectUploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database := uploadBaseHandler(t, false)
+	handler, database := uploadBaseHandler(t)
 	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); created.Code != http.StatusCreated {
@@ -456,7 +521,7 @@ func projectUploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
 	return handler, database
 }
 
-// A project document is replaced through a route of its own, and the base holds there as it
+// A project document is replaced through a route of its own, and the token holds there as it
 // holds on the issue route, in the JSON body and in the multipart form alike: one that matches
 // the live document is taken, and one the document has moved past is refused 409
 // PRECONDITION_FAILED naming the token and the version number the document stands at, with
@@ -534,14 +599,14 @@ func TestUploadReplacingAProjectDocumentHoldsTheBaseItNames(t *testing.T) {
 	}
 }
 
-// Two uploads of one project document read the same base, and both are in the server at once:
-// the first is held inside its transactional append, after its own base check and before it
+// Two uploads of one project document read the same token, and both are in the server at once:
+// the first is held inside its transactional append, after its own check and before it
 // commits, while the second reaches the handler and queues on the project's document lock the
 // first holds. Releasing the first commits it, and the second then runs against the document the
-// first wrote and is refused 409, though the base it named was live when it was sent and when it
+// first wrote and is refused 409, though the token it named was live when it was sent and when it
 // entered the handler. That is what places the check inside the write's own lock: a check made
 // before the lock would have read the document as it stood while the first upload was still
-// uncommitted, found the base live, and taken the second upload, losing the first's text.
+// uncommitted, found the token live, and taken the second upload, losing the first's text.
 func TestConcurrentUploadsOfOneBaseLandTheFirstAndRefuseTheSecond(t *testing.T) {
 	f := newUploadRaceFixture(t)
 	base := uploadBase(t, f.handler, f.document.ID)

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +90,29 @@ const carryReason = CarriedReviewReasonPrefix + "%d: the answer to a decision bl
 // restoreReason is the reason a review carried to a version restoring the approved text records,
 // naming the approval it follows.
 const restoreReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, unchanged."
+
+// CarriedFromVersion reads the version a carried review's reason names, out of the sentence
+// carryReason and restoreReason write, and reports false for every reason a person wrote. It
+// stands beside the two sentences because a reader that took a carried review for a person's
+// own would quote Dispatch's own words back as the reviewer's, and nothing would report it: the
+// writer and its reader are changed together here. A reason that opens with the prefix but
+// names no number there is read as a person's, since the number is all such a line would say.
+// The Legion daemon reads the same sentence in its own module, which no import can share.
+func CarriedFromVersion(reason string) (int, bool) {
+	rest, found := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
+	if !found {
+		return 0, false
+	}
+	digits, _, found := strings.Cut(rest, ":")
+	if !found {
+		return 0, false
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil || version < 1 {
+		return 0, false
+	}
+	return version, true
+}
 
 // carryInput is what the rule is decided on once H, the version he approved, A, and when he
 // approved it are known: the blocks of N by block id, each its row (rowBackedBlocks); the block

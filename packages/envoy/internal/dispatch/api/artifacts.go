@@ -68,9 +68,9 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 type artifactUploadInput struct {
 	name    string
 	content []byte
-	// precondition is the base a whole-document upload believes it is replacing, nil when the
-	// upload names none. A replacement of a document that already exists must name one
-	// (storeArtifact); a first upload and a file never do.
+	// precondition is the token of the version a whole-document upload believes it is
+	// replacing, nil when the upload names none. A replacement of a document that already
+	// exists must name it (storeArtifact); a first upload and a file never do.
 	precondition *model.EditPrecondition
 	contentType  string
 	summary      string
@@ -253,16 +253,16 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 			return
 		}
 	}
-	// The base an upload names is held to what an upload can mean before anything is written:
+	// The token an upload names is held to what an upload can mean before anything is written:
 	// the document token alone, in the shape every edit's precondition takes, and only on an
-	// upload Dispatch stores as a document, since a file holds no tree and so no token. A base
+	// upload Dispatch stores as a document, since a file holds no tree and so no token. A token
 	// nothing would read is refused rather than taken and dropped, because the caller believes
 	// its write was conditional. Whether a replacement must name one at all is the stored
 	// document's to say (storeArtifact).
 	if input.precondition != nil {
 		if kind != "doc" {
 			s.writeHandlerError(w, &docs.ErrInvalidPrecondition{
-				Reason: "only a document has a base; this upload is stored as a file",
+				Reason: "only a document has a version token; this upload is stored as a file",
 			})
 			return
 		}
@@ -318,6 +318,36 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 	}, true
 }
 
+// multipartJSONField reads one JSON object a multipart upload sends as a form field - its
+// `actor`, its `precondition` - as the JSON body's decoder reads the same object: a member no
+// field of the type names is refused rather than dropped, so a key misspelled in a form is
+// refused as it is in a body (jsonArtifactUpload's DisallowUnknownFields), and so is a field
+// holding more than one JSON value. A field the form does not carry, or carries empty, is no
+// field at all and answers nil. Every refusal is written here, naming the field, so a caller
+// reading false returns.
+func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request, field string) (*T, bool) {
+	raw := r.FormValue(field)
+	if raw == "" {
+		return nil, true
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var read T
+	if err := decoder.Decode(&read); err != nil {
+		writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart "+field)
+		return nil, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, "INVALID_JSON", http.StatusBadRequest, "multipart "+field+" must contain one JSON value")
+		return nil, false
+	}
+	if refusal := unstorableJSON(field, []byte(raw)); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return nil, false
+	}
+	return &read, true
+}
+
 func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
 	// Only the size limits are 413: the body past maxArtifactBlobSize and a megabyte of fields
 	// (uploadArtifactFor's MaxBytesReader), or fields past what the parser holds in memory. A file
@@ -353,37 +383,19 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, refusal)
 		return artifactUploadInput{}, false
 	}
-	var supplied *model.Actor
-	if raw := r.FormValue("actor"); raw != "" {
-		var actor model.Actor
-		if err := json.Unmarshal([]byte(raw), &actor); err != nil {
-			writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart actor")
-			return artifactUploadInput{}, false
-		}
-		if refusal := unstorableJSON("actor", []byte(raw)); refusal != nil {
-			s.writeHandlerError(w, refusal)
-			return artifactUploadInput{}, false
-		}
-		supplied = &actor
+	supplied, read := multipartJSONField[model.Actor](s, w, r, "actor")
+	if !read {
+		return artifactUploadInput{}, false
 	}
 	if _, exists := r.MultipartForm.Value["primary"]; exists {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
-	// A multipart upload names the base it replaces in the form field `precondition`, holding
-	// the same JSON object the JSON body's `precondition` holds.
-	var precondition *model.EditPrecondition
-	if raw := r.FormValue("precondition"); raw != "" {
-		var read model.EditPrecondition
-		if err := json.Unmarshal([]byte(raw), &read); err != nil {
-			writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart precondition")
-			return artifactUploadInput{}, false
-		}
-		if refusal := unstorableJSON("precondition", []byte(raw)); refusal != nil {
-			s.writeHandlerError(w, refusal)
-			return artifactUploadInput{}, false
-		}
-		precondition = &read
+	// A multipart upload names the token of the version it replaces in the form field
+	// `precondition`, holding the same JSON object the JSON body's `precondition` holds.
+	precondition, read := multipartJSONField[model.EditPrecondition](s, w, r, "precondition")
+	if !read {
+		return artifactUploadInput{}, false
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	file, header, err := r.FormFile("file")
@@ -421,31 +433,13 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	}, true
 }
 
-// uploadBaseAdvice tells the reader of a refused upload where a base that is not behind the live
-// document comes from, and is the tail of both refusals an upload's base can earn: the one a
-// replacement naming none gets, and the one a replacement naming a stale one gets.
+// uploadBaseAdvice tells the reader of a refused upload where the token of the version it is
+// replacing is printed, and is the tail of both refusals that token can earn: the one a
+// replacement naming none gets, and the one a replacement naming a token the document has moved
+// past gets.
 const uploadBaseAdvice = "read the document with `dispatch doc-read`, which prints " +
 	"`Document token: sha256:…`, and upload again naming that token as " +
 	"`--precondition-json '{\"document\":\"sha256:…\"}'`"
-
-// refuseUploadNamingNoBase is the refusal of a replacement that named no base, where the server
-// asks every replacement to name one (Deps.UploadBaseRequired): the upload says which text it
-// believes it is replacing, and the reader is told where that token comes from. A document whose
-// live tree is outside the Proof schema is the one exception: it renders no markdown and has no
-// token, so nobody could name a base for it, and an upload is the only way to repair it, which
-// is the exception docs.Service.ReplaceText makes under the write's own lock. The read that
-// tells the two apart runs on the upload's own transaction, in the write's lock order, and only
-// for an upload that named no base.
-func (s *server) refuseUploadNamingNoBase(ctx context.Context, name, artifactID string) error {
-	if _, err := s.deps.Docs.Text(ctx, artifactID); err != nil {
-		if errors.Is(err, docs.ErrDocOutsideSchema) {
-			return nil
-		}
-		return err
-	}
-	return errorf(http.StatusBadRequest, "PRECONDITION_REQUIRED",
-		"an upload replacing document %q must name the base it replaces: "+uploadBaseAdvice, name)
-}
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
 // decoded version the route returns to its caller. Uploads keep this separate from
@@ -617,34 +611,6 @@ func (s *server) storeArtifact(
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	// An upload over a document that already exists replaces every word of it, so where the
-	// server asks for it (Deps.UploadBaseRequired) it says which text it believes it is
-	// replacing, and one that names none is refused before anything is written. A file is not a
-	// document and was refused a base already (uploadArtifactFor).
-	if kind == "doc" && !created && input.precondition == nil && s.deps.UploadBaseRequired {
-		if refusal := s.refuseUploadNamingNoBase(documentCtx, input.name, artifact.ID); refusal != nil {
-			s.writeHandlerError(w, refusal)
-			return
-		}
-	}
-	// A first upload under a name the owner holds nothing under replaces nothing, so a base
-	// names a document that is not there: the caller read something this owner does not hold,
-	// or another writer has taken the name since. That is a failed precondition rather than a
-	// malformed request, so it is answered as a stale base is, with no current token to give -
-	// and so with words of its own, since telling the caller to read a document the owner holds
-	// nothing under would send it after a token nothing can print.
-	if kind == "doc" && created && input.precondition != nil {
-		s.writeHandlerError(w, &docs.ErrPreconditionFailed{
-			Advice: fmt.Sprintf(
-				"%q names no document of this owner, so this upload creates one and replaces nothing: send it again with no base",
-				input.name),
-			Mismatches: []model.EditPreconditionMismatch{{
-				Scope:    "document",
-				Expected: input.precondition.Document,
-			}},
-		})
-		return
-	}
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
@@ -654,20 +620,45 @@ func (s *server) storeArtifact(
 	var movedEvents []model.Event
 	if kind == "doc" {
 		if created {
+			// A first upload under a name the owner holds nothing under replaces nothing, so a
+			// token names a version that is not there: the caller read something this owner
+			// does not hold, or another writer has taken the name since. The caller believed
+			// its write was conditional, so it is refused rather than taken, with a sentence of
+			// its own and no live token beside it: this owner holds no document under the name,
+			// so there is no token to answer with, and telling the caller to read one would
+			// send it after a token nothing can print.
+			if input.precondition != nil {
+				s.writeHandlerError(w, errorf(http.StatusConflict, "PRECONDITION_FAILED",
+					"%q names no document of this owner, so this upload creates one and replaces nothing: send it again naming no token",
+					input.name))
+				return
+			}
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
 		} else {
+			// An upload over a document that already exists replaces every word of it, so it
+			// names the token of the version it is replacing, and one that names none is
+			// refused. The write settles that on the tree it reads under its own lock, where a
+			// repair - a live tree outside the Proof schema, which has no token for anyone to
+			// name - is the one exception. A file is not a document and was refused a token
+			// already (uploadArtifactFor).
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor, input.precondition)
 		}
 		if err != nil {
-			// The document service knows the tree the base missed, not the version rows; this
+			// The document service knows the tree the token missed, not the version rows; this
 			// route has just read the next number, so the version the client is behind is the one
-			// before it. The refusal carries both, and says where a base that is not behind comes
-			// from, as the refusal of an upload naming none does. Nothing is written.
+			// before it. The refusal carries both, and says where a current token is printed, as
+			// the refusal of an upload naming none does. Nothing is written.
 			var stale *docs.ErrPreconditionFailed
 			if errors.As(err, &stale) {
 				currentVersion := nextNumber - 1
 				stale.CurrentVersion = &currentVersion
 				stale.Advice = uploadBaseAdvice
+			}
+			// The write knows no document is named, only that a token was wanted and none came.
+			if errors.Is(err, docs.ErrPreconditionRequired) {
+				err = errorf(http.StatusBadRequest, "PRECONDITION_REQUIRED",
+					"an upload replacing document %q must name the token of the version it replaces: "+uploadBaseAdvice,
+					input.name)
 			}
 			s.writeHandlerError(w, err)
 			return

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -248,6 +247,41 @@ func (s *server) logAdviceError(route, issueKey, query string, err error) {
 	slog.Warn("dispatch: write advice omitted", "route", route, "issue", issueKey, "query", query, "error", err)
 }
 
+// boundedAdviceRead runs one advice read behind a savepoint of its own and answers what it read,
+// or nil whenever anything failed: the write this advice describes has already happened, so no
+// read of it may fail that write, and a failed statement aborts the transaction it ran in. The
+// read writes nothing, so the savepoint is always rolled back, which also restores the 500 ms
+// statement_timeout it set. query names the read in the log of every advice the server omitted
+// (logAdviceError), and every failure of the three steps is logged under it. A method takes no
+// type parameter in Go, so the reads that answer a shape of their own - the superseded approval,
+// the standing review - reach this as a function over the server.
+func boundedAdviceRead[T any](
+	ctx context.Context,
+	s *server,
+	tx pgx.Tx,
+	route string,
+	issueKey string,
+	query string,
+	read func(ctx context.Context, tx pgx.Tx) (*T, error),
+) *T {
+	adviceTx, err := tx.Begin(ctx)
+	if err != nil {
+		s.logAdviceError(route, issueKey, query, err)
+		return nil
+	}
+	defer func() { _ = adviceTx.Rollback(ctx) }()
+	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
+		s.logAdviceError(route, issueKey, query, err)
+		return nil
+	}
+	value, err := read(ctx, adviceTx)
+	if err != nil {
+		s.logAdviceError(route, issueKey, query, err)
+		return nil
+	}
+	return value
+}
+
 // documentBlocks is what a document write's advice reports about the typed blocks in the document
 // it stored: how many ask blocks it holds, and the typed block openings it holds as text.
 type documentBlocks struct {
@@ -312,9 +346,7 @@ type supersededApproval struct {
 // older approval was already stale before this write, and a newer changes request had already
 // closed the gate.
 //
-// Like every other advice query this runs behind a savepoint, because a failed statement aborts
-// the transaction it ran in and this must never fail the write it describes. It writes nothing,
-// so the savepoint is always rolled back, which also restores the statement_timeout it set.
+// Like every other advice query it runs behind a savepoint, which boundedAdviceRead owns.
 func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -323,22 +355,10 @@ func (s *server) supersededApprovalAdvice(
 	artifactID string,
 	version int,
 ) *supersededApproval {
-	adviceTx, err := tx.Begin(ctx)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil
-	}
-	defer func() { _ = adviceTx.Rollback(ctx) }()
-	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil
-	}
-	approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil
-	}
-	return approval
+	return boundedAdviceRead(ctx, s, tx, route, issueKey, "superseded_approval",
+		func(ctx context.Context, adviceTx pgx.Tx) (*supersededApproval, error) {
+			return newestReviewAsApproval(ctx, adviceTx, artifactID, version)
+		})
 }
 
 // newestReviewAsApproval is supersededApprovalAdvice's rule, over whatever queryer the caller
@@ -382,12 +402,12 @@ type standingReview struct {
 	// the review carries none, which an approval may. A carried review's reason is Dispatch's
 	// own carry sentence rather than anything the person wrote.
 	Reason string `json:"reason,omitempty"`
-	// Carried says the review is one Dispatch carried forward to this version rather than one
-	// the person gave on it, and CarriedFromVersion is the version the carry's reason names:
-	// the version the person reviewed, or, where a carry followed a carry, the version the
-	// carry before it named.
-	Carried            bool `json:"carried,omitempty"`
-	CarriedFromVersion int  `json:"carried_from_version,omitempty"`
+	// CarriedFromVersion is set exactly when the review is one Dispatch carried forward to this
+	// version rather than one the person gave on it, and is the version the carry's reason
+	// names: the version the person reviewed, or, where a carry followed a carry, the version
+	// the carry before it named. It is omitted from every other review, which is what says the
+	// person reviewed this version himself.
+	CarriedFromVersion int `json:"carried_from_version,omitempty"`
 }
 
 // standingReviewReasonLimit is how much of the reviewer's reason the advice carries, counted in
@@ -398,26 +418,12 @@ const standingReviewReasonLimit = 500
 // is opened on it, or nil when it carries none and whenever the read failed: the question is
 // written either way, so this reports nothing rather than refusing the write.
 //
-// Like every other advice query it runs behind a savepoint, because a failed statement aborts
-// the transaction it ran in. It writes nothing, so the savepoint is always rolled back, which
-// also restores the statement_timeout it set.
+// Like every other advice query it runs behind a savepoint, which boundedAdviceRead owns.
 func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string) *standingReview {
-	adviceTx, err := tx.Begin(ctx)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "standing_review", err)
-		return nil
-	}
-	defer func() { _ = adviceTx.Rollback(ctx) }()
-	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
-		s.logAdviceError(route, issueKey, "standing_review", err)
-		return nil
-	}
-	review, err := standingSpecReview(ctx, adviceTx, issueKey)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "standing_review", err)
-		return nil
-	}
-	return review
+	return boundedAdviceRead(ctx, s, tx, route, issueKey, "standing_review",
+		func(ctx context.Context, adviceTx pgx.Tx) (*standingReview, error) {
+			return standingSpecReview(ctx, adviceTx, issueKey)
+		})
 }
 
 // standingSpecReview is standingReviewAdvice's rule, over whatever queryer the caller holds: the
@@ -464,33 +470,13 @@ func standingSpecReview(ctx context.Context, q queryer, issueKey string) (*stand
 	// the person wrote, so the carry is reported and the sentence is not: a reader that printed
 	// it would quote Dispatch back to the sender as the reviewer's words.
 	if review.Reason != nil {
-		if from, carried := carriedApprovalVersion(*review.Reason); carried {
-			standing.Carried, standing.CarriedFromVersion = true, from
+		if from, carried := docs.CarriedFromVersion(*review.Reason); carried {
+			standing.CarriedFromVersion = from
 		} else {
 			standing.Reason = firstCharacters(*review.Reason, standingReviewReasonLimit)
 		}
 	}
 	return standing, nil
-}
-
-// carriedApprovalVersion reads the version a carried review's reason names out of
-// docs.CarriedReviewReasonPrefix's sentence, and reports false for every reason a person wrote.
-// A reason that opens with the prefix but names no number there is read as a person's: the
-// number is what the line would print, and a line naming no version says less than none.
-func carriedApprovalVersion(reason string) (int, bool) {
-	rest, found := strings.CutPrefix(reason, docs.CarriedReviewReasonPrefix)
-	if !found {
-		return 0, false
-	}
-	digits, _, found := strings.Cut(rest, ":")
-	if !found {
-		return 0, false
-	}
-	version, err := strconv.Atoi(digits)
-	if err != nil || version < 1 {
-		return 0, false
-	}
-	return version, true
 }
 
 // firstCharacters is text cut to the first count characters, whole: a cut between two bytes of

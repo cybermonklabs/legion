@@ -121,6 +121,7 @@ func TestIssueProgressFollowsSpecUpload(t *testing.T) {
 	wantCount(t, "tasks before", progressOf(t, handler, issue.Key).Tasks, 0, 1)
 	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "spec.md", "content": "- [x] one\n- [x] two\n- [ ] three\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	}, "alice")
 	if uploaded.Code != http.StatusCreated && uploaded.Code != http.StatusOK {
 		t.Fatalf("upload spec: status=%d body=%s", uploaded.Code, uploaded.Body.String())
@@ -129,6 +130,7 @@ func TestIssueProgressFollowsSpecUpload(t *testing.T) {
 
 	cleared := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "spec.md", "content": "No more tasks.\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	}, "alice")
 	if cleared.Code != http.StatusCreated && cleared.Code != http.StatusOK {
 		t.Fatalf("upload spec: status=%d body=%s", cleared.Code, cleared.Body.String())

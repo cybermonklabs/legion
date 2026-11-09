@@ -1269,6 +1269,8 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 		return logs
 	}
+	// Every write below repairs a tree outside the Proof schema, which renders no markdown and
+	// has no token for any caller to name (ReplaceText's one exception).
 	replaceWhole := func(service *Service, artifactID string) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
 			_, err := service.ReplaceText(ctx, artifactID, renderReuseDocument(), reuseAgent, nil)

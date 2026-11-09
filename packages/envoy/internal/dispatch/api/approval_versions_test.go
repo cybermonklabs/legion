@@ -704,6 +704,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 		{"an upload", time.Hour, func(t *testing.T, doc *document) {
 			if uploaded := sessionRequest(t, doc.handler, http.MethodPost, "/api/v1/issues/"+doc.issueKey+"/artifacts", map[string]any{
 				"actor": sessionActor(), "name": "spec.md", "content": "A revised spec",
+				"precondition": uploadBase(t, doc.handler, doc.artifactID),
 			}); uploaded.Code != http.StatusCreated {
 				t.Fatalf("upload a version: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 			}
@@ -721,10 +722,20 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer earlierTx.Rollback(earlierCtx)
 			earlierJoined, earlierLedger := doc.documentService.Join(earlierCtx, earlierTx)
 			defer earlierLedger.Discard()
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice, nil); err != nil {
+			// The token is read on the joined context, which reads the tree this write works on:
+			// the undo names what the write before it left, not what the room held before both.
+			earlierBase, err := replacementPrecondition(earlierJoined, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice, earlierBase); err != nil {
 				t.Fatalf("write the earlier edit: %v", err)
 			}
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice, nil); err != nil {
+			undoBase, err := replacementPrecondition(earlierJoined, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token for the undo: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice, undoBase); err != nil {
 				t.Fatalf("undo the earlier edit: %v", err)
 			}
 			if err := earlierLedger.Commit(earlierCtx); err != nil {
@@ -742,7 +753,11 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer tx.Rollback(ctx)
 			joined, ledger := doc.documentService.Join(ctx, tx)
 			defer ledger.Discard()
-			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker, nil); err != nil {
+			base, err := replacementPrecondition(ctx, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker, base); err != nil {
 				t.Fatalf("the agent's joined write: %v", err)
 			}
 			if err := ledger.Commit(ctx); err != nil {

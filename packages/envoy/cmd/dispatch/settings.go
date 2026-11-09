@@ -74,8 +74,6 @@ var settings = []setting{
 		Description: "Most document rooms the server holds in memory at once; a document socket that would open one more is refused (503) until a room goes. A positive integer."},
 	{Name: "DISPATCH_MAX_DOC_CONNECTIONS", Default: "`1000`", Required: "no",
 		Description: "Most browser connections to document rooms the server holds at once; one more document socket is refused (503) until one leaves. A positive integer."},
-	{Name: "DISPATCH_UPLOAD_BASE_REQUIRED", Default: "`off`", Required: "no",
-		Description: "Set to `on` so a whole-document upload that replaces a document which already exists and names no base is refused `400 PRECONDITION_REQUIRED`; `off`, such an upload is taken as before, and only a base an upload does name is checked against the live document (a stale one is refused `409 PRECONDITION_FAILED` either way). It stays off until the fleet's pods run a `dispatch` that sends a base: a pod runs the command from its image, so the sending command reaches a pod only when the daemon replaces it. Any value but `on` and `off` refuses startup."},
 	{Name: "XDG_CONFIG_HOME", Default: "`~/.config`", Required: "no",
 		Description: "Directory whose `legion/envoy.json` is the user `envoy.json`, which `DISPATCH_SERVER_URL` and `NATS_URLS` fall back to; set but empty, it is `~/.config` too, and a path that is not absolute refuses startup."},
 	{Name: "DISPATCH_SERVER_URL", Default: "`dispatch.serverUrl` from `envoy.json`", Required: "no",
