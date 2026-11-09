@@ -226,7 +226,7 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 job runs only under the race detector, in its race step, once per job;
 the plain step ("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the
 `typecheck` job still compiles it without the detector.
-Its tests run beside each other: 790 of its 825 built top-level tests call `t.Parallel()`, and
+Its tests run beside each other: 818 of its 853 built top-level tests call `t.Parallel()`, and
 each of the 35 that do not carries a comment naming what it shares with the rest of the process.
 Each test that opens a store gets a database of its own, cloned from the template the run
 migrates once, and each test that needs NATS gets a server of its own inside the test process.
