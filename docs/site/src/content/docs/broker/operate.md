@@ -216,12 +216,17 @@ stops authenticating at its next call, and its next login is refused.
 An account on that list also registers which pod may write under which session name
 (`POST /v1/oauth/exchange/pod-sessions`), which is how a deployment's daemon tells the broker that
 a pod it has just started owns an issue's session. That is a second authority the list carries, so
-weigh it before listing an account: a listed account can register any pod of any account the token
-exchange serves, except the pod the caller itself runs in, which is refused
-`403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row would pick the session name it writes
-under, including a name a sibling pod holds. So listing a session account, which the paragraph
-above describes, gives every pod of it that second authority over every other pod the exchange
-serves, and a deployment that does not want it lists no such account.
+weigh it before listing an account. The request carries the pod's own projected ServiceAccount
+token, which the broker verifies as it verifies an enrolling pod's token, so a listed account
+registers a pod whose token it holds and no other. Its own pod is the one pod it may not register,
+refused `403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row would pick the session name it
+writes under, including a name a sibling pod holds. So listing a session account, which the
+paragraph above describes, does not in itself give its pods that authority over one another: each
+holds one token, its own, and its own pod is what the refusal names. The authority is as wide as
+the cluster's own rights to mint or read another pod's token — the same kind of access over that
+pod's account as the paragraph below names over a listed one — and no wider: a caller that can get
+another pod's token registers any pod of an account the exchange serves but the one it runs in. A
+deployment that does not want that lists no such account.
 A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
