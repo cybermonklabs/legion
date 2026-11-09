@@ -186,7 +186,7 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, record.SuperviseRequest{
 				Op: "start", Tree: row.root, Role: role, Generation: row.generation, Phase: row.stands,
-				Task: "Carry on.", Assignment: seededAssignment(row.key)}, fixedNow); err != nil {
+				Task: "Carry on.", Assignment: seededAssignment(row.key)}, true, fixedNow); err != nil {
 				t.Fatalf("queue the start %s already has: %v", row.key, err)
 			}
 		})
@@ -205,8 +205,9 @@ type owedRepairRow struct {
 	// state and suspendedBy are the claim's.
 	state       supervise.ClaimState
 	suspendedBy supervise.SuspendSource
-	// relaunched writes the owed row through workflow.StartOrOwe, so the relaunch row of the same
-	// start is queued beside it, rather than enqueueing the owed row alone.
+	// relaunched writes the owed row through workflow.StartOrOwe rather than enqueueing it
+	// directly. A start is one row now, so the two paths leave the same row; the field is kept
+	// until the repair of a start that can no longer act is rewritten onto it.
 	relaunched bool
 	// holdsTask gives the claim the owed row's own task, of that row's generation and phase and
 	// unconfirmed, so the claim still works it.
@@ -232,8 +233,8 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	inTx(t, pool, func(tx pgx.Tx) {
 		ctx := context.Background()
 		if row.relaunched {
-			if err := workflow.StartOrOwe(ctx, tx, record.NewStore(), row.key, request, fixedNow); err != nil {
-				t.Fatalf("owe %s its start with the relaunch of the same start beside it: %v", row.key, err)
+			if err := workflow.StartOrOwe(ctx, tx, record.NewStore(), row.key, request, true, fixedNow); err != nil {
+				t.Fatalf("owe %s its start through the workflow's own writer: %v", row.key, err)
 			}
 			return
 		}
@@ -333,8 +334,8 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			seeded := startsOf(t, pool, row.key)
 			want := 0
 			if row.queuedStart {
-				// The relaunch row and the row that carries the task (workflow.StartOrOwe).
-				want = 2
+				// The one row a start is written as (workflow.StartOrOwe).
+				want = 1
 			}
 			if len(seeded) != want {
 				t.Fatalf("the start rows of %s before the pass = %+v, want %d: the row's own premise", row.key, seeded, want)
@@ -359,18 +360,11 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 					}
 					return
 				}
-				var relaunch, tasked []midPhaseStart
-				for _, start := range got {
-					if start.task == "" {
-						relaunch = append(relaunch, start)
-						continue
-					}
-					tasked = append(tasked, start)
-				}
-				if len(relaunch) != 1 || len(tasked) != 1 {
-					t.Fatalf("the start rows of %s after the pass = %+v, want its one relaunch and the one row that carries the task (workflow.StartOrOwe): %s",
+				if len(got) != 1 {
+					t.Fatalf("the start rows of %s after the pass = %+v, want the one row that carries the task (workflow.StartOrOwe): %s",
 						row.key, got, row.why)
 				}
+				tasked := got
 				role := workflow.RoleFor(row.stands)
 				if tasked[0].role != role || !tasked[0].needsSlot {
 					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot as every phase worker's start does",

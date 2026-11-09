@@ -721,28 +721,19 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
-		// Nothing of the old run is wanted back: every start the re-entry queued is the planner's,
-		// of the new generation and the new run's first phase, and the pair of them is the one
-		// workflow.StartOrOwe writes — the task-less relaunch and the row carrying the phase's own
-		// task and the assignment it minted, which is no resume of anything.
+		// Nothing of the old run is wanted back: the one start the re-entry queued is the
+		// planner's, of the new generation and the new run's first phase, carrying that phase's
+		// own task and the assignment it minted, which is no resume of anything
+		// (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
-		if len(queued) != 2 {
-			t.Fatalf("the re-entry queued %d starts, want the two of the planner's first phase: %+v", len(queued), queued)
+		if len(queued) != 1 {
+			t.Fatalf("the re-entry queued %d starts, want the one of the planner's first phase: %+v", len(queued), queued)
 		}
-		var relaunched, tasked int
-		for _, row := range queued {
-			if row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
-				t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
-			}
-			if row.Relaunch && row.Task == "" {
-				relaunched++
-			}
-			if !row.Relaunch && row.Task != "" && row.Assignment != "" {
-				tasked++
-			}
+		if row := queued[0]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
+			t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
 		}
-		if relaunched != 1 || tasked != 1 {
-			t.Fatalf("the re-entry queued %d relaunch rows and %d task rows, want one of each: %+v", relaunched, tasked, queued)
+		if row := queued[0]; row.Task == "" || row.Assignment == "" {
+			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task and the assignment it minted", row)
 		}
 
 		// The fixture runs no controller, so the planner's launch ends at its wait for a pod and
@@ -878,37 +869,33 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// The rows admit.startMidPhaseMembers wrote for the member, which is the only pass that
 		// wrote a start of it here: the phase's own role, the implementer, through
-		// workflow.StartOrOwe, which splits its start in two — the task-less relaunch row,
-		// claimable at once, and the row carrying the phase's resume task (workflow.ResumeTask),
-		// marked ResumeTask and held unclaimable until the member holds a slot — and every other
-		// role one start of its own with no task at all, since a role with nothing to do comes back
-		// and is told nothing.
+		// workflow.StartOrOwe, which writes one row carrying the phase's resume task
+		// (workflow.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
+		// slot — and every other role one start of its own with no task at all, since a role with
+		// nothing to do comes back and is told nothing.
 		resume := workflow.ResumePhaseTask(*carried)
 		taskless := map[claim.Role]bool{}
-		var relaunch, owed *record.SuperviseRequest
+		var owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {
 			if row.Generation != carried.Generation || row.Phase != carried.Phase || row.Tree != root.Tree {
 				t.Fatalf("the re-admission queued %+v for the member, want every start to serve its own run and the phase it stands in", row)
 			}
-			switch {
-			case row.Role != claim.RoleImplementer:
+			if row.Role != claim.RoleImplementer {
 				taskless[row.Role] = row.Task == "" && !row.NeedsSlot && !row.ResumeTask
-			case row.Relaunch:
-				relaunch = &row
-			default:
-				owed = &row
+				continue
 			}
+			if owed != nil {
+				t.Fatalf("the re-admission queued a second start of the member's implementer, %+v: its start is one row that carries the task", row)
+			}
+			owed = &row
 		}
 		for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
 			if !taskless[role] {
 				t.Fatalf("the re-admission wrote no task-less start of the member's %s, want every role of the member brought back", role)
 			}
 		}
-		if relaunch == nil || relaunch.Task != "" || relaunch.NeedsSlot {
-			t.Fatalf("the member's relaunch row = %+v, want StartOrOwe's first half: the implementer's start with no task, claimable at once", relaunch)
-		}
 		if owed == nil || owed.Task != resume || !owed.ResumeTask || !owed.NeedsSlot {
-			t.Fatalf("the member's task row = %+v, want StartOrOwe's second half: the phase's resume task %q, held for the member's slot", owed, resume)
+			t.Fatalf("the member's start row = %+v, want the one StartOrOwe writes: the phase's resume task %q, held for the member's slot", owed, resume)
 		}
 
 		run("the re-admitted tree's branches and relaunches")

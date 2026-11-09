@@ -184,9 +184,9 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 		state != string(supervise.StateWorking) || tree != rootKey {
 		t.Fatalf("the implementer's stored claim at the carry = %s in %s, %v; want working in %s", state, tree, err, rootKey)
 	}
-	// Promotion queues two rows per start (workflow.StartOrOwe): the relaunch, which brings the
-	// role's session back at once carrying no task, and the row that carries the task and waits
-	// for the issue's admission slot. One start means one of the second kind.
+	// Promotion queues the phase worker's start as one row, which carries the task and waits for
+	// the issue's admission slot (workflow.StartOrOwe), beside a task-less row for each of the
+	// member's other roles. One start of the phase's own role means one row carrying a task.
 	var starts int
 	if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
 		and payload->>'role' = 'implementer' and payload->>'generation' = '2' and coalesce(payload->>'task', '') <> ''`, childKey).Scan(&starts); err != nil || starts != 1 {

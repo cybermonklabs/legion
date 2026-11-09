@@ -589,28 +589,25 @@ type SuperviseRequest struct {
 	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
 	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
-	// NeedsSlot marks a phase worker's start as the one part of a transition that waits for its
-	// issue's admission slot. The cap counts the issues at work, so what it must bound is the task
-	// that puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the assignment on the role's phases row, the notices — is written in the
-	// transition's own transaction and waits for nothing. The hold is on this row's claimability
-	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
-	// of its issue's later rows is held behind it, and the relaunch half of the start travels in
-	// a row of its own that carries no task at all (workflow.StartOrOwe), so the worker's session
-	// is relaunched and answering questions while its next task waits in the line.
+	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
+	// The cap counts the issues at work, so what it must bound is the start that puts a worker
+	// to work; everything else the transition writes — the phase, the Dispatch status, the
+	// assignment on the role's phases row, the notices — is written in the transition's own
+	// transaction and waits for nothing. The hold is on this row's claimability alone (store.go's
+	// outboxInOrder): a row that is merely unclaimable takes no lease, so none of its issue's
+	// later rows is held behind it. The row carries the worker's task whether or not it is
+	// marked, since a start is one row either way (workflow.StartOrOwe); what the mark decides is
+	// when the worker comes back with it.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
-	// Relaunch marks that other half: the row workflow.StartOrOwe writes to bring a phase
-	// worker's session back at once, with no task and none of a task's marks, while the row
-	// above waits for the slot. It is what tells the outbox that a task of this start is still
-	// to come, so a claim that failed holding that phase's task is left failed here rather than
-	// retried: a retry sends the kept task back to the worker (supervise's RequestRetry) before
-	// the issue holds a slot, and the task row behind it would then find a claim no longer
-	// failed and deliver a second prompt for the same phase. Every other start carries its own
-	// task or none at all and is answered where it stands, the tree architect's among them.
+	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
+	// worker's start used to be, before a start became one row that carries its task
+	// (workflow.StartOrOwe); the outbox decodes it now and acts on it nowhere.
 	//
-	// A row the previous release wrote and a deploy finds still in the outbox decodes with the
-	// mark false, which is that release's own behaviour: it retries a failed claim. Such a row
-	// lives seconds, and the pair this mark separates is written only by a daemon that reads it.
+	// It is kept for one release because the outbox decodes strictly
+	// (DecodeOutboxPayload, DisallowUnknownFields) and a row the previous release wrote may
+	// still be in the table when this one deploys: a payload the decoder refuses is a row that
+	// retries for ever. The validation rule below is kept with it, so such a row still passes
+	// the check the decode makes. The release after this one may delete both.
 	Relaunch bool `json:"relaunch,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root

@@ -83,8 +83,8 @@ func passed(t *testing.T, pool *pgxpool.Pool, what string) {
 
 // startRowsOf is every start the outbox still owes issue, spelled for a failure message: the role,
 // the phase, and whether the row waits for the issue's admission slot. The repair of a slot writes
-// two such rows for a worker it starts again (workflow.StartOrOwe), and the repair of a start that
-// can no longer act deletes the one that waits.
+// one such row for a worker it starts again (workflow.StartOrOwe), and the repair of a start that
+// can no longer act deletes it.
 func startRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),

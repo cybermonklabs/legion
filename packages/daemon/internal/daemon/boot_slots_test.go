@@ -87,8 +87,8 @@ func readBootAdmission(t *testing.T, pool *pgxpool.Pool) bootAdmission {
 }
 
 // deliverableStarts counts the start rows of issue that carry a task: the rows that deliver a
-// worker its work. A start of a phase worker is two rows (workflow.StartOrOwe), and the relaunch
-// beside this one carries none, so it delivers nothing however often it runs.
+// worker its work. A phase worker's start is one such row (workflow.StartOrOwe); a start with no
+// task is a role admission brings back beside it, which delivers nothing however often it runs.
 func deliverableStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
 	t.Helper()
 	var count int

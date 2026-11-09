@@ -133,10 +133,11 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 // counts the issues at work and the tree's one root slot no longer carries its children.
 //
 // The promotion writes everything but the tasks in the fact's own transaction: the root's new
-// generation and Dispatch status, each child's branch row, and the relaunch of every role of
-// every member (startMidPhaseMembers), so each member's sessions come back and answer while
-// their work waits. Each child then owes exactly one start, held unclaimable until that child
-// holds a slot, and nothing names its worker as a claim nothing will wake.
+// generation and Dispatch status, each child's branch row, and a task-less start of every role
+// of every member but the one whose phase it stands in (startMidPhaseMembers), so each member's
+// other sessions come back and answer while its work waits. Each child then owes exactly one
+// start, the phase worker's, which carries that phase's task and is held unclaimable until the
+// child holds a slot, and nothing names its worker as a claim nothing will wake.
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
 // and the rule is the re-admission's. A resume hands the worker the phase it is already on, so it
@@ -145,7 +146,7 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 // then empty, which api/handoff.go compares only when both name one, so no completion in flight
 // is refused for an assignment nothing ever delivered. And the claim this start brings back is
 // the suspended one the tree's close left: the promotion itself stops and resumes nothing, and
-// the relaunch row is what resumes it, holding no task of its own.
+// the start row is what resumes it, when the child's slot comes.
 func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 	const root, testing_, retro = "LEGION-208", "LEGION-209", "LEGION-211"
 	pool := migratedPool(t)
@@ -189,29 +190,29 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		if got := assignmentOf(t, pool, child, role); got != "" {
 			t.Fatalf("the %s's row of %s carries assignment %q, want none: the re-admission cleared the generation's handoffs", role, child, got)
 		}
-		var owed, relaunch []midPhaseStart
+		var owed, taskless []midPhaseStart
 		for _, row := range startsOf(t, pool, child) {
 			if row.needsSlot {
 				owed = append(owed, row)
 				continue
 			}
-			relaunch = append(relaunch, row)
+			taskless = append(taskless, row)
 		}
 		if len(owed) != 1 || owed[0].role != role || owed[0].task == "" || owed[0].claimable {
 			t.Fatalf("%s owes %+v, want the %s one start, carrying its resume task and runnable by nobody while it holds no slot", child, owed, role)
 		}
-		if len(relaunch) != len(claim.Roles) {
-			t.Fatalf("%s has the relaunch rows %+v, want one for each of its %d roles", child, relaunch, len(claim.Roles))
+		if len(taskless) != len(claim.Roles)-1 {
+			t.Fatalf("%s has the task-less start rows %+v, want one for each of its %d roles but the one whose phase it stands in", child, taskless, len(claim.Roles))
 		}
-		for _, row := range relaunch {
-			if row.task != "" || !row.claimable {
-				t.Fatalf("the relaunch row %+v of %s, want it carrying no task and runnable at once", row, child)
+		for _, row := range taskless {
+			if row.role == role || row.task != "" || !row.claimable {
+				t.Fatalf("the task-less start row %+v of %s, want another role's, carrying no task and runnable at once", row, child)
 			}
 		}
 	}
 	for token, state := range claimStates(t, pool) {
 		if state != string(supervise.StateSuspended) {
-			t.Fatalf("the claim %s is %s, want it as the tree's close left it: the promotion resumes nothing itself, its relaunch rows do", token, state)
+			t.Fatalf("the claim %s is %s, want it as the tree's close left it: the promotion resumes nothing itself, its start rows do", token, state)
 		}
 	}
 	var pending int

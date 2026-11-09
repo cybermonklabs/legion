@@ -668,14 +668,13 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 	}
 }
 
-// superviseRequests counts the enqueued supervise requests of one operation by issue/role, with
-// the relaunch half of a phase-worker start left out: a start is two rows (StartOrOwe), and the
-// one these counts are about is the row that carries the task.
+// superviseRequests counts the enqueued supervise requests of one operation by issue/role. A
+// phase worker's start is one row, which carries the worker's task (StartOrOwe), and every start
+// this package writes carries one.
 func superviseRequests(t *testing.T, pool *pgxpool.Pool, op string) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select issue, payload->>'role' from outbox
-		where kind = 'supervise' and payload->>'op' = $1
-			and not (payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`, op)
+		where kind = 'supervise' and payload->>'op' = $1`, op)
 	if err != nil {
 		t.Fatalf("read %s requests: %v", op, err)
 	}
@@ -708,14 +707,11 @@ func sameCounts(got, want map[string]int) bool {
 	return true
 }
 
-// assertOutboxCount counts the rows of one kind, with the relaunch half of a phase-worker start
-// left out: a start is two rows (StartOrOwe) and the one these counts are about is the row that
-// carries the task.
+// assertOutboxCount counts the rows of one kind.
 func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) {
 	t.Helper()
 	var got int
-	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1
-		and not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`, kind).Scan(&got); err != nil {
+	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1`, kind).Scan(&got); err != nil {
 		t.Fatalf("count %s rows: %v", kind, err)
 	}
 	if got != want {
@@ -1006,16 +1002,11 @@ func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	}, log)
 }
 
-// assertOutboxKinds is every row the transition left, by kind and in the order it wrote them,
-// with the relaunch half of each phase-worker start left out: a start is two rows now
-// (StartOrOwe), one that brings the role's session back carrying no task and one that carries
-// the task and waits for the issue's slot, and it is the second that every one of these
-// assertions is about. A test that is about the relaunch row itself reads it by name.
+// assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
+// phase worker's start is one of them: one row, which carries the task (StartOrOwe).
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox
-		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
-		order by id`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}

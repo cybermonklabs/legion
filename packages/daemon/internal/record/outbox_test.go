@@ -325,6 +325,27 @@ func TestAnIssueSuspensionCarriesNoReleaseField(t *testing.T) {
 	}
 }
 
+// A start the release before this one wrote still decodes. Nothing writes SuperviseRequest's
+// Relaunch mark now — a phase worker's start is one row that carries its task
+// (workflow.StartOrOwe) — but the previous release wrote the task-less half of a pair with the
+// mark on it, and such a row can still be in the outbox when this release deploys. The outbox
+// decodes strictly (DisallowUnknownFields) and a refused payload is a row that retries for
+// ever, so the field and the validation rule that reads it are kept for one release: the row
+// decodes, and the executor acts on the mark nowhere.
+func TestAStartTheReleaseBeforeWroteWithTheRelaunchMarkStillDecodes(t *testing.T) {
+	row := OutboxRow{ID: 42, Kind: OutboxKindSupervise, Issue: "LEGION-208",
+		Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"phase":"implementing","relaunch":true}`)}
+	got, err := DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decoding the start the previous release wrote = %v, want it accepted: a refused payload retries for ever", err)
+	}
+	want := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
+		Phase: phase.Implementing, Relaunch: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload = %#v, want %#v", got, want)
+	}
+}
+
 // A tick notice carries the names of the deployment capabilities with no decision through the
 // outbox row and back, and a notice with none carries no such field: the controller's payload
 // reads `openCapabilities` only when there is a gap to name.

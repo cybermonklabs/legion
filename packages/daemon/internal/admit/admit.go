@@ -1927,12 +1927,13 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // since the old tree's linger disarmed the pull request (beginLinger) and only a new READY,
 // whose merge the daemon submits, arms it again.
 //
-// It relaunches every role a member can hold rather than the phase's owner alone, because the
-// admission cap counts the issues at work now: the phase task is the only thing that waits for a
-// slot (workflow.StartOrOwe), and the live sessions of a member's other roles are exactly what
-// the design keeps so that a person can still talk to any of them. A relaunch row carries no
-// task, so a role with nothing to do comes back and is told nothing. The roles are enumerated as
-// every other sweep of them does, over claim.Roles (the engine's everyClaim).
+// It brings back every role a member can hold rather than the phase's owner alone, because the
+// admission cap counts the issues at work now: the one start that waits for a slot is the phase
+// worker's, which carries that phase's task (workflow.StartOrOwe), and the live sessions of a
+// member's other roles are exactly what the design keeps so that a person can still talk to any
+// of them. Those other roles' rows carry no task, so a role with nothing to do comes back and
+// is told nothing. The roles are enumerated as every other sweep of them does, over claim.Roles
+// (the engine's everyClaim).
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
@@ -2005,7 +2006,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
+				Role: role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, true, now); err != nil {
 				return err
 			}
 		}

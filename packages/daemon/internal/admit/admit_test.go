@@ -239,7 +239,7 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 //
 // A child in accepting waits on the tree's architect, which the promotion starts, so no task is
 // queued for it; its branch row is, because every member past admitted gets one and every role
-// of it is relaunched (workflow.StartOrOwe's relaunch half, which these effects leave out).
+// of it is brought back by a task-less start, which these effects leave out.
 func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

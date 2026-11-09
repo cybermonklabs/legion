@@ -292,78 +292,65 @@ func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue recor
 }
 
 // started enqueues the start both make, for a role start and restart have already held to one
-// that works a phase. It goes through StartOrOwe, so the worker's session comes back at once and
-// only its new task waits for the issue's admission slot.
+// that works a phase. It goes through StartOrOwe, so the worker comes back on the one row that
+// carries its new task, and that row waits for the issue's admission slot: a transition's start
+// puts a worker to work, which is exactly what the cap counts.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, assignment string) error {
 	task, err := withApprovedHead(ctx, e.store, tx, issue.Key, role, task)
 	if err != nil {
 		return err
 	}
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Assignment: assignment}, e.now())
+		Generation: issue.Generation, Phase: issue.Phase, Assignment: assignment}, true, e.now())
 }
 
-// StartOrOwe writes the start of a phase worker as two outbox rows in the caller's own
-// transaction, which is how the admission cap bounds the issues at work without stopping
-// anything that is already running. It is exported because admission starts phase workers too
-// (admit's startMidPhaseMembers), and every start of a worker the daemon makes comes through
-// here, so there is one implementation of the rule and one place to test it.
+// StartOrOwe writes the start of a phase worker as one outbox row in the caller's own
+// transaction: the caller's own request, the task on it. The outbox's start case does the whole
+// start on that row — it stops the role elsewhere, re-points a carried claim at this tree,
+// provisions the workspace and creates the claim when there is none, records the start against
+// the claim, spawns, resumes or retries it by state, and delivers the task — so a worker that
+// comes back comes back with its work, rather than spending a turn asking what it is for. It is
+// exported because admission starts phase workers too (admit's startMidPhaseMembers), so there
+// is one implementation of the rule and one place to test it.
 //
-// The first row is the relaunch: the caller's request with no task, no assignment and none of the
-// marks that belong to a task (Kept, ResumeTask, RuleResume, NeedsSlot). It is claimable at once,
-// and the outbox's start case runs its whole relaunch half on it — it stops the role elsewhere,
-// re-points a carried claim at this tree, provisions the workspace and creates the claim when
-// there is none, records the start against the claim, and spawns, rule-resumes or retries it by
-// state — and delivers nothing, because the delivery is guarded by a task the row does not carry.
-// So the worker's session is live and answering questions while its next task waits.
+// needsSlot says whether that row waits for the issue's admission slot, which the outbox holds
+// unclaimable while the issue holds none (store.go's outboxInOrder); it is the caller's to state
+// rather than something read here, because the answer is a fact about the caller's issue and not
+// about the request. A transition's start (Engine.started) and admission's start of a
+// mid-phase member both put a worker to work on an issue the cap counts, so both wait. The
+// boot's resume by rule asks record.AtWork, because an issue that is not at work is offered no
+// slot by any admission pass and a row marked for one would wait for ever. A row that waits for
+// no slot is claimable at once and carries its task all the same: the delivery is the same
+// delivery, made as soon as the worker is up.
 //
-// The second row is the task, the caller's own request marked NeedsSlot, which the outbox holds
-// unclaimable while the issue holds no slot (store.go's outboxInOrder). It is written through
-// Store.ReplaceOwedStart first: an issue that already owes a start and has not had its slot yet
-// keeps that row's id and created_at, which is its place in the waiting line, and carries the
-// later transition's task instead, so two transitions before the slot start the worker once. Only
-// when no such row is there — the first start, or one the lane has already leased because the
-// slot came — is a row of its own enqueued, which is what the daemon has always done for
-// back-to-back transitions.
+// The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
+// nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at
+// are the issue's place in the waiting line: an issue that already owes a start and has not had
+// its slot keeps that place and carries the later transition's task instead, so two transitions
+// before the slot start the worker once. The superseded role never starts, which is right —
+// the issue has left that phase, so that role never had work to do, while the role the later
+// transition names has it. Only when there is no such row — the first start, or one the lane has
+// already leased because the slot came — is a row of its own enqueued, which is what the daemon
+// has always done for back-to-back transitions.
 //
-// Which mark rides on which row follows from that split. The relaunch row keeps only what names
-// the run it brings back — the op, the tree, the role, the generation and the phase — plus
-// Relaunch, which says a task of this start is still to come, so that a claim that failed
-// holding that phase's task is left for the task row to retry rather than put back to work with
-// no slot (the daemon's outbox start case). The task row keeps everything that describes the
-// task: the task itself, the assignment the transition minted, the decisions the task names
-// (Kept), ResumeTask, which says the outbox must not deliver it to a claim already working that
-// phase's task, and RuleResume, which says a claim that spends its launch budget on it is left
-// failed for the boot report rather than retried. RuleResume therefore rides on the row that
-// carries the task and not on the relaunch before it; the boot only ever resumes a suspended
-// claim, which the relaunch resumes by rule without spending a launch budget, so the row that
-// could spend one is the row still marked.
-//
-// Re-running the relaunch half when the task row is finally claimed is safe and is the reason the
-// two rows can be the same request: the claim is found, recording the start only notes the newer
-// row's id, and the state the relaunch left the claim in — ready, idle or working — is named by
-// none of the cases of that switch, so nothing is spawned, resumed or retried a second time.
-func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
-	relaunch := payload
-	relaunch.Task, relaunch.Assignment, relaunch.Kept = "", "", nil
-	relaunch.ResumeTask, relaunch.RuleResume, relaunch.NeedsSlot, relaunch.Relaunch = false, false, false, true
-	row, err := record.NewOutboxRow(issue, relaunch, at)
+// No other start of the daemon's comes through here, and none may: the tree architect's start,
+// which takes no slot of its own (admit's promotion, awaiting_reconcile.go), the production
+// check's look (check.go), the pod wake (wake.go), the resume of a cancelled idle release (the
+// daemon's outbox) and the roles admission brings back beside a member's phase worker (admit's
+// startMidPhaseMembers) are enqueued directly and stay claimable at once. None of them puts a
+// worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
+// might never be offered.
+func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, needsSlot bool, at time.Time) error {
+	payload.NeedsSlot = needsSlot
+	row, err := record.NewOutboxRow(issue, payload, at)
 	if err != nil {
 		return err
 	}
-	if err := store.Enqueue(ctx, tx, row); err != nil {
-		return err
-	}
-	payload.NeedsSlot = true
-	owed, err := record.NewOutboxRow(issue, payload, at)
-	if err != nil {
-		return err
-	}
-	replaced, err := store.ReplaceOwedStart(ctx, tx, owed)
+	replaced, err := store.ReplaceOwedStart(ctx, tx, row)
 	if err != nil || replaced {
 		return err
 	}
-	return store.Enqueue(ctx, tx, owed)
+	return store.Enqueue(ctx, tx, row)
 }
 
 // assign mints the assignment this start hands role on issue, writes it onto the role's phases row

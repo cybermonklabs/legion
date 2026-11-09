@@ -281,14 +281,13 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // reads the way back (startedAgain): the relaunch is a resume of the recorded session, the
 // recorded session is unchanged, and the budgets the earlier run spent are zero again.
 //
-// The third is the one the change could break. Admission's promotion of a re-admitted root writes
-// the member's start as two rows — the relaunch and the task that waits for the issue's slot
-// (workflow.StartOrOwe) — and the claim it writes them for is still retired. The passes that
-// subtest makes after the promotion therefore meet the repair of a fenced start with the task
-// row owed: while the relaunch is still queued the claim is retired and the second queued start
-// is what keeps the row, and once the relaunch has run the claim is retired no longer. Which of
-// the two a pass meets is the outbox's to decide, and the row must stand either way. That
-// subtest makes those passes and reads the row still there, and then reads it delivered.
+// The third is the one the change could break. Admission's promotion of a re-admitted root
+// writes the member's start as one row, which carries the task and waits for the issue's slot
+// (workflow.StartOrOwe), and the claim it writes it for is still retired. The passes that
+// subtest makes after the promotion therefore meet the repair of a fenced start with that row
+// owed and its claim retired, which is the state the repair must leave alone: the workflow is
+// starting this worker again, and the row is the whole of that start. That subtest makes those
+// passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
@@ -382,41 +381,38 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 
 		// Dispatch takes the tree back. Admission re-admits the root, promotes it into the free
-		// slot and writes the member's start as the two rows every start of a phase worker is:
-		// the relaunch, claimable at once, and the task, which waits for the member's own slot and
-		// so waits for the cap (admit's startMidPhaseMembers through workflow.StartOrOwe).
+		// slot and writes the member's start as the one row every start of a phase worker is: it
+		// carries the phase's task and waits for the member's own slot, and so waits for the cap
+		// (admit's startMidPhaseMembers through workflow.StartOrOwe).
 		engine := startedAgainEngine(cfg)
 		handlers := []intake.Handler{engine, admit.New(record.NewStore(), engine, cfg.AdmissionCap, cfg.Project, quietLogger())}
 		applyFact(t, pool, "dispatch", "todo-again:"+root, intake.DispatchIssue{Key: root, ResolvedRepo: startedAgainRepo,
 			Seq: 6, Type: "issue.updated", Status: "todo", Title: root, Rank: root, HandedOver: true}, handlers...)
-		// The row the promotion writes for the member's task, spelled as startRowsOf spells a
-		// start row: the implementer's, in the phase the member stands in, waiting for the
-		// member's own admission slot.
+		// The row the promotion wrote, spelled as startRowsOf spells a start row: the
+		// implementer's, in the phase the member stands in, waiting for the member's own
+		// admission slot.
 		const owed = "implementer implementing needsSlot=true"
 		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
-			t.Fatalf("after the re-admission %s owes the start rows %v, want %q among them: the promotion writes the member's task as a row of its own",
+			t.Fatalf("after the re-admission %s owes the start rows %v, want %q among them: the promotion writes the member's start as the row that carries its task",
 				member, rows, owed)
 		}
 
-		// Three passes over what the re-admission left. What each of them meets is the outbox's
-		// to decide, since its lanes are live here: while the relaunch row is still queued a pass
-		// meets the retired claim with the task row owed beside that relaunch, which is the state
-		// the stop rule weighs and the second queued start is what keeps the row from; once the
-		// relaunch has run the claim is no longer retired, and the rule's first term keeps it.
-		// The row stands either way, which is what these passes read. The term that keeps it
-		// while the relaunch is still queued is locked on its own by the admit row LEGION-710 (a
-		// retired claim whose relaunch row is still queued, slot_repair_test.go).
+		// Three passes over what the re-admission left, with the member's claim still retired and
+		// its row still waiting for a slot: that is the state the stop rule weighs, and the row
+		// must stand, because the workflow is starting this worker again. The passes read it
+		// still there.
 		passed(t, pool, "after the re-admission")
 		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
 			t.Fatalf("three passes after the re-admission %s owes the start rows %v, want %q still among them: the start the promotion wrote is the way back, not a start the stop outlived",
 				member, rows, owed)
 		}
 
+		// The member's slot, which the other root's work ending frees: the row runs then, and it
+		// is the whole of the start — the stopped worker comes back and its task reaches it.
+		finish(t, pool, record.NewStore(), other)
+
 		startedAgain(t, cfg, rt, kept, before, "the promotion of the re-admitted root")
 
-		// The task the row carries reaches the worker once the member has a slot, which the other
-		// root's work ending frees.
-		finish(t, pool, record.NewStore(), other)
 		testwait.Eventually(t, "the task the promotion owed "+string(implementer)+" to be delivered", func() bool {
 			pending := storedClaim(t, cfg, implementer).Pending
 			return pending != nil && pending.Phase == phase.Implementing && pending.Generation == 1

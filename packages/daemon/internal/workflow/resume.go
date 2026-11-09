@@ -49,11 +49,12 @@ import (
 // its issues wait in the line.
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
-// mid-phase child, through the outbox's start like every other start (StartOrOwe): its claim is
-// resumed by rule at once, and the task that carries its phase on (ResumePhaseTask, the merger's
-// with the head its round approved) waits for the issue's slot; the outbox does not deliver it
-// to a claim still holding its phase's task. A role a start already covers (StartFor) gets no
-// second. The sweep runs first so the resume reads the trees it closed as lingering.
+// mid-phase child, through the outbox's start like every other start (StartOrOwe): one row that
+// resumes the claim by rule and carries the task that takes its phase on (ResumePhaseTask, the
+// merger's with the head its round approved), which the outbox does not deliver to a claim still
+// holding its phase's task. Whether that row waits for the issue's admission slot is
+// record.AtWork's answer for the issue, read below. A role a start already covers (StartFor)
+// gets no second. The sweep runs first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
@@ -116,8 +117,16 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if err != nil {
 			return intake.Result{}, err
 		}
+		// The row waits for a slot only where the issue is at work by the one rule the cap
+		// counts with. record.AtWork is false for an issue in merging while a closed design gate
+		// holds the READY its merger already built, and merging is the one phase with a phase
+		// worker that can be not at work: a row marked for a slot there would wait for a slot no
+		// admission pass ever offers, and the merger would stay down until a person approved the
+		// spec. record.TreeGate{} is exact here: the loop never reaches a phase whose role is
+		// empty, and AtWork reads the gate only at admitted.
 		if err := StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true}, e.now()); err != nil {
+			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true},
+			record.AtWork(issue, record.TreeGate{}), e.now()); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,
