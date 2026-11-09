@@ -117,8 +117,11 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 				// was changed or removed) ends for good: setting the kind back serves the same
 				// source again, and the grant must not come back with it. So does one whose
 				// requesters tag no longer lists this session: listing the person again must not
-				// revive a grant made while they were off the list.
-				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) {
+				// revive a grant made while they were off the list. So does a judged grant of a
+				// secret the policy now tags as an administrator's: a person approves every
+				// release of one, so taking the tag off again must not revive a grant no person
+				// ever approved — the session asks again, and the judge refuses it then.
+				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
 				return grantRelease{}, err
@@ -306,6 +309,13 @@ func requesterNotListed(name string) error {
 	return fmt.Errorf("%w: %w: %s no longer lists this requester", ErrGrantNotLive, errRequesterNotListed, name)
 }
 
+// judgedAdminSecret is the refusal of a granted name the live policy tags as an administrator's
+// (policy.TagAdmin) on a grant the model judge decided, which ends the grant for good
+// (errJudgedAdminSecret).
+func judgedAdminSecret(name string) error {
+	return fmt.Errorf("%w: %w: %s is an administrator's secret, and a person approves every release of one", ErrGrantNotLive, errJudgedAdminSecret, name)
+}
+
 // GrantEndedActor is what a grant the broker itself ended at release records as having ended it,
 // as revoked_by and as its grant.revoked audit row's actor.
 const GrantEndedActor = "broker:release-recheck"
@@ -441,8 +451,9 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 // ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
 // all, so a grant made before it dropped them must not go on releasing while they are off it.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
-// held to the rules instead of to that login: the rules in force must still give the name a judge
-// of at least the seconds the grant was given (judgeStillDecides, which lifetime carries here).
+// held to the rules instead of to that login, and to the admin tag over both: the secret must not
+// be an administrator's now, and the rules in force must still give the name a judge of at least
+// the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
 // No judge login goes through record.MayDecide, which refuses every one of them.
 func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
 	d, err := set.Evaluate(name, requester)
@@ -466,28 +477,42 @@ func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, froz
 	case frozenDecision == policy.Automatic && !slices.Contains(requester.Withheld, name):
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
 	case judged:
-		return judgeStillDecides(rules, name, lifetime)
+		return judgeStillDecides(set, rules, name, lifetime)
 	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy):
 		return fmt.Errorf("%w: %s now needs its owner's approval, which this grant does not have", ErrGrantNotLive, name)
 	}
 	return nil
 }
 
-// judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the rules in force
-// must still give name a judge of at least lifetime, the seconds the grant was given. The judge's
-// authority is that entry and not a person's, so this arm reads the entry where the person's arm
-// reads a login: a secret handed to another person ends a grant that person must approve and did
-// not, and leaves a judged one alone, no person's approval being what it rested on, while a
-// rules file that stops letting the judge decide this name, or that lowers it below what this
-// grant holds, ends it. An entry that changed at all already ends the grant through the frozen
+// judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the secret must
+// not be an administrator's under the live policy, and the rules in force must still give name a
+// judge of at least lifetime, the seconds the grant was given. The judge's authority is that
+// entry and not a person's, so this arm reads the entry where the person's arm reads a login: a
+// secret handed to another person ends a grant that person must approve and did not, and leaves
+// a judged one alone, no person's approval being what it rested on, while a rules file that
+// stops letting the judge decide this name, or that lowers it below what this grant holds, ends
+// it. An entry that changed at all already ends the grant through the frozen
 // request_secrets.airlock_digest, so this states the same rule where a reader of the release
 // checks it, over the one thing the judge's approval rested on.
+//
+// The admin tag is read first and off the live policy set, because it outranks whatever seconds
+// a rules file gives the name: the tag's promise is that a person approves every release of the
+// credential (policy.TagAdmin), and a release is exactly what this is deciding, so an owner who
+// tags a secret an administrator's after the judge decided it stops the releases a model
+// approved rather than only the next decision (judge's admin check, currentPolicyAdmits). The
+// promise is the secret's and not the rules file's to make, so no judge entry answers it, and
+// the refusal ends the grant for good (errJudgedAdminSecret): the session asks again, and the
+// judge then refuses it at decision time. A person's own grant of an admin secret is untouched,
+// this arm being a judged grant's alone — a person approved it, which is all the tag asks.
 //
 // A grant with no lifetime — one that lasts until its session ends — is not live under a judge
 // decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
 // exactly what the judge's seconds are there to bound, so the judge made no such grant and no
 // such grant is its.
-func judgeStillDecides(rules airlock.Rules, name string, lifetime *int) error {
+func judgeStillDecides(set *policy.Set, rules airlock.Rules, name string, lifetime *int) error {
+	if set.Secrets[name].Admin {
+		return judgedAdminSecret(name)
+	}
 	bound, ok := rules.JudgeSeconds(name)
 	switch {
 	case lifetime == nil:
@@ -510,6 +535,14 @@ var errSourceMoved = errors.New("source moved")
 // reuseLiveGrant end such a grant for good (endGrant), so putting the person back on the list
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
+
+// errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret the live
+// policy tags as an administrator's (policy.TagAdmin): the tag was added after the model judge
+// decided the request, and a person approves every release of such a secret. Values and
+// reuseLiveGrant end such a grant for good (endGrant), so taking the tag off again never brings
+// back a grant no person approved; the session asks again, and the judge refuses it at decision
+// time instead.
+var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,
 // whether that name is withheld from its session, and whether the secret is an administrator's:
@@ -805,14 +838,16 @@ func writtenBeforeMigration13(alias string) string {
 // prove) and no granted name carries a requesters tag (anyListed: an entry naming a service
 // matches by those same accounts), or the current policy still allows it to the session
 // (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
-// give its name, over the lifetime this reuse matched it on, the grant's own), and its whole
-// approval chain still verifies
-// (VerifyChain, the same check Values makes). A caller that already holds a live grant for these
-// exact names never re-asks a human who already approved it, a policy tightened since then is
-// never bypassed by reuse, and neither is a chain that no longer verifies.
-// A grant whose secret no longer lists this requester is not merely passed over: it is ended for
-// good here, as Values ends it (errRequesterNotListed), and Create goes on to write the denied
-// request that tells the session why.
+// give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
+// whose secret the policy now tags as an administrator's), and its whole approval chain still
+// verifies (VerifyChain, the same check Values makes). A caller that already holds a live grant
+// for these exact names never re-asks a human who already approved it, a policy tightened since
+// then is never bypassed by reuse, and neither is a chain that no longer verifies.
+// A grant whose secret no longer lists this requester, and a judged grant of a secret the policy
+// now tags as an administrator's, are not merely passed over: each is ended for good here, as
+// Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
+// the names afresh — the denied request that tells the session why, where the list dropped it,
+// and the card the tag's own person answers, where the tag ended it.
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
@@ -845,10 +880,11 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names [
 		for _, g := range granted {
 			err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 			switch {
-			case errors.Is(err, errRequesterNotListed):
-				// The list dropped this requester while the grant was live: end it here as Values
-				// does, rather than leave it live and unrevoked, and answer no reusable grant so
-				// Create goes on to write the denied request the session reads its reason off.
+			case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
+				// The list dropped this requester while the grant was live, or the secret became
+				// an administrator's, which a person approves every release of: end the grant
+				// here as Values does, rather than leave it live and unrevoked, and answer no
+				// reusable grant so Create goes on to ask for the names afresh.
 				if ended := m.endGrant(ctx, grantID, err); !errors.Is(ended, ErrGrantNotLive) {
 					return Request{}, false, ended
 				}

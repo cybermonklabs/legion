@@ -856,13 +856,17 @@ record's own approver — the secret's owner, or `anyone` for a shared secret �
 approves that secret lists the grant and can end it, and a judged grant of a shared secret is on
 every signed-in person's page.
 
-A judged grant is held to the rules in force rather than to a person's standing. Each release
-re-checks that the secret's entry still gives the judge at least the grant's lifetime; a grant
-whose entry lost its `judge`, or whose seconds fell below that lifetime, releases nothing
-(`GRANT_NOT_LIVE`). The chain check ([The audit record](#the-audit-record)) admits a judge's
-approval only on a record that names one secret, a lifetime the rules still let the judge decide
-for it, and a reason naming an issue key, so a forged record, and one a rules change left behind,
-release nothing either.
+A judged grant is held to the rules in force rather than to a person's standing, and to the
+`admin` tag over both. Each release re-checks that the secret's entry still gives the judge at
+least the grant's lifetime; a grant whose entry lost its `judge`, or whose seconds fell below
+that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
+administrator's after the judge decided it ends that grant for good, at the release and at the
+next request that would reuse it: a person approves every release of one, so no judged grant
+goes on releasing it, and taking the tag off again does not bring the grant back — the session
+asks afresh, and the judge refuses it then. The chain check
+([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
+one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
+key, so a forged record, and one a rules change left behind, release nothing either.
 
 The issue check is the broker's one read of Dispatch: two GETs, the issue and the text of its
 spec document, with the broker's own projected ServiceAccount token, read again from its file once
