@@ -280,6 +280,37 @@ describe("every remedy the CLI prints, followed", () => {
     }
   }
 
+  // The one state no resend clears, for either kind, and the reason it is worse than a refusal:
+  // `askgateState` answers `broken`, so no marker is ever reached, and each attempt spends a
+  // whole review before being refused anyway. The agent page promised a resend cleared "any of
+  // them"; it now says not to resend this one.
+  test("an unreadable record is refused however often it is resent, and each resend costs a review", async () => {
+    for (const who of ["main", "sub"] as const) {
+      const s = session("allow");
+      try {
+        // A stray owner file, not this owner's own: `writeAskgateRecord` removes only the
+        // files it can parse, so the gate rewriting its own record leaves this one, and
+        // `askgateState` answers `broken` for the session from then on.
+        const record = join(s.dir(), "askgate", "99999999-0-stray.json");
+        writeFileSync(record, "{not json");
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          const again = await resend(s, who);
+          expect({ who, attempt, code: again.code, posts: again.posts }).toEqual({
+            who,
+            attempt,
+            code: 1,
+            posts: 0,
+          });
+        }
+        // And it survives the gate writing its record again, since only an owner file that
+        // parses is replaced.
+        expect(readFileSync(record, "utf8")).toBe("{not json");
+      } finally {
+        s.stop();
+      }
+    }
+  }, 30_000);
+
   // The failure control: with nothing recorded against the write, both kinds post. Without it
   // the rows above would pass on a CLI that refused everything.
   test("with nothing recorded against it, both kinds post", async () => {

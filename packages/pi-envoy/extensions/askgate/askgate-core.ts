@@ -247,7 +247,6 @@
 // while the gate still held it — its review is the await such an end falls in — is minted none
 // either, since nothing of it runs any more, and its entry says `mintSkipped: "call-ended"`. The
 // record starts after the mint, so it carries the decision the call finally got.
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PICTURE_PLACEHOLDER } from "@legion/contracts";

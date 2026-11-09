@@ -250,7 +250,13 @@ export function processStart(pid: number): string | null {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
     // The name in parentheses may hold spaces and parentheses; the fields after it do not.
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
-  } catch {
+  } catch (error) {
+    // Only ENOENT is the process being gone. Anything else — a `/proc` that cannot be read, an
+    // EIO — says nothing about whether it lives, and answering every error with `null` made an
+    // owner of this namespace read as dead, which turns AskGate off for the session and skips
+    // the verdict lookup entirely. The same shape as the cross-namespace arm, on the other
+    // branch of the same function; the caller reads a throw as the owner being live.
+    if (!hasErrnoCode(error, "ENOENT")) throw error;
     return null;
   }
 }
@@ -328,7 +334,15 @@ function ownerLive(owner: AskgateOwner, now: number): boolean {
       return !hasErrnoCode(error, "ENOENT");
     }
   }
-  if (owner.start !== null) return processStart(owner.pid) === owner.start;
+  if (owner.start !== null) {
+    try {
+      return processStart(owner.pid) === owner.start;
+    } catch {
+      // Its start time cannot be read, so it cannot be shown dead: keep it live and let the
+      // state's own checks answer, rather than turning the gate off on a fault.
+      return true;
+    }
+  }
   try {
     process.kill(owner.pid, 0);
     return true;

@@ -577,7 +577,6 @@ AskGate on, and the start notice names the file.
 **The modes.** A model's revise verdict and the CLI's marker checks have separate defaults. A revise
 verdict blocks by default: the write does not post. `OMP_ASKGATE=warn`, or a session whose latest
 `experiments` entry turns its `askgate_block` arm off, lets the write post with the reason. The
-The
 CLI's checks warn by default: a file changed after the review, a marker past its age and a file
 missing when the gate ran each post with a warning and an `unmarked` or `unreadable` entry that
 the report counts, and refuse only when the session chose block explicitly — `OMP_ASKGATE=block`,
