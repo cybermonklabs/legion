@@ -120,6 +120,7 @@ function setup(
   const gaps: ConsumerGapNotice[] = [];
   // The failure notices shown through the ledger (`liveFailed`).
   const failed: Array<{
+    readonly session: string;
     readonly subject: string;
     readonly eventID: string | undefined;
     readonly receivedAt: number;
@@ -146,8 +147,8 @@ function setup(
     publish: (reply, body) => replies.push([reply, body]),
     ledger: {
       delivered: (identity) => options.ledger?.delivered(identity) ?? false,
-      liveFailed: async (followed, envelope, _error, receivedAt) => {
-        failed.push({ subject: followed, eventID: envelope.event_id, receivedAt });
+      liveFailed: async (session, followed, envelope, _error, receivedAt) => {
+        failed.push({ session, subject: followed, eventID: envelope.event_id, receivedAt });
       },
       state: () => options.state ?? { subjects: {} },
       setConsumerMode: (on) => consumerMode.push(on),
@@ -286,7 +287,10 @@ describe("replies", () => {
 
     expect(repliesTo(replies, "_INBOX.a")).toEqual(["received", "nak"]);
     expect(repliesTo(replies, "_INBOX.c")).toEqual(["received", "done"]);
-    expect(failed).toEqual([{ subject: AGENT, eventID: "evt-1", receivedAt: T0 }]);
+    // The notice is the relay's own session's, whichever one the host has open by then.
+    expect(failed).toEqual([
+      { session: SESSION, subject: AGENT, eventID: "evt-1", receivedAt: T0 },
+    ]);
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {

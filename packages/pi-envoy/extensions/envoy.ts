@@ -214,6 +214,7 @@ import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-
 import { sideTurn } from "../src/side-turn";
 import { TypedPictures } from "../src/typed-pictures";
 import {
+  MOVED_SESSION_REASON,
   runShellCommand,
   shellCommandBusyReport,
   shellCommandFrom,
@@ -338,10 +339,10 @@ const REPLAYED_BTW_NOTE =
  *  open here: a `/new`, a `/resume`, or a move the host made with no event for it put the host
  *  on another conversation, and that conversation is neither the one the person wrote to nor
  *  the one that may answer for it. The `!` path says the same of the command it did not run
- *  (`shellCommandMovedReport` in `../src/typed-shell.ts`), so one sentence meets a person
- *  wherever a delivery stops for this. */
-const MOVED_SESSION_REFUSAL =
-  "The message was not sent: this session is no longer the one open here.";
+ *  (`shellCommandMovedReport` in `../src/typed-shell.ts`), from the one sentence both read
+ *  here (`MOVED_SESSION_REASON`), so one sentence meets a person wherever a delivery stops
+ *  for this. */
+const MOVED_SESSION_REFUSAL = `The message was not sent: ${MOVED_SESSION_REASON}`;
 
 /**
  * Aside and Steer go through `pi.sendMessage` on every OMP build; BTW only where the host has a
@@ -1180,15 +1181,29 @@ export default function envoyExtension(pi: PiApi): void {
   };
 
   // Posts one reply to a person's message, as the session `replySessionID` names and under the
-  // Dispatch `config` resolves for that same session: the two halves of a reply - the actor it
-  // names and the configuration it goes out under - cannot name two different sessions.
+  // Dispatch resolved here for that same session: the two halves of a reply - the actor it
+  // names and the configuration it goes out under - are read from the one argument, so they
+  // cannot name two different sessions.
+  //
+  // A reply names the session its message was addressed to whether or not the host still has
+  // that session open: a configuration resolved for the session open when the reply goes out
+  // would sign one person's answer with the conversation the host moved to. A session this
+  // host has left is logged here, so every reply to one says so - twice for a reply whose
+  // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
+  // for a session this machine no longer runs and the refusal would otherwise read as a plain
+  // reply failure.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
-    replySessionID: string,
-    config: () => ActiveDispatchConfig
+    replySessionID: string
   ): Promise<void> => {
-    await postDeliveryReply(config(), replySessionID, delivery, result);
+    if (!sessionOpen(replySessionID)) {
+      logger.warn("envoy: a reply is signed as the session its message named, which is closed", {
+        addressed: replySessionID,
+        open: sessionID,
+      });
+    }
+    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -1277,8 +1292,13 @@ export default function envoyExtension(pi: PiApi): void {
   const unwritten = new UnwrittenFrames({
     sessionID: () => sessionID,
     settled: hostSettled,
+    // The card's own session: `UnwrittenFrames` records a card only once the session it was
+    // handed in is the one open here (`#recordWritten`), so the session named here is the
+    // session the card was shown in, rather than whichever one the host reaches by the time the
+    // write lands. A record that names a closed session is written nowhere, and that session's
+    // own sweep reads its transcript instead.
     recordDelivered: async (identity) => {
-      await replay?.recordDelivered(identity);
+      await replay?.recordDeliveredFor(sessionID, identity);
     },
     handCard,
     handNotice: (content) => {
@@ -1379,23 +1399,21 @@ export default function envoyExtension(pi: PiApi): void {
   // holding a block longer than it takes, or output it cannot store - would otherwise leave the
   // person who sent the line with no answer at all; Dispatch's words say why, and they are short
   // enough to post in its place. Both the typed path and the `!command` path post through here,
-  // so the fallback exists once. Both texts go out under the one `config`, so the fallback names
-  // the session the reply it replaces named.
+  // so the fallback exists once. Both texts name the one session, so the fallback is signed as
+  // the reply it replaces was.
   const postTypedInputReply = async (
     delivery: DispatchDelivery,
     replySessionID: string,
-    body: string,
-    config: () => ActiveDispatchConfig
+    body: string
   ): Promise<void> => {
     try {
-      await postDispatchReply(delivery, { body }, replySessionID, config);
+      await postDispatchReply(delivery, { body }, replySessionID);
     } catch (error) {
       if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
       await postDispatchReply(
         delivery,
         { body: `Your command ran, and Dispatch refused its output: ${error.message}` },
-        replySessionID,
-        config
+        replySessionID
       );
     }
   };
@@ -1526,10 +1544,10 @@ export default function envoyExtension(pi: PiApi): void {
     const answer = async (): Promise<void> => {
       try {
         // Posted for the session the message was addressed to, under that session's own
-        // Dispatch: a configuration resolved for the session open when the command ends would
-        // have a `/new` or a `/resume` in this window write the reply to the person's message
-        // under the conversation the host moved to.
-        await postTypedInputReply(delivery, session, await ran(), () => dispatchConfigFor(session));
+        // Dispatch (`postDispatchReply` resolves it): a configuration resolved for the session
+        // open when the command ends would have a `/new` or a `/resume` in this window write
+        // the reply to the person's message under the conversation the host moved to.
+        await postTypedInputReply(delivery, session, await ran());
       } catch (error: unknown) {
         logger.warn("envoy: a person's shell command from Dispatch was not answered", {
           attempt: delivery.attempt,
@@ -1573,14 +1591,12 @@ export default function envoyExtension(pi: PiApi): void {
   const runTypedInput = (
     sendUserInput: NonNullable<PiApi["sendUserInput"]>,
     delivery: DispatchDelivery,
+    // The session the reply below names and is signed as, however long the host takes to
+    // answer the input: `postDispatchReply` reads both halves of the reply from it.
     replySessionID: string,
     turn: AcceptedUserTurn,
     content: string | readonly ContentBlock[],
-    pictureAddresses: readonly string[],
-    // Dispatch as the reply below is posted with: the delivery's own (`replyConfig`), so the
-    // session the reply names as its actor and the session it is signed as are the one session
-    // however long the host takes to answer the input.
-    config: () => ActiveDispatchConfig
+    pictureAddresses: readonly string[]
   ): void => {
     const images =
       typeof content === "string"
@@ -1631,7 +1647,7 @@ export default function envoyExtension(pi: PiApi): void {
         // reply that names it reaches the page.
         refreshAgentStreamSettings(sessionID);
         if (reply === undefined) return;
-        await postTypedInputReply(delivery, replySessionID, reply, config);
+        await postTypedInputReply(delivery, replySessionID, reply);
       })
       .catch((error: unknown) => {
         logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
@@ -1743,29 +1759,16 @@ export default function envoyExtension(pi: PiApi): void {
     // Whether the session this frame was addressed to is still the one open here, read by this
     // instance's own id and by the host's live one. A frame that addresses no session - a role
     // topic, an ad-hoc topic - is held to none: the session that took it answers it, wherever
-    // the host goes next. Every branch below reads this before it hands a person's message to
-    // the host or asks the model for them, since each await above - the acknowledgement, the
-    // read of the body whole, the accept, the picture load - is a window a `/new` or a
-    // `/resume` lands in, and the work would then be another conversation's.
+    // the host goes next. Every branch of `deliver` reads this before it hands a person's
+    // message to the host or asks the model for them, since each await above - the
+    // acknowledgement, the read of the body whole, the accept, the picture load - is a window a
+    // `/new` or a `/resume` lands in, and the work would then be another conversation's. The
+    // replay path never reaches here: it holds its own frames to the session it swept for
+    // (`showReplayed`).
     const addressedSessionOpen = (): boolean =>
       addressedSession === undefined || sessionOpen(session);
-    // Dispatch as every reply to this frame is posted with, resolved for that one session: the
-    // session a reply names as its actor and the session it is signed as are never two. A frame
-    // addressed to a session is answered as that session and signed as it, whether or not the
-    // host still has it open: a configuration resolved for the session open when the reply goes
-    // out would sign one person's answer with the conversation the host moved to. A session the
-    // host has left is logged at each resolve - twice for a reply whose first text Dispatch
-    // refuses (`postTypedInputReply`) - since the broker may refuse a token for a session this
-    // machine no longer runs and the refusal would otherwise read as a plain reply failure.
-    const replyConfig = (): ActiveDispatchConfig => {
-      if (addressedSession !== undefined && !sessionOpen(session)) {
-        logger.warn("envoy: a reply is signed as the session its message named, which is closed", {
-          addressed: session,
-          open: sessionID,
-        });
-      }
-      return dispatchConfigFor(session);
-    };
+    // Every reply to this frame names `session` and is signed as it, and `postDispatchReply`
+    // reads both halves from that one argument.
     let rendered = renderInbound(raw, session, subject);
     // Acknowledge first. The listener waits two seconds for this receipt: its
     // publish route, which forwards a role message or an ad-hoc topic's copy
@@ -1883,10 +1886,11 @@ export default function envoyExtension(pi: PiApi): void {
     //
     // That write lands only while the addressed session is the one this process writes its
     // transcript to (`writeSessionID`); `recordDeliveredFor` makes that test itself, and answers
-    // false having recorded nothing when the host has moved, which would settle the claim with
-    // nothing written - the session's transcript would lose the delivery, and its resume would
-    // show the person's line again as a card. The write cannot be made from the conversation the
-    // host moved to, so the loss is logged instead of settled in silence.
+    // false when the write it queued did not reach the host - the host moved while the write
+    // waited behind the writes before it, or the write failed - which would settle the claim
+    // with nothing written: the session's transcript would lose the delivery, and its resume
+    // would show the person's line again as a card. The write cannot be made from the
+    // conversation the host moved to, so the loss is logged instead of settled in silence.
     const recordTaken = async (frame: DedupeIdentity): Promise<void> => {
       // With no replay engine there is no ledger at all, so no session's record loses anything.
       if (replay === undefined || (await replay.recordDeliveredFor(session, frame))) return;
@@ -1900,6 +1904,20 @@ export default function envoyExtension(pi: PiApi): void {
       if (identity !== undefined) await recordTaken(identity);
       claim.settle();
     };
+    // A card the host would be handed in the conversation it moved to: `sendCard` goes to
+    // whatever session the host has open now (`handCard`), and the pictures it carries would
+    // count as shown there. Nothing is handed and nothing is marked: the claim goes back, so a
+    // relay frame is sent again by the listener to the session it names, and a core frame
+    // reaches that session again only through its replay sweep, as a card. The pictures stay
+    // unshown, so the copy that comes back to that session carries them.
+    const cardNotShown = (): void => {
+      logger.warn("envoy: a card was not shown here; the session it names is closed", {
+        addressed: session,
+        eventID: envelope?.event_id,
+        open: sessionID,
+      });
+      claim.release();
+    };
     // An error reply means the agent was not handed the frame: Dispatch records the attempt
     // failed, and a same-mode re-send of it must reach this session again, so the claim is
     // released before the reply goes out. A BTW side turn adds nothing to the transcript, so
@@ -1907,7 +1925,7 @@ export default function envoyExtension(pi: PiApi): void {
     // once the reply is posted: the re-send is a new frame.
     const refuse = async (delivery: DispatchDelivery, error: string): Promise<void> => {
       held.release();
-      await postDispatchReply(delivery, { error }, session, replyConfig);
+      await postDispatchReply(delivery, { error }, session);
       relayed?.done();
     };
     // Runs a side turn or a Dispatch reply off the caller (a pump or the relay's queue), so the
@@ -1924,7 +1942,7 @@ export default function envoyExtension(pi: PiApi): void {
         );
         if (relayed !== undefined) relayed.done();
         else if (envelope !== undefined)
-          void replay?.liveFailed(topic, envelope, error, receivedAt);
+          void replay?.liveFailed(session, topic, envelope, error, receivedAt);
       });
     };
     try {
@@ -1944,12 +1962,18 @@ export default function envoyExtension(pi: PiApi): void {
         // began) never starts a side turn: it is one inert card, as a replayed BTW is, written to
         // the transcript and done then. Its answer, if any, is on Dispatch.
         noteBtw(identity?.event_id);
-        unwritten.sendCard(
-          `${replayedText(rendered.content, relayed.storedAt)}\n${REPLAYED_BTW_NOTE}`,
-          "inert",
-          identity,
-          claim
-        );
+        // The card is the addressed session's, and the read of the body whole above is a window
+        // a `/new` or a `/resume` lands in.
+        if (!addressedSessionOpen()) {
+          cardNotShown();
+        } else {
+          unwritten.sendCard(
+            `${replayedText(rendered.content, relayed.storedAt)}\n${REPLAYED_BTW_NOTE}`,
+            "inert",
+            identity,
+            claim
+          );
+        }
       } else if (rendered.delivery?.mode === "btw") {
         // A BTW is answered on Dispatch or refused there, never shown as a card: the stream's
         // copy must never come back from a sweep as a card that starts a turn. The ledger
@@ -1983,7 +2007,7 @@ export default function envoyExtension(pi: PiApi): void {
           offWorker(async () => {
             try {
               const reply = await answer({ prompt: delivery.body });
-              await postDispatchReply(delivery, { body: reply.replyText }, session, replyConfig);
+              await postDispatchReply(delivery, { body: reply.replyText }, session);
               await taken();
             } catch (error) {
               await refuse(delivery, messageFor(error));
@@ -2011,9 +2035,14 @@ export default function envoyExtension(pi: PiApi): void {
         // addressed session's own Dispatch bearer, each picture once in this session. They count
         // as shown only once the host took the send: one that throws releases the claim, and the
         // delivery Dispatch retries must carry them again. `session` names the accept, the reads
-        // and the replies; what to name is read from the set of the session live once the accept
-        // answers, which a switch during it changes, and what was shown joins the set of the
-        // session live once the pictures load, which the send goes into.
+        // and the replies. The set below is read live, after the accept, so a `/new` or a
+        // `/resume` inside the accept has this text built against the set of the conversation
+        // the host moved to: a picture that conversation was shown is left out of it, and one it
+        // was not is carried again. Nothing is marked from it - each branch below marks the set
+        // it reads for itself, past its own check that the addressed session is still the open
+        // one, and a card for a session that is not is shown to nobody. That check compares
+        // session ids, as the branches that send a person's turn do, so a host that left this
+        // session and came back to it inside the accept reads here as one that never left.
         const shown = shownPictures(sessionID);
         if (accepted === undefined) {
           const card = await withDeliveredPictures(
@@ -2023,15 +2052,24 @@ export default function envoyExtension(pi: PiApi): void {
             true,
             shown
           );
-          // Settled once the host writes the card, or at once when nothing waits on that. How
-          // the card goes, and why, is the wake's (`handCard`, `../src/card-wake`).
-          unwritten.sendCard(
-            card.content,
-            rendered.delivery?.mode === "aside" ? "aside" : "card",
-            identity,
-            claim
-          );
-          markPicturesShown(shownPictures(sessionID), card.shown);
+          // The accept, the picture load, or both, ran across a `/new` or a `/resume`: this card
+          // is the addressed session's, and that session is open nowhere here now. A frame that
+          // is no Dispatch delivery names no session to hold it to: which of them arrive while
+          // the host has moved and no event has said where is the subject's own lineage to
+          // decide (`topicAddress`), exactly as before the accept.
+          if (rendered.delivery !== undefined && !addressedSessionOpen()) {
+            cardNotShown();
+          } else {
+            // Settled once the host writes the card, or at once when nothing waits on that. How
+            // the card goes, and why, is the wake's (`handCard`, `../src/card-wake`).
+            unwritten.sendCard(
+              card.content,
+              rendered.delivery?.mode === "aside" ? "aside" : "card",
+              identity,
+              claim
+            );
+            markPicturesShown(shownPictures(sessionID), card.shown);
+          }
         } else {
           const { turn } = accepted;
           // Sent exactly as Enter, or an aside, at the terminal sends it, the person's pictures
@@ -2043,76 +2081,69 @@ export default function envoyExtension(pi: PiApi): void {
             false,
             shown
           );
-          // The person's answer when the session their message was accepted for stopped being
-          // the one open here while the accept ran or the pictures loaded. The host is handed
-          // nothing: the line would run as the conversation it moved to, and that
-          // conversation's answer would be posted under the name of the session the person
-          // wrote to. The accept spent the attempt, so this settles rather than releases -
-          // Dispatch holds the message delivered and refuses a re-send of it - and the reply
-          // is what tells the person their message is still theirs to send again.
-          const answerNotSent = (): void => {
+          // The person's answer, and the end of their attempt with it. The accept spent the
+          // attempt, so each answer below settles rather than releases - Dispatch holds the
+          // message delivered and refuses a re-send of it - and the reply is what tells the
+          // person what became of their line.
+          const answerAndSettle = (body: string): void => {
             offWorker(async () => {
-              await postDispatchReply(
-                accepted.delivery,
-                { body: MOVED_SESSION_REFUSAL },
-                session,
-                replyConfig
-              );
+              await postDispatchReply(accepted.delivery, { body }, session);
               await taken();
             });
           };
           const sendUserInput = pi.sendUserInput;
-          if (sendUserInput === undefined) {
-            const refusal = typedInputReply(turn.body, { hostVersion: VERSION });
-            if (refusal !== undefined) {
-              // A host that cannot run typed input would hand the command to the model as words.
-              offWorker(async () => {
-                await postDispatchReply(accepted.delivery, { body: refusal }, session, replyConfig);
-                await taken();
-              });
-            } else if (!addressedSessionOpen()) {
-              answerNotSent();
-            } else {
-              // Noted right before the send, after the pictures load: a run that ends while they
-              // load clears every text note (endInjectedUserTurns), and this turn must still be found.
-              const injectionSessionID = sessionID;
-              noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
-              notedSessionIDs.add(injectionSessionID);
-              pi.sendUserMessage(
-                delivery.content,
-                turn.mode === "aside" ? { deliverAs: "aside" } : undefined
-              );
-              markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
-              // Done once the host writes the user message its text is found as, or at the
-              // run's end, which stops that search (`endInjectedUserTurns`).
-              unwritten.awaitTurn(turn.messageId, {
-                sessionID: injectionSessionID,
-                identity,
-                claim,
-                via: "text",
-              });
-            }
+          // Why this host sends nothing, on a host that cannot run typed input: a command it
+          // was handed would reach the model as words, so the person is answered that nothing
+          // was sent. Plain text there has no refusal and goes to the model as before.
+          const refusal =
+            sendUserInput === undefined
+              ? typedInputReply(turn.body, { hostVersion: VERSION })
+              : undefined;
+          // A `!command` is the session's own to run: nothing is written for it and the host
+          // never sees it, which is why it is read here rather than inside the send, where the
+          // wait for the host's own message of this turn is armed. A host without typed input
+          // runs none, and its lines reach the model as they always did.
+          const command = sendUserInput === undefined ? undefined : shellCommandFrom(turn.body);
+          if (refusal !== undefined) {
+            answerAndSettle(refusal);
+          } else if (command !== undefined) {
+            runShellCommandTurn(accepted.delivery, session, turn, command, taken);
+          } else if (!addressedSessionOpen()) {
+            // The session this message was accepted for stopped being the one open here while
+            // the accept ran or the pictures loaded. The host is handed nothing: the line would
+            // run as the conversation it moved to, and that conversation's answer would be
+            // posted under the name of the session the person wrote to. The reply is what tells
+            // the person their message is still theirs to send again.
+            answerAndSettle(MOVED_SESSION_REFUSAL);
+          } else if (sendUserInput === undefined) {
+            // Noted right before the send, after the pictures load: a run that ends while they
+            // load clears every text note (endInjectedUserTurns), and this turn must still be found.
+            const injectionSessionID = sessionID;
+            noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
+            notedSessionIDs.add(injectionSessionID);
+            pi.sendUserMessage(
+              delivery.content,
+              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
+            );
+            markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
+            // Done once the host writes the user message its text is found as, or at the run's
+            // end, which stops that search (`endInjectedUserTurns`).
+            unwritten.awaitTurn(turn.messageId, {
+              sessionID: injectionSessionID,
+              identity,
+              claim,
+              via: "text",
+            });
           } else {
-            // The wait for the host's own message of this turn is armed only for a line the host
-            // is handed: a `!command` is the session's to run, nothing is written for it, and the
-            // host never sees it, which is why the branch is here rather than inside the send.
-            const command = shellCommandFrom(turn.body);
-            if (command !== undefined) {
-              runShellCommandTurn(accepted.delivery, session, turn, command, taken);
-            } else if (!addressedSessionOpen()) {
-              answerNotSent();
-            } else {
-              unwritten.awaitTurn(turn.messageId, { sessionID, identity, claim, via: "typed" });
-              runTypedInput(
-                sendUserInput,
-                accepted.delivery,
-                session,
-                turn,
-                delivery.content,
-                delivery.shown,
-                replyConfig
-              );
-            }
+            unwritten.awaitTurn(turn.messageId, { sessionID, identity, claim, via: "typed" });
+            runTypedInput(
+              sendUserInput,
+              accepted.delivery,
+              session,
+              turn,
+              delivery.content,
+              delivery.shown
+            );
           }
         }
       }
@@ -2122,10 +2153,13 @@ export default function envoyExtension(pi: PiApi): void {
       console.warn(`[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, error);
       // A frame no sweep will show again (a role forward, already acknowledged; one on a
       // subscription the replay does not read: refused, not started, or the listener's replay
-      // failing) gets its notice at once. The stream's copy of any other waits for a sweep. A
-      // relay frame's failure is the relay's to count: it comes again, or gets its notice.
+      // failing) gets its notice at once, in the session the frame was addressed to and nowhere
+      // else: a frame that failed because the host moved on names a session that is closed here
+      // now, and the conversation it moved to is told nothing. The stream's copy of any other
+      // waits for a sweep. A relay frame's failure is the relay's to count: it comes again, or
+      // gets its notice.
       if (relayed === undefined && envelope !== undefined) {
-        void replay?.liveFailed(topic, envelope, error, receivedAt);
+        void replay?.liveFailed(session, topic, envelope, error, receivedAt);
       }
       throw error;
     }
@@ -2475,15 +2509,20 @@ export default function envoyExtension(pi: PiApi): void {
   // only when it was stored after the session started following that topic
   // (`closeReplayedRemoval`). The card is `queued` until the host writes it (`showReplayCard`).
   const showReplayed = async (frame: ReplayFrame): Promise<ReplayDeliveryOutcome> => {
-    const rendered = renderInbound(frame.data, sessionID, frame.subject);
+    // The session this frame is replayed for, read before anything awaits: the engine sweeps for
+    // one session and hands each stored frame to it, so the card, the removal it may close and
+    // the subject it is read as are all that session's. Reading it again below would let a
+    // `/new` or a `/resume` landing in the close hand this session's frame to the next one.
+    const addressed = sessionID;
+    const rendered = renderInbound(frame.data, addressed, frame.subject);
     if (replay !== undefined) {
       await closeReplayedRemoval(frame, {
-        sessionID,
+        sessionID: addressed,
         engine: replay,
         close: closeIntentionally,
         unregister: async (topics) => {
           await active?.client
-            .unsubscribe({ sessionID, topics })
+            .unsubscribe({ sessionID: addressed, topics })
             .catch((error: unknown) =>
               logger.warn(
                 "envoy: a replayed subscription removal was not taken out of the registry",
@@ -2493,6 +2532,21 @@ export default function envoyExtension(pi: PiApi): void {
         },
         followedChanged: replayFollowedChanged,
       });
+    }
+    // The close above is the one window here, and both cards below go to whatever session the
+    // host has open now (`handCard`): a `/new` or a `/resume` inside it would card the
+    // conversation the host moved to with a frame stored for the one it left. Nothing is handed
+    // and nothing is recorded. `failed` is the only answer for a frame nobody was shown, and it
+    // counts as no failure here: the engine reads the move for itself after every delivery and
+    // answers its sweep `stopped`, so the frame keeps its place in the stream and the addressed
+    // session's own next sweep shows it there, as a card.
+    if (!sessionOpen(addressed)) {
+      logger.warn("envoy: a replayed card was not shown here; the session it names is closed", {
+        addressed,
+        eventID: rendered.envelope?.event_id,
+        open: sessionID,
+      });
+      return "failed";
     }
     if (replaySuppressed(rendered)) return "suppressed";
     if (rendered.envelope !== undefined) noteInbox(rendered.envelope);

@@ -204,6 +204,8 @@ Accepting it there would spend that person's attempt for the conversation the ho
 After the accept the attempt is spent, so the person is answered instead, in the words the `!` path uses for the same move.
 A typed Send is answered that the message was not sent, since this session is no longer the one open here, and the host is handed nothing.
 A BTW is refused with that sentence before its side turn, which would otherwise be the conversation the host moved to answering a question nobody asked it.
+A card is held to that session too: a delivery whose accept Dispatch refused, one naming an attempt this session delivered, and a late BTW are each shown to nobody, and the claim goes back as it does before the accept.
+Nothing of such a card counts as shown, so the copy that reaches the addressed session carries its pictures.
 
 On a host with `pi.sendUserInput` (our Oh My Pi fork, can1357/oh-my-pi#14323) the body runs as if
 typed at the session's terminal (`runTypedInput`), with the Dispatch message id as the host's `tag`
@@ -660,6 +662,11 @@ that topic (the cursor's `since`), and takes it out of the listener's registry a
 `envoy_unsubscribe` does (`client.unsubscribe`), both by the engine's shared rule
 (`closeReplayedRemoval`): a resumed session registered the topic again before the sweep, and the
 registry, which only ever adds a registered topic, would have the next restart follow it again.
+Every replayed card is held to the session the sweep reads for, which `showReplayed` takes before
+anything awaits: the removal's close is the one window a `/new` or a `/resume` lands in, and a
+card handed after one would go to the conversation the host moved to. Nothing is handed and
+nothing is recorded then; the frame keeps its place in the stream, and the sweep after the host is
+back on the session it names shows it there.
 
 Two transcript entries hold it, written with `pi.appendEntry` and rebuilt by
 `restoreLocalSessionState` from every entry of the session file (`replaySnapshot`):
@@ -691,7 +698,10 @@ show gets the notice at once: a role forward after its receipt, or a frame on a 
 replay does not read (a team topic, a subject refused or without a cursor yet, or while the
 listener's replay is failing), or one the plugin received before its subject's cursor started (a
 new follow, a new session, a reset after a stream recreation), since that cursor starts at the
-stream's end, which can be past a frame the live path still held. A frame is stamped when its
+stream's end, which can be past a frame the live path still held. The notice names the session
+the frame was addressed to (`liveFailed` takes it), so a frame that failed because the host moved
+on is told to nobody: the conversation it moved to is shown no notice of a message nobody sent
+it, and records none. A frame is stamped when its
 subscription yielded it (`readArrivals`, which reads each subscription as its messages arrive),
 not when the frames queued before it finished delivering. One card that starts no turn
 (`routeReplayNotice` sends this kind to a card, through `UnwrittenFrames.sendNotice`) says that

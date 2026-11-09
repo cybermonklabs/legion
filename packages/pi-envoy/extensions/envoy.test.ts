@@ -679,7 +679,14 @@ function forwardedRoleEnvelope(role: string, summary: string, label: string) {
   });
 }
 
-function targetedDispatchEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: string): string {
+/** A Dispatch delivery frame addressed to ses_delivery, on issue CORE-1. `bodyTruncated` says
+ *  the event carries the body's first part alone, so the session reads the message whole before
+ *  it renders it (`wholeCarriedBody`). */
+function targetedDispatchEnvelope(
+  mode: "aside" | "btw" | "steer",
+  dedupeKey: string,
+  frame: { readonly bodyTruncated?: boolean } = {}
+): string {
   return JSON.stringify({
     dedupe_key: dedupeKey,
     event_id: `dispatch-${dedupeKey}`,
@@ -691,6 +698,7 @@ function targetedDispatchEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: st
         payload: {
           author: { id: "alice", kind: "user" },
           body: `Delivery ${mode} ${dedupeKey}`,
+          ...(frame.bodyTruncated === true ? { body_truncated: true } : {}),
           created_at: "2026-09-12T00:00:00Z",
           deliveries: [],
           id: "11111111-1111-4111-8111-111111111111",
@@ -710,7 +718,14 @@ function targetedDispatchEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: st
   });
 }
 
-function targetedCommentEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: string): string {
+/** A Dispatch comment delivery frame addressed to ses_delivery, on issue CORE-1.
+ *  `bodyTruncated` says the event carries the body's first part alone, so the session reads the
+ *  comment whole before it renders it (`wholeCarriedBody`). */
+function targetedCommentEnvelope(
+  mode: "aside" | "btw" | "steer",
+  dedupeKey: string,
+  frame: { readonly bodyTruncated?: boolean } = {}
+): string {
   return JSON.stringify({
     dedupe_key: dedupeKey,
     event_id: `dispatch-${dedupeKey}`,
@@ -725,6 +740,7 @@ function targetedCommentEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: str
           artifact_slug: "spec",
           author: { id: "alice", kind: "user" },
           body: `Comment ${dedupeKey}`,
+          ...(frame.bodyTruncated === true ? { body_truncated: true } : {}),
           created_at: "2026-09-12T00:00:00Z",
           deliveries: [],
           mentions: [],
@@ -931,7 +947,7 @@ async function bootDirectSession(
      *  `/tmp/envoy-omp-test`, which is no real directory, by default. */
     readonly cwd?: string;
     /** The host's `ctx.runEphemeralTurn`, which answers a BTW; a context without it refuses one. */
-    readonly sideTurn?: (prompt: string) => string;
+    readonly sideTurn?: (prompt: string) => string | Promise<string>;
     /** What this session's Dispatch is written with: a token written for every session by
      *  default, and the secrets broker where the row says so, which the row then stands in
      *  (`AGENT_SECRETS_URL`) and which trades one token per session. No token is written there:
@@ -1056,7 +1072,7 @@ async function bootDirectSession(
     ...(options.cwd !== undefined && { cwd: options.cwd }),
     ...(options.sideTurn !== undefined && {
       runEphemeralTurn: async ({ promptText }: { readonly promptText: string }) => ({
-        replyText: options.sideTurn?.(promptText) ?? "",
+        replyText: (await options.sideTurn?.(promptText)) ?? "",
       }),
     }),
     sessionManager: {
@@ -1093,6 +1109,80 @@ async function bootDirectSession(
     replied,
     replies,
     sends,
+  };
+}
+
+/**
+ * A stub secrets broker, for a row that reads which session a Dispatch request was signed as.
+ *
+ * Where no bearer is written, a session's Dispatch credential is this machine's own identity
+ * traded at the secrets broker (`AGENT_SECRETS_URL`, stood in as
+ * `packages/envoy-client/src/__tests__/broker-credential.test.ts` stands one in), and a trade
+ * writes under one session: the broker records the minted token against it and Dispatch reads it
+ * back there. That trade is the one place a session name reaches the wire, so this broker mints
+ * `token-for-<session>` and every Dispatch request of the row says which session resolved it. The
+ * listener keeps a written token (ENVOY_TOKEN), so every trade here is Dispatch's own.
+ *
+ * `trade` answers the broker's token endpoint, which a row hands the boot as its `dispatch`;
+ * `watch` records what each Dispatch request presented, from the call on, so a row calls it once
+ * the boot has installed its own fetch; `stop` puts the environment back and drops the tokens
+ * this process traded, which are held under their session for the life of the process.
+ */
+function stubBroker(label: string) {
+  const secrets = mkdtempSync(join(tmpdir(), `envoy-${label}-broker-`));
+  // A pod's projected service-account token, which is the identity this machine trades.
+  const identityFile = join(secrets, "projected-token");
+  writeFileSync(identityFile, "projected.service.account.token\n");
+  /** The session each trade the stub broker was asked wrote its token under. */
+  const traded: string[] = [];
+  /** The credential each Dispatch request presented, by the route it was made to. */
+  const presented: { readonly authorization: string | null; readonly path: string }[] = [];
+  const restore = captureEnvironment([
+    "AGENT_SECRETS_URL",
+    "AGENT_SECRETS_MACHINE_IDENTITY",
+    "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+    "DISPATCH_TOKEN",
+    "ENVOY_TOKEN",
+  ]);
+  process.env.AGENT_SECRETS_URL = "http://broker.test";
+  process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+  process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = identityFile;
+  process.env.ENVOY_TOKEN = "listener-token";
+  return {
+    presented,
+    traded,
+    trade: async (url: URL, init?: RequestInit): Promise<Response | undefined> => {
+      if (url.origin !== "http://broker.test") return undefined;
+      // The trade's form names the session its token is written under, and the token this one
+      // mints names it back.
+      const session =
+        new URLSearchParams(await new Response(init?.body ?? null).text()).get("session") ?? "";
+      traded.push(session);
+      return Response.json({
+        access_token: `token-for-${session}`,
+        expires_in: 600,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+      });
+    },
+    watch: () => {
+      const answered = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(input.toString());
+        if (url.host === "dispatch.test") {
+          presented.push({
+            authorization: new Headers(init?.headers).get("Authorization"),
+            path: url.pathname,
+          });
+        }
+        return await answered(input, init);
+      };
+    },
+    stop: () => {
+      restore();
+      forgetBrokerClients();
+      rmSync(secrets, { force: true, recursive: true });
+    },
   };
 }
 
@@ -13533,41 +13623,56 @@ console.log(JSON.stringify(args));
       // session's and that session is open nowhere, so nothing runs: the person is told, and
       // the conversation the host moved to is handed nothing.
       test("refuses the command when the host moved on before the command was asked", async () => {
-        let live = "ses_delivery";
-        const { agent, fixture, replied, replies, sends } = await bootShellSession(
-          "shell-command-host-moved-first",
-          {
-            accept: () => {
-              // The host leaves while Dispatch answers the accept, with no event for the move,
-              // so the plugin's own `sessionID` still reads ses_delivery while the host's live
-              // id does not.
-              live = "ses_after_shell";
-              return { accepted: true, body: "!printf hi" };
-            },
-            hostSessionID: () => live,
-          }
-        );
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-host-moved-first"));
-        await replied(1);
-
-        expect(replies[0]?.body).toMatchObject({
-          body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
+        const warnings: string[] = [];
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
         });
-        // No command ran, so no report reached any of the three surfaces.
-        expect(streamFrames()).toEqual([]);
-        expect(sends).toEqual([]);
-        // The conversation the host moved to reads nothing of a command it was never asked for.
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-        expect(
-          natsState.published.filter(
-            (published) => published.subject === "agentstream.ses_after_shell.frames"
-          )
-        ).toEqual([]);
+        let live = "ses_delivery";
+        try {
+          const { agent, fixture, replied, replies, sends } = await bootShellSession(
+            "shell-command-host-moved-first",
+            {
+              accept: () => {
+                // The host leaves while Dispatch answers the accept, with no event for the move,
+                // so the plugin's own `sessionID` still reads ses_delivery while the host's live
+                // id does not.
+                live = "ses_after_shell";
+                return { accepted: true, body: "!printf hi" };
+              },
+              hostSessionID: () => live,
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-host-moved-first"));
+          await replied(1);
+
+          expect(replies[0]?.body).toMatchObject({
+            body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
+          });
+          // No command ran, so no report reached any of the three surfaces.
+          expect(streamFrames()).toEqual([]);
+          expect(sends).toEqual([]);
+          // The conversation the host moved to reads nothing of a command it was never asked for.
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+          expect(
+            natsState.published.filter(
+              (published) => published.subject === "agentstream.ses_after_shell.frames"
+            )
+          ).toEqual([]);
+          // The reply is signed as the session the person wrote to, which is closed here. Every
+          // reply says so, a `!` answer included: the broker may refuse a token for a session
+          // this machine no longer runs, and that refusal would otherwise read as a plain reply
+          // failure (`postDispatchReply`).
+          expect(warnings).toContain(
+            "envoy: a reply is signed as the session its message named, which is closed"
+          );
+        } finally {
+          stopSink();
+        }
       }, 20_000);
 
       // The same move, made inside the Dispatch accept the delivery awaits: a `/new` whose
@@ -14375,6 +14480,143 @@ console.log(JSON.stringify(args));
         }
       });
 
+      // The same window on the three deliveries that are never a person's own turn: an issue
+      // message, a comment mention, and one recipient's copy of a broadcast. Dispatch is never
+      // asked to accept one of these (`isUserTurnCandidate`), so each arrives as a card, and
+      // `sendCard` would hand that card to the conversation the host moved to under the name of
+      // the session the frame names. The branch before the accept takes each back whole: the
+      // claim goes back, nothing of the frame is read for it, and the card reaches the session
+      // the frame names once that session is open again.
+      //
+      // Each body embeds a picture, which is the work this branch does not do: a card nobody is
+      // shown costs no read of the person's picture. The one Dispatch route each row touches
+      // before the move is the read of the body whole, which is the window the move lands in.
+      for (const carded of [
+        {
+          envelope: (key: string) =>
+            targetedDispatchEnvelope("steer", key, { bodyTruncated: true }),
+          key: "carded-issue-message-left-before-accept",
+          name: "an issue message",
+          read: "/api/v1/issues/CORE-1/messages/11111111-1111-4111-8111-111111111111",
+          whole: (body: string) =>
+            response({
+              message: { body, id: "11111111-1111-4111-8111-111111111111" },
+              replies: [],
+            }),
+        },
+        {
+          envelope: (key: string) => targetedCommentEnvelope("steer", key, { bodyTruncated: true }),
+          key: "carded-comment-left-before-accept",
+          name: "a comment mention",
+          read: "/api/v1/comments/22222222-2222-4222-8222-222222222222",
+          whole: (body: string) =>
+            response({
+              comment: { body, id: "22222222-2222-4222-8222-222222222222" },
+              replies: [],
+            }),
+        },
+        {
+          // A broadcast is one message per recipient session: Dispatch writes a row for each,
+          // whose `target` names that recipient, and the copies share a `broadcast_id` column
+          // alone (`packages/envoy/internal/dispatch/api/broadcasts.go`). Each copy reaches the
+          // plugin as its own frame carrying its own claim, the broadcast id read off it as one
+          // more field of the delivery (`renderInbound`, in
+          // `packages/envoy-client/src/delivery.ts`). So the claim that goes back here returns
+          // this one recipient's copy, and no other recipient of the broadcast is touched.
+          envelope: (key: string) =>
+            directDispatchEnvelope("steer", key, {
+              bodyTruncated: true,
+              broadcastID: "66666666-6666-4666-8666-666666666666",
+            }),
+          key: "carded-broadcast-left-before-accept",
+          name: "a broadcast copy",
+          read: `/api/v1/messages/${DIRECT_MESSAGE_ID}`,
+          whole: (body: string) =>
+            response({ message: { body, id: DIRECT_MESSAGE_ID }, replies: [] }),
+        },
+      ]) {
+        test(`takes nothing for ${carded.name} whose session the host left before the accept, and shows it once that session is open`, async () => {
+          const address = `dispatch://LEGION-1/artifact/${carded.key}@v1`;
+          const body = `Look:\n\n![shot.png](${address})`;
+          /** Every Dispatch route this delivery was read on, in the order it read them. */
+          const reads: string[] = [];
+          const warnings: string[] = [];
+          const stopSink = logger.registerLogSink((entry) => {
+            if (entry.level === "warn") warnings.push(entry.message);
+          });
+          const move: { fire?: () => Promise<void> } = {};
+          let moved = false;
+          try {
+            const { accepts, agent, context, fixture, replies, sends } = await bootDirectSession(
+              carded.key,
+              {
+                dispatch: async (url) => {
+                  if (!url.pathname.startsWith("/api/v1/")) return undefined;
+                  reads.push(url.pathname);
+                  if (url.pathname !== carded.read) return undefined;
+                  if (!moved) {
+                    moved = true;
+                    await move.fire?.();
+                  }
+                  return carded.whole(body);
+                },
+              }
+            );
+            move.fire = () => moveHost(fixture, "ses_after_carded");
+            /** The cards of the person's own text, which the switch's own notices are not. */
+            const carding = () => sends.filter((send) => String(send.content).includes(address));
+            const frame = carded.envelope(carded.key);
+
+            agent.push(frame);
+            await until(
+              () =>
+                carding().length > 0 ||
+                warnings.some((warning) => warning.includes("the session it names is closed")),
+              "the delivery to be carded or reported as not taken"
+            );
+
+            expect(moved).toBe(true);
+            // Nothing was carded in the conversation the host moved to, and no picture of the
+            // frame counts as shown there. The read of the body whole is the whole of what the
+            // frame cost: the person's picture was never read, which is the work the check
+            // after the accept does before it releases the very same claim.
+            expect(carding()).toEqual([]);
+            expect(reads).toEqual([carded.read]);
+            expect(shownPictures("ses_after_carded").size).toBe(0);
+            // Nothing was accepted and nothing was posted: Dispatch still holds the attempt.
+            expect(accepts).toEqual([]);
+            expect(replies).toEqual([]);
+            // And the branch before the accept is the one that answered for it, which is what
+            // its own line says here.
+            expect(warnings).toContain(
+              "envoy: a delivery was not taken here; the session it names is closed"
+            );
+            expect(warnings).not.toContain(
+              "envoy: a card was not shown here; the session it names is closed"
+            );
+
+            // The claim went back, so the copy the listener sends again is shown to the session
+            // the frame names: a claim still held would have dropped that copy as a repeat of a
+            // frame this session was shown.
+            await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
+            await until(
+              () => natsState.controls.get("notifications.agent.ses_delivery") !== agent,
+              "the resumed session's agent subject to be subscribed again"
+            );
+            natsState.controls.get("notifications.agent.ses_delivery")?.push(frame);
+            await until(
+              () => carding().length === 1,
+              "the card to reach the session the frame names"
+            );
+
+            expect(accepts).toEqual([]);
+            expect(replies).toEqual([]);
+          } finally {
+            stopSink();
+          }
+        });
+      }
+
       // Between the accept and the send: the accept itself. The attempt is spent by the time
       // Dispatch answers it, so this one is no release - a re-send of a taken message is
       // refused - and the person is answered instead. The host is handed nothing: the line
@@ -14402,6 +14644,129 @@ console.log(JSON.stringify(args));
         expect(sends.filter((send) => String(send.content).includes(DIRECT_MESSAGE_BODY))).toEqual(
           []
         );
+      });
+
+      // The same window as the row above, read on the credential rather than on the actor: that
+      // one holds the session the refusal names, this one the session it is signed as. The
+      // broker mints one token per session and records which session each trade named
+      // (`stubBroker`), so both halves of this delivery say which session resolved them: the
+      // accept, made before the move, and the refusal, posted after it. A configuration
+      // resolved for the session open when the reply goes out (`currentSessionID`) would sign
+      // the person's answer `token-for-ses_after_send` and trade under a conversation they
+      // never wrote to.
+      test("signs a typed Send's refusal as the addressed session when the host left inside the accept", async () => {
+        const broker = stubBroker("typed-send-refusal");
+        const warnings: string[] = [];
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
+        });
+        const move: { fire?: () => Promise<void> } = {};
+        try {
+          const { accepts, agent, fixture, replied, replies } = await bootDirectSession(
+            "typed-send-left-in-accept-broker",
+            {
+              accept: async () => {
+                await move.fire?.();
+                return { accepted: true };
+              },
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+              sendUserInput: async () => ({ handled: "terminal-only" }),
+            }
+          );
+          move.fire = () => moveHost(fixture, "ses_after_send");
+          broker.watch();
+
+          agent.push(directDispatchEnvelope("steer", "typed-send-left-in-accept-broker"));
+          await replied(1);
+
+          // The move landed before the reply went out, so the window this row is about is the
+          // one it landed in, and the person's own message is answered as the session they
+          // wrote to.
+          expect(warnings).toContain(
+            "envoy: a reply is signed as the session its message named, which is closed"
+          );
+          expect(replies).toEqual([
+            { body: { actor, attempt: 1, body: notSent }, path: replyPath },
+          ]);
+          // And signed as that session: the accept and the refusal both presented the token the
+          // broker minted for ses_delivery, and the broker was asked for no other session.
+          expect(accepts.map((accept) => accept.authorization)).toEqual([
+            "DPoP token-for-ses_delivery",
+          ]);
+          expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
+            { authorization: "DPoP token-for-ses_delivery", path: replyPath },
+          ]);
+          // Two trades, both under the session the person wrote to: the accept's, and the
+          // refusal's own, since leaving a session drops the key pair and token this process
+          // held for it (`forgetBrokerSession`) and a reply signed as it trades afresh.
+          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+        } finally {
+          stopSink();
+          broker.stop();
+        }
+      });
+
+      // The same window on the card branch: the accept moves the host and Dispatch then refuses
+      // it, so the delivery is a card and `sendCard` would hand it to the conversation the host
+      // moved to. Nothing is handed there and nothing counts as shown there: the claim goes
+      // back, and the card reaches the session the person wrote to once that session is open
+      // again. The attempt was spent above, so what comes back is the card it already was.
+      test("shows no card for a delivery whose session the host left inside the accept, and shows it once that session is open", async () => {
+        const warnings: string[] = [];
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
+        });
+        const move: { fire?: () => Promise<void> } = {};
+        try {
+          const { accepts, agent, context, fixture, replies, sends } = await bootDirectSession(
+            "card-left-in-accept",
+            {
+              accept: async () => {
+                await move.fire?.();
+                return { code: "ACCEPT_FAILED", status: 409 };
+              },
+            }
+          );
+          move.fire = () => moveHost(fixture, "ses_after_card");
+          /** The card of the person's message, which the switch's own notice is not. */
+          const carded = () =>
+            sends.filter((send) => String(send.content).includes(DIRECT_MESSAGE_BODY));
+          const frame = directDispatchEnvelope("steer", "card-left-in-accept");
+
+          agent.push(frame);
+          await until(
+            () =>
+              carded().length > 0 ||
+              warnings.some((warning) => warning.includes("a card was not shown here")),
+            "the card to be shown or reported as not shown"
+          );
+
+          expect(accepts).toHaveLength(1);
+          expect(replies).toEqual([]);
+          expect(carded()).toEqual([]);
+          expect(shownPictures("ses_after_card").size).toBe(0);
+
+          // The session the message names is open again, and the copy the listener sends again
+          // is shown there: a claim still held would have dropped it as a repeat of a frame
+          // this session was shown.
+          await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
+          await until(
+            () => natsState.controls.get("notifications.agent.ses_delivery") !== agent,
+            "the resumed session's agent subject to be subscribed again"
+          );
+          natsState.controls.get("notifications.agent.ses_delivery")?.push(frame);
+          await until(
+            () => carded().length === 1,
+            "the card to reach the session the person wrote to"
+          );
+
+          // Dispatch recorded the attempt above, so the copy is a card and asks for no second
+          // accept.
+          expect(accepts).toHaveLength(1);
+        } finally {
+          stopSink();
+        }
       });
 
       // Before the side turn: the read of the body whole again, which a BTW does before it asks
@@ -14456,6 +14821,61 @@ console.log(JSON.stringify(args));
         expect(moved).toBe(true);
         expect(replies).toEqual([{ body: { actor, attempt: 1, error: notSent }, path: replyPath }]);
         expect(prompts).toEqual([]);
+      });
+
+      // The window after that check: the side turn itself. The model answers for the session
+      // the person asked, and the host leaves while it answers. The answer is posted on that
+      // person's message, as the session they asked and under that session's own Dispatch:
+      // a configuration resolved for the session open when the reply goes out
+      // (`currentSessionID`) would sign one person's answer `token-for-ses_after_btw_answer`,
+      // the credential of a conversation that was never asked the question.
+      test("signs a BTW's answer as the session it was asked of when the host left inside the side turn", async () => {
+        const broker = stubBroker("btw-answer");
+        const warnings: string[] = [];
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
+        });
+        const move: { fire?: () => Promise<void> } = {};
+        let moved = false;
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession(
+            "btw-left-inside-side-turn-broker",
+            {
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+              sideTurn: async () => {
+                // The host leaves while the model answers: from here the session the BTW was
+                // asked of is open nowhere, and the answer still belongs to it.
+                await move.fire?.();
+                moved = true;
+                return "This session's answer.";
+              },
+            }
+          );
+          move.fire = () => moveHost(fixture, "ses_after_btw_answer");
+          broker.watch();
+
+          agent.push(directDispatchEnvelope("btw", "btw-left-inside-side-turn-broker"));
+          await replied(1);
+
+          // The move was made inside the side turn, so the reply went out after it.
+          expect(moved).toBe(true);
+          expect(warnings).toContain(
+            "envoy: a reply is signed as the session its message named, which is closed"
+          );
+          expect(replies).toEqual([
+            { body: { actor, attempt: 1, body: "This session's answer." }, path: replyPath },
+          ]);
+          // And signed as the session the question was asked of: the broker minted that
+          // session's token for this reply and was asked for no other session.
+          expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
+            { authorization: "DPoP token-for-ses_delivery", path: replyPath },
+          ]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          stopSink();
+          broker.stop();
+        }
       });
     });
 
@@ -15247,77 +15667,101 @@ console.log(JSON.stringify(args));
       });
     }
 
-    // A card goes into whichever session is live once the accept answers, so its pictures count
-    // as shown there; the id the session left was forgotten at the switch and stays forgotten.
-    test("a card refused after a switch during the accept counts its picture shown in the session it went into", async () => {
+    // A card is the addressed session's, whatever the host does while the accept runs: a switch
+    // inside it leaves the card unshown and its picture unshown with it, so the copy that
+    // reaches that session carries the picture (dispatch://INFRA-812).
+    test("shows no card refused after a switch during the accept, and leaves its picture unshown", async () => {
       const slug = "card-after-accept-switch";
       const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
       const body = `Look:\n\n![shot.png](${address})`;
       const answer = Promise.withResolvers<AcceptAnswer>();
       const acceptRequested = Promise.withResolvers<void>();
-      const { agent, delivered, fixture } = await bootDirectSession(slug, {
-        accept: () => {
-          acceptRequested.resolve();
-          return answer.promise;
-        },
-        dispatch: pictureRoutes(slug),
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
       });
+      try {
+        const { agent, fixture } = await bootDirectSession(slug, {
+          accept: () => {
+            acceptRequested.resolve();
+            return answer.promise;
+          },
+          dispatch: pictureRoutes(slug),
+        });
 
-      agent.push(directDispatchEnvelope("steer", slug, { body }));
-      await acceptRequested.promise;
-      await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_accept"));
-      answer.resolve({ code: "UNAUTHORIZED", status: 401 });
-      // The switch's own notice is the first delivery; the card is the second.
-      await delivered(2);
+        agent.push(directDispatchEnvelope("steer", slug, { body }));
+        await acceptRequested.promise;
+        await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_accept"));
+        answer.resolve({ code: "UNAUTHORIZED", status: 401 });
+        /** The card of the person's message, which the switch's own notice is not. */
+        const carded = () =>
+          fixture.deliveries.filter((delivery) =>
+            JSON.stringify(delivery.content).includes(address)
+          );
+        await until(
+          () =>
+            carded().length > 0 ||
+            warnings.some((warning) => warning.includes("a card was not shown here")),
+          "the card to be shown or reported as not shown"
+        );
 
-      const card = fixture.deliveries.at(-1);
-      expect(card?.content).toEqual([
-        {
-          type: "text",
-          text: expect.stringContaining(`- image 1: ${address} (shot.png, image/png, 10 bytes)`),
-        },
-        image,
-      ]);
-      expect(shownPictures("ses_after_accept").has(address)).toBe(true);
-      expect(shownPictures("ses_delivery").size).toBe(0);
+        // The switch's own notice is the only delivery: nothing of the person's message reached
+        // the conversation the host moved to, and the picture is unshown in both sessions, so
+        // the copy that reaches ses_delivery carries it.
+        expect(carded()).toEqual([]);
+        expect(shownPictures("ses_after_accept").size).toBe(0);
+        expect(shownPictures("ses_delivery").size).toBe(0);
+      } finally {
+        stopSink();
+      }
     });
 
-    // The card goes into the session live once its pictures load, which a switch during the
-    // load changes again, so that session's set is the one the card's pictures join.
-    test("a card whose picture load overlaps a switch counts its picture shown in the session it went into", async () => {
+    // The picture load is the last window before the card goes out, and a switch inside it
+    // leaves the card the addressed session's too.
+    test("shows no card whose picture load overlaps a switch, and leaves its picture unshown", async () => {
       const slug = "card-load-switch";
       const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
       const body = `Look:\n\n![shot.png](${address})`;
       const picture = Promise.withResolvers<Response>();
       const requested = Promise.withResolvers<void>();
       const routes = pictureRoutes(slug);
-      const { agent, delivered, fixture } = await bootDirectSession(slug, {
-        accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
-        dispatch: ((url: URL) => {
-          if (url.pathname === `/api/v1/artifacts/${slug}-id/versions/1`) {
-            requested.resolve();
-            return picture.promise as unknown as Response;
-          }
-          return routes(url);
-        }) as (url: URL) => Response | undefined,
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
       });
+      try {
+        const { agent, fixture } = await bootDirectSession(slug, {
+          accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
+          dispatch: ((url: URL) => {
+            if (url.pathname === `/api/v1/artifacts/${slug}-id/versions/1`) {
+              requested.resolve();
+              return picture.promise as unknown as Response;
+            }
+            return routes(url);
+          }) as (url: URL) => Response | undefined,
+        });
 
-      agent.push(directDispatchEnvelope("steer", slug, { body }));
-      await requested.promise;
-      await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_load"));
-      picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
-      // The switch's own notice is the first delivery; the card is the second.
-      await delivered(2);
+        agent.push(directDispatchEnvelope("steer", slug, { body }));
+        await requested.promise;
+        await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_load"));
+        picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
+        const carded = () =>
+          fixture.deliveries.filter((delivery) =>
+            JSON.stringify(delivery.content).includes(address)
+          );
+        await until(
+          () =>
+            carded().length > 0 ||
+            warnings.some((warning) => warning.includes("a card was not shown here")),
+          "the card to be shown or reported as not shown"
+        );
 
-      expect(fixture.deliveries.at(-1)?.content).toEqual([
-        {
-          type: "text",
-          text: expect.stringContaining(`- image 1: ${address} (shot.png, image/png, 10 bytes)`),
-        },
-        image,
-      ]);
-      expect(shownPictures("ses_after_load").has(address)).toBe(true);
-      expect(shownPictures("ses_delivery").size).toBe(0);
+        expect(carded()).toEqual([]);
+        expect(shownPictures("ses_after_load").size).toBe(0);
+        expect(shownPictures("ses_delivery").size).toBe(0);
+      } finally {
+        stopSink();
+      }
     });
 
     // An admission still holding its pictures belongs to a `sendUserInput` the host has not yet
@@ -19381,6 +19825,8 @@ describe("messages missed while the subscription was down", () => {
     };
     const session = {
       fixture,
+      /** The session's own context, which a `session_switch` resumes it with. */
+      context,
       notifications,
       agentSubject: `notifications.agent.${sessionID}`,
       entries: () => [...prior, ...fixture.entries, ...written],
@@ -20740,6 +21186,77 @@ describe("messages missed while the subscription was down", () => {
       expect(third.live(ISSUE_TOPIC).active()).toBe(false);
       expect([...(model.interests.get("ses_replay") ?? [])]).not.toContain(ISSUE_TOPIC);
     });
+
+    // The one window inside a replayed card (dispatch://INFRA-812): the close above waits on the
+    // listener's unsubscribe, and `handCard` hands a card to whatever session the host has open
+    // when it goes. A `/new` landing in that wait would card the conversation the host moved to
+    // with a frame stored for the session it left. Nothing is handed there and nothing is
+    // recorded: the stream keeps the frame, and the sweep after the host is back on the session
+    // the frame names shows it there.
+    test("shows no card for a replayed removal whose session the host left inside the unsubscribe, and shows it once that session is open", async () => {
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      const model = new StreamModel();
+      const move: { fire?: () => Promise<void> } = {};
+      let moved = false;
+      try {
+        const session = await bootReplay("replay-removal-left-in-unsubscribe", model, {
+          dispatch: async (url) => {
+            if (url.pathname !== "/v1/interests/unsubscribe" || moved) return undefined;
+            moved = true;
+            await move.fire?.();
+            return undefined;
+          },
+        });
+        // The conversation the host moves to is idle and holds no message, so a card would reach
+        // it at once: this row reads whether the card went there, not whether it waited.
+        move.fire = async () => {
+          await session.fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            {
+              ...sessionContext("ses_after_removal"),
+              hasPendingMessages: () => false,
+              isIdle: () => true,
+            }
+          );
+        };
+        /** The replayed removal's cards: its text is the sentence, which carries no event id. */
+        const cards = () =>
+          session.fixture.deliveries.filter(
+            (delivery) =>
+              delivery.customType === "envoy-message" &&
+              delivery.content.includes("Unsubscribed from")
+          );
+        await session.follow(ISSUE_TOPIC);
+        model.store(session.agentSubject, removal(14));
+        const mark = session.fixture.entries.length;
+
+        await session.reconnect();
+
+        expect(moved).toBe(true);
+        expect(cards()).toEqual([]);
+        expect(warnings).toContain(
+          "envoy: a replayed card was not shown here; the session it names is closed"
+        );
+
+        // Back on the session the frame names, its own next sweep shows it there. What this
+        // process appended while the host was on the other conversation went to that
+        // conversation's file, not this one's (`switchAwayAndBack`).
+        session.fixture.entries.splice(mark);
+        await session.fixture.handlers.get("session_switch")?.(
+          { reason: "resume" },
+          session.context
+        );
+        await settle();
+        await session.tick();
+
+        expect(cards()).toHaveLength(1);
+      } finally {
+        stopSink();
+      }
+    });
   });
 
   describe("a frame the host cannot show", () => {
@@ -21298,6 +21815,10 @@ describe("consumer delivery", () => {
       readonly entries?: readonly unknown[];
       readonly turn?: "idle" | "streaming";
       readonly runEphemeralTurn?: SessionContext["runEphemeralTurn"];
+      /** Answers a Dispatch request the fixture has no answer of its own for: the read of a
+       *  message an event carried in part (`wholeCarriedBody`). A row whose host moves inside
+       *  that read answers it from an async callback, as Dispatch's own answer takes time. */
+      readonly dispatch?: (url: URL) => Response | undefined | Promise<Response | undefined>;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -21353,6 +21874,8 @@ describe("consumer delivery", () => {
       ) {
         return response({ session_id: SESSION, machine_id: "test", dir: "/tmp", topics: [] });
       }
+      const read = await options.dispatch?.(url);
+      if (read !== undefined) return read;
       return response({});
     }) as typeof fetch;
     const events: string[] = [];
@@ -21762,6 +22285,64 @@ describe("consumer delivery", () => {
     );
     expect(sideTurns).toBe(0);
     expect(session.dispatchReplies).toHaveLength(0);
+  });
+
+  // The one window before a late BTW's card: the read of the body whole. The card is the
+  // session the frame names, and `sendCard` would hand it to the conversation the host moved to
+  // inside that read, under the name of the session the person wrote to. Nothing is handed: the
+  // claim goes back, so the frame is naked and the listener sends it again to the session it
+  // names and to no other.
+  test("shows no late BTW card when the host left inside the read of its body, and naks the frame", async () => {
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    const move: { fire?: () => Promise<void> } = {};
+    let moved = false;
+    try {
+      const session = await bootConsumer("consumer-late-btw-moved", {
+        dispatch: async (url) => {
+          if (!url.pathname.includes("/messages/")) return undefined;
+          if (!moved) {
+            moved = true;
+            await move.fire?.();
+          }
+          return response({
+            message: { body: "Can this ship?", id: "11111111-1111-4111-8111-111111111111" },
+            replies: [],
+          });
+        },
+      });
+      // The conversation the host moves to is idle and holds no message, so an inert card is
+      // handed to it at once rather than waiting for a settled moment: this row reads whether
+      // the card went there, not whether the host was ready for it.
+      move.fire = async () => {
+        await session.fixture.handlers.get("session_switch")?.(
+          { reason: "new" },
+          {
+            ...sessionContext("ses_after_btw"),
+            hasPendingMessages: () => false,
+            isIdle: () => true,
+          }
+        );
+      };
+
+      const inbox = session.relay(
+        9,
+        targetedDispatchEnvelope("btw", "late-btw-moved", { bodyTruncated: true }),
+        { delivered: 2 }
+      );
+      await until(() => session.replies(inbox).includes("nak"), "the late BTW's nak");
+
+      expect(moved).toBe(true);
+      expect(session.cards("dispatch-late-btw-moved")).toHaveLength(0);
+      expect(warnings).toContain(
+        "envoy: a card was not shown here; the session it names is closed"
+      );
+      expect(session.replies(inbox)).toEqual(["received", "nak"]);
+    } finally {
+      stopSink();
+    }
   });
 
   test("a BTW whose side turn is still running delays neither the next frame's received nor its card", async () => {

@@ -407,6 +407,13 @@ export function shellCommandReport(line: string, result: ShellCommandResult): st
   return parts.join(SHELL_COMMAND_REPORT_SEPARATOR);
 }
 
+/** Why nothing was done for a person's message: the session it named is not the one open here,
+ *  because a `/new`, a `/resume`, or a move the host made with no event for it put the host on
+ *  another conversation. Every text that stops for this ends with this sentence - the two
+ *  reports below and the delivery path's own refusal (`MOVED_SESSION_REFUSAL` in
+ *  `extensions/envoy.ts`, built from this) - so the words a person reads exist once. */
+export const MOVED_SESSION_REASON = "this session is no longer the one open here.";
+
 /** The report with one sentence more, for a command whose session is not the one open here by
  *  the time it ends: the agent of that session was handed no copy (the `sessionOpen` guard in
  *  `runShellCommandTurn`), so the person reading the reply, and the live view of the session
@@ -414,7 +421,7 @@ export function shellCommandReport(line: string, result: ShellCommandResult): st
  *  sentence goes last, so the text still opens with the person's line and the live view still
  *  reads it back (`isShellCommandReport`, `@legion/contracts`). */
 export function shellCommandWithheldReport(report: string): string {
-  return `${report}${SHELL_COMMAND_REPORT_SEPARATOR}The agent was not handed this output: this session is no longer the one open here.`;
+  return `${report}${SHELL_COMMAND_REPORT_SEPARATOR}The agent was not handed this output: ${MOVED_SESSION_REASON}`;
 }
 
 /** The report as the agent reads it in its transcript, under the line that says whose command it
@@ -450,5 +457,5 @@ export function shellCommandShutdownReport(line: string): string {
  *  conversation's directory, and the person who sent the line is answered rather than left
  *  waiting. */
 export function shellCommandMovedReport(line: string): string {
-  return shellCommandRefusal(line, "this session is no longer the one open here.");
+  return shellCommandRefusal(line, MOVED_SESSION_REASON);
 }

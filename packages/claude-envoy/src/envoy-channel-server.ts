@@ -1087,9 +1087,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // A frame no sweep will show again gets its notice at once: a role forward, already
       // acknowledged, one on a subscription the replay does not read (refused, not started, or
       // the listener's replay failing), or one received before its subject's cursor started.
-      // The stream's copy of any other waits for a sweep.
+      // The stream's copy of any other waits for a sweep. The notice is the session the frame
+      // was addressed to: this process serves the one session.
       const envelope = renderInbound(message.raw, identity.id, message.subject).envelope
-      if (envelope !== undefined) void replay.liveFailed(topic, envelope, error, receivedAt)
+      if (envelope !== undefined)
+        void replay.liveFailed(identity.id, topic, envelope, error, receivedAt)
     },
     deliver: async (message) => {
       takeRemovals(message.raw)

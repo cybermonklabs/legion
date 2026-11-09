@@ -466,11 +466,13 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       settle(entry, "nak");
       return;
     }
-    // The session gets the notice a failed live frame gets.
+    // The session gets the notice a failed live frame gets, under its own name: the relay serves
+    // one session, and a notice of its frame belongs to it wherever the host went meanwhile.
     safely("failure notice", () => {
       const { subject, data } = entry.frame;
       const { envelope } = renderInbound(data, sessionID, subject);
-      if (envelope !== undefined) void ledger.liveFailed(subject, envelope, error, now());
+      if (envelope !== undefined)
+        void ledger.liveFailed(sessionID, subject, envelope, error, now());
     });
     settle(entry, "done");
   };
