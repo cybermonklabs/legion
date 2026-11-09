@@ -192,6 +192,13 @@ type Service struct {
 	// (awarenessRelay.record). Nil outside tests; tests use it to hold that read open while the
 	// room moves on under it.
 	beforeAwarenessAnswerRecord func(room string, aw *awareness.Awareness, entries []awarenessEntry)
+	// beforeAwarenessResolve is given the batch a flush of a room has taken, before the flush
+	// reads the room for the states of the clients that batch holds no state of yet
+	// (awarenessRelay.flush, awarenessRelay.resolve). Nil outside tests; tests use it to count
+	// the batches a client's state is carried in, since each batch still carrying that client
+	// when the flush packs it offers the state to the notification size check once
+	// (awarenessRelay.awarenessNotifications).
+	beforeAwarenessResolve func(room string, batch map[uint64]awarenessEntry)
 	// beforeSettleStart runs as a settlement starts (settleRoomWithin), before it compares the
 	// room's generation under the state lock: after its timer fired, while the timer is still
 	// registered, or after settleLastPeer took the timer and counted the settlement running. Nil
