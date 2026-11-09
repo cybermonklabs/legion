@@ -2253,7 +2253,7 @@ jobs:
   #
   # WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
   # Everything a case is read on is driven here: the fault, the origin that stands in for all
-  # three sources, the corrupted payloads, and the removals each case makes before it.
+  # four sources, the corrupted payloads, and the removals each case makes before it.
   # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's second step pins,
   # restores a cached Bun into ~/.bun/bin/bun inside a step of its own, and the Actions cache it
   # restores from is on hosts this job's fault does not hold.
@@ -2306,7 +2306,7 @@ jobs:
           persist-credentials: false
 
       # The merge base, for the negative control below: a second tree of this same repository,
-      # whose four installs that control drives with nowhere left to go. The comment on those
+      # whose seven installs that control drives with nowhere left to go. The comment on those
       # steps says what keeps this checkout here.
       - name: Check out the merge base the negative control installs from
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2444,25 +2444,32 @@ jobs:
       - name: Read the fault before any install meets it
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
-      # The negative control, under the same fault: the merge base's four installs, each given a
-      # ghcr base and an npm base on a dead port, so every one of them must fail here.
+      # The negative control, under the same fault: eight installs with nowhere to go — the
+      # merge base's seven, each given a dead port where its second source would be read, a ghcr
+      # base, an npm base, a URL base or a proxy, and the docker provider plugin, which the
+      # merge base has no action for, as the head's own action with its second source on a dead
+      # port — so every one of them must fail here.
       # What it asserts is a property of this change and not a fact about history: an install
       # whose primary meets the fault and whose second source cannot be reached fails. That is
       # what makes the passes below a reading of the second source rather than of a cache, of a
       # tool the runner image already carries, or of a proxy that let the asset through.
-      # A merge base from before this change reads neither CI_TOOLS_GHCR_BASE nor
-      # CI_TOOLS_NPM_BASE, so the release asset this fault holds is its one source, and that is
-      # what fails these four on a pull request and a merge group today.
-      # A base that reads both — this tree on a workflow_dispatch, and every base once this
-      # change is on main — fails for the two dead ports instead, which leave its second source
-      # nothing to reach.
+      # The merge base's seven fail for two reasons, and which one is each install's depends on
+      # whether that install already read the helper there. Its crane, changie, jj and Bun do,
+      # so their primary meets the fault and the ghcr and npm seams send them to a dead port.
+      # Its elan, uv and Pulumi CLI read no seam at all, each being a `curl` of its own: elan's
+      # and uv's one source is the release asset this fault holds, and the CLI's is
+      # get.pulumi.com, which this fault does not hold, so that step carries a dead proxy of its
+      # own instead.
+      # Once this change is on main the base is this tree, and every one of the eight fails for
+      # the dead ports alone, which leave its second source nothing to reach.
       # A control that leaned on the merge base having one source each would expire the day this
       # change lands on main: the base would then be this tree, each primary would meet the
       # fault, each second source would reach the real ghcr — whose blobs redirect to
       # pkg-containers.githubusercontent.com, which this fault leaves alone on purpose — or the
-      # real npm, all four would succeed, and this step would fail every pull request and merge
-      # group that selects this job. On a workflow_dispatch the ref below falls through to
-      # github.sha, the head itself, so that control is wrong already.
+      # real npm, PyPI or get.pulumi.com, every one of them would succeed, and this step would
+      # fail every pull request and merge group that selects this job. On a workflow_dispatch
+      # the ref below falls through to github.sha, the head itself, so that control is wrong
+      # already.
       # A dead port rather than a manifest with its `second_source` rows deleted: a row with no
       # second source makes ci_tools__second_source refuse the empty field, so the install would
       # fail for the wrong reason — it would prove the helper rejects an empty field, not that
@@ -2472,9 +2479,10 @@ jobs:
       # The merge-base checkout stays. It is this repository's only caller of the rule
       # .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second
       # checkout of this same repository, and that check's own comment names this job for it.
-      # After this change is on main the checkout is redundant to the two variables below, which
-      # drive the control by themselves, so a later reader who deletes these four steps is
-      # deleting that caller too and should move the rule's exercise rather than lose it.
+      # After this change is on main the checkout is redundant to the dead ports below, which
+      # drive the control by themselves, so a later reader who deletes the merge base's seven
+      # steps is deleting that caller too and should move the rule's exercise rather than lose
+      # it.
       - id: base-crane
         continue-on-error: true
         uses: ./base/.github/actions/install-crane
