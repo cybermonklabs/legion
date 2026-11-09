@@ -100,14 +100,10 @@ function isListMode(argv: readonly string[]): boolean {
   return scanned.includes("--list");
 }
 
-// Whether this command line selects the `stub` project and nothing else, read from argv as the
-// list mode above is. Such a run needs no harness at all - no Go server, no Postgres, no fakes -
-// so it is exempt from the three refusals below and from the global setup, which probes every
-// lane's server. Every refusal keeps its sentence for every other run, so a person who forgets
-// the harness still gets the line that fixes it. The reading lives here rather than in
-// e2e/run.ts because a stub-only run never goes through that wrapper, and because
-// dispatch://INFRA-1410 deletes it.
-function onlyStubProject(argv: readonly string[]): boolean {
+// The projects `--project` names on this command line, in either spelling Playwright takes,
+// read from argv before a `--` separator as the list mode above is. An empty list is a run
+// that names none, which is every project of the mode.
+function projectsOnCommandLine(argv: readonly string[]): string[] {
   const separator = argv.indexOf("--");
   const scanned = separator === -1 ? argv : argv.slice(0, separator);
   const named: string[] = [];
@@ -115,7 +111,39 @@ function onlyStubProject(argv: readonly string[]): boolean {
     if (argument === "--project") named.push(scanned[index + 1] ?? "");
     else if (argument.startsWith("--project=")) named.push(argument.slice("--project=".length));
   }
+  return named;
+}
+
+// Whether this command line selects the `stub` project and nothing else. Such a run needs no
+// harness at all - no Go server, no Postgres, no fakes - so it is exempt from the three
+// refusals below and from the global setup, which probes every lane's server. Every refusal
+// keeps its sentence for every other run, so a person who forgets the harness still gets the
+// line that fixes it. The reading lives here rather than in e2e/run.ts because a stub-only run
+// never goes through that wrapper, and because dispatch://INFRA-1410 deletes it.
+function onlyStubProject(argv: readonly string[]): boolean {
+  const named = projectsOnCommandLine(argv);
   return named.length > 0 && named.every((project) => stubProjectNames.includes(project));
+}
+
+// Whether this run holds a stubbed row at all, which is what decides whether it is given the
+// static file server below. A run that names no project runs every project of its mode, the
+// stub ones among them; a run that names some holds a stubbed row only if it named one.
+//
+// It matters because Playwright starts a `webServer` for every run of a config but a listing,
+// whatever projects the run selects, and two jobs of
+// `.github/workflows/dispatch-browser.yaml` run this config with no stubbed row in sight. One
+// of them cannot start that command at all: `visual` runs Playwright inside the pinned
+// container through `e2e/visual-run.sh`, and that image carries the three browser engines and
+// node, not bun, so a server declared there kills the job before its first row with
+// `[WebServer] /bin/sh: 1: bun: not found` and `Exit code: 127`. That is the full lane, which
+// the merge queue runs, and the pull-request lane skips `visual`, so no run on a pull request
+// says a word about it (dispatch://INFRA-1407's test round found it on the full lane).
+// `e2e/__tests__/stub-web-server.test.ts` holds the config to both directions of this.
+function runsAStubProject(argv: readonly string[]): boolean {
+  // Two-process mode runs `multiprocessProjects` and nothing else, which holds no stub project.
+  if (harnessProcessCount === 2) return false;
+  const named = projectsOnCommandLine(argv);
+  return named.length === 0 || named.some((project) => stubProjectNames.includes(project));
 }
 
 // How many workers the command line asks for, if it does: `--workers <n>`, `--workers=<n>`,
@@ -697,21 +725,27 @@ export default defineConfig({
   // project alone reaches no such server, so it has no global setup at all.
   globalSetup: stubOnly ? undefined : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
   // The one server this config starts, and it serves files: the built SPA, for the stubbed
-  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts it
-  // before Playwright. A recording run reaches the real harness instead, so it starts none, and
-  // Playwright starts no web server for a `--list` either.
-  webServer: stubRecording()
-    ? undefined
-    : {
-        command: "bun e2e/stub/static-server.ts",
-        // Playwright runs a `webServer` command in the config's own directory, and every command
-        // of this package is written from the package root, as `package.json`'s scripts are.
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        reuseExistingServer: true,
-        stdout: "pipe",
-        timeout: 60_000,
-        url: `${stubOrigin()}/index.html`,
-      },
+  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
+  // it before Playwright.
+  //
+  // It is declared for a run that holds a stubbed row and for no other, because Playwright
+  // starts a `webServer` for every run of a config but a listing, and the containerised
+  // `visual` job of the full lane runs this config where there is no bun to start it with
+  // (`runsAStubProject` above says the rest). A recording run reaches the real harness
+  // instead, so it starts none either.
+  webServer:
+    !runsAStubProject(process.argv) || stubRecording()
+      ? undefined
+      : {
+          command: "bun e2e/stub/static-server.ts",
+          // Playwright runs a `webServer` command in the config's own directory, and every command
+          // of this package is written from the package root, as `package.json`'s scripts are.
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          reuseExistingServer: true,
+          stdout: "pipe",
+          timeout: 60_000,
+          url: `${stubOrigin()}/index.html`,
+        },
   projects:
     harnessProcessCount === 2
       ? multiprocessProjects
