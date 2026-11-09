@@ -574,7 +574,8 @@ operation mints its grant in-process and posts it with the request; nothing is w
 pane. A predecessor's handoff is read with `dispatch handoff-read`, at the version the task's
 `Handoff:` line names (`--version <n>`), except the plan.
 The plan is the issue's `plan.md` document, which its planner goes on writing after the planning
-phase ends, so a worker builds from `plan.md` at its newest version and reads the
+phase ends, so a worker builds from `plan.md` at the newest version the plan review approved, the
+version the `Approval:` line of `dispatch read` names, and reads the
 `Handoff: plan version <n>` line as the receipt for the record the daemon accepted. GitHub is the pane's
 `gh` and `git`, which read the role's App tokens from the gh bundle under `LEGION_GH_OWNERS_DIR`; no
 tool operation writes to GitHub for a role. Review threads are the pull request author's to
