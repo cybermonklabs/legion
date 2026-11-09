@@ -1769,8 +1769,9 @@ const (
 	// errSettlementTimeout). The pending-settlement row leaves it to resume too, so a settlement that
 	// cannot finish gives its slot and its connection back and fails no room.
 	settlePastDeadline
-	// settleOverloaded is a settlement refused a connection for overload (store.IsPoolBusy: the
-	// settlements pool's or the rooms pool's acquire bound). The pending-settlement row
+	// settleOverloaded is a settlement the database did not serve (store.Unserved: the
+	// settlements pool's or the rooms pool's acquire bound ran out, or the database stopped
+	// answering inside it, the statement it may still have run included). The pending-settlement row
 	// leaves it to resume, so overload fails no room (maxSettleFailures).
 	settleOverloaded
 	// settleRefusedInShutdown is a settlement that had to write into a room Shutdown has begun
@@ -1825,7 +1826,7 @@ func (s *Service) followUpSettlement(room string, outcome settleOutcome) {
 	case settlePastDeadline:
 		slog.Warn("dispatch: document settlement ran past its deadline; the resumption settles it", "room", room, "error", outcome.err)
 	case settleOverloaded:
-		slog.Warn("dispatch: document settlement found no connection free; the resumption settles it", "room", room, "error", outcome.err)
+		slog.Warn("dispatch: document settlement was not served by the database; the resumption settles it", "room", room, "error", outcome.err)
 	case settleRefusedInShutdown:
 		slog.Warn("dispatch: skip shutdown document settlement that has to write into its room", "room", room, "error", outcome.err)
 	case settleEnded, settleRoomFailed, settleReloaded:

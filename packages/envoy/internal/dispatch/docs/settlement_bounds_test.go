@@ -221,6 +221,62 @@ func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) 
 	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
 }
 
+// A settlement whose statement reached the database and was never answered is the same overload
+// to this service as a pool with no connection free: the document stays owed, its room stays
+// resident, and it counts no settlement failure however often it recurs. The statement ran
+// outside nothing a retry cannot redo - a pass reads the document again and writes what it
+// reads - so `store.Unserved` is what this branches on, not the narrower `IsPoolBusy`: under a
+// stall of the whole pod every room whose settlement met one would otherwise count a failure,
+// and three stalls would fail the room, which is the collapse these bounds exist to prevent
+// (INFRA-592).
+func TestASettlementWhoseStatementStallsStaysOwedAndCountsNoFailure(t *testing.T) {
+	socket := storetest.NewStalledSocket(store.SettlementsPool)
+	database := storetest.Reopened(t, storetest.Open(t), func(config *pgxpool.Config) {
+		config.ConnConfig.DialFunc = socket.Dial
+	})
+	service, artifactID := newTestServiceOn(t, database)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	versions := latestVersionNumber(t, service, artifactID)
+
+	socket.StallAfter(artifactID)
+	settleCurrentGeneration(t, service, artifactID)
+
+	if !socket.Fired() {
+		t.Fatal("the settlements socket never timed out, so the settlement ran as any other")
+	}
+	ctx := context.Background()
+	owes, err := settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone, want it kept for the resumption")
+	}
+	if service.srv.GetDoc(artifactID) == nil {
+		t.Fatal("the document's room is gone, want it resident")
+	}
+	state := service.room(artifactID)
+	state.mu.Lock()
+	failures, failed := state.settleFailures, state.failed
+	state.mu.Unlock()
+	if failures != 0 || failed != nil {
+		t.Fatalf("settlement failures = %d, room failure = %v; want none for a database that stopped answering", failures, failed)
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
+		t.Fatalf("latest version = %d, want %d: no settlement the database left unanswered commits", latest, versions)
+	}
+
+	service.settle = 10 * time.Millisecond
+	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the owed settlement: %v", err)
+	}
+	waitForDocumentVersion(t, service.store, artifactID, versions+1)
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+}
+
 // settlementTimeouts is how many acquires the settlements pool has refused at its bound.
 func settlementTimeouts(service *Service) uint64 {
 	for _, pool := range service.store.Pool.Stats() {

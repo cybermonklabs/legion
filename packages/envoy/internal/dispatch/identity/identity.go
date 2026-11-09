@@ -102,8 +102,9 @@ const signInUnavailableMessage = "the sign-in issuer cannot be reached; try agai
 // response: 401 NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable
 // (Membership: the person stays signed in, and the first request after the issuer answers is
 // served); and 500 IDENTITY_ERROR for anything else. A lookup that failed because r could not be
-// served - its deadline passed, its client went away, or no connection of a pool came free within
-// its acquire bound - is answered as admission.WriteUnserved answers it, a retryable 503 or
+// served - its deadline passed, its client went away, or a bound of the server's own ended one
+// of its calls before the database answered it - is answered as admission.WriteUnserved answers
+// it, a retryable 503 or
 // nothing, rather than as a failure of the identity service. An unreachable sign-in issuer is
 // answered as itself: the timeout its error carries is the call to the issuer's, which no longer
 // reads as a want of database room (store.IsPoolBusy).

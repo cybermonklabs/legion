@@ -835,7 +835,8 @@ var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
 
 // openAPIServerAnswers are the answers the server's own layers write for route, which no row of
 // routeShapes carries because no handler writes them: admission's refusals, a read's deadline, a
-// pool with no connection free, and a commit the database did not answer (serveRoute,
+// bound of the server's that ended a call before the database answered it, and a commit the
+// database did not answer (serveRoute,
 // admission.WriteUnserved, (*server).writeHandlerError). Each carries the one refusal body every
 // route writes (errorBody), so what the document adds here is the status, the codes it may
 // carry, and the Retry-After beside them.
@@ -846,7 +847,7 @@ var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
 //     and a stream, whose reader holds it open for the run behind it (apiRoute.Streams);
 //   - 503 goes to every row: only a read servedAsRead bounds by a deadline can run past one, so
 //     REQUEST_TIMEOUT is named on a GET that is no test hook alone, and any row's statement can
-//     meet a pool with no connection free;
+//     meet a pool with no connection free or a database that stops answering on the one it held;
 //   - 500 COMMIT_OUTCOME_UNKNOWN goes to every row that commits a transaction, which is every
 //     row that is not a GET. It is the one of these that carries no Retry-After: the write may
 //     have landed, so what to do next is the caller's to decide after a read.
@@ -863,13 +864,16 @@ func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
 			retryAfter: true,
 		})
 	}
-	unserved := "Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire " +
-		"bound, so nothing ran."
+	busy := "DATABASE_BUSY, a bound of the server's own ended the request before the database " +
+		"answered it and before anything of it had committed: no connection of a pool came " +
+		"free within its acquire bound, so nothing ran, or the database stopped answering on " +
+		"the connection the request held, leaving nothing behind - a read, a call that had " +
+		"not reached the database, or a statement whose transaction then rolled back."
+	unserved := "Unserved: " + busy
 	// A test hook's GET is not served as a read (serveRoute wraps only a row that is not a test
 	// hook in servedAsRead), so it has no deadline to run past.
 	if route.Method == http.MethodGet && !route.TestHook {
-		unserved = "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or " +
-			"DATABASE_BUSY, no connection of a pool came free within its acquire bound."
+		unserved = "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or " + busy
 	}
 	answers = append(answers, openAPIServerAnswer{
 		status:      http.StatusServiceUnavailable,
@@ -880,7 +884,8 @@ func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
 		answers = append(answers, openAPIServerAnswer{
 			status: http.StatusInternalServerError,
 			description: "COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's " +
-				"commit within its bound, so the write may have landed and may not. It carries " +
+				"commit, or a statement it ran outside any transaction, so the write may " +
+				"have landed and may not. It carries " +
 				"no Retry-After: read what the write would have written before sending it again.",
 		})
 	}

@@ -190,9 +190,15 @@ type settlementPass struct {
 // transaction rolls back, and nothing retries it or counts it as a failure: the document's
 // pending-settlement row leaves it to resume (onLoadDocument, RunSettlementResumption). That is how
 // a shutdown that cannot settle every room within its budget leaves the rest to the next process. A
-// settlement refused a connection for overload (store.IsPoolBusy: the settlements pool's or the
-// rooms pool's acquire bound) is left to resume the same way, so overload fails
-// no room (maxSettleFailures). So is a settlement that has to write into a room Shutdown has begun
+// settlement the database did not serve (store.Unserved: the settlements pool's or the rooms
+// pool's acquire bound ran out, or the database stopped answering inside it) is left to resume
+// the same way, so overload fails
+// no room (maxSettleFailures). It is one outcome for all three shapes that bound names, the
+// statement the database may still have run included: a settlement pass reads the document
+// again and writes what it reads, so running it again costs nothing whatever the statement did,
+// where counting each stall a failure would fail every room a pod-wide stall touched three
+// times over.
+// So is a settlement that has to write into a room Shutdown has begun
 // closing, which refuses the write (allowInject). A room Shutdown has begun closing is not loaded
 // for a settlement unless mayLoad says this is the settlement the shutdown drain owes it, whose
 // warm-up loads through the shutdown (withShutdownLoad).
@@ -222,7 +228,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 			next = settlePastDeadline
 		case parent.Err() != nil:
 			next = settleOutOfBudget
-		case store.IsPoolBusy(err):
+		case store.Unserved(parent, err):
 			next = settleOverloaded
 		case s.shuttingDown(room) && errors.Is(err, ErrServiceUnavailable):
 			next = settleRefusedInShutdown

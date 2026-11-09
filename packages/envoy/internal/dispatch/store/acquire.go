@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -122,33 +123,123 @@ func defaultAcquireBound(name string) time.Duration {
 	return 0
 }
 
-// ErrPoolBusy is an acquire that ran out its pool's acquire bound while the caller was still
-// waiting: every connection of that pool stayed taken for the whole bound. Nothing ran, so the
-// caller may retry; a request answers it as busy rather than as a failure. The error wraps
-// context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells it from a deadline
-// of the caller's own.
+// ErrPoolBusy is a call a bound of this server's own, and not the caller's context, ended
+// before the database answered it, and after which nothing the caller asked for can have
+// committed: an acquire that ran out its pool's acquire bound while the caller was still
+// waiting, every connection of that pool having stayed taken for the whole bound, or a call the
+// database stopped answering on before the call reached it at all (pgconn.SafeToRetry). The
+// caller may retry; a request answers it as busy rather than as a failure. An acquire's error
+// wraps context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells either from
+// a deadline of the caller's own.
 //
 // Every pool answers a bound it ran out with it, the wrapped pools (Pool) and the raw ones
-// (RawPool: rooms, leases, listen, registry, health) alike, so a caller tells a pool with nothing
-// free from its own deadline by IsPoolBusy rather than by guessing from a bare
+// (RawPool: rooms, leases, listen, registry, health) alike, so a caller tells a pool that could
+// not serve it from its own deadline by IsPoolBusy rather than by guessing from a bare
 // context.DeadlineExceeded - a guess that read a commit cut off at its bound (ErrCommitTimeout),
 // whose outcome is unknown, as a pool that refused before anything ran.
-var ErrPoolBusy = errors.New("no connection of the pool came free within its acquire bound")
+var ErrPoolBusy = errors.New("a bound of this server's ended the call before the database answered it")
 
-// IsPoolBusy reports whether err is an acquire that ran out its pool's bound (ErrPoolBusy), as
-// opposed to the caller's own deadline or cancellation. Nothing of what the caller asked for ran,
-// so it may be retried whatever it was.
+// IsPoolBusy reports whether err is a call one of this server's bounds ended before the database
+// answered it and before anything of it could have committed (ErrPoolBusy), as opposed to the
+// caller's own deadline or cancellation. It may be retried whatever it was. The two calls whose
+// outcome a lost answer leaves unknown are told apart before they reach here: a commit is
+// ErrCommitTimeout (commitTimedOut) and a statement this pool ran outside a transaction is
+// ErrStatementOutcomeUnknown.
 func IsPoolBusy(err error) bool { return errors.Is(err, ErrPoolBusy) }
 
-// poolBusy wraps err as ErrPoolBusy when it is an acquire bound: a deadline exceeded while the
-// caller's own context is still live can only be the bound acquireTracer put on the acquire,
-// since the statement itself runs on the caller's context. A caller whose own deadline came first
+// ErrStatementOutcomeUnknown is a statement one of these pools ran outside a transaction that
+// reached the database and was never answered: a bound of this server's stopped the read of its
+// answer (DatabaseStalled) and pgconn does not mark it safe to retry, so it may have run. A
+// statement outside a transaction commits itself, so its outcome is unknown exactly as an
+// unanswered commit's is (ErrCommitTimeout), and it is not retryable: a client that sent it
+// again could write twice. A write route answers it 500 COMMIT_OUTCOME_UNKNOWN with no
+// Retry-After and an ERROR line; a read route answers it 503 DATABASE_BUSY, since what a read
+// runs commits nothing and sending the GET again only reads (api.writeHandlerError).
+//
+// A statement inside a transaction is none of this: its transaction rolls back, so nothing of it
+// committed, and it never passes through this package's pools in the first place - it runs on
+// the pgx transaction the caller holds.
+var ErrStatementOutcomeUnknown = errors.New(
+	"the database stopped answering on the connection after this statement reached it; it ran outside a transaction, so its outcome is unknown",
+)
+
+// IsStatementOutcomeUnknown reports whether err is a statement run outside a transaction whose
+// answer never came and which may have committed (ErrStatementOutcomeUnknown).
+func IsStatementOutcomeUnknown(err error) bool { return errors.Is(err, ErrStatementOutcomeUnknown) }
+
+// stalled reports whether err is a call pgx answered with a timeout of the socket to Postgres
+// (pgconn.Timeout) while ctx, the caller's own context, was still live.
+//
+// pgx puts a deadline on that socket for one reason: a context it is watching was cancelled, and
+// the deadline is how it stops the read in flight (pgconn's DeadlineContextWatcherHandler). So a
+// socket timeout raised while the caller's context is live belongs to a bound of this server's -
+// the acquire bound this package puts on the call (acquireTracer), which pgx also runs an idle
+// connection's ping and that ping's statement-cache deallocation under (pgxpool's Acquire,
+// pgx.Conn.Exec), or a bound that passed on an earlier call of the same pooled connection, whose
+// deadline pgx had not lifted by the time this call read (the race pgconn's
+// exitPotentialWriteReadDeadlock names). Before this such a call was answered 500 naming no
+// cause (INFRA-592).
+//
+// It is the socket's timeout alone. A context's deadline pgx reports as
+// context.DeadlineExceeded is poolBusy's own case; the caller's own deadline or cancellation is
+// the caller's to answer, which ctx says; and an error that is no timeout - a statement Postgres
+// refused, a connection that broke - stays the error it is, so a fault the server should be
+// alarmed over is not hidden behind a refusal.
+func stalled(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, context.Canceled) && pgconn.Timeout(err)
+}
+
+// DatabaseStalled reports whether err is a stall (stalled) after which nothing the caller asked
+// for can have committed, so its request may be refused as busy and sent again. Every stall a
+// caller meets outside this package's pools is one: a statement inside a transaction, which
+// rolls back. A statement one of these pools ran outside a transaction is not, unless pgconn
+// marks it safe to retry; poolBusy names that one ErrStatementOutcomeUnknown, and this reports
+// false for it so its caller answers the unknown outcome rather than a retry.
+func DatabaseStalled(ctx context.Context, err error) bool {
+	return stalled(ctx, err) && !errors.Is(err, ErrStatementOutcomeUnknown)
+}
+
+// Unserved reports whether err is any call a bound of this server's ended before the database
+// answered it: a pool with no connection free (ErrPoolBusy), a stall after which nothing can
+// have committed (DatabaseStalled), and a statement outside a transaction the database may
+// still have run (ErrStatementOutcomeUnknown) alike.
+//
+// It is for a caller whose work it may run again whatever that statement did, because the work
+// reads what it needs and writes what it reads: a settlement pass, which is dropped and armed
+// again (docs.Service.settleRoomWithin), a duty pass, which the next tick makes, a sweep. Such a
+// caller must not count the database's overload as a failure of its own - under a stall of the
+// whole pod that would fail every room whose settlement met it, which is the collapse these
+// bounds exist to prevent - and must not tell the three shapes apart, because for it they mean
+// one thing. A caller answering a client does tell them apart, and uses IsPoolBusy,
+// DatabaseStalled and IsStatementOutcomeUnknown instead (admission.WriteUnserved,
+// api.writeHandlerError): a client may repeat a request, where a pass only runs again.
+func Unserved(ctx context.Context, err error) bool {
+	return IsPoolBusy(err) || stalled(ctx, err)
+}
+
+// poolBusy names err for what a bound of this server's did to the call: a deadline exceeded
+// while the caller's own context is still live can only be the bound acquireTracer put on the
+// acquire, since the statement itself runs on the caller's context, and a socket that timed out
+// under a live caller is one of those bounds too (stalled). A stall pgconn marks safe to retry
+// never reached the database and is a busy pool like any other; one that did reach it may have
+// run, and a pool runs every statement outside a transaction, so that one is
+// ErrStatementOutcomeUnknown. Each wrap names what the pool met, so the line a refusal is logged
+// on says which bound passed and what it left behind. A caller whose own deadline came first
 // gets its own error back.
 func poolBusy(ctx context.Context, pool string, err error) error {
-	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrPoolBusy) {
+	switch {
+	case err == nil || errors.Is(err, ErrPoolBusy) || errors.Is(err, ErrStatementOutcomeUnknown):
+		return err
+	case stalled(ctx, err):
+		if pgconn.SafeToRetry(err) {
+			return fmt.Errorf("%s pool: %w: the database stopped answering before the call reached it: %w", pool, ErrPoolBusy, err)
+		}
+		return fmt.Errorf("%s pool: %w: %w", pool, ErrStatementOutcomeUnknown, err)
+	case ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded):
 		return err
 	}
-	return fmt.Errorf("%s pool: %w: %w", pool, ErrPoolBusy, err)
+	return fmt.Errorf("%s pool: %w: no connection came free within the pool's acquire bound: %w", pool, ErrPoolBusy, err)
 }
 
 // acquireBuckets are the upper bounds of the acquire-wait histogram's buckets, from a

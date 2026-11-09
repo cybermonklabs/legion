@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // assertRetryable fails the test unless response has status and code, Retry-After: 1 and
@@ -301,6 +302,108 @@ func TestARequestOnAFullPoolAnswersDatabaseBusy(t *testing.T) {
 		t.Fatalf("answered after %v, want within the acquire bound %v + 200ms", answered, bound)
 	}
 	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+}
+
+// A read whose database stops answering inside a bound of the server's own - the socket times
+// out while the read's own 20 s deadline is nowhere near - is answered 503 DATABASE_BUSY with
+// Retry-After, which its client may send again, and the line it is logged on names the pool
+// whose bound ended it. Before this it fell through every classification to 500 INTERNAL with an
+// `API handler failed` ERROR line, which told the client nothing to do and the operator nothing
+// but that a handler had failed: three requests of INFRA-592's ten-times load step were answered
+// that way, two of them on a statement-cache deallocation pgx runs before a read's first
+// statement.
+func TestAReadWhoseDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
+	socket := storetest.NewStalledSocket(store.RequestsPool)
+	logs := captureDebugLog(t)
+	// The settlement of the seeded spec reads the same issue on a pool of its own; held off, it
+	// cannot be the statement that arms the socket.
+	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "The database stops answering", "A spec")
+
+	socket.StallAfter(issue.Key)
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key, nil, "alice")
+
+	if !socket.Fired() {
+		t.Fatal("the socket never timed out, so the read was served as any other")
+	}
+	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+	if failed := logs.Lines("API handler failed"); failed != "" {
+		t.Fatalf("the read was logged as a fault of the server's:\n%s", failed)
+	}
+	busy := logs.Lines("request found the database busy")
+	if !strings.Contains(busy, store.RequestsPool+" pool") || !strings.Contains(busy, "stopped answering") {
+		t.Fatalf("logged %q, want a line naming the pool whose bound ended the call and what it met", busy)
+	}
+}
+
+// A write whose database stops answering inside a statement of its transaction is refused the
+// same way, and this is the surface the pool's own error mapping does not reach: a write runs
+// its statements on the transaction it opened, which is pgx's and not store.Pool's, so nothing
+// names the error before it reaches the handler. admission.WriteUnserved reads the socket's
+// timeout off the error itself there (store.DatabaseStalled). The transaction rolled back, so
+// the comment was not written and the client may send it again; a call whose outcome nobody
+// knows - the commit, and a statement run outside any transaction - is 500
+// COMMIT_OUTCOME_UNKNOWN instead, before this branch is reached.
+func TestAWriteWhoseDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
+	socket := storetest.NewStalledSocket(store.RequestsPool)
+	logs := captureDebugLog(t)
+	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "The database stops answering a write", "A spec")
+
+	socket.StallAfter(issue.Key)
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": "A comment the database never answered"}, "alice")
+
+	if !socket.Fired() {
+		t.Fatal("the socket never timed out, so the write was served as any other")
+	}
+	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+	if failed := logs.Lines("API handler failed"); failed != "" {
+		t.Fatalf("the write was logged as a fault of the server's:\n%s", failed)
+	}
+	if logs.Lines("request found the database busy") == "" {
+		t.Fatalf("no line says the write found the database busy; the log reads:\n%s", logs.String())
+	}
+}
+
+// A write route's statement that runs outside any transaction commits itself, so a database
+// that stops answering it leaves an outcome nobody knows: the server sent the UPDATE and never
+// heard back, exactly as it never hears back from a COMMIT it sent. It is answered 500
+// COMMIT_OUTCOME_UNKNOWN with no Retry-After and an ERROR line naming the unknown outcome, and
+// never the retryable 503 the two tests above get: a client that sent this again could revoke,
+// insert or delete twice. `DELETE /api/v1/me/agent-tokens/{id}` is one of the handful of such
+// statements (`agent_tokens.go`, the revoking UPDATE on store.Pool).
+func TestAWriteStatementOutsideATransactionTheDatabaseDropsIsAnOutcomeNobodyKnows(t *testing.T) {
+	socket := storetest.NewStalledSocket(store.RequestsPool)
+	logs := captureDebugLog(t)
+	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
+	minted := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens",
+		map[string]string{"name": "architect"}, "alice"))
+	if minted.ID == "" {
+		t.Fatal("the mint answered no token id")
+	}
+
+	socket.StallAfter(minted.ID)
+	response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+minted.ID, nil, "alice")
+
+	if !socket.Fired() {
+		t.Fatal("the socket never timed out, so the revoke was served as any other")
+	}
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"COMMIT_OUTCOME_UNKNOWN"`) {
+		t.Fatalf("status=%d body=%s, want 500 COMMIT_OUTCOME_UNKNOWN", response.Code, response.Body.String())
+	}
+	if retry := response.Result().Header.Get("Retry-After"); retry != "" {
+		t.Fatalf("Retry-After = %q, want none: the statement may have committed", retry)
+	}
+	if busy := logs.Lines("request found the database busy"); busy != "" {
+		t.Fatalf("the revoke was offered as retryable:\n%s", busy)
+	}
+	unknown := logs.Lines("its outcome is unknown")
+	if !strings.Contains(unknown, "level=ERROR") || !strings.Contains(unknown, "statement was not answered") {
+		t.Fatalf("logged %q, want an ERROR line naming the statement whose outcome is unknown", unknown)
+	}
 }
 
 // The live socket is mounted outside the route table, so it is neither admitted nor bounded by the

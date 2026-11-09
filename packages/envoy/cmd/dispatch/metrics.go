@@ -197,7 +197,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
-	registry.NewCounterVecFunc(metricPrefix+"db_pool_acquire_timeouts_total", "Acquires of the pool refused for running out its acquire bound (store.ErrPoolBusy).", func() []metrics.Sample {
+	registry.NewCounterVecFunc(metricPrefix+"db_pool_acquire_timeouts_total", "Acquires of the pool refused for running out its acquire bound, the acquire half of store.ErrPoolBusy.", func() []metrics.Sample {
 		return poolSamples(poolStats(), func(s store.PoolStats) float64 { return float64(s.Acquire.Timeouts) })
 	})
 

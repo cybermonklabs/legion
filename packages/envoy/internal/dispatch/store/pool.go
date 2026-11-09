@@ -574,24 +574,30 @@ func (t *trackedTx) Rollback(ctx context.Context) error {
 // commitTimeout bounds a commit CommitContext has detached from its caller.
 const commitTimeout = 10 * time.Second
 
-// ErrCommitTimeout is a commit the bound of its own context cut off (CommitContext): the database
-// did not answer the COMMIT within commitTimeout. Its outcome is unknown - the transaction may
-// have committed, and nothing the server holds says whether it did - so it is neither a pool that
-// refused before anything ran (ErrPoolBusy) nor a failure that rolled back: a request answers it
-// 500, naming the unknown outcome, and a client must read what it wrote before sending it again
-// (api.writeHandlerError, cmd/dispatch/README.md "Load errors"). The error wraps
+// ErrCommitTimeout is a commit the database did not answer: the bound of its own context cut it
+// off (CommitContext, commitTimeout), or the socket to Postgres timed out under it
+// (DatabaseStalled), which is a bound of this server's that passed on that connection. Its
+// outcome is unknown - the transaction may have committed, and nothing the server holds says
+// whether it did - so it is neither a pool that could not serve the call (ErrPoolBusy) nor a
+// failure that rolled back: a request answers it 500, naming the unknown outcome, and a client
+// must read what it wrote before sending it again (api.writeHandlerError,
+// cmd/dispatch/README.md "Load errors"). A commit its own bound cut off wraps
 // context.DeadlineExceeded too, so errors.Is finds both.
-var ErrCommitTimeout = errors.New("the commit ran out its bound; its outcome is unknown")
+var ErrCommitTimeout = errors.New("the commit was not answered; its outcome is unknown")
 
-// IsCommitTimeout reports whether err is a commit cut off at its bound (ErrCommitTimeout).
+// IsCommitTimeout reports whether err is a commit the database did not answer (ErrCommitTimeout).
 func IsCommitTimeout(err error) bool { return errors.Is(err, ErrCommitTimeout) }
 
-// commitTimedOut names err ErrCommitTimeout when ctx, the commit's own context, is the bound that
-// ended it: pgx answers a statement its context cut off with that context's error and not with
-// its cause, so the cause is read here instead. A commit that failed for any other reason, and
-// one that did not fail at all, is returned as it is.
+// commitTimedOut names err ErrCommitTimeout when the database did not answer the COMMIT: ctx,
+// the commit's own context, is the bound that ended it - pgx answers a statement its context cut
+// off with that context's error and not with its cause, so the cause is read here instead - or
+// the socket timed out while that context was still live, which is a bound of this server's
+// that passed on the connection (DatabaseStalled). The second is told here rather than left to
+// poolBusy, which never sees a commit, because the outcome of a COMMIT whose answer was lost is
+// unknown where every other lost answer leaves the transaction rolled back. A commit that
+// failed for any other reason, and one that did not fail at all, is returned as it is.
 func commitTimedOut(ctx context.Context, err error) error {
-	if err == nil || !errors.Is(context.Cause(ctx), ErrCommitTimeout) {
+	if err == nil || !(errors.Is(context.Cause(ctx), ErrCommitTimeout) || DatabaseStalled(ctx, err)) {
 		return err
 	}
 	return fmt.Errorf("%w: %w", ErrCommitTimeout, err)

@@ -20,6 +20,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/persistence"
 
@@ -126,6 +127,10 @@ type testServerOptions struct {
 	// refused within a fraction of a second.
 	requestPoolSize int32
 	acquireBound    time.Duration
+	// dialRequestPool replaces how the request pool dials Postgres, so a test can put a fault on
+	// the socket pgx reads and writes; nil dials as the deployment does. It rebuilds the pool as
+	// requestPoolSize and acquireBound do.
+	dialRequestPool pgconn.DialFunc
 	// browserPeers lets the document service admit a browser peer by the X-Dispatch-User header,
 	// as connectBrowserPeer connects one; without it the document websocket refuses every peer.
 	browserPeers bool
@@ -231,7 +236,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if database == nil {
 		database = storetest.Open(t)
 	}
-	if options.requestPoolSize != 0 || options.acquireBound != 0 {
+	if options.requestPoolSize != 0 || options.acquireBound != 0 || options.dialRequestPool != nil {
 		config := database.Pool.Config()
 		if options.requestPoolSize != 0 {
 			config.MaxConns = options.requestPoolSize
@@ -239,6 +244,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		}
 		if options.acquireBound != 0 {
 			store.BoundAcquires(config, options.acquireBound)
+		}
+		if options.dialRequestPool != nil {
+			config.ConnConfig.DialFunc = options.dialRequestPool
 		}
 		pool, err := pgxpool.NewWithConfig(context.Background(), config)
 		if err != nil {

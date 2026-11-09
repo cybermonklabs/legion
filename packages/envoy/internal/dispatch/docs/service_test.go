@@ -43,7 +43,13 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 
 func newTestService(t *testing.T) (*Service, string) {
 	t.Helper()
-	database := storetest.Open(t)
+	return newTestServiceOn(t, storetest.Open(t))
+}
+
+// newTestServiceOn is newTestService on a store the test opened itself, for a test that needs a
+// pool of a shape of its own (storetest.Reopened).
+func newTestServiceOn(t *testing.T, database *store.Store) (*Service, string) {
+	t.Helper()
 	artifactID := createDocument(t, database, "# First")
 	service := New(Deps{
 		Store:     database,
@@ -59,6 +65,7 @@ func newTestService(t *testing.T) (*Service, string) {
 	})
 	return service, artifactID
 }
+
 func TestRepairingAnUnreadableAskBlockCountsTheAskItOpens(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
