@@ -3,7 +3,7 @@
 // helpers a case reads it with. The cases are in `extensions/legion-stall-watchdog-omp.test.ts`,
 // and what was measured to build them is in that file's own header; nothing here is a case, so
 // this module runs nothing on import but the constants below.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -26,6 +26,7 @@ import {
   type StallWatchRecord,
 } from "../src/stall-evidence";
 import { stallExitsFile } from "../src/stall-exits";
+import { transcriptEntries, transcriptSettled, writtenLines } from "./transcript-entries";
 
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
@@ -67,6 +68,11 @@ export const SHELL_DEADLINE_MS = 20_000;
 /** How long a case waits for something the pane owes it before failing: the pane's boot and the
  * three steps of the ladder, each a 5-second sweep apart. */
 export const DEADLINE_MS = 120_000;
+
+/** How long `settled()` waits for the pane to finish the line it is writing. One line is one
+ * `write`, so this is orders of magnitude more than it takes even on a loaded pod; it is a
+ * bound, not a sleep. */
+const SETTLED_MS = 5_000;
 
 /** How long a case watches for something that must not happen: the bound, two of the plugin's
  * 5-second sweeps, and a margin. */
@@ -325,6 +331,11 @@ export interface StallPane {
   readonly exited: Promise<number>;
   /** Whether omp is still running. */
   readonly running: () => boolean;
+  /** Waits until the transcript holds no half-written line, so that a read taken next is a read
+   * of whole lines. A case that reads an empty result as proof a record is absent calls this
+   * first: the only line that could falsify it is the one a write may not have finished, and
+   * `records()` withholds that line while the pane runs. Throws naming the file at its bound. */
+  settled(): Promise<void>;
   /** Polls `probe` until it answers, failing on `what` at the deadline. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
@@ -485,25 +496,14 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
   /** This launch's transcript entries of `customType`. The file is appended to as the session
-   * runs, so a case reads it while the pane is still running — and after it has ended itself. */
-  const entries = async (customType: string): Promise<Record<string, unknown>[]> => {
-    const files = (await readdir(sessions, { recursive: true })).filter((file) =>
-      file.endsWith(".jsonl")
-    );
-    if (files.length !== 1) return [];
-    return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line): unknown => JSON.parse(line))
-      .flatMap((entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        "customType" in entry &&
-        entry.customType === customType
-          ? [entry as Record<string, unknown>]
-          : []
-      );
-  };
+   * runs, so a case reads it while the pane is still running — and after it has ended itself.
+   * While it runs, a read can land between a line's bytes and its newline, so the unfinished
+   * last line is withheld rather than handed to `JSON.parse` half-written
+   * (`transcript-entries.ts`, dispatch://INFRA-2188); once the pane has exited nothing will
+   * finish it, so every line is parsed and a fragment throws where it is written. A case that
+   * reads an empty result as proof a record is absent waits for `settled()` first. */
+  const entries = async (customType: string): Promise<Record<string, unknown>[]> =>
+    transcriptEntries(sessions, customType, running ? "alive" : "gone");
 
   const pane: StallPane = {
     requests,
@@ -524,13 +524,23 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       } catch {
         return [];
       }
-      return written
-        .split("\n")
-        .filter(Boolean)
-        .map((line): AgentEndSeen => JSON.parse(line) as AgentEndSeen);
+      // The pane's own extension appends to this file (`steerExtension`), so the last line can
+      // be half-written while the pane runs; see `entries` above.
+      return writtenLines(written, running ? "alive" : "gone").map(
+        (line): AgentEndSeen => JSON.parse(line) as AgentEndSeen
+      );
     },
     exited: rpc.exited,
     running: () => running,
+    async settled() {
+      const deadline = Date.now() + SETTLED_MS;
+      while (!(await transcriptSettled(sessions))) {
+        if (Date.now() > deadline) {
+          throw new Error(`the transcript under ${sessions} still ends mid-line`);
+        }
+        await Bun.sleep(25);
+      }
+    },
     async until(what, probe) {
       const deadline = Date.now() + DEADLINE_MS;
       for (;;) {

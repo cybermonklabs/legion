@@ -167,6 +167,11 @@ test.skipIf(skip)(
       pane.turns().find((turn) => conversation(turn).includes("the child is gone"))
     );
     expect(conversation(after)).toContain("the child is gone");
+    // An absence read taken while the pane is mid-write would be the absence of a line still
+    // being written, not of the record: `records()` withholds an unfinished last line while the
+    // pane runs (test/transcript-entries.ts, dispatch://INFRA-2188), so this waits for the
+    // transcript to end on a newline before it reads one.
+    await pane.settled();
     const records = await pane.records();
     expect(ofKind(records, "step").map((record) => record.step)).toEqual(["end-processes"]);
     expect(ofKind(records, "stopped")).toEqual([]);
@@ -230,6 +235,7 @@ test.skipIf(skip)(
     // The ladder stopped at the abort: the turn it ended closed the call's record, so the step
     // that ends this process never ran, nothing was told that the ladder had stopped, and no
     // exit was counted.
+    await pane.settled();
     const records = await pane.records();
     expect(ofKind(records, "step").map((record) => record.step)).toEqual([
       "end-processes",
@@ -391,6 +397,7 @@ test.skipIf(skip)(
     // Past the bound and two sweeps. A real clock, deliberately: the proposition is that the watch
     // did nothing at all, and a watch that does nothing emits no signal to await.
     await Bun.sleep(QUIET_MS);
+    await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
@@ -590,6 +597,7 @@ test.skipIf(skip)(
     // turn immediately after it backgrounds the call, so the turn's own close takes the record
     // either way. No live case can hold one of these four alone.
     await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
+    await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
     expect(pane.running()).toBe(true);

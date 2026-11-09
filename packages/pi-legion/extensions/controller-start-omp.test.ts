@@ -21,6 +21,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { connect, StringCodec } from "nats";
 import { z } from "zod";
+import { completeLines } from "../test/transcript-entries";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
 // it: both plugins, the controller's environment, and `/legion-controller-start` on the command
@@ -454,6 +455,10 @@ async function startController(
     }
   };
 
+  // The pane appends to its transcript as this polls it, so a read can land between a line's
+  // bytes and its newline; `completeLines` withholds that fragment until the write has finished
+  // it, rather than handing `JSON.parse` half an object (dispatch://INFRA-2188). Once Oh My Pi
+  // has exited nothing will finish it, so every line is parsed and a fragment throws.
   const transcriptLines = async (): Promise<string[]> => {
     const files = (await readdir(sessions, { recursive: true })).filter((file) =>
       file.endsWith(".jsonl")
@@ -461,9 +466,8 @@ async function startController(
     if (files.length === 0) return [];
     if (files.length !== 1)
       throw new Error(`want one transcript under ${sessions}, found ${files}`);
-    return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-      .split("\n")
-      .filter(Boolean);
+    const text = await readFile(path.join(sessions, files[0] ?? ""), "utf8");
+    return exitCode === undefined ? completeLines(text) : text.split("\n").filter(Boolean);
   };
 
   let taken = 0;
@@ -1035,20 +1039,19 @@ test.skipIf(skip)(
     await session.shows("the start turn's reply", "Start procedure done.");
 
     // The start message is the new session's first user message, and the replaced session has none.
+    // Both files belong to the one live process, so an unfinished last line is withheld
+    // (`completeLines`, dispatch://INFRA-2188) rather than parsed half-written.
     const [replacedUsers, newUsers] = await session.until(
       "the new session's transcript to hold the start message",
       async () => {
         const users = await Promise.all(
           [first.ompSessionFile, reclaimed.ompSessionFile].map(async (file) =>
-            (await readFile(String(file), "utf8"))
-              .split("\n")
-              .filter(Boolean)
-              .flatMap((line) => {
-                const entry = MessageEntrySchema.safeParse(JSON.parse(line));
-                return entry.success && entry.data.message.role === "user"
-                  ? [JSON.stringify(entry.data)]
-                  : [];
-              })
+            completeLines(await readFile(String(file), "utf8")).flatMap((line) => {
+              const entry = MessageEntrySchema.safeParse(JSON.parse(line));
+              return entry.success && entry.data.message.role === "user"
+                ? [JSON.stringify(entry.data)]
+                : [];
+            })
           )
         );
         return (users[1]?.length ?? 0) > 0 ? users : undefined;

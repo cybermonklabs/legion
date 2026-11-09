@@ -753,6 +753,9 @@ export async function runLegionPane(
       }
       return results;
     },
+    // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
+    // so nothing is still appending and a trailing fragment is a defect that must throw rather
+    // than be withheld (dispatch://INFRA-2188).
     transcriptEntries: async (customType) => {
       const files = (await readdir(sessions, { recursive: true })).filter((file) =>
         file.endsWith(".jsonl")
