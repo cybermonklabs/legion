@@ -1767,6 +1767,40 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 So a daemon left on the earlier release counts the new child slots of its own project against its cap and admits nothing until they drain.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that keeps a slot to the merge
+
+This release's migration `20261109060737_drop_awaiting_slot_notice` takes the column `awaiting_slot_notice_at` off `issues`, drops the trigger `issues_carried_slot_notice_cleared` with the function behind it, and puts `issues_awaiting_shape` back in the form `0057_awaiting_person` wrote.
+Re-pinning an image asks for part of that back, and which part follows the release.
+Pull request cybermonklabs/legion#2989 added `awaiting_slot_notice_at`, and the commit it merged as, `6c72aaee111c`, is release `legion-v19.45.0`: every release from `legion-v19.45.0` on carries the column.
+The newest, `legion-v19.47.0`, names it three times in `packages/daemon/internal/record/store.go` — in the `issueColumns` select list, in the `PutIssue` insert and its values, and in that insert's `on conflict ... do update set` — and scans it in `scanIssue`.
+So once this migration has dropped the column, pinning any release from `legion-v19.45.0` on fails every issue read and every `PutIssue` with `column "awaiting_slot_notice_at" does not exist`, which is every fact, tick and boot pass that daemon makes, until the column is back.
+Run this with the daemon stopped, before that image is pinned:
+
+```sql
+alter table issues add column if not exists awaiting_slot_notice_at timestamptz;
+```
+
+Nothing else of #2989 need come back.
+That daemon reads and writes the column and asks nothing else of the shape: the trigger only cleared a mark a write had left standing, and the two clauses this migration took out of `issues_awaiting_shape` only refused a mark outside an answered wait, so the constraint without them refuses nothing that daemon writes.
+A rollback to a release before `legion-v19.45.0` needs no statement at all: `legion-v19.44.0` names `awaiting_slot_notice_at` nowhere in `packages/daemon/internal/record/store.go`, so its `PutIssue` names no such column in its insert or its on-conflict update and nothing of it reads one.
+
+What the rollback does bring back is the earlier release's slot rule: an issue gives its row up the moment no worker of it has work, so a root in `accepting`, one waiting on a person and one waiting for its merge hold none again.
+It reads the `slots` rows as it finds them, and this release leaves a row standing for each of those issues, so the earlier release's first admission pass releases them and its cap counts what that release expects.
+
+**A queued `waiting-for-slot` notice must go before this release is pinned, not after.**
+This release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind nor the `waiting_for_slot` field the earlier release wrote, so a row still queued at the upgrade fails for ever on its backoff and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`).
+Run this with the daemon stopped, before this release's image is pinned:
+
+```sql
+delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot';
+```
+
+This release's own migration runs that statement too (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
+No daemon of the earlier release can write such a row after the migration has run: every release from `legion-v19.45.0` on names `awaiting_slot_notice_at` among the columns it reads an issue with, so with the column dropped every issue read it makes fails, before it reaches the code that would queue the notice; and that queue and the issue write marking the root are one transaction, so neither is written without the other.
+The step costs an operator one statement with the daemon stopped, and it leaves the outbox clean whatever order the restart takes.
+
+Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -4116,14 +4150,18 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` bounds the issues at work, not the pods: an issue that only waits — for its merge, in `accepting`, on a blocker, on its children or on a person — keeps its pod and holds no slot, so a deployment runs at least one pod per open issue of every live tree and nothing caps that number.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue keeps its admission slot from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and its pod can stand where it holds no slot — through the merge wait, after a merge wait sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues waiting for their merge, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+Fewer run than that bound, for two reasons.
+Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
+And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
 A pod the pool cannot place stays `Pending`, unscheduled;
 once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same pool, and the claim fails once its launch failures run out
 — no later than its registration deadline.
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 250m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for the pods of every open tree a deployment runs at once, per-pod sum, plus those two, since `admission_cap` bounds the issues at work rather than the pods a waiting issue keeps.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods a merge wait and a production check keep.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;

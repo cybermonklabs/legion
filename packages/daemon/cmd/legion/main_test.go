@@ -1782,10 +1782,11 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 }
 
 // The `roots waiting on a person` line counts the answered roots the daemon's own published
-// waiting line still names (api.WaitingLineView), not every answered one: a root whose design
-// gate has opened at every gated step resumes at once and takes no slot, so it stands in no line
-// and belongs in no count of one. A daemon below contract 58 serves no place at all, and 0 is
-// the true answer for a caller that cannot see the line.
+// waiting line still names (api.WaitingLineView), not every answered one: record.Waiting puts
+// every answered root in that line whatever its design gate says, until the pass that resumes
+// it, so what the count leaves out is a root of another Dispatch project, whose line this
+// daemon does not build, and every root at all against a daemon below contract 58, which
+// serves no place. 0 is the true answer for a caller that cannot see the line.
 //
 // The operator's guide prints this line as its sample and says what the count is, so the sample
 // is built here from the state the guide describes and read back out of awaiting_summary_extract.txt,
@@ -1795,7 +1796,7 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
 // TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
 // file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
-// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineNotice, which reads each
+// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
 // out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)

@@ -10,10 +10,10 @@ import (
 )
 
 // The waiting line ships in three kinds of text outside packages/daemon: the contract a caller
-// is told the place arrives at, the two words a root's architect reads about the wait, and the
-// `legion state` sample an operator reads the count in. Three tests of the daemon hold those
-// texts to the daemon's own constants, and none of them reads a text any more: each reads a copy
-// committed beside it - internal/api/waiting_line_contract_extract.txt,
+// is told the place arrives at, the fragment that states where the line puts an issue whose
+// work came back, and the `legion state` sample an operator reads the count in. Three tests of
+// the daemon hold those texts to the daemon's own constants, and none of them reads a text any
+// more: each reads a copy committed beside it - internal/api/waiting_line_contract_extract.txt,
 // internal/workflow/waiting_line_words_extract.txt and cmd/legion/awaiting_summary_extract.txt -
 // because a test that reads a shipped text puts that text in its job's filter, a declared read
 // applying to every compiled source file of a run, and an edit of AGENTS.md or a guide page
@@ -25,9 +25,9 @@ import (
 //
 // What these four tests prove: that the api package's copy is every window of the seven texts
 // that names the field's contract, in their own bytes; that every quotation of the workflow
-// package's copy is still in the file it names, raw or collapsed as the section says, and that
-// no file of either list has lost its section; that the guide still carries the sample line
-// cmd/legion renders; and that no shipped text of either list claims a position in the line,
+// package's copy is still in the file it names, in the one-line form that copy quotes it in,
+// and that no file of its list has lost its section; that the guide still carries the sample
+// line cmd/legion renders; and that no shipped text of that list claims a position in the line,
 // which is a whole-file negative that no excerpt can prove and so could not stay with the three
 // product tests.
 //
@@ -59,13 +59,12 @@ const (
 	// and a renamed field puts it at no window of the daemon's own sources, which its
 	// `checked == 0` guard fails on.
 	waitingLineField = "waitingLine"
-	// workflow.WaitingForSlotNoticeKind and record.WaitingLineBand, written out for the same
-	// reason. A rename of either is internal/workflow's
-	// TestTheShippedWordsNameTheWaitingLineNotice to catch: it reads both constants and holds the
-	// files of packages/daemon to them directly, so the rename fails there while the quotations
-	// here stay the texts' own words.
-	waitingForSlotKind = "waiting-for-slot"
-	waitingLineBand    = "among the issues whose work came back, oldest first"
+	// record.WaitingLineBand, written out for the same reason. A rename of it is
+	// internal/workflow's TestTheShippedWordsNameTheWaitingLineBand to catch: it reads the
+	// constant, holds the files of packages/daemon to it directly and holds every quotation of
+	// the copy to it too, so the rename fails there while the quotations here stay the texts'
+	// own words.
+	waitingLineBand = "among the issues whose work came back, oldest first"
 )
 
 // The seven shipped texts outside packages/daemon that internal/api's contract test used to read
@@ -82,31 +81,22 @@ var waitingLineContractTexts = []string{
 	"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
 }
 
-// The shipped texts outside packages/daemon of internal/workflow's two lists: `naming`, the
-// files that name the notice and the field, and `band`, the files that state where the line puts
-// an issue whose work came back. The lists are written out here rather than read from that test,
-// which this file may not import, and they are what the committed copy is held to: a section
-// deleted there would otherwise take that file's coverage with it, since the product half reads
-// the sections and no longer the files. They are also what the ban below reads, over the whole
-// of each file.
-var (
-	waitingLineNamingTexts = []string{
-		"skills/legion-architect/SKILL.md",
-		"skills/legion-architect/references/wake-routing.md",
-		"skills/legion-architect/references/design-gate.md",
-		"skills/legion-architect/references/acceptance.md",
-		runningLegionGuide,
-		"docs/site/src/content/docs/legion/troubleshooting.md",
-		"docs/site/src/content/docs/legion/concepts.md",
-	}
-	waitingLineBandTexts = []string{
-		"AGENTS.md",
-		runningLegionGuide,
-		"docs/site/src/content/docs/legion/troubleshooting.md",
-		"packages/contracts/src/legion-api.ts",
-		"skills/legion-controller/references/admission.md",
-	}
-)
+// The shipped texts outside packages/daemon that internal/workflow's band list names: the files
+// that state where the line puts an issue whose work came back. The list is written out here
+// rather than read from that test, which this file may not import, and it is what the committed
+// copy is held to: a section deleted there would otherwise take that file's coverage with it,
+// since the product half reads the sections and no longer the files. It is also what the ban
+// below reads, over the whole of each file.
+var waitingLineBandTexts = []string{
+	"AGENTS.md",
+	runningLegionGuide,
+	"docs/site/src/content/docs/legion/troubleshooting.md",
+	"packages/contracts/src/legion-api.ts",
+	"skills/legion-controller/references/admission.md",
+	"docs/site/src/content/docs/legion/concepts.md",
+	"skills/legion-architect/references/acceptance.md",
+	"skills/legion-controller/references/wakes.md",
+}
 
 // quotedText is one section of a committed copy: the repository-relative path it was taken from
 // and its body, the bytes under the section's own `#` line.
@@ -176,77 +166,59 @@ func waitingLineContractWindows(t *testing.T) []quotedText {
 	return windows
 }
 
-// Every quotation of the workflow package's copy is still in the file it names, in the form the
-// section declares, and every file of either list still has a section. The product half reads
-// this copy and not the files, so a sentence reworded in a text and not here leaves that half
-// holding words nobody ships, and a section deleted here leaves it holding nothing at all for
-// that file - both are failures of this test and of nothing else.
+// Every quotation of the workflow package's copy is still in the file it names, in the one-line
+// form the copy quotes it in, and every file of the band list still has a section. The product
+// half reads this copy and not the files, so a sentence reworded in a text and not here leaves
+// that half holding words nobody ships, and a section deleted here leaves it holding nothing at
+// all for that file - both are failures of this test and of nothing else.
 func TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay(t *testing.T) {
 	sections := waitingLineWordsSections(t)
 	for _, section := range sections {
-		path, list, form, _ := wordsSectionParts(section.path)
-		text := shippedText(t, path)
-		if form == "collapsed" {
-			text = onOneLine(text)
-		}
-		if !strings.Contains(text, section.body) {
-			t.Errorf("%s no longer carries its %s quotation in %s form, which %s is holding "+
-				"internal/workflow's check to:\n  %s\nquote the file as it reads now, in the same "+
-				"commit as the edit that moved it", path, list, form, waitingLineWordsExtract, section.body)
+		if !strings.Contains(onOneLine(shippedText(t, section.path)), section.body) {
+			t.Errorf("%s no longer carries the quotation %s is holding internal/workflow's check "+
+				"to:\n  %s\nquote the file as it reads now, on one line, in the same commit as the "+
+				"edit that moved it", section.path, waitingLineWordsExtract, section.body)
 		}
 	}
-	for _, list := range []struct {
-		name  string
-		files []string
-	}{{"naming", waitingLineNamingTexts}, {"band", waitingLineBandTexts}} {
-		for _, file := range list.files {
-			if slices.ContainsFunc(sections, func(section quotedText) bool {
-				path, named, _, _ := wordsSectionParts(section.path)
-				return path == file && named == list.name
-			}) {
-				continue
-			}
-			t.Errorf("%s has no `%s` section for %s: internal/workflow's check reads this copy and "+
-				"not that file, so the file is held to nothing until a section quotes it again",
-				waitingLineWordsExtract, list.name, file)
+	for _, file := range waitingLineBandTexts {
+		if slices.ContainsFunc(sections, func(section quotedText) bool { return section.path == file }) {
+			continue
 		}
+		t.Errorf("%s has no section for %s: internal/workflow's check reads this copy and not that "+
+			"file, so the file is held to nothing until a section quotes it again",
+			waitingLineWordsExtract, file)
 	}
 }
 
-// waitingLineWordsSections reads the workflow package's copy, each section keyed by its whole
-// `<path> <list> <form>` marker. The marker is kept whole and split by wordsSectionParts, so a
-// marker this file does not understand fails loudly rather than standing for a file nobody
-// checks.
+// waitingLineWordsSections reads the workflow package's copy, each section keyed by the path its
+// marker names. A `# ` line is a marker only in the copy's own shape, `<path> collapsed`, so a
+// quotation that itself opens with a hash stays the body it is, and a marker naming a file the
+// list does not read fails loudly rather than standing for a file nobody checks.
 func waitingLineWordsSections(t *testing.T) []quotedText {
 	t.Helper()
 	return quotedSections(t, waitingLineWordsExtract, func(marker string) (quotedText, bool) {
-		path, list, form, ok := wordsSectionParts(marker)
+		path, ok := wordsSectionPath(marker)
 		if !ok {
 			return quotedText{}, false
 		}
-		if !slices.Contains(waitingLineNamingTexts, path) && !slices.Contains(waitingLineBandTexts, path) {
-			t.Fatalf("%s quotes %s, which neither list of internal/workflow's check names: a section "+
-				"no list reads is held to that file by nothing", waitingLineWordsExtract, path)
+		if !slices.Contains(waitingLineBandTexts, path) {
+			t.Fatalf("%s quotes %s, which internal/workflow's band list does not name: a section no "+
+				"list reads is held to that file by nothing", waitingLineWordsExtract, path)
 		}
-		if (list == "naming") != (form == "raw") {
-			t.Fatalf("%s quotes %s as `%s %s`: a `naming` section is the file's raw bytes and a "+
-				"`band` section its collapsed form, as the product half reads each list",
-				waitingLineWordsExtract, path, list, form)
-		}
-		return quotedText{path: marker}, true
+		return quotedText{path: path}, true
 	})
 }
 
-// wordsSectionParts reads a section marker of the workflow package's copy: the path it quotes,
-// which of the two lists it answers for, and whether its body is the file's raw bytes or its
-// collapsed form.
-func wordsSectionParts(marker string) (path, list, form string, ok bool) {
+// wordsSectionPath reads a section marker of the workflow package's copy, `<path> collapsed`:
+// the path the section quotes, and the form word that says its body is that file's prose on one
+// line, which is the form the product half reads a wrapped fragment in and the only form a
+// quotation of one can be in.
+func wordsSectionPath(marker string) (string, bool) {
 	parts := strings.Fields(marker)
-	if len(parts) != 3 || !slices.Contains([]string{"naming", "band"}, parts[1]) ||
-		!slices.Contains([]string{"raw", "collapsed"}, parts[2]) {
-		return "", "", "", false
+	if len(parts) != 2 || parts[1] != "collapsed" {
+		return "", false
 	}
-	return parts[0], parts[1], parts[2], true
+	return parts[0], true
 }
 
 // The guide still prints the `legion state` sample cmd/legion's awaitingSummary is held to. That
@@ -264,20 +236,20 @@ func TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample(t *testing.T) {
 	}
 }
 
-// No shipped text of either of internal/workflow's lists claims a position in the waiting line.
-// This is the half of that test no copy can carry: a ban is a whole-file negative, and an
-// excerpt proves nothing about the sentence beside it - AGENTS.md once carried the placement
-// word for word two lines below a sentence claiming a position, and the presence check passed on
-// the neighbouring sentence's words. The rule those texts keep is that a text states the
-// placement, "among the issues whose work came back, oldest first", with a tree root's own first
-// phase placed at the moment its gate opened, and never the position that placement gives an
-// issue, which depends on what else waits.
+// No shipped text of internal/workflow's band list claims a position in the waiting line. This
+// is the half of that test no copy can carry: a ban is a whole-file negative, and an excerpt
+// proves nothing about the sentence beside it - AGENTS.md once carried the placement word for
+// word two lines below a sentence claiming a position, and the presence check passed on the
+// neighbouring sentence's words. The rule those texts keep is that a text states the placement,
+// "among the issues whose work came back, oldest first", with a tree root's own first phase
+// placed at the moment its gate opened, and never the position that placement gives an issue,
+// which depends on what else waits.
 //
-// What it proves: no file of either list carries one of the four wordings that claim a position.
+// What it proves: no file of the list carries one of the four wordings that claim a position.
 // What it does not: whether what a file says instead is true, which stays a reader's to judge,
 // and a wrong wording nobody has written yet, since the list holds the phrases these texts used
-// and no more. internal/workflow keeps the same ban over the files of packages/daemon, which are
-// its own job's inputs either way.
+// and no more. internal/workflow keeps the same ban over the files of packages/daemon, which
+// are its own job's inputs either way.
 func TestNoShippedTextClaimsAPositionInTheWaitingLine(t *testing.T) {
 	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
 	// one of these is banned as the one that carries it mid-sentence is.
@@ -287,23 +259,16 @@ func TestNoShippedTextClaimsAPositionInTheWaitingLine(t *testing.T) {
 		"front of the whole line",
 		"never first in",
 	}
-	read := map[string]bool{}
-	for _, list := range [][]string{waitingLineNamingTexts, waitingLineBandTexts} {
-		for _, file := range list {
-			if read[file] {
+	for _, file := range waitingLineBandTexts {
+		text := strings.ToLower(onOneLine(shippedText(t, file)))
+		for _, phrase := range banned {
+			if !strings.Contains(text, phrase) {
 				continue
 			}
-			read[file] = true
-			text := strings.ToLower(onOneLine(shippedText(t, file)))
-			for _, phrase := range banned {
-				if !strings.Contains(text, phrase) {
-					continue
-				}
-				t.Errorf("%s says %q, which no text the waiting line's checks list may say: such a "+
-					"text states where the line puts an issue - %q, a tree root's own first phase "+
-					"placed at the moment its gate opened - and never the position that gives it, "+
-					"which depends on what else waits.", file, phrase, waitingLineBand)
-			}
+			t.Errorf("%s says %q, which no text the waiting line's checks list may say: such a "+
+				"text states where the line puts an issue - %q, a tree root's own first phase "+
+				"placed at the moment its gate opened - and never the position that gives it, "+
+				"which depends on what else waits.", file, phrase, waitingLineBand)
 		}
 	}
 }

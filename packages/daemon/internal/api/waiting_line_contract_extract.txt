@@ -26,9 +26,18 @@
 # beside the field. A window it ever gains is one this file must gain with it.
 
 # packages/contracts/src/legion-api.ts
-al(),
+pec` step's row, which a reader that asks one question of one gate takes. */
+  gatedSteps: z.array(legionGatedStepView).optional(),
+  slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
-   * list names, so a slot holder and every other issue the line does not carry have none, and a
+   * list names, so every issue the line does not carry has none, and a
+   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: l
+
+# packages/contracts/src/legion-api.ts
+ot: legionSlotView.optional(),
+  /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
+   * list names, so every issue the line does not carry has none, and a
    * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
@@ -45,9 +54,9 @@ contract 58's waiting line
 an issue the list does
 
 # packages/pi-legion/AGENTS.md
-iting` names carries
+1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
-an issue the list does not name, a slot holder among them, carries no such key, and a caller
+an issue the list does not name carries no such key, and a caller
 from a pod below 58 is served every issue without the field), after contract 57's claim step
 record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
 carries `step`, what the daemon last saw that cla

@@ -1016,7 +1016,8 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261106150254_test.go'
               - '!packages/daemon/internal/store/migration_20261107052815_test.go'
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
-              - '!packages/daemon/internal/store/migration_20261108055000_test.go'
+              - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
+              - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -1724,7 +1725,8 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261106150254_test.go'
               - '!packages/daemon/internal/store/migration_20261107052815_test.go'
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
-              - '!packages/daemon/internal/store/migration_20261108055000_test.go'
+              - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
+              - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -2097,7 +2099,8 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261106150254_test.go'
               - '!packages/daemon/internal/store/migration_20261107052815_test.go'
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
-              - '!packages/daemon/internal/store/migration_20261108055000_test.go'
+              - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
+              - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -2641,15 +2644,16 @@ jobs:
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The three copies of the shipped texts waiting_line_texts_test.go:355 holds to
+              # The three copies of the shipped texts waiting_line_texts_test.go:320 holds to
               # the texts themselves, each committed beside the package whose own check reads
               # it. They are .txt files, which the module's `**/*.go` above does not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
               - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts those copies are held to, and the ban over them, every one
-              # read by waiting_line_texts_test.go:365. The three skills/legion-architect files
-              # it reads too are below already, for the wake check.
+              # read by waiting_line_texts_test.go:330. skills/legion-architect's SKILL.md,
+              # design-gate.md and wake-routing.md are below already, for the wake check, which
+              # is what reads them now.
               - 'AGENTS.md'
               - 'docs/site/src/content/docs/legion/concepts.md'
               - 'docs/site/src/content/docs/legion/running-legion.md'
@@ -2661,6 +2665,7 @@ jobs:
               - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
               - 'skills/legion-architect/references/acceptance.md'
               - 'skills/legion-controller/references/admission.md'
+              - 'skills/legion-controller/references/wakes.md'
               # The guide packages/envoy/internal/broker/oauth and
               # packages/daemon/internal/runtime/sandbox hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:36,43 and reclaim_doc_test.go:44,167).
