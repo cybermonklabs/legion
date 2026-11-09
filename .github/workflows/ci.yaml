@@ -3647,13 +3647,9 @@ jobs:
     # The stall watchdog's suites among them are cybermonklabs/legion#2922's, merged
     # 2026-11-08T18:46:47Z, and the 10 minutes that stood here came from #2512 (a limit above
     # each job's slowest green run, 2026-10-30), which is before them.
-    # The population these figures hold for is every branch that adds no pi-legion test of its
-    # own, this one among them: legion/INFRA-956, which adds its own and sets its own budget
-    # for them, is left out.
     # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
     # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
-    # concluded `success`, and to job 128896832850 of pull request 2938 at 602 s, every step of
-    # it successful too. A ceiling a little above today's sum is back inside the test step's
+    # concluded `success`. A ceiling a little above today's sum is back inside the test step's
     # own spread at the next file that lands: five stall-watchdog files and two model-fallback
     # files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
     # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry

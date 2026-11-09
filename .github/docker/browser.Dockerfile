@@ -100,13 +100,13 @@ RUN set -eux; \
       "postgresql-${PG_MAJOR}-pgvector" \
       python3 \
       # yaml, which .github/scripts/ci-tools.sh imports to read a row of
-      # .github/ci-tools.yaml (its `python3 -` heredocs at lines 158 and 285). GitHub's
+      # .github/ci-tools.yaml (its functions ci_tools__row and ci_tools_rows). GitHub's
       # ubuntu-24.04 runner carries PyYAML in its system python, so the second source every
       # tool install reads was written against an interpreter that has it; this base's python3
       # has it not. Without this package ./.github/actions/setup-bun dies with
-      # `ModuleNotFoundError: No module named 'yaml'` in its second-source step, which is the
-      # first step of every job of this image -- measured on jobs 128987854416 and
-      # 128987683881, where all eight browser legs died there before a browser started.
+      # `ModuleNotFoundError: No module named 'yaml'` in its second-source step, which runs
+      # before any browser step of the jobs this image serves -- measured in runs 42564330394
+      # and 42564284422, where all seven container legs of each died there.
       python3-yaml \
       util-linux \
       jq \
@@ -207,7 +207,7 @@ RUN set -eux; \
       || { echo "::error::fc-match sans-serif answered '$answer', not '$expected'"; exit 1; }; \
     pg_config --version; \
     python3 --version; \
-    # The module above, since `python3 --version` passes without it and the step that needs it
-    # is the first step of every job that runs this image.
+    # The module above, since `python3 --version` passes without it and setup-bun's
+    # second-source step, which runs before any browser step, needs it.
     python3 -c 'import yaml; print("python3 yaml", yaml.__version__)'; \
     weed version

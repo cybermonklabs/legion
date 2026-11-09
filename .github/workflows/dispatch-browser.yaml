@@ -166,7 +166,7 @@ jobs:
     # PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
     # binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
     # of .github/ci-tools.yaml, in the second-source step of ./.github/actions/setup-bun, which
-    # is the first step of every job here - flock, a C/C++ toolchain for the dependency whose
+    # runs before any browser step here - flock, a C/C++ toolchain for the dependency whose
     # install falls back to a source build, and a DejaVu core font added. So this job downloads
     # no browser and installs no browser host package from Ubuntu's mirror pool at run time
     # (dispatch://INFRA-1443). The digest is written out as a literal rather than through an
