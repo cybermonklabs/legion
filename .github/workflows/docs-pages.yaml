@@ -47,6 +47,8 @@ on:
       - 'docs/site/package.json'
       - '.bun-version'
       - '.github/actions/setup-bun/**'
+      - '.github/ci-tools.yaml'
+      - '.github/scripts/ci-tools.sh'
       # ci.yaml's *biome:
       - 'biome.json'
       - '.gitignore'
