@@ -1025,7 +1025,11 @@ test.skipIf(skip)(
     const answer =
       "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
     expect(await session.reply(sent, "the reply to `!exit 3`")).toBe(answer);
-    const published = messageFrames(session.frames.slice(from));
+    // Every row here shares one session, so a frame of an earlier row published after this row
+    // took its snapshot would be counted too: keep only the frames of the message sent above.
+    const published = messageFrames(session.frames.slice(from)).filter(
+      (each) => each.message.dispatchMessageId === sent.messageID
+    );
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe(answer);
   },
