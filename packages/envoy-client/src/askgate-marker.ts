@@ -133,6 +133,21 @@ export function gatedWrite(tool: string, args: Readonly<Record<string, unknown>>
   return false;
 }
 
+/**
+ * Whether this call may carry a verdict of AskGate's, which is a wider question than whether a
+ * review would be asked for it (`gatedWrite`).
+ *
+ * The two differ for an upload, and the difference was a hole. A write's identity covers the
+ * bytes and not the path, deliberately, so the same bytes under another name meet the same no —
+ * but `uploadIsDocument` reads the path's suffix, so `plan.txt` was a copy of a refused
+ * `plan.md` that the CLI never looked up at all. Same issue, same name, same bytes, the same
+ * identity, and one extra shell word posted the refused text verbatim. A predicate may govern
+ * what a missing marker means; it may never govern whether the verdict is read.
+ */
+export function mayCarryVerdict(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+  return gatedWrite(tool, args) || tool === "dispatch_artifact";
+}
+
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
@@ -300,9 +315,17 @@ function ownerLive(owner: AskgateOwner, now: number): boolean {
   if (owner.ns !== null && owner.ns !== pidNamespace()) {
     try {
       return now - storeTouched(owner.store) <= MARKER_MAX_AGE_MS;
-    } catch {
-      // The store is gone: its process removed it at exit, or it ended long ago.
-      return false;
+    } catch (error) {
+      // Only ENOENT is the store being gone — its process removed it at exit, or it ended long
+      // ago. Anything else (EACCES, ENOTDIR, EIO, ELOOP) is a store that cannot be read, which
+      // says nothing about whether its owner lives, and swallowing it dropped the only live
+      // owner: `askgateState` then returned `off` and the CLI skipped the whole check,
+      // `readVerdict` included, so a recorded refusal posted with no warning and no ledger row.
+      // Keeping the owner live sends the same fault to `askgateState`'s own store check, which
+      // answers `broken` — which is what that fault already gets for an owner of this
+      // namespace. The verdict differed only by which namespace the owner was in, and
+      // cross-namespace is the agent-box case.
+      return !hasErrnoCode(error, "ENOENT");
     }
   }
   if (owner.start !== null) return processStart(owner.pid) === owner.start;
@@ -386,13 +409,18 @@ function parseOwner(
   }
   if (!isOwnerText(data) || data.v !== 2) return undefined;
   const { pid, start, ns, store, mode, caps } = data;
+  // Absent is a fact about a version that predates the field, so it infers that version's
+  // behaviour. Present and unrecognised is a claim this reader cannot evaluate, so it takes the
+  // stricter reading: a future gate writing a third mode would otherwise drop every "cannot
+  // tell" of this session to posting.
+  const checks: AskgateMode = mode === undefined || mode === "warn" ? "warn" : "block";
   // A record with no capabilities is not ambiguous: it is a gate from before them, which is a
   // fact and not a guess. It records no verdicts, and its markers bind the one encoding that
   // version used. One historical encoder, named by a declared fact rather than tried among
   // several — and deletable once no such gate is left, with the record itself saying when.
   return {
     owner: { pid, start, ns: ns ?? null, store },
-    mode: mode === "block" ? "block" : "warn",
+    mode: checks,
     ...held(caps, "caps" in data),
   };
 }
@@ -414,13 +442,21 @@ function parseOwner(
  */
 function held(caps: unknown, present: boolean): { verdicts: boolean; markers: string[] } {
   if (!present) return { verdicts: false, markers: [MARKERS_RAW] };
+  // Every key known, every value known, nothing over. A key written twice is not seen here:
+  // `JSON.parse` keeps the last, so what survives the collapse is what is read, and a record
+  // carrying `{"verdicts":"nope","verdicts":"askgate-verdicts-v2","markers":"canonical"}`
+  // holds the capability while the reverse order does not. Nothing in this tree writes a
+  // duplicate key, and a same-user process that edits the record is already outside what the
+  // marker store defends against, so this is left rather than guarded — but it is a shape
+  // order decides, which is why it is written down rather than claimed closed.
   if (typeof caps !== "object" || caps === null || Array.isArray(caps))
     return { verdicts: false, markers: [] };
   const declared = caps as Record<string, unknown>;
-  const keys = Object.keys(declared);
-  // Every key known, every value known, nothing over: a duplicate key `JSON.parse` collapsed
-  // leaves a shape that fails this, so order cannot decide what a record permits.
-  if (keys.length !== 2 || declared.verdicts !== VERDICTS || declared.markers !== MARKERS_CANONICAL)
+  if (
+    Object.keys(declared).length !== 2 ||
+    declared.verdicts !== VERDICTS ||
+    declared.markers !== MARKERS_CANONICAL
+  )
     return { verdicts: false, markers: [] };
   return { verdicts: true, markers: [MARKERS_CANONICAL] };
 }
@@ -938,7 +974,17 @@ export function consumeMarker(
   }
   usable.sort((a, b) => Number(b.bound) - Number(a.bound));
   for (const { file, bound } of usable) {
-    if (!bound && !acceptUnbound) continue;
+    // An argv-only marker says no review stands behind it, so it may not answer an uncertainty
+    // — neither the caller's, from the verdict store (`acceptUnbound`), nor this scan's own,
+    // from a marker of this very call that exists and will not be read, or that a verdict does
+    // not cover. The second was found here and reported only after this loop had returned, so
+    // a subagent's marker, or one minted for a timeout, posted past a damaged marker of the
+    // same call and past a stale or expired one — silently, since nothing refused.
+    if (
+      !bound &&
+      (!acceptUnbound || unreadable !== undefined || changed !== undefined || mismatched || expired)
+    )
+      continue;
     try {
       unlinkSync(file);
       return { ok: true, bound };
@@ -1206,8 +1252,11 @@ export type VerdictRead =
   | { readonly kind: "unknown"; readonly why: string; readonly path: string }
   /** The store was read whole and holds no verdict for this write, and none was lost. */
   | { readonly kind: "none" }
-  /** No verdict for this write, but this session lost one it could not write down. */
-  | { readonly kind: "lost"; readonly path: string };
+  /**
+   * No verdict for this write, but this session lost one it could not write down. `path` is the
+   * mark and `store` the directory that would not take the verdict — the one an operator fixes.
+   */
+  | { readonly kind: "lost"; readonly path: string; readonly store: string };
 
 /** Reads one file of the verdict store, without following a link. */
 function readVerdictFile(file: string): Record<string, unknown> | "gone" | "unreadable" {
@@ -1264,7 +1313,7 @@ export function readVerdict(session: string, identity: string): VerdictRead {
       why: `AskGate's record of a lost verdict cannot be read (${lost})`,
       path: lost,
     };
-  return { kind: "lost", path: lost };
+  return { kind: "lost", path: lost, store: verdictDir(session) };
 }
 
 /** This session's verdict filed under one identity, or undefined where it holds none. */

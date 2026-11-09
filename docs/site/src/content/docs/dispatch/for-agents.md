@@ -133,8 +133,11 @@ this version of the command does not read or whose gate recorded none. Those are
 saying no; they are the command unable to say that none did. Most refuse in block mode and post
 with a warning in warn mode; a record that cannot be read refuses in both, since the mode is
 unreadable with it. Sending the write again as one `dispatch` call of literal words has the gate
-review it now, which clears any of them for that write; the condition itself ends when the Oh My
-Pi process restarts.
+review it now, which clears any of them for that write — **from the main agent only**. A task
+subagent's literal write is given a marker carrying no review, which is passed over here, so
+resending from one never works and the main agent has to send it. The condition itself ends when
+the Oh My Pi process restarts, except for a session holding verdicts of a scheme the command does
+not read, which outlive any restart.
 
 `{ "askgate": { "enabled": false } }` in the session's own `envoy.json` turns the review off.
 

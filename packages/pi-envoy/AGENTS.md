@@ -703,7 +703,10 @@ the command (dispatch://INFRA-2079, row 3.5). A write no review ever saw carries
 verdict: where the gate recording the session says it records its refusals, that absence is a
 statement and the write posts with a warning in every mode, where the session's block choice
 used to refuse it. Where it does not — a gate from before the capability — absence states
-nothing and the write is held in block mode until the Oh My Pi process restarts. A file that changed after the gate read it, other arguments, a marker past its age, and
+nothing and the write is held in block mode until the Oh My Pi process restarts; a literal
+resend from the main agent is reviewed and posts, while a task subagent's gets a marker carrying
+no review and so has no remedy of its own. A file that changed after the gate read it, other
+arguments, a marker past its age, and
 evidence that cannot be read fall between the two and are refused where the session chose block.
 A session's verdicts live in `<state>/sessions/<id>/askgate-verdicts-v2/`, one file per refused
 write named by the write's identity, the directory carrying the scheme that wrote it, and `<state>/sessions/<id>/askgate-verdicts-lost` marks a

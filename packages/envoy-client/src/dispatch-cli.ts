@@ -9,6 +9,7 @@ import {
   type FileDigest,
   fileOperands,
   gatedWrite,
+  mayCarryVerdict,
   operandPath,
   readVerdict,
   uploadBytesOf,
@@ -122,13 +123,38 @@ const STORE_RECOVERY =
   "This is AskGate's own state for this session and nothing about the call, but a store that cannot be read may hold a refusal of this write, so it is not sent. The path that could not be read is named above. A session whose Oh My Pi process is gone may have its AskGate record removed, which turns AskGate off for that session; tell whoever owns the session if it is live.";
 
 /**
- * What the agent reads when this session holds verdicts of a scheme this version cannot read,
- * or a gate that records none. Its own text, because the marker advice is wrong three times
- * over here: nothing was tampered with, the path named is a directory rather than a file, and
- * resending cannot help — nothing may write to a foreign store, so no review clears it.
+ * What a write held for want of a readable verdict can actually do about it, and what it cannot.
+ * Measured on this head in each state that prints it, by following the advice rather than
+ * rewording it from the code.
+ *
+ * A main agent's literal resend works everywhere: the gate reviews it now and mints a marker
+ * bound to these arguments, which the CLI consumes and posts. A **task subagent's does not**,
+ * and no wording makes it: `askgate-core` mints an argv-only marker for every call whose
+ * `ctx.agent.kind` is not `main`, and an argv-only marker is not a verdict, so it is passed over
+ * wherever the store cannot be read. Four literal resends in a row are four refusals. Telling a
+ * subagent to resend costs it four attempts to learn what this sentence can tell it, so these
+ * say so instead.
  */
-const FOREIGN_VERDICTS =
-  "No marker was tampered with and nothing of the call is at fault. A verdict this session holds, or one its gate did not record, cannot be read by this version of the dispatch CLI, so a refusal of this very write cannot be ruled out and it is not sent. Send it as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it. The session goes on reading this way until the Oh My Pi process it belongs to restarts: a new session inside the same process is written by the same gate and reads the same.";
+const RESEND = (ends: string) =>
+  `Send it again as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it — from the main agent, not from a task subagent, whose literal write gets a marker carrying no review and is passed over here; a subagent's write has no remedy of its own, so have the main agent send it. ${ends}`;
+
+/**
+ * What the agent reads when the gate recording this session says nothing about recording the
+ * writes its reviews refuse: a gate from before the capability, or one declaring a capability
+ * this version cannot evaluate. Nothing was tampered with and nothing of the call is at fault.
+ */
+const NO_VERDICT_CAPABILITY = `No marker was tampered with and nothing of the call is at fault. The AskGate recording this session does not say it records the writes its reviews refuse, so a refusal of this very write cannot be ruled out and it is not sent. ${RESEND(
+  "The session goes on reading this way until the Oh My Pi process it belongs to restarts: a new session inside the same process is written by the same gate and reads the same."
+)}`;
+
+/**
+ * What the agent reads when this session holds verdicts of a scheme this version cannot read.
+ * A process restart does not end this one: the store is in the session's own directory and
+ * outlives the gate, so it stays until that directory is pruned or someone removes it.
+ */
+const FOREIGN_VERDICTS = `No marker was tampered with and nothing of the call is at fault. This session holds AskGate verdicts of a scheme this version of the dispatch CLI does not read, so a refusal of this very write cannot be ruled out and it is not sent. ${RESEND(
+  "The store named above sits in the session's own directory and outlives any restart: it goes when that directory is pruned, or when someone who knows what it held removes it."
+)}`;
 
 /**
  * What the agent reads when an upload's own file cannot be read here. Its bytes are what the
@@ -141,9 +167,17 @@ const UPLOAD_UNREADABLE =
 /**
  * What the agent reads in a session whose gate reached a verdict of no and could not write it
  * down. Nothing found is no longer proof that nothing was said, for any write of that session.
+ *
+ * It names the verdict store, which is what failed. The earlier text accused the session's own
+ * directory of taking no file, measured false in the one state that prints this: with the store
+ * at `chmod 500` the verdict write fails while the mark and a plain file both succeed, so the
+ * sentence sent an operator to a healthy directory. The state it did describe is the one where
+ * the gate hard-stops and this never prints.
  */
-const VERDICT_LOST =
-  "AskGate could not write down a verdict it reached in this session, so for the rest of it a write it has nothing recorded against is no proof that it reviewed nothing. Send this write as one bash call of literal words to have it reviewed, and read the path named above: the session's own state directory would not take a file.";
+const VERDICT_LOST = (store: string) =>
+  `AskGate could not write down a verdict it reached in this session, so for the rest of it a write it has nothing recorded against is no proof that it reviewed nothing. The verdict store that would not take it is \`${store}\`; the session's own directory is writable, which is how the mark naming this got there. ${RESEND(
+    "The mark does not clear itself, since the verdict that was lost stays lost: repair the store, and remove the mark by hand once you accept that one verdict is gone."
+  )}`;
 
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
 const LITERAL_FORM =
@@ -432,7 +466,11 @@ export async function runDispatchCli(
   let uploadBytes: Uint8Array | undefined;
   /** Said again after the result, where the ledger could not record an unreviewed write. */
   let unreviewedAgain: string | undefined;
-  if (gatedWrite(parsed.tool, parsed.args)) {
+  if (mayCarryVerdict(parsed.tool, parsed.args)) {
+    // A call no review would be asked for — an upload whose suffix is not markdown — is in this
+    // branch only so that its verdict is read. A refusal of it still refuses; anything short of
+    // one leaves it exactly as it was, with no warning and no ledger line.
+    const reviewed = gatedWrite(parsed.tool, parsed.args);
     const command = commandName(parsed.tool);
     const notCalled = `dispatch ${command} was not called:`;
     /**
@@ -589,7 +627,9 @@ export async function runDispatchCli(
             advice:
               said === undefined
                 ? { refused: UPLOAD_UNREADABLE, posted: UPLOAD_UNREADABLE }
-                : { refused: FOREIGN_VERDICTS, posted: FOREIGN_VERDICTS },
+                : stored?.kind === "none"
+                  ? { refused: NO_VERDICT_CAPABILITY, posted: NO_VERDICT_CAPABILITY }
+                  : { refused: FOREIGN_VERDICTS, posted: FOREIGN_VERDICTS },
           };
         } else {
           if (spent === undefined || spent.ok) throw new Error("unreachable: a marker was taken");
@@ -628,7 +668,10 @@ export async function runDispatchCli(
                     mode: gate.mode,
                     why: "AskGate reached a verdict in this session that it could not write down",
                     reason: `AskGate reached a verdict in this session that it could not write down (${said.path}), so a verdict on this write cannot be ruled out`,
-                    advice: { refused: VERDICT_LOST, posted: VERDICT_LOST },
+                    advice: {
+                      refused: VERDICT_LOST(said.store),
+                      posted: VERDICT_LOST(said.store),
+                    },
                   }
                 : {
                     verdict: "none",
@@ -651,7 +694,7 @@ export async function runDispatchCli(
         advice: { refused: STORE_RECOVERY, posted: STORE_RECOVERY },
       };
     }
-    if (finding !== undefined) {
+    if (finding !== undefined && (reviewed || finding.verdict === "refused")) {
       // The asks this write would open for a person, counted from the write's own text: the
       // one number pi-envoy's record of an unmarked write carries, so a session holding a
       // Dispatch token alone can count the asks that went out, or were refused, unreviewed.

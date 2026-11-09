@@ -1333,6 +1333,203 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(messagePosts()).toHaveLength(0);
   });
 
+  // A message is as much an artefact of this head as a test is, and it has no suite to fail.
+  // These follow each remedy rather than reading it: the advice is executed in the state that
+  // prints it, and only what works is promised.
+  test("each held write's advice is followed, and only what works is promised", async () => {
+    // What the gate mints for a literal resend: bound for the main agent, argv-only for a task
+    // subagent (`ctx.agent.kind !== "main"`), which is unchanged at the base. A gate from
+    // before capabilities binds the encoding of its own version, which is what the record then
+    // declares by saying nothing.
+    const mintAs = async (kind: "main" | "subagent", raw: boolean) => {
+      if (kind !== "main") return mint(MESSAGE, null);
+      const args = await dryArgs(MESSAGE);
+      return raw
+        ? writeFileSync(
+            join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`),
+            JSON.stringify({
+              v: 2,
+              argv: argvDigest(MESSAGE),
+              args: sha(args),
+              files: [],
+              toolCallId: "call-1",
+              outcome: "verdict",
+              createdAt: Date.now(),
+            }),
+            { mode: 0o600 }
+          )
+        : void mint(MESSAGE, args);
+    };
+    const states: Array<[string, () => Promise<void>, boolean]> = [
+      ["no verdict capability", async () => writeRecord("ses-1", undefined, "block", null), true],
+      [
+        "a foreign store",
+        async () => {
+          writeRecord();
+          const older = join(stateDir, "sessions", "ses-1", "askgate-verdicts");
+          mkdirSync(older, { recursive: true });
+          writeFileSync(join(older, "0".repeat(64)), "{}");
+        },
+        false,
+      ],
+      [
+        "a lost verdict",
+        async () => {
+          writeRecord();
+          markVerdictsLost(join(stateDir, "sessions", "ses-1"), Date.now());
+        },
+        false,
+      ],
+    ];
+    for (const [state, arrange, raw] of states) {
+      for (const who of ["main", "subagent"] as const) {
+        rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+        rmSync(store(), { recursive: true, force: true });
+        posts.length = 0;
+        await arrange();
+        // Held with no marker at all, which is what prints the advice.
+        const held = await run(MESSAGE);
+        expect({ state, who, held: held.code }).toEqual({ state, who, held: 1 });
+        expect(held.stdout).toContain("not from a task subagent");
+        // Then the advice, followed.
+        await mintAs(who, raw);
+        const after = await run(MESSAGE);
+        expect({ state, who, posted: after.code === 0 }).toEqual({
+          state,
+          who,
+          posted: who === "main",
+        });
+      }
+    }
+  });
+
+  // The lost-verdict message names the store that would not take the verdict, not the session
+  // directory, which in the only state that prints this demonstrably takes files — the mark
+  // naming it is one of them.
+  test("the lost-verdict advice names the store that failed", async () => {
+    const session = join(stateDir, "sessions", "ses-1");
+    writeRecord();
+    markVerdictsLost(session, Date.now());
+    const { stdout } = await run(MESSAGE);
+    expect(stdout).toContain(join(session, "askgate-verdicts-v2"));
+    expect(stdout).not.toContain("own state directory would not take a file");
+  });
+
+  // An argv-only marker beside a damaged one of the same call: the shortcut was taken inside
+  // `consumeMarker`, which found the damage and reported it only after the unlink loop had
+  // already returned. The gate mints argv-only for every task subagent's literal write and for
+  // every timeout, which its own comment calls the ordinary case.
+  test("an argv-only marker does not outrank a marker of this call that cannot be read", async () => {
+    const damage: Array<[string, (file: string) => void]> = [
+      ["unreadable", (file) => chmodSync(file, 0o000)],
+      ["corrupt", (file) => writeFileSync(file, "{broken")],
+      ["empty", (file) => writeFileSync(file, "")],
+      ["a version this one cannot read", (file) => writeFileSync(file, JSON.stringify({ v: 3 }))],
+    ];
+    for (const [name, spoil] of damage) {
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      posts.length = 0;
+      writeRecord();
+      const bound = mint(MESSAGE, await dryArgs(MESSAGE));
+      spoil(bound);
+      mint(MESSAGE, null);
+      try {
+        const { code } = await run(MESSAGE);
+        expect({ name, code }).toEqual({ name, code: 1 });
+        expect(messagePosts()).toHaveLength(0);
+      } finally {
+        chmodSync(bound, 0o600);
+      }
+    }
+  });
+
+  // And the two mode-governed refusals the same shortcut erased.
+  test("an argv-only marker does not outrank a stale or expired marker", async () => {
+    for (const [name, make] of [
+      // Bound to arguments this call does not carry, which is what makes it stale: MESSAGE
+      // sends its body inline, so feeding stdin would change nothing.
+      ["other arguments", async () => void mint(MESSAGE, { issue: "DSP-1", body: "other text" })],
+      ["past its age", async () => void mint(MESSAGE, null, Date.now() - 3 * MARKER_MAX_AGE_MS)],
+    ] as Array<[string, () => Promise<void>]>) {
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      posts.length = 0;
+      writeRecord();
+      await make();
+      mint(MESSAGE, null);
+      const { code } = await run(MESSAGE);
+      expect({ name, code }).toEqual({ name, code: 1 });
+      expect(messagePosts()).toHaveLength(0);
+    }
+  });
+
+  // A cross-namespace owner whose store cannot be stat'ed read as "the owner is gone", which
+  // turned the gate off and skipped the verdict lookup entirely. The same fault for an owner of
+  // this namespace reached `askgateState`'s own check and refused: one fault, two verdicts,
+  // decided by a namespace.
+  test("a cross-namespace owner whose store cannot be read keeps the gate on", async () => {
+    const self = {
+      pid: process.pid,
+      start: startOf(process.pid),
+      ns: "ns-elsewhere",
+      store: store(),
+    };
+    const file = ownerFile("ses-1", self);
+    mkdirSync(dirname(file), { recursive: true });
+    mkdirSync(join(self.store, "markers"), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        v: 2,
+        ...self,
+        mode: "block",
+        caps: { verdicts: "askgate-verdicts-v2", markers: "canonical" },
+      })
+    );
+    await refused();
+    const parent = dirname(self.store);
+    chmodSync(parent, 0o000);
+    try {
+      const { code, stdout } = await run(MESSAGE);
+      expect(code).toBe(1);
+      expect(stdout).not.toContain("Posted message");
+      expect(messagePosts()).toHaveLength(0);
+    } finally {
+      chmodSync(parent, 0o700);
+    }
+  });
+
+  // The verdict is read for every upload, whatever its path is called. The identity covers the
+  // bytes and not the path on purpose, but a suffix test decided whether the lookup happened at
+  // all, so a `cp` of a refused `plan.md` to `plan.txt` posted the same bytes verbatim.
+  test("a refused upload's bytes are refused under any suffix", async () => {
+    const text = "# Plan\n";
+    writeRecord();
+    for (const name of ["plan.md", "plan.txt"]) writeFileSync(join(stateDir, name), text);
+    const upload = (file: string) => [
+      "artifact",
+      "--issue",
+      "DSP-1",
+      "--name",
+      "plan",
+      "--path",
+      join(stateDir, file),
+    ];
+    writeVerdict(
+      join(stateDir, "sessions", "ses-1"),
+      writeIdentity("dispatch_artifact", await dryArgs(upload("plan.md")), Buffer.from(text)),
+      "failure 12: the plan names no owner",
+      Date.now()
+    );
+    for (const file of ["plan.md", "plan.txt"]) {
+      const { code, stdout } = await run(upload(file));
+      expect({ file, code }).toEqual({ file, code: 1 });
+      expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    }
+    expect(postsTo(ARTIFACTS)).toHaveLength(0);
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();

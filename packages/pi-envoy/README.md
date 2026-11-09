@@ -512,8 +512,10 @@ review refused that very write (dispatch://INFRA-2079, row 3.5):
   file per refused write, named by the write's identity, whose body is the reason the review
   gave and when. The directory carries the scheme, so a change to the encoding is a new
   directory: a verdict of another scheme is never decoded, only detected, and a session holding
-  one holds every gated write in block mode that no marker bound to it covers — a literal
-  resend the gate reviews and mints for still posts — until the Oh My Pi process restarts. `<state>/sessions/<id>/askgate-verdicts-lost`
+  one holds every gated write in block mode that no marker bound to it covers. A literal resend
+  **from the main agent** is reviewed and minted for and still posts; a task subagent's gets a
+  marker carrying no review, which is passed over, so it has no remedy of its own. A foreign
+  store outlives a restart, since it sits in the session's own directory. `<state>/sessions/<id>/askgate-verdicts-lost`
   is the mark: its presence makes the session read a write it has nothing recorded against as
   unknown rather than unreviewed, for the rest of that session's life, and it never clears. An
   operator whose session refuses every unreviewed write should look for that file first — the
