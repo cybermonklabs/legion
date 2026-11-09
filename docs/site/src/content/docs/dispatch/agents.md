@@ -333,6 +333,8 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   message, and is given to the agent to read at its next turn; it starts no turn.
   If the session moves to another conversation (`/new`, `/resume`) while the command runs, the
   agent is not given it, so the other conversation never reads output that is not its own.
+  If it moved before the command started, the command is not run at all and the reply says so, so
+  nothing of it runs in the other conversation.
   One command runs for a session at a time, and a second while one is running is answered naming
   the command it is waiting on.
   A command is stopped after two minutes with what it printed kept, and output longer than 8,000

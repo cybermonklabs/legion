@@ -251,13 +251,20 @@ What this caller still does differently from the same line typed at the CLI, and
 keeps of its own (a process group, both streams pipes read to their end with the first 32,000
 bytes kept, the ignored standard input, and the stop after `ENVOY_SHELL_COMMAND_LIMIT_MS`,
 default 120000, with what it printed kept), is listed once, in `src/typed-shell.ts`'s header.
-One command runs for a
-session at a time, and a `!` that arrives while one runs is answered naming the command still
-running. The group is also killed as this process exits and at `session_shutdown`, which holds
-the running command's own kill: a detached group outlives the session otherwise, so an `/exit`
-during `!while :; do :; done` would leave a process nobody stops. A `!` that arrives once the
-session is shutting down runs nothing and is answered saying so, since a command started then
-would outlive the session it was asked of. What it printed goes three ways, each cut at 8,000
+One command runs for a session at a time, and the claim is keyed by the session the command was
+addressed to (`runningShellCommands`), so a second `!` sent to the same session is answered
+naming that session's running command while a `!` sent to a session the host has moved to runs
+on its own.
+The group is also killed as this process exits and at `session_shutdown`, which holds the kill
+of every command running then: a detached group outlives the session otherwise, so an `/exit`
+during `!while :; do :; done` would leave a process nobody stops.
+A `!` that arrives once the session is shutting down runs nothing and is answered saying so,
+since a command started then would outlive the session it was asked of.
+A `!` whose session is no longer the one open here (`sessionOpen`: this instance's own id and
+the host's live one) runs nothing either, and is answered saying so: a `/new`, a `/resume` or a
+move with no event for it put the host on another conversation between the accept and the
+command, and running it then would run it in that conversation's directory.
+What it printed goes three ways, each cut at 8,000
 characters with a line saying it was
 cut, and each carrying the output in a fenced code block whose fence is longer than the longest
 run of backticks in it, since all three surfaces read the text as Markdown and the fence is also
@@ -268,7 +275,12 @@ person ran it and the host wrote nothing, and which carries the Dispatch message
 re-keys it over the person's turn instead of drawing it twice; the reply on Dispatch, which every
 such message gets, one whose command printed nothing included; and the agent's transcript, through
 `pi.sendMessage` with `deliverAs: "nextTurn"` and `triggerTurn: false`, so it reads them at its
-next turn and no turn starts for them. What the command printed is kept without its control
+next turn and no turn starts for them.
+Where the session the command was asked of is not the one open here by the time the report is
+ready, the agent is handed no copy, and the report the person and the live view read says so in
+a sentence of its own (`shellCommandWithheldReport`), so neither is left to read the output as
+something the agent went on to act on.
+What the command printed is kept without its control
 characters, the line break and the tab apart: Dispatch cannot store U+0000 and refuses a whole
 reply holding one (400 `NUL_CHARACTER`), which would leave `!head -c 64 /dev/urandom` with no
 answer at all; a reply Dispatch refuses for any other reason is posted again as Dispatch's own

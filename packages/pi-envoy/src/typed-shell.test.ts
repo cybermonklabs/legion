@@ -19,8 +19,10 @@ import {
   shellCommandBusyReport,
   shellCommandFrom,
   shellCommandMessage,
+  shellCommandMovedReport,
   shellCommandReport,
   shellCommandShutdownReport,
+  shellCommandWithheldReport,
 } from "./typed-shell";
 
 /** A directory of this machine's own, so a command that prints its working directory proves the
@@ -623,6 +625,24 @@ describe("the texts a command becomes", () => {
     );
   });
 
+  // The command ran, and the agent of the session it was asked of was handed no copy: the host
+  // had moved to another conversation by the time it ended (the `sessionOpen` guard in
+  // `runShellCommandTurn`). The person reading the reply, and the live view of the session that
+  // ran it, are told that rather than left to assume the agent read the output. The text still
+  // opens with the person's line, so the view reads it back as this message's own report.
+  test("say the agent was handed no output, keeping the person's line at the opening", () => {
+    expect(shellCommandWithheldReport(shellCommandReport(line, ran))).toBe(
+      "!printf hi\n\n```\nhi\n```\n\nThe agent was not handed this output: this session is no longer the one open here."
+    );
+    for (const sent of ["!ls", "! ls", "!  git status", "!ls\t"]) {
+      const withheld = shellCommandWithheldReport(
+        shellCommandReport(sent, { ...ran, output: "one.txt" })
+      );
+      expect(withheld).toStartWith(`${sent}\n\n\`\`\`\none.txt\n\`\`\`\n\n`);
+      expect(isShellCommandReport(withheld, sent)).toBe(true);
+    }
+  });
+
   // The space a person typed after the mark is theirs, and so is a tab after the command: the
   // live view reads each of these texts back against the message's stored body
   // (`isShellCommandReport`), so one opening with the trimmed command matches nothing there and
@@ -632,14 +652,19 @@ describe("the texts a command becomes", () => {
       const report = shellCommandReport(sent, { ...ran, output: "one.txt" });
       const busy = shellCommandBusyReport(sent, "sleep 600");
       const shutdown = shellCommandShutdownReport(sent);
+      const moved = shellCommandMovedReport(sent);
       expect(report).toBe(`${sent}\n\n\`\`\`\none.txt\n\`\`\``);
       expect(busy).toBe(
         `${sent}\n\nThe command was not run: this session is still running !sleep 600.`
       );
       expect(shutdown).toBe(`${sent}\n\nThe command was not run: this session is shutting down.`);
+      expect(moved).toBe(
+        `${sent}\n\nThe command was not run: this session is no longer the one open here.`
+      );
       expect(isShellCommandReport(report, sent)).toBe(true);
       expect(isShellCommandReport(busy, sent)).toBe(true);
       expect(isShellCommandReport(shutdown, sent)).toBe(true);
+      expect(isShellCommandReport(moved, sent)).toBe(true);
     }
     // What ran is still the trimmed command, which is what the CLI's own bang handler runs.
     expect(shellCommandFrom("! ls")).toBe("ls");

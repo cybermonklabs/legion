@@ -283,6 +283,12 @@ export async function runShellCommand(
     killGroupsOnExit();
     // Inside the try with the spawn: the host's own configuration is what answers here, and a
     // shell it cannot resolve is a command that did not start rather than a throw at the caller.
+    // Nothing is awaited before this spawn, and nothing may be. The caller reads the session the
+    // command was addressed to, reads that session's working directory, and reaches here in the
+    // same synchronous run (`runShellCommandTurn` in `extensions/envoy.ts`), which is what makes
+    // the guard and the directory describe the same moment as the spawn. One await inserted
+    // anywhere on that path lets a `/new` or a `/resume` land inside it, and the whole command
+    // then runs for the conversation the host moved to, in its directory.
     const invocation = shellInvocation(command);
     child = Bun.spawn(invocation.argv, {
       cwd: options.cwd,
@@ -401,6 +407,16 @@ export function shellCommandReport(line: string, result: ShellCommandResult): st
   return parts.join(SHELL_COMMAND_REPORT_SEPARATOR);
 }
 
+/** The report with one sentence more, for a command whose session is not the one open here by
+ *  the time it ends: the agent of that session was handed no copy (the `sessionOpen` guard in
+ *  `runShellCommandTurn`), so the person reading the reply, and the live view of the session
+ *  that ran the command, are told that rather than left to assume the agent read it. The
+ *  sentence goes last, so the text still opens with the person's line and the live view still
+ *  reads it back (`isShellCommandReport`, `@legion/contracts`). */
+export function shellCommandWithheldReport(report: string): string {
+  return `${report}${SHELL_COMMAND_REPORT_SEPARATOR}The agent was not handed this output: this session is no longer the one open here.`;
+}
+
 /** The report as the agent reads it in its transcript, under the line that says whose command it
  *  was. The report's own fence is what marks where the output ends here too: a file or a `curl`
  *  response that prints a line like the heading above would otherwise reach the agent as if
@@ -410,7 +426,7 @@ export function shellCommandMessage(report: string): string {
 }
 
 /** The answer a `!` nothing ran for: the person's line as they sent it, the separator, and the
- *  one sentence saying why nothing ran. The two refusals below are this text and a reason, so
+ *  one sentence saying why nothing ran. The three refusals below are this text and a reason, so
  *  the shape a refusal has is written here alone. */
 function shellCommandRefusal(line: string, why: string): string {
   return `${line}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: ${why}`;
@@ -426,4 +442,13 @@ export function shellCommandBusyReport(line: string, running: string): string {
  *  will be. A command started now would outlive the session that was asked for it. */
 export function shellCommandShutdownReport(line: string): string {
   return shellCommandRefusal(line, "this session is shutting down.");
+}
+
+/** The answer a `!` gets once the session it was addressed to is not the one open here any
+ *  more: a `/new` or a `/resume`, or a move the host made with no event for it, put the host on
+ *  another conversation before the command started. Running it then would run it in that other
+ *  conversation's directory, and the person who sent the line is answered rather than left
+ *  waiting. */
+export function shellCommandMovedReport(line: string): string {
+  return shellCommandRefusal(line, "this session is no longer the one open here.");
 }
