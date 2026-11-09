@@ -140,8 +140,9 @@ var connectCounts struct {
 // run from a campaign would say nothing and could hide a defect of this very conversion.
 //
 // Only a reset, a refusal or a closed socket is retried. A server that ANSWERED — a bad password,
-// a database that does not exist — fails at once, because a second attempt meets the same answer
-// and a retry there would turn a defect into a wait (transientConnect).
+// a database that does not exist, a connection refused for max_connections — fails at once,
+// because a second attempt meets the same answer and a retry there would turn a defect into a
+// wait (transientConnect).
 func OnConnect(open func() error) error {
 	var err error
 	for try := 1; ; try++ {
@@ -161,7 +162,10 @@ func OnConnect(open func() error) error {
 
 // transientConnect reports whether err is the socket going rather than the server answering: a
 // reset, a refusal, a broken pipe or an end of file, each of which a later attempt may not meet.
-// A *pgconn.PgError is the server's own answer and is never transient, whatever it says.
+// A *pgconn.PgError is the server's own answer and is never transient, whatever it says — the
+// connection cap's own refusal (SQLSTATE 53300, "sorry, too many clients already") above all,
+// since a retry that absorbed that would make k6's headroom true by construction and leave the
+// campaign's zero refusals saying nothing.
 func transientConnect(err error) bool {
 	var answered *pgconn.PgError
 	if errors.As(err, &answered) {

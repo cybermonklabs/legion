@@ -30,11 +30,19 @@ func TestATransientConnectIsTheSocketGoingAndNotTheServerAnswering(t *testing.T)
 		{name: "a closed connection of this process's own", err: fmt.Errorf("write: %w", net.ErrClosed), want: true},
 		{name: "a bad password, which the server answered", err: &pgconn.PgError{Code: "28P01", Message: "password authentication failed"}},
 		{name: "a database that does not exist, which the server answered", err: &pgconn.PgError{Code: "3D000", Message: "database does not exist"}},
+		// The one answer it would be worst to retry. A refusal for max_connections is how the cap
+		// reports itself, and the absence of that refusal across a campaign is what k6's headroom
+		// rests on: a retry that absorbed it would make the absence true by construction and leave
+		// the evidence saying nothing (dispatch://INFRA-1524, k6).
+		{name: "the connection cap's own refusal, which must fail at once", err: &pgconn.PgError{Code: "53300", Message: "sorry, too many clients already"}},
+		{name: "the cap's refusal for one role", err: &pgconn.PgError{Code: "53300", Message: "too many connections for role \"legion_test\""}},
 		{name: "a server answer wrapped in a connect error", err: fmt.Errorf("connect: %w", &pgconn.PgError{Code: "28P01"})},
 		{name: "any other error", err: errors.New("parse the URL")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// A retry of the cap's own refusal is the failure this table exists to refuse, so it
+			// is named rather than left to the reader of the want column.
 			if got := transientConnect(tc.err); got != tc.want {
 				t.Fatalf("transientConnect(%v) = %v, want %v", tc.err, got, tc.want)
 			}
