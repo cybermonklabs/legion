@@ -14,11 +14,12 @@ import { answerAsk, createAsk, createIssue, createProject } from "./api";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { stubbed } from "./stub/stub-test";
 
-/** The file's own three issues - a document, a comment and a message - with the two hits the
- *  term finds among them and a word that is in none of them. */
+/** The file's own three issues - a document, a comment and a message - with the three hits the
+ *  term finds among them - the issue whose spec holds the term, that document, and the comment
+ *  - and a word that is in none of them. */
 const test = stubbed(async () => ({
   ...(await seedSearchFixture()),
-  hits: 2,
+  hits: 3,
   missing: "zzqqxx",
 }));
 
@@ -84,7 +85,11 @@ phoneTest(
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
     const options = dialog.getByRole("option");
-    await expect(options).toHaveCount(3);
+    // Four rows, not the three this corpus answered before an issue's keyword vector carried
+    // its primary document's text: the document, the comment, the ask, and the issue the
+    // document belongs to, which that change makes a hit for its own spec's words.
+    await expect(options).toHaveCount(4);
+    await expect(dialog.getByRole("option", { name: /^issue / })).toHaveCount(1);
     await expect(dialog.getByRole("option", { name: /^ask / })).toContainText(
       "Chose On the chart table"
     );

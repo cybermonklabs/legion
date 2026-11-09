@@ -160,11 +160,15 @@ test("g d opens the route's project Documents, from an issue key or a project pa
   await page.keyboard.press("g");
   await page.keyboard.press("p");
   const dialog = page.getByRole("dialog", { name: "Search" });
-  await expect(dialog.getByRole("group", { name: "Projects" })).toBeVisible();
   const input = page.getByRole("combobox", { name: "Search" });
+  // `g p` opens the one bar, where a project is a row the reader types their way to. The bar
+  // searches by meaning now, so a word that names a project can also find an issue of this
+  // file's scene: the claim is the Projects group's own row, and the pick is that row rather
+  // than whatever Enter would highlight.
   await input.fill("operations");
-  await expect(dialog.getByRole("option")).toHaveCount(1);
-  await input.press("Enter");
+  const projects = dialog.getByRole("group", { name: "Projects" });
+  await expect(projects.getByRole("option")).toHaveCount(1);
+  await projects.getByRole("option").click();
   await expect(page).toHaveURL(/\/projects\/OPS\/issues/);
 
   // A project path names it outright. The heading is the page the key reads its route from.
@@ -442,7 +446,7 @@ architectureTest(
   }
 );
 
-test("Go to project… and Keyboard shortcuts are rows, and each opens its own dialog @pr", async ({
+test("Keyboard shortcuts is a row that opens its own dialog, and a project is a row of the bar itself @pr", async ({
   page,
   scene,
 }) => {
@@ -450,17 +454,16 @@ test("Go to project… and Keyboard shortcuts are rows, and each opens its own d
   const dialog = page.getByRole("dialog", { name: "Search" });
   const actions = dialog.getByRole("group", { name: "Actions" });
 
-  // A row runs once the palette has closed, so a row that opens the projects list opens it.
+  // `Go to project…` is no row of its own: its key opens this same bar, where the projects
+  // are rows the reader types their way to, and Enter opens the one they chose.
   await page.keyboard.press("Control+k");
-  await actions.getByRole("option", { name: "Go to project…" }).click();
-  await expect(dialog.getByRole("group", { name: "Projects" })).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Search" })).toHaveAttribute(
-    "placeholder",
-    "Go to project"
-  );
-  await page.keyboard.press("Escape");
+  await expect(actions.getByRole("option", { name: "Go to project…" })).toHaveCount(0);
+  await page.getByRole("combobox", { name: "Search" }).fill("operations");
+  await dialog.getByRole("group", { name: "Projects" }).getByRole("option").click();
   await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/\/projects\/OPS\/issues/);
 
+  // A row runs once the bar has closed, so a row that opens another dialog opens it.
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   await actions.getByRole("option", { name: "Keyboard shortcuts" }).click();

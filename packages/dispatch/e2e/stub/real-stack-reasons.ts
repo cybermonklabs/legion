@@ -92,6 +92,16 @@ export const realStackReasons: Record<string, string> = {
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
+  "going-bar.e2e.ts":
+    "every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor",
+  "going-handoff.e2e.ts":
+    "the hand-off row is offered only while a live session holds the issue's claim, and approving it is a message the fake Envoy records",
+  "going-key-forms.e2e.ts":
+    "each form of a key is resolved by the server, and the row reads the rows it answers back through psql",
+  "going-new-issue.e2e.ts":
+    "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
+  "going-operators.e2e.ts":
+    "each operator form and each chip narrows a list the server answers, read back through psql",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -182,6 +192,8 @@ export const realStackReasons: Record<string, string> = {
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
   "refresh-freshness.e2e.ts": "writes after load must reach the open page within 2 s",
   "result-commit.e2e.ts": "the result line is read in the document margin's Pinned tab",
+  "search-tiers.e2e.ts":
+    "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",
   "search.e2e.ts": "the server's search hits; the server's answer for the query",
   "settings.e2e.ts": "mappings, defaults and architecture sources saved, refused and re-read",
   "shell.e2e.ts": "the server must revoke the session",
