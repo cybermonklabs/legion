@@ -40,9 +40,14 @@
 #   3. No file under .github/ fetches a tool asset no row of this manifest names and no
 #      no_second_source entry of it declines.
 #      Every file under .github/ but this manifest — which declares addresses and fetches
-#      nothing — is read as text, and a GitHub release-asset URL — one of the shape
-#      `https://github.com/` <owner>/<repo> `/releases/download/` … — is refused whatever
-#      repository it names, unless one of these holds, tested in this order:
+#      nothing — is read as text, and a GitHub release-asset URL is refused whatever repository
+#      it names, unless one of these holds, tested in this order. The addresses read as one are
+#      every spelling github.com serves that asset at: the tag's own path,
+#      `/releases/` `download/` <tag> `/` <asset>, and the `latest` permalink GitHub documents,
+#      `/releases/` `latest/download/` <asset>, each over http as well as https and with or
+#      without the `www.` host. What is NOT read as one is any other host that can serve the
+#      same bytes — the API's release-asset endpoint, a redirector, a copy — so this rule closes
+#      the addresses of github.com and not the class of every way those bytes could be reached.
 #        a. its <owner>/<repo> is this repository's own, which .github/scripts/repo-paths.sh
 #           derives. This repository publishes those bytes and installs none of them.
 #        b. the file's own name holds `.test.`: its URLs are fixtures a test feeds to a gate,
@@ -72,8 +77,9 @@
 #        * its `url` occurs verbatim in some file under .github/ that this rule reads, the
 #          manifest itself not counted, so an entry whose install was deleted is refused and the
 #          list prunes itself;
-#        * its `digest` is 64 lower-case bare hex and occurs in the file `pinned_in` names, so
-#          one source never means no checksum;
+#        * its `digest` is 64 lower-case bare hex, the file `pinned_in` names can be read as
+#          text, and that digest occurs in it, each refused in its own words, so one source
+#          never means no checksum;
 #        * no row's `primary` or `mirror_from` already covers its repository, so a decline never
 #          bypasses a tool that has a second source;
 #        * `why` is a sentence rather than a placeholder.
@@ -190,8 +196,15 @@ ARG_MISE_VERSION = re.compile(r"^ARG\s+MISE_VERSION=(\S+)\s*$")
 ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
 ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # A URL ends at whitespace or at a quote of any of the three kinds a YAML or a shell line uses.
+# github.com serves one release asset at more than one address, and a rule that compares text
+# must read every one of them or a job reaches the same bytes by writing the asset's address
+# another way: the tag's own path and the `latest` permalink GitHub documents, over http as well
+# as https, with or without the `www.` host. Measured against github.com on 2026-11-09:
+# `/releases/latest/download/<asset>` answered 302 to the tagged asset, and the `http://` and the
+# `www.github.com` spellings each answered 301 to the https form.
 ASSET_URL = re.compile(
-    r"https://github\.com/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)/releases/download/[^\s\"'`]*"
+    r"https?://(?:www\.)?github\.com/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)"
+    r"/releases/(?:download|latest/download)/[^\s\"'`]*"
 )
 NPM_URL = re.compile(r"(?:https://)?registry\.npmjs\.org/(?P<rest>[^\s\"'`]+)")
 
