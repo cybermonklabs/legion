@@ -880,9 +880,21 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 }
 
 // startDaemonLogging is startDaemon writing the daemon's log to log.
+//
+// The bound is the package's own standard wait, `testwait.Bounded(t, time.Minute, time.Second)`,
+// and not the ten seconds it was: a boot here migrates a database, opens a store, binds two
+// listeners and reads a repository mapping, and this package's tests run beside the five other
+// binaries of the module on a four-vCPU pod, so ten seconds bounded that machine's load rather
+// than the daemon's readiness — and failed that way, in a six-package run
+// (TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration, `did not answer /healthz
+// within 10s`). Taking it from testwait rather than naming a bigger number is what keeps it from
+// failing again under seven binaries: a wait that is merely slow costs the run nothing, while a
+// boot that never serves still fails naming what it waited for, a boot that exits fails at once
+// through the check below, and a `-timeout` shorter than the bound still reports the wait rather
+// than the binary's panic.
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz

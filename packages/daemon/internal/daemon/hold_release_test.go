@@ -819,6 +819,15 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	testwait.Eventually(t, "the held root takes the free slot once the quiet stream's idle ticker releases it", func() bool {
 		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD")
 	})
+	// The slot row is written inside the pass's transaction and the line that reports it by
+	// intake.OnCommit after that transaction commits, so the row is visible before the line
+	// exists. The reads below are of the log, so the wait is of the log: waiting for the row and
+	// reading the line found an empty list on a loaded machine, which is the thing this test
+	// cannot tell from a slot nobody took.
+	testwait.Eventually(t, "the log to carry the release and the slot it let through", func() bool {
+		text := logged.String()
+		return strings.Contains(text, releaseMessage) && strings.Contains(text, slotTakenMessage)
+	})
 	cancel()
 	<-done
 
