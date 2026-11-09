@@ -498,9 +498,12 @@ check "names the repository the API endpoint's path carries" \
 
 echo "case: rule 3 — the path spellings the rule leaves open"
 # The host is read without regard to case; the path is compared literally, and github.com serves
-# more spellings of it than a text comparison can hold. Measured on 2026-11-09: an extra slash
-# at each of four positions of the path answered 302 with the asset, and so did a `/.` segment.
-# Closing them means normalising a path, which takes in percent-encoding and dot segments too.
+# more spellings of it than a text comparison can hold. Measured on 2026-11-09, each reading
+# taken between two readings of the canonical address and counted only because both answered
+# 302: an extra slash before the owner, after the owner and after `releases` each answered 302
+# with the asset, and so did a `/.` segment. An extra slash after `download` answered 504
+# between two 302 controls, three times, so GitHub does not serve that one and it is no gap.
+# Closing the rest means normalising a path, which takes in percent-encoding and dot segments.
 # AGENTS.md and this gate's header both name these as open, and a named gap is a claim: this
 # case is what holds that claim true, and it turns red the day the rule closes them.
 root=$(fixture reach-open-path-spellings)

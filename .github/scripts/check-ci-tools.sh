@@ -41,13 +41,11 @@
 #      no_second_source entry of it declines.
 #      Every file under .github/ but this manifest — which declares addresses and fetches
 #      nothing — is read as text, and a GitHub release-asset URL is refused whatever repository
-#      it names, unless one of these holds, tested in this order. The addresses read as one are
-#      every spelling github.com serves that asset at: the tag's own path,
-#      `/releases/` `download/` <tag> `/` <asset>, and the `latest` permalink GitHub documents,
-#      `/releases/` `latest/download/` <asset>, each over http as well as https and with or
-#      without the `www.` host. What is NOT read as one is any other host that can serve the
-#      same bytes — the API's release-asset endpoint, a redirector, a copy — so this rule closes
-#      the addresses of github.com and not the class of every way those bytes could be reached.
+#      it names, unless one of these holds, tested in this order. WHICH addresses are read as
+#      one release asset, and which are deliberately not read at all, is stated once beside the
+#      patterns themselves — ASSET_URL and API_ASSET_URL below — each with the measurement that
+#      earned it. It is not restated here: this header carried its own copy of that list for one
+#      round, the patterns grew, and the two then said different things about the same code.
 #        a. its <owner>/<repo> is this repository's own, which .github/scripts/repo-paths.sh
 #           derives. This repository publishes those bytes and installs none of them.
 #        b. the file's own name holds `.test.`: its URLs are fixtures a test feeds to a gate,
@@ -216,11 +214,16 @@ ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # of its own rather than another branch of the first.
 #
 # WHAT IS NOT READ, measured and left open deliberately: every other spelling of the same path.
-# github.com answered 302 to an extra slash at each of four positions of that path and to a `/.`
-# segment, and a rule that normalised the path would have to take in percent-encoding and dot
-# segments as well, which is not a class a text comparison can close. Nor is any other host that
-# can serve the bytes, the `release-assets.githubusercontent.com` address these redirects land
-# on among them.
+# Each reading below was taken between two readings of the canonical address and counts only
+# because both of those answered 302 — a release asset answering 504 in an outage and one
+# answering 504 because GitHub does not serve that shape look alike, and that control is what
+# tells them apart. github.com answered 302 with the asset to an extra slash before the owner,
+# after the owner and after `releases`, and to a `/.` segment; an extra slash after `download`
+# answered 504 between two 302 controls, three times over. So most of this class is reachable
+# and the rule does not read it: normalising a path would have to take in percent-encoding and
+# dot segments as well, which is not a class a text comparison can close. Nor is any other host
+# that can serve the bytes, the `release-assets.githubusercontent.com` address these redirects
+# land on among them.
 GITHUB_HOST = r"(?i:(?:www\.)?github\.com)\.?(?::(?:80|443))?"
 ASSET_URL = re.compile(
     rf"https?://{GITHUB_HOST}/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)"
