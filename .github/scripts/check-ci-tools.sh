@@ -196,19 +196,62 @@ ARG_MISE_VERSION = re.compile(r"^ARG\s+MISE_VERSION=(\S+)\s*$")
 ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
 ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # A URL ends at whitespace or at a quote of any of the three kinds a YAML or a shell line uses.
-# github.com serves one release asset at more than one address, and a rule that compares text
-# must read every one of them or a job reaches the same bytes by writing the asset's address
-# another way: the tag's own path and the `latest` permalink GitHub documents, over http as well
-# as https, with or without the `www.` host. Measured against github.com on 2026-11-09:
-# `/releases/latest/download/<asset>` answered 302 to the tagged asset, and the `http://` and the
-# `www.github.com` spellings each answered 301 to the https form.
+# GitHub serves one release asset at many addresses, and a rule that compares text reaches only
+# the ones it spells out. Every form below was measured against github.com on 2026-11-09 with
+# `curl -sS -I`, and each answered with the asset or a redirect to it.
+#
+# THE HOST IS READ WITHOUT REGARD TO CASE, because a URL's host is case-insensitive:
+# `https://GitHub.com/…` answered 302 with the asset. A trailing dot (`github.com.`, 301 to the
+# canonical form) and an explicit port (`github.com:443`, 302; `http://github.com:80`, 301) are
+# the same host written two other ways, so both are read too, as is the `www.` prefix.
+#
+# THE PATH IS COMPARED LITERALLY, because github.com's path IS case-sensitive:
+# `/RELEASES/download/` and `/releases/DOWNLOAD/` each answered 404, so a rule that read the
+# whole address without regard to case would refuse an address GitHub does not answer. Two paths
+# are read: the tag's own, and the `latest` permalink GitHub documents.
+#
+# AND THE API SERVES THE SAME BYTES at /repos/<owner>/<repo>/releases/assets/<id>, which answered
+# 302 to the asset under `Accept: application/octet-stream`, so that address is read as well.
+# Its host carries the owner one path element later than github.com's does, so it is a pattern
+# of its own rather than another branch of the first.
+#
+# WHAT IS NOT READ, measured and left open deliberately: every other spelling of the same path.
+# github.com answered 302 to an extra slash at each of four positions of that path and to a `/.`
+# segment, and a rule that normalised the path would have to take in percent-encoding and dot
+# segments as well, which is not a class a text comparison can close. Nor is any other host that
+# can serve the bytes, the `release-assets.githubusercontent.com` address these redirects land
+# on among them.
+GITHUB_HOST = r"(?i:(?:www\.)?github\.com)\.?(?::(?:80|443))?"
 ASSET_URL = re.compile(
-    r"https?://(?:www\.)?github\.com/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)"
+    rf"https?://{GITHUB_HOST}/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)"
     r"/releases/(?:download|latest/download)/[^\s\"'`]*"
 )
+API_ASSET_URL = re.compile(
+    r"https?://(?i:api\.github\.com)\.?(?::(?:80|443))?"
+    r"/repos/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)/releases/assets/[0-9]+"
+)
+ASSET_PATTERNS = (ASSET_URL, API_ASSET_URL)
 NPM_URL = re.compile(r"(?:https://)?registry\.npmjs\.org/(?P<rest>[^\s\"'`]+)")
 
 problems: list[str] = []
+
+
+def asset_at(url: str) -> re.Match[str] | None:
+    """The release-asset address this text begins with, read by either pattern, or None."""
+    for pattern in ASSET_PATTERNS:
+        match = pattern.match(url)
+        if match:
+            return match
+    return None
+
+
+def asset_whole(url: str) -> re.Match[str] | None:
+    """The same, where the whole text is one address and nothing more."""
+    for pattern in ASSET_PATTERNS:
+        match = pattern.fullmatch(url)
+        if match:
+            return match
+    return None
 
 
 def one_line(value: object) -> str:
@@ -305,7 +348,7 @@ for entry in entries:
         )
         continue
     url = str(entry["url"]).strip()
-    if not ASSET_URL.fullmatch(url):
+    if not asset_whole(url):
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'url')}: this {NO_SECOND_SOURCE} entry's url is "
             f"{one_line(url)}, which is not a GitHub release-asset address. An entry declines "
@@ -506,7 +549,7 @@ except (OSError, subprocess.CalledProcessError) as error:
         f"allows a release-asset URL of this repository's own by reading that answer. Without "
         f"it every rule below would judge this repository's own published address as a fetch."
     )
-own_match = ASSET_URL.match(own_url)
+own_match = asset_at(own_url)
 if not own_match:
     fatal(
         f"{REPO_PATHS} answered plugin_download_url with {one_line(own_url)}, which is not a "
@@ -528,7 +571,7 @@ for row in readable:
         if not url:
             continue
         allowed.add(url)
-        match = ASSET_URL.match(url)
+        match = asset_at(url)
         if match:
             row_repositories.setdefault(
                 f"{match.group('owner')}/{match.group('repo')}", f"the {name} row's {field}"
@@ -598,17 +641,18 @@ for file in sorted(GITHUB.rglob("*")):
 
     # offset, the URL as written, what it names, the repository it names, the remedy
     found: list[tuple[int, str, str, str | None, str]] = []
-    for match in ASSET_URL.finditer(text):
-        repository = f"{match.group('owner')}/{match.group('repo')}"
-        found.append(
-            (
-                match.start(),
-                match.group(0).rstrip(",);"),
-                f"a release asset of {repository}",
-                repository,
-                ASSET_REMEDY,
+    for pattern in ASSET_PATTERNS:
+        for match in pattern.finditer(text):
+            repository = f"{match.group('owner')}/{match.group('repo')}"
+            found.append(
+                (
+                    match.start(),
+                    match.group(0).rstrip(",);"),
+                    f"a release asset of {repository}",
+                    repository,
+                    ASSET_REMEDY,
+                )
             )
-        )
     # Rule 3's npm half claims every *.yml and *.yaml under NPM_DIRECTORIES and nothing else.
     if file.name.endswith((".yml", ".yaml")) and any(
         directory in file.parents for directory in NPM_DIRECTORIES
@@ -627,6 +671,9 @@ for file in sorted(GITHUB.rglob("*")):
                 )
             )
 
+    # Two address patterns and the npm one each sweep the file, so the refusals are put back
+    # into the order a reader meets them in that file.
+    found.sort()
     for offset, url, what, repository, remedy in found:
         line = line_at(text, offset)
         if repository == OWN_REPOSITORY:
@@ -653,7 +700,7 @@ for file in sorted(GITHUB.rglob("*")):
 # ------------------------------------------- the four rules a no_second_source entry is held to
 for entry in declines:
     url = str(entry["url"]).strip()
-    url_match = ASSET_URL.match(url)
+    url_match = asset_at(url)
     repository = f"{url_match.group('owner')}/{url_match.group('repo')}"
 
     if url not in written:

@@ -446,6 +446,80 @@ check "names the upper-case host on the latest permalink" \
 check "and refuses those two alone, leaving the upper-case path github.com answers 404 for" \
   "$(contains "$out" '^::error::2 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
 
+echo "case: rule 3 — the host written with a trailing dot and with an explicit port"
+# Two more spellings of the same host, measured against github.com on 2026-11-09:
+# https://github.com./<o>/<r>/releases/download/… answered 301 to the canonical form,
+# https://github.com:443/… answered 302 with the asset, and http://github.com:80/… answered 301.
+# A host is the same host written these ways, so the rule reads all three.
+root=$(fixture reach-host-dot-port)
+cat > "$root/.github/workflows/host-forms.yaml" <<'YAML'
+name: Host forms
+on: [push]
+jobs:
+  host-forms:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O https://github.com./other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+          curl -fsSL -O https://github.com:443/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+          curl -fsSL -O http://github.com:80/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the trailing-dot host" \
+  "$(contains "$out" '^.github/workflows/host-forms.yaml:9: this file fetches a release asset of other/thing at https://github.com./other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+check "names the host with an explicit 443" \
+  "$(contains "$out" '^.github/workflows/host-forms.yaml:10: this file fetches a release asset of other/thing at https://github.com:443/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+check "and names the http host with an explicit 80" \
+  "$(contains "$out" '^.github/workflows/host-forms.yaml:11: this file fetches a release asset of other/thing at http://github.com:80/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+
+echo "case: rule 3 — the API's release-asset endpoint"
+# api.github.com serves the same bytes at /repos/<o>/<r>/releases/assets/<id>, measured on
+# 2026-11-09: that address answered 302 to the asset under `Accept: application/octet-stream`.
+# Its owner sits one path element later than github.com's, so it is read by a pattern of its own.
+root=$(fixture reach-api-asset)
+cat > "$root/.github/workflows/api-asset.yaml" <<'YAML'
+name: API asset
+on: [push]
+jobs:
+  api-asset:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -H "Accept: application/octet-stream" \
+            -O https://api.github.com/repos/other/thing/releases/assets/183937293
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the repository the API endpoint's path carries" \
+  "$(contains "$out" '^.github/workflows/api-asset.yaml:10: this file fetches a release asset of other/thing at https://api.github.com/repos/other/thing/releases/assets/183937293, and no row of .github/ci-tools.yaml names that URL')"
+
+echo "case: rule 3 — the path spellings the rule leaves open"
+# The host is read without regard to case; the path is compared literally, and github.com serves
+# more spellings of it than a text comparison can hold. Measured on 2026-11-09: an extra slash
+# at each of four positions of the path answered 302 with the asset, and so did a `/.` segment.
+# Closing them means normalising a path, which takes in percent-encoding and dot segments too.
+# AGENTS.md and this gate's header both name these as open, and a named gap is a claim: this
+# case is what holds that claim true, and it turns red the day the rule closes them.
+root=$(fixture reach-open-path-spellings)
+cat > "$root/.github/workflows/open-paths.yaml" <<'YAML'
+name: Open paths
+on: [push]
+jobs:
+  open-paths:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O https://github.com//other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+          curl -fsSL -O https://github.com/other/thing/releases//download/v3.0.0/thing-3.0.0.tar.gz
+          curl -fsSL -O https://github.com/./other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+YAML
+run_gate "$root"
+check "exits 0, which is the gap AGENTS.md names" "$(is "$status" 0)"
+
 echo "case: rule 3 — a workflow that fetches Bun's own release asset"
 # No bun row carries a primary, because oven-sh/setup-bun fetches that asset. So this URL is a
 # release asset no row and no entry names, and the gate refuses it as it refuses any other,
