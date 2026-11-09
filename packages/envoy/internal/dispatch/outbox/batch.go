@@ -826,13 +826,14 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 	}
 }
 
-// forwardUnanswered reports whether a send that did not reach NATS is a role forward left
-// unanswered rather than one that failed: it was a forward, the stream did not acknowledge the
-// copy it took (bus.ErrNotAcknowledged), and the publish itself was confirmed, so a copy may yet
-// reach the holder's consumer. An unconfirmed publish (bus.ErrPublishUnconfirmed) is no such
-// case and counts a failure, as every send that is no forward does. One rule for the two
-// switches that count such a send, the batch's (sendChains) and the fallback copies'
-// (recordFallbackCopies), so the two cannot drift apart.
+// forwardUnanswered reports whether a role forward NATS took is left unanswered rather than
+// failed: it was a forward, its publish was confirmed, and the stream gave no answer to the copy
+// it took (bus.ErrNotAcknowledged), so a copy may yet stand for the holder's consumer. An error
+// that carries bus.ErrPublishUnconfirmed beside that one says the publish itself was never
+// confirmed, so nothing is known to stand and it counts a failure, as every send that is no
+// forward does. One rule for the two switches that count a send that did not reach a session,
+// the batch's (sendChains) and the fallback copies' (publishFallbackCopies), so the two cannot
+// drift apart.
 func forwardUnanswered(forward bool, err error) bool {
 	return forward && errors.Is(err, bus.ErrNotAcknowledged) && !errors.Is(err, bus.ErrPublishUnconfirmed)
 }

@@ -146,19 +146,17 @@ interface FallbackPane extends LegionPane {
  * architect holds a Legion claim, which is all the model fallback gates on, and is the one role
  * the phase reminder leaves alone, so nothing but the case's own assignments starts a turn.
  */
-async function fallbackPane(
-  binary: string,
-  options: {
-    readonly prompt: readonly string[];
-    /** Answers the turn the gateway was sent: `model` is the request's own model id, and `nth`
-     * counts the turns of the whole pane, its second life included, from 1. */
-    readonly answer: (model: string, nth: number, request: Request) => Response;
-    /** `LEGION_REFUSAL_COOLDOWN_MS`; `COOLDOWN_MS` by default. */
-    readonly cooldownMs?: number;
-    /** The `fallbackChains` lines of the pane's overlay; `ONE_STEP` by default. */
-    readonly chains?: readonly string[];
-  }
-): Promise<FallbackPane> {
+async function fallbackPane(options: {
+  readonly prompt: readonly string[];
+  /** Answers the turn the gateway was sent: `model` is the request's own model id, and `nth`
+   * counts the turns of the whole pane, its second life included, from 1. */
+  readonly answer: (model: string, nth: number, request: Request) => Response;
+  /** `LEGION_REFUSAL_COOLDOWN_MS`; `COOLDOWN_MS` by default. */
+  readonly cooldownMs?: number;
+  /** The `fallbackChains` lines of the pane's overlay; `ONE_STEP` by default. */
+  readonly chains?: readonly string[];
+}): Promise<FallbackPane> {
+  const { binary, nats } = setup();
   const served: Served[] = [];
   const pane = await runLegionPane(
     binary,
@@ -168,7 +166,7 @@ async function fallbackPane(
       role: "architect",
       tree: "FALL-1",
       issue: "FALL-1",
-      nats: setup().nats,
+      nats,
       prompt: options.prompt,
       config: overlay(options.chains ?? ONE_STEP),
       providers: PROVIDERS,
@@ -200,11 +198,10 @@ async function fallbackPane(
 test.skipIf(skip)(
   "a refusal before any output is retried on the chain's next model, which is the host's own walk",
   async () => {
-    const { binary } = setup();
     /** When the second assignment's turn must stop pinging the gateway and let the run settle:
      * well past the wait the refusal bought, so the case sees both sides of it. */
     let until = 0;
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       // The second assignment is one long turn that asks the gateway every second, so the model
       // of each of its requests says where the session stood at that moment.
       prompt: ["Start FALL-1.", "Keep working."],
@@ -251,11 +248,10 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a refusal of the fallback model after the host's own walk steps down again and comes back to the model the session started on",
   async () => {
-    const { binary } = setup();
     /** When the turn that pings the gateway every second must stop and let the run settle: past
      * the doubled wait the second refusal bought. */
     let until = 0;
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       chains: TWO_STEPS,
       prompt: ["Start FALL-1.", "Keep working."],
       answer: (_model, nth) => {
@@ -302,8 +298,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a refusal after streamed text, which the host leaves where it is, sends the next turn to the chain's next model",
   async () => {
-    const { binary } = setup();
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Carry on."],
       answer: (_model, nth) =>
         nth === 1
@@ -323,8 +318,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the session is put back on the model it fell back from inside a turn already running, once the cooldown is over",
   async () => {
-    const { binary } = setup();
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working."],
       answer: (_model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
@@ -355,10 +349,9 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a second refusal of the same model doubles its wait, so the return does not come at the first one",
   async () => {
-    const { binary } = setup();
     /** When the turn that pings every two seconds must stop and let the run settle. */
     let until = 0;
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going."],
       answer: (model, nth) => {
         // The first assignment is refused on the stronger model, which arms the base wait.
@@ -402,12 +395,11 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a clean turn on the model the session came back to puts its wait back to the base",
   async () => {
-    const { binary } = setup();
     /** How many turns the stronger model has been sent: the first is refused, the second is the
      * clean turn that puts the wait back, the third is refused again. */
     let onStrong = 0;
     let until = 0;
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going.", "Carry on."],
       answer: (model, nth) => {
         if (model === "strong-model") {
@@ -455,10 +447,9 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a pane whose process is gone resumes its own transcript's arming, and comes back no earlier than it says",
   async () => {
-    const { binary } = setup();
     /** When the resumed life's long turn must stop pinging the gateway. */
     let until = 0;
-    const pane = await fallbackPane(binary, {
+    const pane = await fallbackPane({
       cooldownMs: RESUME_COOLDOWN_MS,
       // The second assignment is a tool-call turn: its own entries carry the arming written at
       // the end of the refused turn to disk, which is where the resumed life reads it.

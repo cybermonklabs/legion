@@ -2538,8 +2538,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 // role forward is counted by (forwardUnanswered,
 // TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered): the publish was confirmed, so what
 // is missing is the acknowledgement and not the bus, and a copy may yet stand for the holder's
-// consumer. Counting it failed would read a forward NATS took as one it refused, which is the
-// other half of that rule and is what TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried
+// consumer. Counting it failed would read a forward NATS took as one it never had: the other
+// half of that rule, an error that carries bus.ErrPublishUnconfirmed beside the missing
+// acknowledgement, is what TestAFallbackForwardWhosePublishWasNotConfirmedIsCountedFailed
 // holds. The holder here is registered and live, as a session plugin registers it, and the
 // stream captures no agent subject over the pass, so nothing acknowledges the forward - and no
 // session answers one.
@@ -2569,5 +2570,59 @@ func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T
 	}
 	if strings.Contains(body, `reason="failed"`) {
 		t.Fatalf("/metrics body = %q counts a fallback forward NATS took as a publish failure", body)
+	}
+}
+
+// unconfirmedForwardSender answers every forward with the error a request returns whose publish
+// the connection could not confirm: bus.ErrNotAcknowledged wrapped with bus.ErrPublishUnconfirmed,
+// which is what internal/bus builds when the stream gave no answer and the flush could not
+// confirm the publish either (bus's async request, "bus: request to %q: %w: %w"). Every other
+// send is taken, so the forward under test is the only thing that fails. A full stream's refusal
+// is no such error and never wraps ErrNotAcknowledged, which is why that case cannot hold this
+// half of the rule.
+type unconfirmedForwardSender struct{ publishOnly }
+
+func (unconfirmedForwardSender) Publish(contracts.Envelope) error { return nil }
+
+func (p unconfirmedForwardSender) WindowUntil(func() time.Time) bus.Sender { return p }
+
+func (unconfirmedForwardSender) PublishAsync(contracts.Envelope) <-chan error { return answered(nil) }
+
+func (unconfirmedForwardSender) Request(subject string, _ contracts.Envelope, _ bus.RequestOptions) <-chan error {
+	return answered(fmt.Errorf("bus: request to %q: %w: %w", subject, bus.ErrNotAcknowledged, bus.ErrPublishUnconfirmed))
+}
+
+// A forward whose publish the connection could not confirm is counted failed, not unanswered,
+// even though the stream did not acknowledge it either: both sentinels are on that one error, and
+// unanswered means the copy stands and may yet be delivered, which an unconfirmed publish does not
+// say. That is the !errors.Is(err, bus.ErrPublishUnconfirmed) half of forwardUnanswered, and this
+// is the case that holds it - TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered holds
+// the other.
+func TestAFallbackForwardWhosePublishWasNotConfirmedIsCountedFailed(t *testing.T) {
+	ctx := store.WithTransactionTracking(context.Background())
+	rig := newRoleRig(t)
+	const role, holder = "reviewer", "ses_fallback_unconfirmed"
+	roleTopic := contracts.RoleTopicPrefix + role
+	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
+	rig.silent(t, roleTopic)
+	deps, registry := rig.countingDeps(t)
+	// The row is seeded through the rig's own publisher, which takes the comment's mention and
+	// holds the route's copy back; the pass alone is given the sender that cannot confirm.
+	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
+	unconfirmed := deps
+	unconfirmed.Publisher = unconfirmedForwardSender{}
+
+	publishFallbackCopies(ctx, unconfirmed, unfenced{}, holdingProcess(t, deps.Store))
+
+	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
+		t.Fatalf("the copy whose forward was not confirmed is published=%v settled=%v, want it left unsettled for a later pass",
+			held.published, held.settled)
+	}
+	body := failureReasons(t, registry)
+	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
+		t.Fatalf("/metrics body = %q, want the forward whose publish was not confirmed counted failed", body)
+	}
+	if strings.Contains(body, `reason="unanswered"`) {
+		t.Fatalf("/metrics body = %q counts a forward whose publish was not confirmed as one the stream may yet have stored", body)
 	}
 }
