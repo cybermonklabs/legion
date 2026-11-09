@@ -2662,12 +2662,24 @@ specRun("spec-writing-head-109", {
     ).slice(1),
   ],
 });
+// A hang guard, not a bound on the work: this row spawns nothing and awaits nothing, so what can
+// hang is its own scan of `out`, the whole `score.ts runs` output the hook below captured — one
+// `toContain` pass over it, an `out.split("\n")` in each of the three `rowOf` calls (`scoresOf`'s
+// included), and the ten `scoresOf` regexes over the row that scan finds. Measured on this
+// two-CPU pod, the row alone: 1.30 / 1.46 / 1.82 ms (min / median / max) over 5 idle runs, and
+// 1.95 / 71.33 / 262.84 ms over 20 runs at 96 busy loops (48 per CPU), this suite's calibrated
+// rung. Run with the rest of the file at that same load the row is charged far more than it
+// works, and Bun's unwritten 5 s default for a test is what failed a correct run of it at
+// 6027.43 ms, in run 9 of a 20-run campaign. 60_000 is 9.9 times that worst charge and the value
+// this file's live-read row carries, and sits well inside the pi-legion job's timeout-minutes: 10
+// (600 s, .github/workflows/ci.yaml), so a row that never returns reddens with this test named
+// instead of cancelling the job, which names nothing.
 test("a run scored from a copy reads the paths it ran with as its own", () => {
   expect(out).not.toContain("spec-writing-head-109\trig error");
   expect(scoresOf("spec-writing-head-109")).toEqual(allPass);
   expect(rowOf("spec-writing-head-109")).not.toContain(" outside=");
   expect(rowOf("spec-writing-head-109")).not.toContain(" skills=");
-});
+}, 60_000);
 // A usage refusal the CLI both prints and logs (an unknown command, under tool `dispatch`), after a
 // skill read earlier in the same call. The ledger line and the printed refusal are one refusal:
 // counted once, at the command, so the read before it is no read between it and its fix.
