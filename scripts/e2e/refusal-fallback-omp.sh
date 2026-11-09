@@ -98,9 +98,11 @@ fail() {
 evidence=${REFUSAL_FALLBACK_EVIDENCE_DIR:-}
 if [ -z "$evidence" ]; then
   evidence=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-refusal-fallback-evidence.XXXXXXXX")
-else
-  mkdir -p "$evidence"
 fi
+# logs/ is the rig's own: start_process redirects each service it starts to $evidence/logs/<name>.log
+# and creates no directory for it, so a run whose evidence directory holds none dies at the first
+# service with "No such file or directory" rather than starting it (lib/rig.sh, start_process).
+mkdir -p "$evidence/logs"
 
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
