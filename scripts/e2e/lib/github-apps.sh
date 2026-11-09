@@ -73,6 +73,18 @@ default_implement_app_id=5341240
 default_implement_app_secret=LEGION_IMPLEMENT_APP
 default_review_app_id=5341243
 
+# app_key_squeezed VALUE prints VALUE with every whitespace character, one surrounding quote of
+# either kind and a leading UTF-8 byte-order mark taken out: the text the key guard below judges,
+# so that an indented paste, a quoted one and one a text editor marked are read as the value they
+# carry. It prints its argument and reads nothing else.
+app_key_squeezed() {
+  local value=${1//[[:space:]]/}
+  value=${value#$'\xEF\xBB\xBF'}
+  value=${value#[\"\']}
+  value=${value%[\"\']}
+  printf '%s' "${value#$'\xEF\xBB\xBF'}"
+}
+
 # require_app_inputs ROLE... reads each ROLE's inputs (implement, review) and fails naming an input
 # that is set but malformed, never echoing its value (an operator who pastes a credential where its
 # name or its command goes must not see it in the transcript). It sets <role>_app_id from
@@ -80,14 +92,19 @@ default_review_app_id=5341243
 # it sets implement_app_secret from LEGION_E2E_IMPLEMENT_APP_SECRET, defaulting to the name above:
 # letters, digits and underscores, so it is safe in the token command's shell text and as a
 # variable name. For review it sets review_app_key_command from LEGION_E2E_REVIEW_APP_KEY_COMMAND,
-# which has no default, and refuses a value that is unset, empty, whitespace alone, or a pasted key
-# rather than a command: with the value's whitespace taken out, one that starts with -----BEGIN (a
+# which has no default, and refuses a value that is unset, empty, whitespace alone, or one of the
+# common pastes of the key itself where its command goes: with the value's whitespace, its
+# surrounding quotes and a leading byte-order mark taken out, one that starts with -----BEGIN (a
 # PEM) and one that is base64 characters alone (the shape of the key GH_REVIEW_APP_PRIVATE_KEY_B64
-# held, below, which `base64` wraps at 76 columns), each refused by its own message, which names
-# the input and prints no part of the value. A command is still a command when it mentions a PEM
-# header or carries a long base64 word, `awk '/-----BEGIN/,/-----END/' <file>` among them. It also
-# refuses a run that still exports the retired LEGION_E2E_REVIEW_APP_SECRET, whose broker secret
-# that App no longer has.
+# held, below, which `base64` wraps at 76 columns), and a value with three or more lines that are
+# 40 or more base64 characters alone (a PEM body line is 64 and a `base64` line 76), each refused
+# by its own message, which names the input and prints no part of the value. Every other value is
+# taken, `awk '/-----BEGIN/,/-----END/' <file>` and a command carrying one long base64 word among
+# them, since arbitrary shell text has no shape every legitimate command has and no positive test
+# can stand; a paste these three refusals do not catch is caught at the sink instead, where
+# app_token_redact masks PEM armour and long runs of base64 in the stderr the key command's `sh`
+# relays. It also refuses a run that still exports the retired LEGION_E2E_REVIEW_APP_SECRET, whose
+# broker secret that App no longer has.
 # When this call reads both roles, one App id for both is refused, since the daemon refuses two
 # roles on one App at boot. It records the roles it read for write_github_apps, and sets
 # app_key_unsets: `-u NAME` for the implement App's broker secret name, when that role is read (the
@@ -102,7 +119,7 @@ require_app_inputs() {
   # The checks below use bracket ranges, which bash's =~ reads in the caller's locale: under a
   # UTF-8 locale [0-9] and [A-Za-z] admit fullwidth digits and accented letters. C keeps them ASCII.
   local LC_ALL=C
-  local role upper id_var id_default id secret key_command key_squeezed name roles_read=()
+  local role upper id_var id_default id secret key_command key_squeezed key_line key_b64_lines name roles_read=()
   for role in "$@"; do
     case "$role" in implement | review) ;; *) fail "require_app_inputs: no App role '$role'" ;; esac
     upper=${role^^}
@@ -115,6 +132,11 @@ require_app_inputs() {
     # only its length tells it from a secret's name, and a refusal prints neither.
     [[ "$id" =~ ^[1-9][0-9]*$ && ${#id} -le 12 ]] || fail "$id_var must be the $role App's numeric id (1 to 12 digits, no leading zero); its value is not printed"
     printf -v "${role}_app_id" %s "$id"
+    # The roles branch here, and in write_github_apps and app_token_command, because the review
+    # App is today the only role whose credential is a key. A second role that took one would need
+    # its own LEGION_E2E_<ROLE>_APP_KEY_COMMAND read here, its own key file under the credential
+    # directory its caller names (DIR/<role>/key.pem), and the same private_key_command in the
+    # block, a `cat` of that file; the branches are kept apart for it.
     if [ "$role" = review ]; then
       # The review App's credential is its key, which the operator's command prints: a required
       # input with no default, since this repository is public (AGENTS.md). Only the command's text
@@ -126,21 +148,33 @@ require_app_inputs() {
         fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND must be set to shell text that prints the review App's PEM private key on stdout; its value is not printed"
       # The input is arbitrary shell text — a `cat` of a file, an `awk` between two markers, a
       # deployment's own secret-store client — so no shape every legitimate command has exists and
-      # no positive test can stand. The guard therefore refuses the two forms key material itself
-      # is written in, a PEM and base64 of one, and judges the value's content rather than its
-      # spelling: each test runs on the value with all its whitespace taken out, so a PEM behind a
-      # leading space or newline and a key wrapped at the 76 columns `base64` prints by default are
-      # the same value here as the unwrapped ones, and a spelling of either cannot slip past. A
-      # command that names a PEM marker is still a command (`awk '/-----BEGIN/,/-----END/' <file>`),
-      # and so is one carrying a long base64 word: squeezed, either still holds characters a PEM
-      # and base64 do not. A key left in would reach `sh`, which echoes every line of what it
-      # cannot run back into the transcript, past a stderr relay that redacts GitHub token forms
-      # alone. Neither refusal prints any part of the value.
-      key_squeezed=${key_command//[[:space:]]/}
+      # no positive test can stand. The guard therefore refuses the common pastes of the key
+      # itself where its command goes and takes every other value: one that is a PEM, one that is
+      # base64 of a PEM, and one with three or more lines that are 40 or more base64 characters
+      # alone. Each test reads its text with the whitespace, the surrounding quotes and a leading
+      # byte-order mark taken out, so an indented paste, a quoted one, one behind a mark an editor
+      # left and a key wrapped at the 76 columns base64 prints by default are the same value here.
+      # A command that names a PEM marker is still a command (`awk '/-----BEGIN/,/-----END/'
+      # <file>`), and so is one carrying a long base64 word: a PEM body line is 64 base64
+      # characters and a base64 line 76, and no realistic command has three such lines. A paste
+      # none of the three catches is caught at the sink rather than here: `sh` echoes the lines of
+      # it that it cannot run, and that stderr reaches the run's transcript through
+      # app_token_redact, which masks PEM armour and long runs of base64. No refusal prints any
+      # part of the value.
+      key_squeezed=$(app_key_squeezed "$key_command")
       [[ "$key_squeezed" != -----BEGIN* ]] ||
         fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND must name a command that prints the review App's private key, not the key itself; its value is not printed"
       [[ ! "$key_squeezed" =~ ^[A-Za-z0-9+/=]{200,}$ ]] ||
         fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND is base64 characters and whitespace alone, which is a key pasted where its command goes (the GH_REVIEW_APP_PRIVATE_KEY_B64 form an older recipe used, in one word or wrapped), not a command that prints a key; its value is not printed"
+      key_b64_lines=0
+      while IFS= read -r key_line; do
+        key_line=$(app_key_squeezed "$key_line")
+        [[ "$key_line" =~ ^[A-Za-z0-9+/=]{40,}$ ]] || continue
+        key_b64_lines=$((key_b64_lines + 1))
+        [ "$key_b64_lines" -lt 3 ] || break
+      done <<<"$key_command"
+      [ "$key_b64_lines" -lt 3 ] ||
+        fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND has three or more lines that are 40 or more base64 characters alone, which is a key pasted where its command goes (a PEM body line is 64 such characters, a wrapped base64 line 76), not a command that prints a key; its value is not printed"
       review_app_key_command=$key_command
     else
       # The implement App is the one role whose credential is a broker secret's name, and the role
@@ -157,12 +191,13 @@ require_app_inputs() {
   fi
   github_apps_read=("${roles_read[@]}")
   app_key_unsets=()
-  # The implement App's broker secret name is the only one to strip, since its releases are the
-  # only credential of a run that comes from the broker, and the role read says so: no variable of
-  # the caller's shell is read for it. The review role's own input,
+  # The implement App's broker secret name is the only name in the list below that depends on the
+  # role that was read, since its releases are the only credential of a run that comes from the
+  # broker: the names after it are stripped whatever roles this call read, and no variable of the
+  # caller's shell is read for any of them. The review role's own input,
   # LEGION_E2E_REVIEW_APP_KEY_COMMAND, is exported and every child does inherit it, but it carries
   # no credential: the refusals above hold it to a command that prints the key rather than to the
-  # key itself.
+  # key itself, and what that command's stderr relays is masked.
   if [[ " ${roles_read[*]} " == *" implement "* ]]; then
     app_key_unsets+=(-u "$implement_app_secret")
   fi
@@ -276,10 +311,42 @@ app_token_mint() {
   done
 }
 # app_token_redact copies its stdin to its stdout, line by line as it arrives, with every GitHub
-# token form replaced, as the daemon redacts a token command's stderr (internal/appauth,
-# tokenPattern).
+# token form and every run of key material in it replaced. It is the one place key material a
+# command printed, or that `sh` echoed back out of a value that was a key itself rather than a
+# command, is stopped before it reaches the run's kept transcript, so what it masks is settled by
+# the text and not by the shape of the value that produced it. It masks:
+#   a GitHub token form, replaced by [redacted], as the daemon redacts a token command's stderr
+#   (internal/appauth, tokenPattern): gh[opsur]_ or github_pat_ and 16 or more characters after
+#   it, which is the 20 and the 27 below;
+#   a PEM armour marker, -----BEGIN… or -----END…, whole or cut to its first word by the shell
+#   that echoed the line;
+#   a run of base64 characters too long for an ordinary message to carry: 20 or more of them when
+#   the run holds an upper-case letter or a digit, as the base64 of a key does (a PEM body line is
+#   64 of those characters, its last line fewer, and a `base64` line 76), and 40 or more
+#   otherwise, which leaves a lower-case path in a message as it is. A `/` is a base64 character,
+#   so a long path of letters, digits and slashes alone is masked too.
+# Everything else of the line is passed on, because a command that failed tells the operator what
+# went wrong in its own words alone — a secret store's refusal, a missing file — and this script
+# names no secret store of theirs to tell them with.
+#
+# One pass over the line takes the leftmost longest run of each kind in turn. The lengths are
+# counted here rather than written as regex bounds: mawk, which is awk on a Debian devbox, matches
+# a bracket range followed by {n,} as though the bound were a `+`.
 app_token_redact() {
-  LC_ALL=C sed -u -E 's/(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/[redacted]/g'
+  LC_ALL=C awk '
+    function masked(run) {
+      if (run ~ /^gh[opsur]_/) return length(run) >= 20 ? "[redacted]" : run
+      if (run ~ /^github_pat_/) return length(run) >= 27 ? "[redacted]" : run
+      if (run ~ /^-----/) return "[redacted key]"
+      if (length(run) >= 40 || (length(run) >= 20 && run ~ /[A-Z0-9]/)) return "[redacted key]"
+      return run
+    }
+    { line = $0; out = ""
+      while (match(line, /gh[opsur]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|-----(BEGIN|END)[ A-Za-z0-9]*-----|-----(BEGIN|END)[A-Za-z0-9-]*|[A-Za-z0-9+\/=]+/)) {
+        out = out substr(line, 1, RSTART - 1) masked(substr(line, RSTART, RLENGTH))
+        line = substr(line, RSTART + RLENGTH)
+      }
+      print out line; fflush() }'
 }
 # app_token_stderr_bound LIMIT MARKER passes on whole lines of its stdin while their bytes stay
 # within LIMIT. Its input is cut at LIMIT+1 bytes by the caller, so the line that crosses LIMIT,
@@ -516,6 +583,29 @@ write_github_apps() {
       "$(printf '%s' "$command" | jq -Rs .)")$'\n'
   done
   printf '%s' "$block" >"$work/github-apps.yaml"
+}
+
+# app_key_left [--check-line] DIR returns 1 when DIR is still there, and 0 when it is gone. DIR is
+# the directory write_github_apps --key-dir resolved the review App's private key into, the only
+# thing that writes it, and every proof calls this at the end of its teardown: the removals that
+# teardown already made are what take the directory — the `rm -rf` at the head of the trap, and,
+# on a run that passes, that of the whole scratch workspace — and this says they ran. A private
+# key never expires, so a run that leaves one behind leaves a usable credential on the driver,
+# whatever else its teardown did, and fails itself for it. The failure is the proof's own line:
+# `FAIL cleanup: …` on stderr, as the sandbox proof's remove_app_tokens prints for the credential
+# files it could not remove, or, with --check-line, the `CHECK app-key: FAIL: …` line on stdout
+# that stage4b-sandbox-tree.sh writes its teardown checks in. The caller decides what the failure
+# costs the run: an exit, a status, or a named teardown check.
+app_key_left() {
+  local check=
+  [ "${1-}" != --check-line ] || { check=1; shift; }
+  [ -e "$1" ] || return 0
+  if [ -n "$check" ]; then
+    echo "CHECK app-key: FAIL: the review App's private key remains in $1"
+  else
+    printf "FAIL cleanup: the review App's private key remains in %s\n" "$1" >&2
+  fi
+  return 1
 }
 
 # check_github_apps ROLE... proves each ROLE's App of $work/github-apps.yaml against GitHub and sets

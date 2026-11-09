@@ -2887,15 +2887,12 @@ cleanup() {
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"
-  # The review App's private key must be gone, whatever else the teardown did: a private key never
-  # expires, and the two removals above are the only things that take it. Left behind, it is a
-  # failed teardown check like the ones above, which the verdict names and the exit status below
-  # carries, as the sandbox proof's remove_app_tokens fails a run that leaves a credential file
-  # (claude-backend-sandbox.sh).
-  if [ -e "$work/app-key" ]; then
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left), printing
+  # the CHECK line this script writes its teardown checks in. Left behind, it is a failed teardown
+  # check like the ones above, which the verdict names and the exit status below carries.
+  app_key_left --check-line "$work/app-key" ||
     teardown_failed+="${teardown_failed:+, }app-key"
-    echo "CHECK app-key: FAIL: the review App's private key remains in $work/app-key"
-  fi
   # The notes are for a checkpoint that failed itself: none once ok is set, after a blocked
   # checkpoint, or after a signal (129, 130, 143, as trapped below). Otherwise a failed teardown
   # check (a pod's session not copied, a namespace left dirty, a write outside the run's own

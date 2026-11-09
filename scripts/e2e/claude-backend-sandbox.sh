@@ -1136,13 +1136,10 @@ cleanup() {
     printf 'claude backend sandbox e2e: FAIL (check %s)\n' "$check" >&2
   fi
   printf "the run's evidence is %s\n" "$evidence" >&2
-  # The aws-private-ip route's key file, which the head of this trap removed: still there after
-  # the teardown, it fails the run, as remove_app_tokens does with the bridge route's credential
-  # files. A private key never expires.
-  if [ -e "$work/app-key" ]; then
-    printf "FAIL cleanup: the review App's private key remains in %s\n" "$work/app-key" >&2
-    status=1
-  fi
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removal at the head of this trap was to take (lib/github-apps.sh,
+  # app_key_left). It costs this run its status rather than its remaining cleanup.
+  app_key_left "$work/app-key" || status=1
   exit "$status"
 }
 trap cleanup EXIT

@@ -180,14 +180,10 @@ cleanup() {
     [ -z "${ok:-}" ] || { since=$first_soft_since failed=$first_soft_check; }
     [ -z "$failed" ] || bash "$unserved_reader" --notes "$evidence/model-gateway" "$since" "$failed" >&2 || true
   fi
-  # The review App's private key must be gone, whatever else the teardown did: a private key never
-  # expires, the removal at the head of this trap is the only thing that takes it, and this run
-  # keeps $work. Left behind, it fails the run, as the sandbox proof's remove_app_tokens does with
-  # the credential files it could not remove (claude-backend-sandbox.sh).
-  if [ -e "$work/app-key" ]; then
-    printf "FAIL cleanup: the review App's private key remains in %s\n" "$work/app-key" >&2
-    exit 1
-  fi
+  # The review App's private key must be gone, whatever else the teardown did, and this run keeps
+  # $work: the lib's own check of the directory the removal above was to take (lib/github-apps.sh,
+  # app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 # github_cleanup closes every proof PR still open, deletes every proof head branch, and deletes the

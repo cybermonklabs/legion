@@ -854,6 +854,36 @@ remove_app_tokens && echo "the teardown returned 0" || echo "the teardown return
     }
   });
 
+  // The check every proof's teardown ends with, over the directory write_github_apps --key-dir
+  // wrote the review App's key into: one helper of the lib rather than a copy of the same `if`
+  // in each of the six, printing the line the proof that called it is written in.
+  test("app_key_left names the key directory a teardown left behind, and says nothing once it is gone", async () => {
+    const { code, stdout, stderr, work } = await githubApps(
+      appInputs,
+      `require_app_inputs implement review
+write_github_apps --key-dir "$work/app-key" implement review
+app_key_left "$work/app-key" && echo "left: returned 0" || echo "left: returned $?"
+app_key_left --check-line "$work/app-key" || true
+rm -rf -- "$work/app-key"
+app_key_left "$work/app-key" && echo "gone: returned 0"
+app_key_left --check-line "$work/app-key" && echo "gone under --check-line: returned 0"`
+    );
+    expect(code).toBe(0);
+    // While the key is there: the proof's own FAIL line on stderr, or the teardown check line
+    // stage4b-sandbox-tree.sh writes on stdout, and a return of 1 for the caller to act on.
+    expect(stdout).toContain("left: returned 1");
+    expect(stderr).toBe(
+      `FAIL cleanup: the review App's private key remains in ${join(work, "app-key")}`
+    );
+    expect(stdout).toContain(
+      `CHECK app-key: FAIL: the review App's private key remains in ${join(work, "app-key")}`
+    );
+    // Once it is gone: nothing printed either way, and a return of 0.
+    expect(stdout).toContain("gone: returned 0");
+    expect(stdout).toContain("gone under --check-line: returned 0");
+    holdsNoKey(stdout + stderr, keyIDs);
+  });
+
   test("a token directory the credential commands could not carry in their shell text is refused, and nothing is written", async () => {
     for (const name of ["tokens 'x", "tokens$x", "tokens;x"]) {
       const tokenDir = join(mkdtempSync(join(dir, "tokens.")), name);
@@ -1037,9 +1067,11 @@ echo wrote`
   });
 
   test("a key command carrying a long base64 word is a command, and is taken", async () => {
-    // The guard judges the value's shape, not the characters in it: a command that names a
-    // deployment's own secret version, an opaque base64 word of its own, is still a command. A
-    // guard that refused this would be in the way of the operators it is for.
+    // The guard refuses the common pastes of a key where its command goes — a PEM, base64 of a
+    // PEM, and a value with three or more lines of 40 or more base64 characters alone — and takes
+    // every other value: a command that names a deployment's own secret version, an opaque base64
+    // word of its own, is one of them, and a guard that refused it would be in the way of the
+    // operators it is for.
     const version = "QUJDREVGR0hJSg".repeat(25);
     const { code, stdout, stderr, work } = await githubApps(
       {
@@ -1059,8 +1091,8 @@ echo wrote`
 
   test("a key pasted as one base64 word is refused by name, with no part of it printed", async () => {
     // The shape an older recipe's GH_REVIEW_APP_PRIVATE_KEY_B64 held. Left to `sh`, it would come
-    // back in a `not found` error, into the transcript, past a relay that redacts token forms
-    // alone.
+    // back in a `not found` error, which the relay then masks; refused here, it never gets that
+    // far.
     const pasted = Buffer.from(reviewKey, "utf8").toString("base64");
     const { code, stdout, stderr, work } = await githubApps(
       { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: pasted },
@@ -1078,10 +1110,9 @@ echo wrote`
   });
 
   test("a key pasted as the base64 `base64` prints, wrapped at 76 columns, is refused with no line of it printed", async () => {
-    // The shape that defeated a guard which tested the whole value for one word: `base64 key.pem`
-    // wraps at 76 columns by default, and `sh` echoed each of those lines back into the run's
-    // stderr. The value is that command's own output over a real 2048-bit key, not a spelling of
-    // it written here.
+    // `base64 key.pem` wraps at 76 columns by default, and `sh` would echo each of those lines.
+    // The value is that command's own output over a real 2048-bit key, not a spelling of it
+    // written here.
     const made = Bun.spawnSync(["base64", reviewKeyFile]);
     expect(made.exitCode).toBe(0);
     const pasted = made.stdout.toString();
@@ -1121,5 +1152,138 @@ echo wrote`
       expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
       holdsNoKey(stdout + stderr, keyIDs);
     }
+  });
+  // The three refusals the guard has, each named by the message it prints.
+  const pemRefused =
+    "LEGION_E2E_REVIEW_APP_KEY_COMMAND must name a command that prints the review App's private key, not the key itself";
+  const base64Refused =
+    "LEGION_E2E_REVIEW_APP_KEY_COMMAND is base64 characters and whitespace alone, which is a key pasted where its command goes";
+  const linesRefused =
+    "LEGION_E2E_REVIEW_APP_KEY_COMMAND has three or more lines that are 40 or more base64 characters alone";
+  // The pastes of a key an operator makes where its command goes, each as the shell would hold
+  // it, with the refusal it earns. The value is the key this run generated every time, never a
+  // spelling of one written here.
+  const pastedKeys = (): [string, string, string][] => [
+    ["a PEM in quotes", `'${reviewKey}'`, pemRefused],
+    ["a PEM after a byte-order mark", `\uFEFF${reviewKey}`, pemRefused],
+    [
+      "the PEM body and its END line, with no header line",
+      reviewKey.trimEnd().split("\n").slice(1).join("\n"),
+      linesRefused,
+    ],
+    [
+      "openssl pkcs12 output, which opens with its Bag Attributes",
+      `Bag Attributes\n    localKeyID: 54 69 6D 65\nKey Attributes: <No Attributes>\n${reviewKey}`,
+      linesRefused,
+    ],
+    ["a PEM behind an export", `export K='${reviewKey}'`, linesRefused],
+    [
+      "base64 of the key in one quoted word",
+      `'${Buffer.from(reviewKey, "utf8").toString("base64")}'`,
+      base64Refused,
+    ],
+  ];
+  // The first 20 characters of every line of the key and of the base64 `base64` makes of it. A
+  // value that reaches `sh` is echoed a line at a time and each line may be cut, so a leak shows
+  // as the head of a line where holdsNoKey, which reads whole lines, would miss it.
+  const holdsNoKeyLine = (text: string) => {
+    const wrapped = Bun.spawnSync(["base64", reviewKeyFile]);
+    expect(wrapped.exitCode).toBe(0);
+    for (const written of [...reviewKey.split("\n"), ...wrapped.stdout.toString().split("\n")]) {
+      if (written.length >= 20) expect(text).not.toContain(written.slice(0, 20));
+    }
+  };
+
+  test("each shape a pasted key arrives in is refused by name, with no line of it printed", async () => {
+    for (const [shape, pasted, refusal] of pastedKeys()) {
+      const { code, stdout, stderr, work } = await githubApps(
+        { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: pasted },
+        proveBoth
+      );
+      expect(code, shape).toBe(1);
+      expect(stderr, shape).toContain(refusal);
+      expect(stderr, shape).toContain("its value is not printed");
+      expect(stdout, shape).not.toContain("logins");
+      expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+      holdsNoKey(stdout + stderr, keyIDs);
+      holdsNoKeyLine(stdout + stderr);
+    }
+  });
+
+  test("the commands operators write are taken, whatever they mention and however many lines they have", async () => {
+    // The guard's tolerance, which costs as much as its refusals: each of these reads a key out
+    // of a deployment's own store, and a guard that refused one would be in the way of the
+    // operator it is for. They are read for their shape alone here, so none of them runs.
+    for (const command of [
+      "gcloud secrets versions access latest --secret=legion-review-app-key --project=legion-prod",
+      "kubectl -n legion get secret review-app -o jsonpath='{.data.key}' | base64 -d",
+      "cat ~/.config/legion/review-key.pem",
+      "pass show legion/review-app-key",
+      "op read op://legion/review-app/key.pem",
+      "awk '/-----BEGIN/,/-----END/' ~/.config/legion/review-key.pem",
+      'project=legion-prod\ngcloud secrets versions access latest \\\n  --secret=review-key --project="$project"',
+    ]) {
+      const { code, stdout, stderr } = await githubApps(
+        { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: command },
+        "require_app_inputs implement review\necho taken"
+      );
+      expect(stderr, command).toBe("");
+      expect(code, command).toBe(0);
+      expect(stdout, command).toContain("taken");
+    }
+  });
+
+  test("a key left where its command goes reaches no output of the run, whatever shape it has and whether or not the guard caught it", async () => {
+    // The sink, which is what holds when a shape the guard does not know is pasted: the value is
+    // put straight into the variable app_token_mint_key reads, as a guard that missed it would
+    // leave it, so every line of it reaches `sh -c`, which echoes back what it cannot run. What
+    // that echo costs the run is one masked line apiece, in the transcript the proof keeps.
+    for (const [shape, pasted] of pastedKeys()) {
+      const { code, stdout, stderr, work } = await githubApps(
+        { ...appInputs, PASTED: pasted },
+        `review_app_id=202
+review_app_key_command=$PASTED
+app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+echo done`
+      );
+      expect(code, shape).toBe(0);
+      expect(stdout, shape).toContain("done");
+      // No key was minted out of a key: the file is absent, or holds nothing of it either.
+      expect(stdout, shape).toContain("refused: the review App (App 202");
+      const keyFile = join(work, "app-key", "review", "key.pem");
+      const written = existsSync(keyFile) ? readFileSync(keyFile, "utf8") : "";
+      holdsNoKey(stdout + stderr + written, keyIDs);
+      holdsNoKeyLine(stdout + stderr + written);
+    }
+  });
+
+  test("the relay masks the key material of a line and passes the rest of it on", async () => {
+    // The other half of the sink: the operator reads why their own command failed — this script
+    // names no secret store of theirs, so that stderr is all they have — while the key material
+    // the same line carries is masked.
+    // The command writes one line of the key's base64 and one of its armour into a message of
+    // its own, as a command that reads the wrong file does.
+    const body = reviewKey.trimEnd().split("\n")[1];
+    const armour = reviewKey.split("\n")[0];
+    const { code, stdout, stderr } = await githubApps(
+      {
+        ...appInputs,
+        MIXED: `printf 'ERROR: secret legion-review-app-key not found; read %s\\n' '${body}' >&2; printf '%s\\n' '${armour}' >&2; exit 4`,
+      },
+      `review_app_id=202
+review_app_key_command=$MIXED
+app_token_mint_key "$work/app-key" || echo "refused: $app_token_mint_failed"
+echo done`
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain("done");
+    // The command's own words, which the operator acts on.
+    expect(stderr).toContain("ERROR: secret legion-review-app-key not found; read ");
+    // And the key material of those two lines, masked: the body line the message quoted, and the
+    // PEM armour of the line after it.
+    expect(stderr).toContain("read [redacted key]");
+    expect(stderr.split("\n")).toContain("[redacted key]");
+    holdsNoKey(stdout + stderr, keyIDs);
+    holdsNoKeyLine(stdout + stderr);
   });
 });

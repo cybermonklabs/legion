@@ -180,14 +180,9 @@ cleanup() {
   printf "the run's evidence is %s\n" "$evidence" >&2
   [ -n "${ok:-}" ] || [[ $status =~ ^(129|130|143)$ ]] || [ ! -d "$evidence/model-gateway" ] ||
     bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$evidence/model-gateway" "$check_started" "$check" >&2 || true
-  # The review App's private key must be gone, whatever else the teardown did: a private key never
-  # expires, and the removal at the head of this trap is the only thing that takes it. Left behind,
-  # it fails the run, as the sandbox proof's remove_app_tokens does with the credential files it
-  # could not remove (claude-backend-sandbox.sh).
-  if [ -e "$work/app-key" ]; then
-    printf "FAIL cleanup: the review App's private key remains in %s\n" "$work/app-key" >&2
-    exit 1
-  fi
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 trap cleanup EXIT
