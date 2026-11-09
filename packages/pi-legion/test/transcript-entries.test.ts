@@ -53,13 +53,13 @@ test("a last line the writer has not finished is withheld while the writer is al
 
 test("the same fragment is handed on once the writer is gone, so parsing it throws", async () => {
   const dir = await sessions(`${entry(KIND, 1)}\n{"customType":"${KIND}",`);
-  await expect(transcriptEntries(dir, KIND, "gone")).rejects.toThrow(/JSON Parse error/);
+  await expect(transcriptEntries(dir, KIND, "gone")).rejects.toThrow(SyntaxError);
 });
 
 test("a complete line that is malformed throws whatever the writer is doing", async () => {
   const dir = await sessions(`${entry(KIND, 1)}\n{"customType":"${KIND}",}\n`);
-  await expect(transcriptEntries(dir, KIND, "alive")).rejects.toThrow(/JSON Parse error/);
-  await expect(transcriptEntries(dir, KIND, "gone")).rejects.toThrow(/JSON Parse error/);
+  await expect(transcriptEntries(dir, KIND, "alive")).rejects.toThrow(SyntaxError);
+  await expect(transcriptEntries(dir, KIND, "gone")).rejects.toThrow(SyntaxError);
 });
 
 test("a directory that does not hold exactly one transcript reads as empty", async () => {

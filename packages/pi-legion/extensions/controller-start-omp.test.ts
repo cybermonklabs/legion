@@ -19,7 +19,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { completeLines, writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { completeLines, endsWhole, writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { connect, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -154,6 +154,10 @@ interface ControllerSession {
   nextTurn(what: string): Promise<Turn>;
   /** The one transcript's lines, raw; none until Oh My Pi writes the file. */
   transcriptLines(): Promise<string[]>;
+  /** Waits until the transcript ends on a finished line, which a read that proves an absence
+   * does first: `transcriptLines` withholds a line the host has not finished, so an empty
+   * result taken mid-write would be the absence of that line and not of the record. */
+  transcriptWhole(): Promise<void>;
   /** The transcript's message entries, in order. */
   messages(): Promise<MessageEntry[]>;
   /**
@@ -455,19 +459,35 @@ async function startController(
     }
   };
 
-  // The pane appends to its transcript as this polls it, so a read can land between a line's
-  // bytes and its newline; `writtenLines` withholds that fragment until the write has finished
-  // it, rather than handing `JSON.parse` half an object (dispatch://INFRA-2188). Once Oh My Pi
-  // has exited nothing will finish it, so every line is parsed and a fragment throws.
-  const transcriptLines = async (): Promise<string[]> => {
+  /** The transcript's text, and `""` before Oh My Pi has written one. */
+  const transcriptText = async (): Promise<string> => {
     const files = (await readdir(sessions, { recursive: true })).filter((file) =>
       file.endsWith(".jsonl")
     );
-    if (files.length === 0) return [];
+    if (files.length === 0) return "";
     if (files.length !== 1)
       throw new Error(`want one transcript under ${sessions}, found ${files}`);
-    const text = await readFile(path.join(sessions, files[0] ?? ""), "utf8");
-    return writtenLines(text, exitCode === undefined ? "alive" : "gone");
+    return await readFile(path.join(sessions, files[0] ?? ""), "utf8");
+  };
+
+  // The pane appends to its transcript as this polls it, so a read can land between a line's
+  // bytes and its newline; `writtenLines` withholds that fragment until the write has finished
+  // it, rather than handing `JSON.parse` half an object (dispatch://INFRA-2188). Once Oh My Pi
+  // has exited nothing will finish it, so every line is parsed and a fragment throws. Which of
+  // the two holds is read before the file and never after, or a read that caught half a line
+  // while Oh My Pi then exited would be parsed and its error would stand in for the real
+  // failure, which is that omp exited.
+  const transcriptLines = async (): Promise<string[]> => {
+    const writer = exitCode === undefined ? "alive" : "gone";
+    return writtenLines(await transcriptText(), writer);
+  };
+
+  // What a read that proves an absence waits for: with the transcript ending on a finished line,
+  // an empty result is the absence of the record rather than of a line still being written.
+  const transcriptWhole = async (): Promise<void> => {
+    await until("the transcript to end on a finished line", async () =>
+      endsWhole(await transcriptText()) ? true : undefined
+    );
   };
 
   let taken = 0;
@@ -480,6 +500,7 @@ async function startController(
       return turn;
     },
     transcriptLines,
+    transcriptWhole,
     async messages() {
       return (await transcriptLines()).flatMap((line) => {
         const entry = MessageEntrySchema.safeParse(JSON.parse(line));
@@ -874,6 +895,10 @@ test.skipIf(skip)(
     for (const turn of session.turns) {
       expect(JSON.stringify(turn.request.body)).not.toContain(START_COMMAND);
     }
+    // An absence read: the start command's word must be nowhere in the transcript. It waits for
+    // the transcript to end on a finished line first, since a line the host had not finished
+    // would be withheld and read as the absence this asserts.
+    await session.transcriptWhole();
     const lines = await session.transcriptLines();
     expect(lines.filter((line) => line.includes(START_COMMAND))).toEqual([]);
     const userMessages = (await session.messages())

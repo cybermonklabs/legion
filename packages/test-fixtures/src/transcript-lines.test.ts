@@ -18,7 +18,5 @@ test("a last line with no newline yet is withheld while the writer is alive", ()
 
 test("every line is handed on once the writer is gone, so a fragment is parsed and throws", () => {
   expect(writtenLines('{"a":1}\n{"c"', "gone")).toEqual(['{"a":1}', '{"c"']);
-  expect(() => writtenLines('{"c"', "gone").map((line) => JSON.parse(line))).toThrow(
-    /JSON Parse error/
-  );
+  expect(() => writtenLines('{"c"', "gone").map((line) => JSON.parse(line))).toThrow(SyntaxError);
 });

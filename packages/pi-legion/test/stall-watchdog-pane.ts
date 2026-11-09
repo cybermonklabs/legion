@@ -349,10 +349,12 @@ export interface StallPane {
   readonly exited: Promise<number>;
   /** Whether omp is still running. */
   readonly running: () => boolean;
-  /** Waits until the transcript holds no half-written line, so that a read taken next is a read
-   * of whole lines. A case that reads an empty result as proof a record is absent calls this
-   * first: the only line that could falsify it is the one a write may not have finished, and
-   * `records()` withholds that line while the pane runs. Throws naming the file at its bound. */
+  /** Waits until a read of the transcript finds it ending on a finished line. A case that reads
+   * an empty result as proof a record is absent calls this first, after the quiet period in
+   * which nothing should be written: the only line that could falsify such a read is one a
+   * write has not finished, which `records()` withholds while the pane runs. It is a separate
+   * read from the one that follows, so it does not promise that one finds the file whole — it
+   * narrows the window to the gap between the two. Throws naming the file at its bound. */
   settled(): Promise<void>;
   /** Polls `probe` until it answers, failing on `what` at the deadline. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
@@ -536,6 +538,10 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       (await entries(STALL_RESTART_MESSAGE)).map((entry) => String(entry.content ?? "")),
     frames: () => frames,
     agentEnds: async () => {
+      // Read the pane's state before the file, never after: a read that catches half a line
+      // while the pane then exits would be marked "gone" and parsed, and the parse error would
+      // stand in for the real failure, which is that omp exited (dispatch://INFRA-2188).
+      const writer = running ? "alive" : "gone";
       let written: string;
       try {
         written = await readFile(endsFile, "utf8");
@@ -544,7 +550,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       }
       // The pane's own extension appends to this file (`steerExtension`), so the last line can
       // be half-written while the pane runs; see `entries` above.
-      return writtenLines(written, running ? "alive" : "gone").map(
+      return writtenLines(written, writer).map(
         (line): AgentEndSeen => JSON.parse(line) as AgentEndSeen
       );
     },

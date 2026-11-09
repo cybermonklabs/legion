@@ -19,8 +19,7 @@ test("the cards of a file are its envoy-message lines, in the order it holds the
 // The control for this finding: the last line is a card the host has not finished writing, cut
 // after both markers, which is the read that threw in packages/pi-legion's stall-watchdog case
 // and would throw here too (dispatch://INFRA-2188). Reverting `writtenLines` to a plain
-// `split("\n")` turns both assertions below red: the first gets a third entry, and the second
-// throws instead of parsing.
+// `split("\n")` turns this case red at its first assertion, which gets a third entry.
 test("a card line the host has not finished writing is withheld while the pane runs", () => {
   const torn = `${card("a")}\n${card("b")}\n${card("c").slice(0, 60)}`;
   expect(torn).toContain('"envoy-message"');
@@ -33,5 +32,5 @@ test("the same fragment is selected once the pane has exited, so parsing it thro
   const torn = `${card("a")}\n${card("c").slice(0, 60)}`;
   const lines = cardLines(torn, "gone");
   expect(lines).toHaveLength(2);
-  expect(() => lines.map((line) => JSON.parse(line))).toThrow(/JSON Parse error/);
+  expect(() => lines.map((line) => JSON.parse(line))).toThrow(SyntaxError);
 });

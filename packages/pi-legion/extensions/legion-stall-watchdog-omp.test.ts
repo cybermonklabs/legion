@@ -228,6 +228,7 @@ test.skipIf(skip)(
     );
     expect(lastMessage(again)).toContain("`eval` call");
     expect(lastMessage(again)).toContain("Decide whether that call is still worth making");
+    await pane.settled();
     const restarts = await pane.restarts();
     expect(restarts).toHaveLength(1);
     expect(restarts[0]).toContain("Your turn was ended because its `eval` call");

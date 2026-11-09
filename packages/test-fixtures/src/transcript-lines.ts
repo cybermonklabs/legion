@@ -20,6 +20,15 @@ export function completeLines(text: string): string[] {
 }
 
 /**
+ * Whether `text` ends on a finished line, so that `completeLines` withholds nothing of it. This
+ * is the one statement of the rule: a reader that wants to know whether a file is whole asks
+ * this rather than testing for the newline itself.
+ */
+export function endsWhole(text: string): boolean {
+  return text === "" || text.endsWith("\n");
+}
+
+/**
  * The lines of `text` a reader may parse now. While the writer is alive an unfinished last line is
  * withheld; once it is gone every line is parsed, so a record written last is never withheld for
  * ever and a fragment that will never be finished throws where it is written rather than timing

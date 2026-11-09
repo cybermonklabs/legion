@@ -4,7 +4,7 @@
 // pane, so `transcript-entries.test.ts` drives all of it in milliseconds and without the binary.
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
-import { type Writer, writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { endsWhole, type Writer, writtenLines } from "@legion/test-fixtures/transcript-lines";
 
 /** The one `.jsonl` under `sessions`, or `undefined` when the directory does not hold exactly one. */
 async function soleTranscript(sessions: string): Promise<string | undefined> {
@@ -46,8 +46,7 @@ export async function transcriptEntries(
 export async function transcriptSettled(sessions: string): Promise<boolean> {
   const file = await soleTranscript(sessions);
   if (file === undefined) return true;
-  const text = await readFile(file, "utf8");
-  return text === "" || text.endsWith("\n");
+  return endsWhole(await readFile(file, "utf8"));
 }
 
 /**

@@ -526,9 +526,13 @@ async function startSession(
       );
     },
     async cardEntries() {
+      // The pane's state is read before the file and never after: a read that caught half a
+      // line while the pane then exited would be marked "gone" and parsed, and that parse error
+      // would stand in for the real failure, which is that omp exited (dispatch://INFRA-2188).
+      const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return cardLines(await readFile(file, "utf8"), running ? "alive" : "gone");
+      return cardLines(await readFile(file, "utf8"), writer);
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
