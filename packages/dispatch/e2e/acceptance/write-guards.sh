@@ -10,27 +10,20 @@
 #             the server keeps. The uploaded block takes the live block's id, so the ask stays on
 #             its block, the answered row stays the issue's one row for that question, and the
 #             settlement writes the answer onto the block again.
-#   base      an upload that replaces a document says which text it replaces. A base behind the
-#             live document is refused `409 PRECONDITION_FAILED`, whose answer carries the live
-#             token, the live version and where to read a fresh token; the command exits non-zero
-#             and nothing is written. The same upload with the base `dispatch doc-read` prints is
-#             taken. A replacement that names no base is taken on a server carrying the default,
-#             and refused `400 PRECONDITION_REQUIRED` on one with DISPATCH_UPLOAD_BASE_REQUIRED=on.
+#   base      an upload that replaces a document names the token of the version it replaces. A
+#             token behind the live document is refused `409 PRECONDITION_FAILED`, whose answer
+#             carries the live token, the version the document stands at and where to read a
+#             fresh token; the command exits non-zero and nothing is written. The same upload
+#             naming the token `dispatch doc-read` prints is taken. A replacement that names no
+#             token at all is refused `400 PRECONDITION_REQUIRED`, which no setting decides: no
+#             replacement lands unguarded. (The section is labelled `base` in the lines below,
+#             which is the name the issue's check carries.)
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DEV_SIGNIN_LOGIN (a login the
 # server's dev sign-in route, /auth/_dev/signin, signs in: the local harness has it, a deployed
 # server does not). The review and the answer are a person's writes, which no bearer may make, so
 # the login is required rather than skipped: without it this driver proves nothing.
-#
-# BASE_REQUIRED_DATABASE_URL is optional, and names an empty Postgres database this driver may
-# use. The refusal of a replacement that names no base is the server's own
-# DISPATCH_UPLOAD_BASE_REQUIRED setting, which is off by default, so the server under test — which
-# carries that default — cannot show it: with the database named, this driver builds the server of
-# this checkout, starts one of its own with the setting on, on a port of its own and that
-# database, drives the refusal against it and stops it by the pid it captured. Unset, the `base`
-# section still drives the other half on the server under test, that such a replacement is taken
-# while the setting is off, and prints one `SKIP: base …` line for the refusal it did not drive.
 #
 # The driver writes three issues in PROJECT — one whose specification a person approves, one whose
 # document holds the question a person answers, and one whose document an upload replaces — and
@@ -53,13 +46,10 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-         DEV_SIGNIN_LOGIN=alice [BASE_REQUIRED_DATABASE_URL=postgres://…] write-guards.sh
+         DEV_SIGNIN_LOGIN=alice write-guards.sh
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN;
        DEV_SIGNIN_LOGIN is required: the review and the answer this driver needs are a person's
-       writes, and only a server with dev sign-in mints that person's cookie;
-       BASE_REQUIRED_DATABASE_URL names an empty Postgres database this driver may start a second
-       server on, with DISPATCH_UPLOAD_BASE_REQUIRED=on, to drive the refusal of a replacement
-       that names no base; unset, that one check is skipped and the other half is driven instead)
+       writes, and only a server with dev sign-in mints that person's cookie)
 USAGE
 }
 
@@ -85,11 +75,9 @@ server="$base"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 readonly dev_login="$DEV_SIGNIN_LOGIN"
-readonly base_required_database_url="${BASE_REQUIRED_DATABASE_URL-}"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
-readonly server_package="$script_dir/../../../envoy"
 bun_bin="$(command -v bun)"
 readonly bun_bin
 readonly saved_path="$PATH"
@@ -107,7 +95,6 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 # server this run started itself, empty until it has started one.
 written=()
 closed=()
-second_server_pid=""
 
 # close_written ISSUE: closes ISSUE, an issue this script wrote, from cleanup.
 close_written() {
@@ -126,10 +113,6 @@ cleanup() {
     issue="${written[$index]}"
     [[ "${closed[$index]}" == 1 ]] || close_written "$issue"
   done
-  if [[ -n "$second_server_pid" ]]; then
-    kill "$second_server_pid" 2>/dev/null || true
-    wait "$second_server_pid" 2>/dev/null || true
-  fi
   rm -rf "$work"
   exit "$code"
 }
@@ -277,7 +260,7 @@ read_token() {
 }
 
 # document_body ISSUE NAME FILE [BASE]: the JSON an artifact POST takes for FILE under NAME, with
-# the base it replaces where BASE is given.
+# the token of the version it replaces where BASE is given.
 document_body() {
   if [[ -n "${4:-}" ]]; then
     jq -cn --arg a "$session" --arg n "$2" --rawfile c "$3" --arg t "$4" \
@@ -451,7 +434,7 @@ expect identity "the uploaded block took the id the live block had, and the sett
 cat >"$work/base-spec.md" <<'SPEC'
 The gateway's upload path replaces a document whole.
 SPEC
-issue base "Write guards: an upload names the base it replaces" "$work/base-spec.md"
+issue base "Write guards: an upload names the token of the version it replaces" "$work/base-spec.md"
 guard="$key"
 readonly guard
 
@@ -474,13 +457,13 @@ live_version="$(jq -er '.version' "$work/body")" || fail base "read the live ver
 readonly live_token live_version
 [[ "$live_token" != "$stale_base" ]] ||
   fail base "the second upload moved the document past the base the first read" "$live_token"
-pass base "the base read before the second upload is behind the live document"
+pass base "the token read before the second upload is behind the live document"
 
 cli artifact --issue "$guard" --name guard.md --path "$work/base-three.md" \
   --precondition-json "$(jq -cn --arg t "$stale_base" '{document: $t}')" >"$work/out" 2>&1 &&
-  fail base "an upload naming a base behind the live document is refused" \
+  fail base "an upload naming a token behind the live document is refused" \
     "the command exited 0: $(<"$work/out")"
-pass base "the upload naming a base behind the live document exits non-zero"
+pass base "the upload naming a token behind the live document exits non-zero"
 grep -qF 'dispatch doc-read' "$work/out" ||
   fail base "the refusal says where a base that is not behind comes from" "$(<"$work/out")"
 pass base "the refusal tells the reader to read the document with dispatch doc-read"
@@ -506,95 +489,30 @@ read_token base "$guard" guard.md
 pass base "dispatch doc-read prints the live token the refusal named"
 upload base "$guard" guard.md "$work/base-three.md" "$doc_token"
 
-run base "replace the guarded document naming no base" artifact --issue "$guard" --name guard.md \
-  --path "$work/base-four.md"
-pass base "a replacement naming no base is taken, which is what a server with DISPATCH_UPLOAD_BASE_REQUIRED off, the default, does with one"
+# --- base: a replacement that names no token at all ----------------------------------------------
 
-# --- base: the refusal a server with the setting on gives, on a server this driver starts --------
+# Dispatch refuses every replacement that names no token, so no replacement lands unguarded. The
+# command exits non-zero and the route answers 400 PRECONDITION_REQUIRED; nothing is written.
+cli artifact --issue "$guard" --name guard.md --path "$work/base-four.md" >"$work/out" 2>&1 &&
+  fail base "a replacement naming no token" "the command exited 0: $(<"$work/out")"
+pass base "a replacement naming no token exits non-zero"
+grep -qF 'must name the token of the version it replaces' "$work/out" ||
+  fail base "the refusal says the replacement must name the version it replaces" "$(<"$work/out")"
+pass base "the refusal says the replacement must name the token of the version it replaces"
+grep -qF 'dispatch doc-read' "$work/out" ||
+  fail base "the refusal says where the token comes from" "$(<"$work/out")"
+pass base "the refusal says where the token comes from"
 
-# second_server_ready: the server this driver started answers its health route, and is still up.
-second_server_ready() {
-  kill -0 "$second_server_pid" 2>/dev/null ||
-    fail base "the server this driver started stays up" "$(<"$work/second-server.log")"
-  [[ "$(curl -sS -o /dev/null -w '%{http_code}' "$second_base/healthz" 2>/dev/null)" == 200 ]]
-}
+send POST "/api/v1/issues/$guard/artifacts" \
+  "$(document_body "$guard" guard.md "$work/base-four.md")"
+want_status 400 base "the same replacement over the artifacts route"
+expect base "it is refused PRECONDITION_REQUIRED" '"PRECONDITION_REQUIRED"' '.code'
+refusal base "the refusal" 'dispatch doc-read'
 
-if [[ -z "$base_required_database_url" ]]; then
-  skip base "a replacement naming no base is refused 400 PRECONDITION_REQUIRED: that is the DISPATCH_UPLOAD_BASE_REQUIRED setting, which the server under test carries off, as every server does by default; set BASE_REQUIRED_DATABASE_URL to an empty Postgres database and this driver starts a server of its own with the setting on and drives it"
-else
-  require_commands go
-  (cd "$server_package" && go build -o "$work/dispatch" ./cmd/dispatch) >"$work/build" 2>&1 ||
-    fail base "build the server to start with DISPATCH_UPLOAD_BASE_REQUIRED=on" "$(<"$work/build")"
-  pass base "built this checkout's server, to start with DISPATCH_UPLOAD_BASE_REQUIRED=on"
-
-  # A port nothing is listening on: bun binds 127.0.0.1:0, reports the port the kernel chose and
-  # closes it, as the e2e harness's own held port does. A port taken between the two leaves the
-  # server's bind to fail, and its log is what this run then reports.
-  second_port="$("$bun_bin" -e \
-    'const s = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } }); console.log(s.port); s.stop(true);')" ||
-    fail base "choose a port for the server this driver starts" "bun bound no port"
-  second_base="http://127.0.0.1:$second_port"
-  readonly second_port second_base
-
-  # The server runs in an environment this script builds, as the CLI does: nothing the calling
-  # shell exported reaches it. Dev sign-in is mounted because it refuses a DATABASE_URL whose host
-  # is not loopback, which keeps this block off any database but a local one; no person signs in
-  # on this server, since the one check it serves is an agent's upload.
-  mkdir "$work/server-home"
-  second_env=(
-    PATH="$saved_path"
-    HOME="$work/server-home"
-    DATABASE_URL="$base_required_database_url"
-    DISPATCH_AGENT_TOKEN="$token"
-    DISPATCH_DEV_SIGNIN=1
-    DISPATCH_IDENTITY=cookie
-    DISPATCH_INSECURE_COOKIE=1
-    DISPATCH_LISTEN_HOST=127.0.0.1
-    DISPATCH_NATS_DISABLED=1
-    DISPATCH_PORT="$second_port"
-    DISPATCH_SERVER_URL="$second_base"
-    DISPATCH_UPLOAD_BASE_REQUIRED=on
-  )
-  if [[ -n "$saved_tmpdir" ]]; then
-    second_env+=(TMPDIR="$saved_tmpdir")
-  fi
-  env -i "${second_env[@]}" "$work/dispatch" >"$work/second-server.log" 2>&1 &
-  second_server_pid=$!
-  wait_until base "the server this driver started answers" second_server_ready
-  pass base "started a server with DISPATCH_UPLOAD_BASE_REQUIRED=on on port $second_port"
-
-  server="$second_base"
-  second_project="WG$$"
-  send POST "/api/v1/projects" \
-    "$(jq -cn --arg s "$session" --arg k "$second_project" \
-      '{actor: {kind: "session", id: $s}, key: $k, name: "Write guards, base required"}')"
-  want_status 201 base "create $second_project on that server"
-  pass base "created $second_project on that server"
-  run base "create an issue on that server" issue --project "$second_project" \
-    --title "Write guards: a replacement names no base" --spec-file "$work/base-spec.md" --force
-  [[ "$(<"$work/out")" =~ Created\ ([A-Z][A-Z0-9]*-[0-9]+): ]] ||
-    fail base "create an issue on that server" "no issue key in: $(<"$work/out")"
-  second_issue="${BASH_REMATCH[1]}"
-  pass base "created $second_issue on that server"
-  run base "upload the first body of $second_issue's document" artifact --issue "$second_issue" \
-    --name guard.md --path "$work/base-one.md"
-  pass base "uploaded guard.md to $second_issue, which names no base because nothing is replaced"
-
-  cli artifact --issue "$second_issue" --name guard.md --path "$work/base-two.md" \
-    >"$work/out" 2>&1 &&
-    fail base "a replacement naming no base, where the server asks for one" \
-      "the command exited 0: $(<"$work/out")"
-  pass base "with the setting on, the replacement naming no base exits non-zero"
-  grep -qF 'must name the base it replaces' "$work/out" ||
-    fail base "the refusal says the replacement must name its base" "$(<"$work/out")"
-  pass base "the refusal says the replacement must name the base it replaces"
-  send POST "/api/v1/issues/$second_issue/artifacts" \
-    "$(document_body "$second_issue" guard.md "$work/base-two.md")"
-  want_status 400 base "the same replacement over the artifacts route"
-  expect base "it is refused PRECONDITION_REQUIRED" '"PRECONDITION_REQUIRED"' '.code'
-  refusal base "the refusal" 'dispatch doc-read'
-  server="$base"
-fi
+read_token base "$guard" guard.md
+[[ "$doc_token" == "$live_token" ]] ||
+  fail base "the refused replacement wrote nothing" "the document token moved to $doc_token"
+pass base "the refused replacement wrote nothing: the document is where it was"
 
 # --- close: the issues the run wrote -------------------------------------------------------------
 

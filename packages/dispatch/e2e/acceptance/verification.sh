@@ -816,7 +816,7 @@ else
   h1="$(sha256sum "$work/approved-spec.md" | cut -d' ' -f1)"
   cp "$work/approved-spec.md" "$work/revised-spec.md"
   printf '\nA new line the person has not approved.\n' >>"$work/revised-spec.md"
-  # This upload replaces the spec whole, so it names the base it replaces, through the multipart
+  # This upload replaces the spec whole, so it names the token of the version it replaces, through the multipart
   # form `--path` sends.
   token_of review "$both" spec.md
   upload review "$both" spec.md "$work/revised-spec.md" "$doc_token"

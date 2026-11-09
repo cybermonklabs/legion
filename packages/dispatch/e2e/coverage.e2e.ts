@@ -74,7 +74,7 @@ Every requirement of the spec is listed.
 
     // A check that serves it is the whole of what it lacked: the next version of the
     // Verification document clears the flag. That version replaces the whole document, so it
-    // names the base it replaces.
+    // names the token of the version it replaces.
     await createIssueArtifact(issue.key, {
       content: `${oneCheck}
 :::check{#c2 serves="dispatch://${issue.key}/spec#b-r2" surface="browser" run="bun run e2e -- e2e/coverage.e2e.ts"}
@@ -135,7 +135,7 @@ List every requirement under the spec.
     await expect(panel).toContainText("List every requirement under the spec.");
 
     // The next version of the plan drops the task, and with it the edge. It replaces the whole
-    // document, so it names the base it replaces.
+    // document, so it names the token of the version it replaces.
     await createIssueArtifact(issue.key, {
       content: `How ${issue.key} is built.\n`,
       name: "plan.md",

@@ -425,12 +425,18 @@ async function readAsks(
   // id it is) says nothing about this upload, so every opener in it is judged.
   //
   // An opener is one the current version already holds when it names a block id the version
-  // holds, or, naming no id, when its question is word for word a question the version holds:
-  // the server gives such a block the live block's id (pmdoc's carryBlockIDs), so the upload
-  // opens no ask for it and judging it would refuse a re-upload of an unchanged document for
-  // its own ask block. Both sides are read with the same scan (`askBlocks`), over the markdown
-  // `readDocumentBlocks` already returned, so no second read is made and a match means the same
-  // text on each side; the scan trims each body.
+  // holds, or, naming no id, when its question is word for word a question the version holds.
+  // Both sides are read with the same scan (`askBlocks`), over the markdown `readDocumentBlocks`
+  // already returned, so no second read is made and a match means the same text on each side;
+  // the scan trims each body.
+  //
+  // The second rule is wider than the server's carry, and deliberately. The server gives a block
+  // the live block's id only where the alignment pairs the two unchanged at one position
+  // (pmdoc's carryBlockIDs), so a question the upload moved, or one whose `urgency` or
+  // `multiple` changed, takes a fresh id and does open an ask this leaves unjudged. That is
+  // accepted: the text is a question the document already holds, so the gate's rules were
+  // applied to those words when they first entered it, and judging them again would refuse a
+  // re-upload of an unchanged document for its own ask block.
   const name = uploadName(call.input);
   const current =
     read !== "not-found" && (read.name === name || read.slug === name) ? read.blocks : undefined;

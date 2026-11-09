@@ -249,7 +249,7 @@ test("a block reference a person made keeps resolving after an upload that leave
   );
   expect(uploaded).not.toBe(markdown);
   expect(uploaded).toContain(cited);
-  // The upload replaces the whole document, so it names the base it replaces: the token this same
+  // The upload replaces the whole document, so it names the token of the version it replaces: the token this same
   // read answered.
   if (token === undefined) {
     throw new Error(`${spec.name} answers no document token`);

@@ -151,36 +151,36 @@ export async function uploadFile(
   );
 }
 
-/** What the row says when the document moved under an upload the dashboard sent a base for. The
- *  server writes its own refusal for a caller holding the `dispatch` command, naming the command
- *  that reads the token and the argument that sends it; a person uploading here runs no command
- *  and pastes no token. Pressing Upload again reads the token afresh, so it sends the base the
- *  document has now - but reading what changed first is the point of the guard, which is why the
- *  row says to open the document rather than only to try again. */
+/** What the row says when the document moved under an upload that named the version it was
+ *  replacing. The server writes its own refusal for a caller holding the `dispatch` command,
+ *  naming the command that reads the token and the argument that sends it; a person uploading
+ *  here runs no command and pastes no token. Pressing Upload again reads the token afresh, so it
+ *  names the version the document is at now - but reading what changed first is the point of the
+ *  guard, which is why the row says to open the document rather than only to try again. */
 export const UPLOAD_BASE_REFUSAL =
   "This document changed while you were uploading it. Open it to see what it says now, then upload again.";
 
-/** What the row says when Dispatch asks every replacement for a base and this upload named none
- *  (`400 PRECONDITION_REQUIRED`, the server's `DISPATCH_UPLOAD_BASE_REQUIRED`). It does not mean
- *  the document changed: the page names a base for every document whose token it could read, and
- *  ends an upload whose read failed, so what reaches this is an upload whose read found no
- *  document under the name while the server found one - a document created in the moment between
- *  that read and the post. */
+/** What the row says when the upload named no version and Dispatch requires every replacement to
+ *  name one (`400 PRECONDITION_REQUIRED`). It does not mean the document changed: the page names
+ *  the version for every document whose token it could read, and ends an upload whose read
+ *  failed, so what reaches this is an upload whose read found no document under the name while
+ *  the server found one - a document created in the moment between that read and the post. */
 export const UPLOAD_BASE_REQUIRED_REFUSAL =
   "The page could not say which text this upload replaces, and Dispatch requires it. Open the document to see what it says now, then upload again.";
 
-/** What the row says when the base could not be read at all (`UploadBaseUnreadableError`),
- *  followed by what Dispatch said of that read where it answered at all. */
+/** What the row says when the version's token could not be read at all
+ *  (`UploadBaseUnreadableError`), followed by what Dispatch said of that read where it answered
+ *  at all. */
 export const UPLOAD_BASE_UNREADABLE_REFUSAL =
   "Could not read the document this upload would replace, so nothing was uploaded.";
 
 // A refused upload is described by the server, which names the bound it hit: a markdown document
 // is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message. The refusals
-// about the document base are the exception: the server writes those for the `dispatch` command
-// and the dashboard says what they mean to a person. They are three sentences, not one - the
-// document moved under the upload, the upload named no base where Dispatch requires one, and the
-// base could not be read at all - and a person told the wrong one of those is told something
-// untrue.
+// about the version an upload replaces are the exception: the server writes those for the
+// `dispatch` command and the dashboard says what they mean to a person. They are three
+// sentences, not one - the document moved under the upload, the upload named no version where
+// Dispatch requires one, and the token could not be read at all - and a person told the wrong
+// one of those is told something untrue.
 export function uploadErrorMessage(error: unknown): string {
   if (error instanceof UploadBaseUnreadableError) {
     const said = error.cause instanceof ApiError ? ` ${error.cause.message}` : "";

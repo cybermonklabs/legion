@@ -278,9 +278,12 @@ function standingReviewLines(advice: WriteAdvice | undefined): string[] {
   }
   const verb = review.state === "approved" ? "approved" : "asked for changes on";
   const opening = `${review.by} ${verb} this issue's spec at version ${review.version} on ${review.at}`;
+  // The reason is a person's own words, up to 500 characters of them, and it goes into what an
+  // agent reads: quoted by JSON, so a quotation mark or a line feed inside it cannot end the
+  // line early or add one the reviewer did not write.
   const reason = review.reason ?? "";
   return [
-    reason === "" ? `${opening}, and gave no reason.` : `${opening}: "${reason}"`,
+    reason === "" ? `${opening}, and gave no reason.` : `${opening}: ${JSON.stringify(reason)}`,
     "Say what changed since that review in a reply on this ask.",
   ];
 }

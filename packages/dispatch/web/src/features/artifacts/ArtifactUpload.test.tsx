@@ -363,17 +363,18 @@ test("a refused upload tells the person the document changed, not a command to r
 // that read failed, so what reaches this is a document created between the page's read and its
 // post. Told "this document changed while you were uploading it", a person whose upload was the
 // first of that name would be told something untrue.
-test("an upload Dispatch required a base of is told it named none, not that the document changed", async () => {
+test("an upload Dispatch required a version of is told it named none, not that the document changed", async () => {
   const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
     new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
   );
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    // The sentence the server sends with DISPATCH_UPLOAD_BASE_REQUIRED on
-    // (`refuseUploadNamingNoBase` in the server's `api/artifacts.go`).
+    // The sentence the server sends when a replacement names no version, which it refuses
+    // whatever the deployment (`api/artifacts.go` in the server).
     new ApiError(400, {
       code: "PRECONDITION_REQUIRED",
       error:
-        'an upload replacing document "notes.md" must name the base it replaces: read the ' +
+        'an upload replacing document "notes.md" must name the token of the version it ' +
+        "replaces: read the " +
         "document with `dispatch doc-read`, which prints `Document token: sha256:…`, and " +
         'upload again naming that token as `--precondition-json \'{"document":"sha256:…"}\'`',
     })

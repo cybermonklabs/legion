@@ -225,16 +225,17 @@ function uploadedBase(request: Request): unknown {
   return field === null ? null : JSON.parse(field[1] ?? "");
 }
 
-// A person uploading a markdown document over a name the issue already holds is a caller of the
-// base guard, so what the page sends and what it shows are read here rather than in jsdom alone.
-// The upload is held in its own route while the document is changed under it: the page reads the
-// token inside `uploadBase` and posts immediately after, so the change lands between that read
-// and the server's reading of the request, and no wall clock decides it. The second half is what
-// `web/src/features/artifacts/ArtifactUpload.test.tsx` asserts against a mocked client - the
-// server's own sentence names `dispatch doc-read` and `--precondition-json`, and a person at a
-// browser runs no command and pastes no token, so the row must say what the refusal means
+// A person uploading a markdown document over a name the issue already holds must name the
+// token of the version they are replacing, so what the page sends and what it shows are read
+// here rather than in jsdom alone. The page reads that token when the person chooses the file
+// and every attempt of the press sends the one it read; the upload is then held in its own
+// route while an agent changes the document under it, so the change lands between the page's
+// read and the server's reading of the request, and no wall clock decides it. The second half
+// is what `web/src/features/artifacts/ArtifactUpload.test.tsx` asserts against a mocked client
+// - the server's own sentence names `dispatch doc-read` and `--precondition-json`, and a person
+// at a browser runs no command and pastes no token, so the row must say what the refusal means
 // instead.
-test("an upload over a document carries the base the page read, and says what a change under it means", async ({
+test("an upload over a document carries the token the page read, and says what a change under it means", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -276,7 +277,7 @@ test("an upload over a document carries the base the page read, and says what a 
     "# Review notes\n\nThese notes replace the initial spec.\n"
   );
 
-  // The second upload names the base the document holds now, and an agent moves the document
+  // The second upload names the token the document holds now, and an agent moves the document
   // past it while the upload is held, so the server reads a base that is one version behind.
   const held = await documentBase(notes.artifact.id);
   changeUnderTheUpload = () =>
@@ -460,7 +461,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
   // A second upload under the same name is a new version; its line links that version. It
-  // replaces the whole document, so it names the base it replaces.
+  // replaces the whole document, so it names the token of the version it replaces.
   await createIssueArtifact(issue.key, {
     content: "# Draft\n\nRevised.\n",
     name,

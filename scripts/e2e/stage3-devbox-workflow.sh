@@ -1050,7 +1050,7 @@ primary_issue() {
   # and only the human's own review reopens the gate. No READY is held yet, so that reopening
   # releases nothing: a merging stint has one refusal-and-release cycle (a held READY is accepted at
   # the first reopening, the daemon's advancePendingReady), and this proof spends it on the carry.
-  # The upload replaces the spec whole, so it names the base it replaces: the document token the
+  # The upload replaces the spec whole, so it names the token of the version it replaces: the document token the
   # live read answers, which Dispatch checks under the write's own lock.
   spec_base=$(dispatch_get "artifacts/$artifact_id/text" | jq -er '.token') ||
     fail "the spec of $root_issue answers no document token for the upload to name as its base"

@@ -1,5 +1,6 @@
 kind: Added
-body: '`dispatch_artifact` takes the same `precondition` object as `dispatch_doc_edit`, and `CreateArtifactInput` carries it to the upload route. An upload over a document the owner already holds under that name names the base it replaces, the document token `dispatch doc-read` prints; a base behind the live document is refused `409 PRECONDITION_FAILED`, whose `current.version` (new on `EditPreconditionCurrent`) names the live version. A first upload names none, and whether a replacement that names none is refused at all is the server''s `DISPATCH_UPLOAD_BASE_REQUIRED` setting, off by default.'
+body: |-
+    `dispatch_artifact` takes a `precondition` naming the token of the version the upload replaces, which `dispatch doc-read` prints, and `CreateArtifactInput` carries it to the upload route. It is the document token alone: an upload rewrites the whole tree, so the block tokens `dispatch_doc_edit` takes mean nothing there and the server refuses them. An upload over a document the owner already holds under that name must name it, and one naming a token behind the live document is refused `409 PRECONDITION_FAILED`, whose `current.version` (new on `EditPreconditionCurrent`) names the version the document stands at. A first upload under a name the owner holds nothing under names none.
 time: 2026-11-08T00:00:00.000000000Z
 custom:
     Issue: pr3000
