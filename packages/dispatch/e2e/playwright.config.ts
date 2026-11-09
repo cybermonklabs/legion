@@ -14,6 +14,8 @@ import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
+import { stubOrigin } from "./stub/origin";
+import { stubRecording } from "./stub/stub-test";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -48,6 +50,15 @@ const firefoxTagged = tagged("firefox");
 // the proxy's own routes; two-process mode (DISPATCH_E2E_PROCESSES=2, `bun run e2e:multiprocess`)
 // runs them alone, in Chromium, since every other spec runs against one server already.
 const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
+// Specs of the stubbed layer, each named `*.stub.e2e.ts`: a real browser against a recording of
+// the API, with no Go server, no Postgres, no fakes, no sign-in and no reset (e2e/stub/). The
+// `stub` project at the end of this file runs them and nothing else runs them: this config's own
+// `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
+// since a project's overrides this one's. A moved row lives in such a file rather than carrying an
+// annotation, because 150 spec files reset the database in a `beforeEach` and most of them sign in
+// and seed through the API: a stubbed row left among them would still run its file's hooks
+// (packages/dispatch/AGENTS.md, "The stubbed layer").
+const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
 // signs in through dev sign-in, runs only without it.
@@ -91,6 +102,24 @@ function isListMode(argv: readonly string[]): boolean {
   return scanned.includes("--list");
 }
 
+// Whether this command line selects the `stub` project and nothing else, read from argv as the
+// list mode above is. Such a run needs no harness at all - no Go server, no Postgres, no fakes -
+// so it is exempt from the three refusals below and from the global setup, which probes every
+// lane's server. Every refusal keeps its sentence for every other run, so a person who forgets
+// the harness still gets the line that fixes it. The reading lives here rather than in
+// e2e/run.ts because a stub-only run never goes through that wrapper, and because
+// dispatch://INFRA-1410 deletes it.
+function onlyStubProject(argv: readonly string[]): boolean {
+  const separator = argv.indexOf("--");
+  const scanned = separator === -1 ? argv : argv.slice(0, separator);
+  const named: string[] = [];
+  for (const [index, argument] of scanned.entries()) {
+    if (argument === "--project") named.push(scanned[index + 1] ?? "");
+    else if (argument.startsWith("--project=")) named.push(argument.slice("--project=".length));
+  }
+  return named.length > 0 && named.every((project) => project === "stub");
+}
+
 // How many workers the command line asks for, if it does: `--workers <n>`, `--workers=<n>`,
 // `-j <n>` or `-j<n>`, read before a `--` separator as the list mode above is. A worker is a
 // lane, and e2e/run.ts started one harness per lane before Playwright, so a command line that
@@ -121,7 +150,24 @@ const ports = harnessPorts();
 const reuseServers = resolveReuseServers();
 const unset = targeted.filter((listener) => ports[listener.key].port === 0);
 const listing = isListMode(process.argv);
-if (!listing && unset.length > 0) {
+// A run of the `stub` project alone, not recording: it reaches no server of the harness, so
+// every refusal below is about a harness it does not want. Recording is the exception - those
+// rows run against the real harness and must meet all of them.
+//
+// Every worker re-imports this config, and a worker's own argv is Playwright's
+// (`.../workerMain.js`), not the command line, so the reading above answers `false` there and
+// the worker would meet a refusal the run was exempt from. The decision therefore travels in the
+// environment, which Playwright gives each worker: the first process to read it writes it, and
+// a person may set it themselves to run this config against no harness at all.
+const stubOnlyVariable = "DISPATCH_E2E_STUB_ONLY";
+function runsStubAlone(): boolean {
+  if (process.env[stubOnlyVariable] === "1") return true;
+  if (!onlyStubProject(process.argv) || stubRecording()) return false;
+  process.env[stubOnlyVariable] = "1";
+  return true;
+}
+const stubOnly = runsStubAlone();
+if (!listing && !stubOnly && unset.length > 0) {
   throw new Error(
     `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
       `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
@@ -131,7 +177,7 @@ if (!listing && unset.length > 0) {
       "DISPATCH_E2E_REUSE_SERVERS=1."
   );
 }
-if (!reuseServers && (!listing || unset.length < targeted.length)) {
+if (!stubOnly && !reuseServers && (!listing || unset.length < targeted.length)) {
   const targets = targeted
     .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
     .join(", ");
@@ -148,7 +194,7 @@ if (!reuseServers && (!listing || unset.length < targeted.length)) {
 // two workers on one lane's servers and database, which e2e/seed.ts truncates per row.
 const lanes = laneCount();
 const asked = workersOnCommandLine(process.argv);
-if (asked !== undefined && asked !== String(lanes)) {
+if (!stubOnly && asked !== undefined && asked !== String(lanes)) {
   throw new Error(
     `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
       `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
@@ -162,7 +208,7 @@ if (asked !== undefined && asked !== String(lanes)) {
 // more: nothing exported a lane, so every worker would resolve lane 0 and share one harness's
 // servers and database, which e2e/seed.ts truncates per row - rows would delete each other's
 // fixtures and fail in ways that read as product faults. Only e2e/run.ts exports that variable.
-if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
+if (!stubOnly && process.env[laneCountVariable] === undefined && workerCount() > 1) {
   throw new Error(
     `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing exported ` +
       `${laneCountVariable}, so there is one harness and every worker would share it. Run this ` +
@@ -275,12 +321,12 @@ const visualSpecs = /visual\.e2e\.ts$/;
 const parallelProjects = [
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: phoneTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -324,7 +370,7 @@ const parallelProjects = [
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -381,7 +427,7 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -553,11 +599,46 @@ const visualProjects = [
   },
 ] satisfies Project[];
 
+/**
+ * The stubbed layer: a real browser against a recording of the API (e2e/stub/).
+ *
+ * It is declared unconditionally, like `visualProjects` above and for the same reason: the guard
+ * that finds a row running twice in one configuration lists this config in a subprocess whose
+ * environment is cut to `HOME`, `PATH` and `DISPATCH_E2E_PROCESSES`
+ * (e2e/__tests__/row-configurations.test.ts), so a project declared only when a variable is set
+ * would be invisible to it.
+ *
+ * Its origin is its own, a static file server over `web/dist` rather than a Dispatch server
+ * (e2e/stub/origin.ts), which is also what gives it a configuration key of its own: `chromium`
+ * runs the same engine at the same viewport, and the origin is what tells the two apart.
+ *
+ * `testIgnore: []` because this config's own `testIgnore` holds `stubSpecs`, to keep a project
+ * that names neither selector from picking these rows up; a project's `testIgnore` replaces this
+ * one's, so the empty array is what lets these rows reach the project that exists for them.
+ *
+ * Recording (`DISPATCH_E2E_STUB_RECORD=1`) is the one run where these rows meet the real stack:
+ * the project takes the harness's base URL, the static server is not started, and each row writes
+ * what it fetched (e2e/stub/stub-test.ts).
+ */
+const stubProjects = [
+  {
+    name: "stub",
+    testMatch: stubSpecs,
+    testIgnore: [],
+    use: {
+      ...devices["Desktop Chrome"],
+      baseURL: stubRecording() ? baseUrl : stubOrigin(),
+    },
+  },
+] satisfies Project[];
+
 export default defineConfig({
   testDir: ".",
   testMatch: /.*\.e2e\.ts/,
-  // The projects below that name no `testIgnore` of their own inherit this one.
-  testIgnore: harnessProcessCount === 1 ? multiprocessSpecs : undefined,
+  // The projects below that name no `testIgnore` of their own inherit this one. `stubSpecs` is
+  // here so that a project which names neither selector never picks a stubbed row up: the `stub`
+  // project names `testIgnore: []`, which is what lets those rows reach it.
+  testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
   // Every row is independent: it empties its lane's database and fake listeners itself
   // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
@@ -595,10 +676,27 @@ export default defineConfig({
   },
   // Runs before any row, against the servers the checks above require: it refuses a target that
   // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not
-  // both read it or do not accept each other's cookies (e2e/preflight.ts).
-  globalSetup: fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  // both read it or do not accept each other's cookies (e2e/preflight.ts). A run of the `stub`
+  // project alone reaches no such server, so it has no global setup at all.
+  globalSetup: stubOnly ? undefined : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  // The one server this config starts, and it serves files: the built SPA, for the stubbed
+  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts it
+  // before Playwright. A recording run reaches the real harness instead, so it starts none, and
+  // Playwright starts no web server for a `--list` either.
+  webServer: stubRecording()
+    ? undefined
+    : {
+        command: "bun e2e/stub/static-server.ts",
+        // Playwright runs a `webServer` command in the config's own directory, and every command
+        // of this package is written from the package root, as `package.json`'s scripts are.
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        reuseExistingServer: true,
+        stdout: "pipe",
+        timeout: 60_000,
+        url: `${stubOrigin()}/index.html`,
+      },
   projects:
     harnessProcessCount === 2
       ? multiprocessProjects
-      : [...parallelProjects, ...aloneProjects, ...visualProjects],
+      : [...parallelProjects, ...aloneProjects, ...visualProjects, ...stubProjects],
 });

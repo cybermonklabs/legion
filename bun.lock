@@ -141,6 +141,7 @@
         "@types/react": "^19.2.18",
         "@types/react-dom": "^19.2.7",
         "@vitejs/plugin-react": "^4.3.4",
+        "ajv": "8.20.0",
         "fake-indexeddb": "^6.2.5",
         "happy-dom": "^20.14.0",
         "msw": "3.0.4",
