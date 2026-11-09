@@ -91,10 +91,13 @@ describe("Supervisor.stop", () => {
 
   test("returns as soon as the leaders exit, not after the force-kill delay", async () => {
     const made = supervisor();
-    made.start("quiet", ["sleep", "60"], "/");
-    const started = Date.now();
-    await made.stop(30_000);
-    expect(Date.now() - started).toBeLessThan(5_000);
+    const quiet = made.start("quiet", ["sleep", "60"], "/");
+    // The force-kill delay is far above this row's per-test limit, so the runner's limit is what
+    // catches a `stop` that waits for the timer, and nothing here reads a clock. What the return
+    // means is asserted below: the leader is gone by the time `stop` resolves, so a `stop` that
+    // returned early having killed nothing fails here rather than passing on its own silence.
+    await made.stop(600_000);
+    expect(groupAlive(quiet.child.pid)).toBe(false);
   });
 
   test("ends a foreground step that a stop interrupts", async () => {
@@ -102,9 +105,9 @@ describe("Supervisor.stop", () => {
     const step = made.run(["sleep", "60"], "/");
     made.interrupt();
     await expect(step).rejects.toBeInstanceOf(Interrupted);
-    const started = Date.now();
-    await made.stop();
-    expect(Date.now() - started).toBeLessThan(5_000);
+    // The force-kill delay is again far above this row's per-test limit: the runner's limit
+    // catches a `stop` that waits for the timer, and nothing here reads a clock.
+    await made.stop(600_000);
   });
 });
 

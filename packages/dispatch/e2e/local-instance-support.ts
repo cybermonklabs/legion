@@ -107,7 +107,9 @@ export class Supervisor {
   /** Aborts `signal`, sends SIGTERM to every process group started and not yet seen to stop,
    *  SIGKILL to whatever still runs `forceAfterMs` later, and returns the moment every leader has
    *  exited: the force-kill timer is cleared then, so a clean Ctrl-C does not keep the shell
-   *  prompt waiting on it. */
+   *  prompt waiting on it. A test that holds this to returning when the leaders exit passes a
+   *  `forceAfterMs` far above its own per-test limit, so the runner's limit, not a clock the test
+   *  reads, catches a `stop` that waits for the timer. */
   async stop(forceAfterMs = 10_000): Promise<void> {
     this.#stopping.abort();
     const running = this.#children.splice(0);
