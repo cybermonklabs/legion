@@ -913,7 +913,14 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	transport := &http.Transport{}
 	d := &daemon{
 		t: t, cfg: cfg, cancel: cancel, done: make(chan error, 1), transport: transport,
-		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		// The package's standard wait rather than ten seconds: a handler here can be behind the
+		// fact lock a test holds on purpose, and this package's tests run beside the module's
+		// other binaries on a two-core pod, so ten seconds bounded that machine's load rather
+		// than the daemon's answer — and failed that way, at 12.00 s, in
+		// TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine on a shuffled run. A request that
+		// never answers still fails, naming the route, and a `-timeout` shorter than the bound
+		// still reports the wait rather than the binary's panic (testwait.Bounded).
+		client: &http.Client{Transport: transport, Timeout: testwait.Bounded(t, time.Minute, time.Second)},
 		base:   "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
 	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
