@@ -1459,6 +1459,7 @@ jobs:
             test:
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
+              - '.claude-plugin/marketplace.json'
               - *bun_install
               - *biome
               # The workspace of the one go command left here, the listener build
