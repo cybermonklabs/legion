@@ -30,6 +30,21 @@ import "./styles.css";
  * sign-in check is out.
  */
 
+/**
+ * The entry's own first statement, so the moment every static import above has evaluated has a
+ * time of its own on the page's performance timeline. A module evaluates all of its static
+ * imports before its body runs, and the build keeps that order inside the chunk - this module's
+ * body is the last of it - so this mark is the end of the one main-thread task that downloads,
+ * compiles and evaluates the entry's whole static graph.
+ *
+ * A browser row reads the mark (`e2e/large-documents.e2e.ts`, "a document's text is asked for
+ * before the entry's imports have evaluated"): the document's own text is asked for from
+ * `index.html`'s head rather than from a module here (`api/early-document-read.ts`), and a read
+ * whose request started before this mark is a read that went out without waiting for any of
+ * those imports - which is the whole of what asking from the head buys the reader.
+ */
+performance.mark("dispatch:entry-imports-evaluated");
+
 // Never two requests in flight for one read: an invalidation during a fetch fetches again once it
 // settles (`api/query-client.ts`).
 const queryClient = new DispatchQueryClient({

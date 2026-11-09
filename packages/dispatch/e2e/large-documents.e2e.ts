@@ -2138,7 +2138,7 @@ test("a document's own text is read before the sign-in check has answered @phone
   }
 });
 
-test("a document's text is asked for before the entry chunk has arrived @phone", async ({
+test("a document's text is asked for before the entry's imports have evaluated @phone", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -2156,31 +2156,42 @@ test("a document's text is asked for before the entry chunk has arrived @phone",
     await expect(firstBlock).toBeVisible({ timeout: 120_000 });
 
     // What the browser itself timed: when the page asked for the document's text, and when the
-    // last byte of the entry chunk arrived. The entry is the page's one module script, and no
-    // module of it can evaluate before all of its bytes are here, so a read that started before
-    // that moment started before every static import of the entry evaluated - which is where
-    // the page used to ask for it (`web/src/main.tsx`), about 1.4 s into the load on a throttled
-    // phone. Asking for it from `web/index.html` is what moves it in front of the chunk. The two
-    // times are the browser's own resource timing, so nothing this row does sits between them.
+    // entry's own module body began. Its first statement writes the
+    // `dispatch:entry-imports-evaluated` mark (`web/src/main.tsx`), and a module evaluates every
+    // static import of it before its own first statement runs, so a read that started before
+    // that mark went out without waiting for any of them - which is what the page used to do
+    // nothing but wait for, asking from the entry's body about 1.4 s into the load on a
+    // throttled phone (`web/src/features/doc/open-document-early.ts`). Asking for it from
+    // `web/index.html`'s head is what moves it in front of them. Both times are the browser's
+    // own performance timeline, so nothing this row does sits between them.
     const timed = await page.evaluate((textPath: string) => {
-      const entry = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
       const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
       return {
-        chunk: entry?.src,
-        chunkArrivedMs: resources.find((resource) => resource.name === entry?.src)?.responseEnd,
+        importsEvaluatedMs: performance.getEntriesByName("dispatch:entry-imports-evaluated")[0]
+          ?.startTime,
         textAskedMs: resources.find((resource) => new URL(resource.name).pathname === textPath)
           ?.startTime,
       };
     }, `/api/v1/issues/${issueKey}/artifacts/notes-md/text`);
 
-    expect(timed.chunk, "the page has no module script to time the read against").toBeDefined();
-    expect(timed.chunkArrivedMs, `the entry chunk ${timed.chunk} was never timed`).toBeDefined();
+    expect(
+      timed.importsEvaluatedMs,
+      "the entry never marked itself: its first statement writes the " +
+        "`dispatch:entry-imports-evaluated` mark (`web/src/main.tsx`)"
+    ).toBeDefined();
     expect(timed.textAskedMs, "the document's text was never asked for at all").toBeDefined();
+    const evaluatedMs = Math.round(timed.importsEvaluatedMs ?? Number.NaN);
+    const askedMs = Math.round(timed.textAskedMs ?? Number.NaN);
+    console.log(
+      `R11 early read · the document's text was asked for at ${askedMs} ms, the entry's ` +
+        `imports had evaluated at ${evaluatedMs} ms, ${evaluatedMs - askedMs} ms later.`
+    );
     expect(
       timed.textAskedMs ?? Number.POSITIVE_INFINITY,
-      "the document's text was asked for only after the entry chunk had arrived, so it waited " +
-        "for the entry's own static imports to evaluate before it went out (`web/index.html`)"
-    ).toBeLessThan(timed.chunkArrivedMs ?? 0);
+      "the document's text was asked for only after the entry's own first statement ran, so it " +
+        "waited for every static import of the entry to evaluate before it went out " +
+        "(`web/index.html`)"
+    ).toBeLessThan(timed.importsEvaluatedMs ?? 0);
   } finally {
     await alice.close();
   }
