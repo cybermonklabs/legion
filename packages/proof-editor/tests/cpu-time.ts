@@ -64,7 +64,7 @@ const parseCpuBudgetMs = 12_000;
 // not catch is listed once, in packages/proof-editor/AGENTS.md.
 
 /**
- * The wall-clock ceiling every row of tests/heavy-bodies.test.ts carries, and the two measured
+ * The wall-clock ceiling every row of tests/heavy-bodies.test.ts carries, and the four measured
  * rows of tests/nested-directive.test.ts, in place of bun's own default of 5,000 ms.
  *
  * On bun 1.4.4 a per-test limit does not interrupt a synchronous body: it is reported once that
@@ -73,10 +73,10 @@ const parseCpuBudgetMs = 12_000;
  * of these rows, "the default mode parses 49 items nested by indentation then blank lines", took
  * 64.4 s of wall time, and the next three took 61.3 s, 54.8 s and 52.4 s, so this ceiling is about
  * 4.7 times the slowest (bun's junit reporter, one loaded run of the two files, 2026-11-09). In
- * CI that ceiling never decides anything: the twenty measured rows carry 100 minutes of it
- * between them inside the `dispatch-ui` job's own `timeout-minutes: 15`, so the job ends first
- * and this number is a guard for a run at a desk. What ends a real hang is that job's
- * `timeout-minutes: 15` in .github/workflows/ci.yaml.
+ * CI it decides a row only when that one row runs past 5 minutes while the `dispatch-ui` job is
+ * still inside its `timeout-minutes: 15` in .github/workflows/ci.yaml. The 33 rows that carry it,
+ * 29 in tests/heavy-bodies.test.ts and 4 in tests/nested-directive.test.ts, hold 165 minutes of
+ * it between them, so a slowdown spread over many rows, or a real hang, ends the job first.
  */
 export const measuredRowCeilingMs = 300_000;
 
