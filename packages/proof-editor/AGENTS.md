@@ -306,7 +306,8 @@ CPU time read-only against 1,630 ms with the patch. Nor is
 patch at all. And six instances are kept by `parseCpuBudgetMs` alone, reddened by no break at a
 cost assertion: `a plain list of 8,000 items`, `49 items nested by indentation then blank lines`
 and `100 items nested by indentation then blank lines`, each in both modes, whose worst available
-break costs 1,370 ms to 4,490 ms of CPU time, inside the budget.
+break costs 1,350 ms to 4,620 ms of CPU time over two rounds of control measurements, inside the
+budget.
 
 To check that a row still catches the defect it guards, break the thing its shape rests on. The
 figures below are CPU time measured in this pod, over both modes of each shape.
