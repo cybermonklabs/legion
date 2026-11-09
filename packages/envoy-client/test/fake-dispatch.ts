@@ -455,7 +455,7 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       );
     },
     docEdit: async (doc, input, key) => {
-      for (const op of input.ops)
+      for (const op of input.ops ?? [])
         edits.push({
           id: doc,
           op: op.op,
@@ -470,8 +470,8 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
         if (held === undefined) {
           throw new DispatchServiceError("ARTIFACT_NOT_FOUND", 404, `no document ${doc}`);
         }
-        for (const op of input.ops) held.markdown += `\n${op.markdown ?? ""}\n`;
-        return { applied: input.ops.length };
+        for (const op of input.ops ?? []) held.markdown += `\n${op.markdown ?? ""}\n`;
+        return { applied: (input.ops ?? []).length };
       });
     },
   };

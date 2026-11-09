@@ -1,17 +1,28 @@
 name: Install jj
 description: >-
   Installs the jj the worker image ships, the fork pinned by `ARG JJ_TOOL` in
-  packages/daemon/docker/worker.Dockerfile, with the mise that file pins, as the image does: the
-  binary itself at ~/.local/bin/jj, never a mise shim. Provisioning's tests give jj a fresh
-  XDG_CONFIG_HOME, as a pod's init container has, and a shim looks its version up in the mise
+  packages/daemon/docker/worker.Dockerfile, with the mise .github/ci-tools.yaml pins, as the image
+  does: the binary itself at ~/.local/bin/jj, never a mise shim. Provisioning's tests give jj a
+  fresh XDG_CONFIG_HOME, as a pod's init container has, and a shim looks its version up in the mise
   configuration under it ("No version is set for shim: jj"). mise stays at ~/.local/bin/mise, on
-  PATH for later steps. Needs the repository checked out.
+  PATH for later steps. Needs the repository checked out, and an x86_64 runner: those are the
+  builds .github/ci-tools.yaml holds a row for.
 
-  mise itself installs from its GitHub release tarball, checked against the `ARG MISE_SHA256` the
-  Dockerfile pins next to `ARG MISE_VERSION` before anything extracts or runs it — not mise.run's
-  `curl | sh`, which runs the installer unverified. That step reads no token. Bumping mise is one
-  edit, in the Dockerfile: both this action and the worker image's own `tools` stage read the same
-  pair.
+  mise itself comes through .github/scripts/ci-tools.sh, so this action names no URL and no digest
+  of its own: the `mise` row of .github/ci-tools.yaml holds both, and .github/scripts/check-ci-tools.sh
+  holds that row's digest to the `ARG MISE_SHA256` the Dockerfile pins, so both this action and the
+  worker image's own `tools` stage install the one mise. That step reads no token.
+
+  The jj binary's own sha256 is checked against the `jj` row of .github/ci-tools.yaml whichever
+  path installed it, so a jj that mise fetched from the GitHub release asset is held to the same
+  literal as one the second source served. That second source is a copy of the binary itself in
+  the package .github/ci-tools.yaml names, read when mise cannot reach the release asset.
+  Both source words come from that row too, through `ci_tools_source_name`, so this action writes
+  none of its own and a row that moves to another second source moves every line that names it.
+
+  A refusal leaves no tool behind: the check runs on the binary where mise or the second source
+  put it, and ~/.local/bin/jj — which is on PATH for every later step of the job — is written
+  only after it passes.
 runs:
   using: composite
   steps:
@@ -19,28 +30,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        dockerfile=packages/daemon/docker/worker.Dockerfile
-        mise_version=$(sed -n 's/^ARG MISE_VERSION=//p' "$dockerfile")
-        mise_sha256=$(sed -n 's/^ARG MISE_SHA256=//p' "$dockerfile")
-        if [ -z "$mise_version" ] || [ -z "$mise_sha256" ]; then
-          echo "$dockerfile names no ARG MISE_VERSION or ARG MISE_SHA256" >&2
+        machine=$(uname -m)
+        if [ "$machine" != x86_64 ]; then
+          echo "this action installs the x86_64 build alone, and .github/ci-tools.yaml holds no row for a $machine runner" >&2
           exit 1
         fi
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
         dir="$RUNNER_TEMP/mise-install"
         mkdir -p "$dir"
-        archive="mise-${mise_version}-linux-x64.tar.gz"
-        # Retried, in the spelling .github/actions/install-changie explains: 8 bounded attempts,
-        # the last starting 127 s after the first, with `--fail` kept so a 504's body never lands
-        # in the tarball. 60 s per attempt: a release asset is tens of megabytes — the Bun
-        # release zip this repository measures is 51,794,595 bytes — and 60 s is the bound every
-        # release-asset fetch of this repository's CI carries (dispatch://INFRA-1545). This
-        # action's two steps measured at most 3 s together across the 20 most recent successful
-        # ci.yaml push runs on main.
-        curl -fsSLo "$dir/$archive" --retry 7 --retry-all-errors --max-time 60 \
-          "https://github.com/jdx/mise/releases/download/${mise_version}/${archive}"
-        printf '%s  %s\n' "$mise_sha256" "$dir/$archive" > "$dir/SHA256SUMS"
-        sha256sum --check --strict "$dir/SHA256SUMS"
-        tar -xzf "$dir/$archive" -C "$dir"
+        archive="$dir/$(basename "$(ci_tools_field mise primary)")"
+        ci_tools_fetch mise "$archive"
+        tar -xzf "$archive" -C "$dir"
         mkdir -p "$HOME/.local/bin"
         install -m 0755 "$dir/mise/bin/mise" "$HOME/.local/bin/mise"
         rm -rf "$dir"
@@ -53,28 +54,63 @@ runs:
         MISE_GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        # shellcheck source=.github/scripts/ci-retry.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
         dockerfile=packages/daemon/docker/worker.Dockerfile
         jj_tool=$(sed -n 's/^ARG JJ_TOOL=//p' "$dockerfile")
         if [ -z "$jj_tool" ]; then
           echo "$dockerfile names no ARG JJ_TOOL" >&2
           exit 1
         fi
-        # mise fetches the jj release through its github backend here, so this is a download and
-        # retries like one: .github/scripts/ci-retry.sh makes five attempts, the last starting
-        # 150 s after the first, each under `timeout`. 60 s per attempt: this action's two steps
-        # measured at most 3 s together across the 20 most recent successful ci.yaml push runs on
-        # main, so the bound is 20 times that.
-        # What the retry holds is `mise install`, not the `mise x` this step used to wrap: `mise
-        # x` only warns when it cannot resolve the tool and then runs whatever binary of that name
-        # is already on PATH, so a retry around it waits for a failure that never comes, and
-        # `mise install` is the half that fails (exit 1, dispatch://INFRA-1545). The `mise x`
-        # below reads the path of what the install put on disk — a local lookup, not a fetch,
-        # which is why it is bare — and it stays a lookup rather than a `mise where` because
-        # whether the binary sits at the install's root or under its `bin/` differs by backend.
-        # shellcheck source=.github/scripts/ci-retry.sh
-        . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
-        retry_fetch "the worker image's jj" 60 -- "$HOME/.local/bin/mise" install "$jj_tool"
-        jj_path=$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')
-        install -m 0755 "$jj_path" "$HOME/.local/bin/jj"
+        # mise fetches the jj release asset here, so this is a download and retries like one:
+        # .github/scripts/ci-retry.sh makes five attempts, the last starting 150 s after the
+        # first, each under `timeout` (dispatch://INFRA-1545, R1 and R2 — one retry rule, and
+        # this action writes no loop of its own).
+        #
+        # The ladder stands in front of the second source rather than being replaced by it,
+        # because the two answer different faults. The second source answers an outage of the
+        # release asset: the bytes are not to be had there at all, for as long as it lasts, and
+        # another host must serve them. The ladder answers a flap of that same asset: one 504,
+        # one reset, one connection that timed out. A fetch that failed once is no evidence of
+        # an outage, and a run that read the copy on the strength of it would install from the
+        # second source every time the first hiccuped — the primary would go untested for weeks
+        # and the fault would be found on the day the copy is cold. So the asset is asked five
+        # times, and only a failure that outlives all five sends this step to the copy.
+        #
+        # 60 s per attempt: it is the `max_time` every row of .github/ci-tools.yaml carries,
+        # the jj row's own included, so mise's fetch of the jj asset is bounded as
+        # .github/scripts/ci-tools.sh's own fetch of that row's bytes is bounded.
+        #
+        # What the retry holds is `mise install`, not the `mise x` below: `mise x` only warns
+        # when it cannot resolve the tool and then runs whatever binary of that name is already
+        # on PATH, so a retry around it waits for a failure that never comes, and `mise install`
+        # is the half that fails (exit 1, dispatch://INFRA-1545). The `mise x` below reads the
+        # path of what the install put on disk — a local lookup, not a fetch, which is why it is
+        # bare — and it stays a lookup rather than a `mise where` because whether the binary
+        # sits at the install's root or under its `bin/` differs by backend.
+        if retry_fetch "the worker image's jj" 60 -- "$HOME/.local/bin/mise" install "$jj_tool"; then
+          # mise fetched the bytes from the GitHub release asset, so that is the source named.
+          source=$(ci_tools_source_name jj primary)
+          # The binary is held to the row where mise put it, and copied to ~/.local/bin/jj only
+          # after that passes. ~/.local/bin is on $GITHUB_PATH from the step above, so a binary
+          # written there before the check is one a later step of this job runs whatever this
+          # step then exits with.
+          installed=$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')
+          echo "mise installed $jj_tool at $installed"
+          ci_tools_verify jj "$installed" "$source"
+          install -m 0755 "$installed" "$HOME/.local/bin/jj"
+        else
+          echo "mise did not install $jj_tool; reading the second source .github/ci-tools.yaml names"
+          source=$(ci_tools_source_name jj second)
+          # ci_tools_fetch_fallback verified the digest before it put the bytes at this path and
+          # leaves nothing there when it refuses, so this check reads what that fetch allowed and
+          # the copy to ~/.local/bin/jj again happens only after it passes.
+          ci_tools_fetch_fallback jj "$RUNNER_TEMP/jj"
+          ci_tools_verify jj "$RUNNER_TEMP/jj" "$source"
+          install -m 0755 "$RUNNER_TEMP/jj" "$HOME/.local/bin/jj"
+          rm -f "$RUNNER_TEMP/jj"
+        fi
         echo "$jj_tool: $HOME/.local/bin/jj"
         "$HOME/.local/bin/jj" --version

@@ -8809,6 +8809,7 @@ describe("executeDispatchTool", () => {
     id,
     issue_key: null,
     project: "GREF",
+    session_id: null,
     ref_key: `GREF/${slug}`,
     slug,
     name,
@@ -11091,6 +11092,19 @@ describe("executeDispatchTool", () => {
       suggestion: null,
       created_at: "2026-09-09T00:00:00Z",
     });
+    // The provenance every graph node carries: this case asserts nothing about it, so each field
+    // takes the value the server sends for an item nothing has touched since it was made.
+    const node = (id: string, ref?: string): GraphReferences["node"] => ({
+      kind: "comment",
+      id,
+      ...(ref === undefined ? {} : { ref }),
+      made_by: [],
+      made_at: null,
+      changed_by: [],
+      changed_at: null,
+      parent: null,
+      parent_version: null,
+    });
     const edge = (
       kind: GraphEdgeKind,
       direction: "in" | "out",
@@ -11099,12 +11113,12 @@ describe("executeDispatchTool", () => {
     ): GraphEdge => ({
       kind,
       direction,
-      node: { kind: "comment", id, ref: ref(id) },
+      node: node(id, ref(id)),
       created_at: at,
       source_seq: null,
     });
     const graph = (edges: GraphEdge[]): GraphReferences => ({
-      node: { kind: "comment", id: "node" },
+      node: node("node"),
       edges,
     });
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -13812,7 +13826,7 @@ describe("positionText", () => {
       positionText({
         id: "r-5",
         type: "table_row",
-        path: anchoredCell.path.slice(0, 2),
+        path: (anchoredCell.path ?? []).slice(0, 2),
         table: { ...anchoredRow, column: null, header: null },
       })
     ).toBe(
@@ -13822,7 +13836,7 @@ describe("positionText", () => {
       positionText({
         id: "t-1",
         type: "table",
-        path: anchoredCell.path.slice(0, 1),
+        path: (anchoredCell.path ?? []).slice(0, 1),
         table: { id: "t-1", row: null, column: null, header: null, cells: null },
       })
     ).toBe("table[3]");

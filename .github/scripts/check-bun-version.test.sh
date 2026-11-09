@@ -29,6 +29,11 @@ source "$script_dir/test-lib.sh"
 # a Dockerfile whose Bun tag comes from the ARG. Echoes the fixture root. Each case names its
 # own tree: two cases sharing a name would share a tree, so a repeated name is refused here
 # rather than surfacing as the `ln -s` below failing.
+#
+# The wrapper holds the install and then the digest check of rule 9, which is what the real one
+# holds, so a case that gives the wrapper another input writes it with on_setup_bun below and
+# one that gives it another step writes it with before_the_check: a line appended to the end of
+# this file would land inside that check's script.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -48,6 +53,11 @@ runs:
     - uses: oven-sh/setup-bun@v2
       with:
         bun-version-file: .bun-version
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        bun=$(command -v bun)
+        ci_tools_verify bun-linux-x64 "$bun" github-release
 YAML
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
 name: CI
@@ -76,6 +86,40 @@ run_check() {
   out=$("$root/.github/scripts/check-bun-version.sh" 2>&1)
   status=$?
   set -e
+}
+
+# wrapper_lines <root> <before|after> <anchor> <line…>: those lines written into the wrapper at
+# the one line holding <anchor>, in the order given and with their indentation as written. The
+# wrapper's last step is the digest check of rule 9, so a case that hands the wrapper another
+# input or another step writes it here rather than at the end of the file, where it would land
+# inside that check.
+wrapper_lines() {
+  local root=$1 where=$2 anchor=$3
+  shift 3
+  python3 - "$root/.github/actions/setup-bun/action.yml" "$where" "$anchor" "$@" <<'PY'
+import sys
+
+path, where, anchor, lines = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+text = open(path).read().splitlines()
+at = next(number for number, line in enumerate(text) if anchor in line)
+at = at + 1 if where == "after" else at
+text[at:at] = lines
+open(path, "w").write("\n".join(text) + "\n")
+PY
+}
+
+# on_setup_bun <root> <line…>: another input on the wrapper's setup-bun step, under its `with:`.
+on_setup_bun() {
+  local root=$1
+  shift
+  wrapper_lines "$root" after 'bun-version-file: .bun-version' "$@"
+}
+
+# before_the_check <root> <line…>: another step of the wrapper, in front of its last one.
+before_the_check() {
+  local root=$1
+  shift
+  wrapper_lines "$root" before 'name: Check the installed Bun' "$@"
 }
 
 echo "case: a tree where every Bun install reads the pin"
@@ -160,25 +204,18 @@ check "the wrapper itself must pass the file" "$(is "$status" 1)"
 check "says which input it wants" "$(contains "$out" 'must pass bun-version-file')"
 
 root=$(fixture wrapper-download-url)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-        bun-download-url: https://example.com/bun-v1.4.2.zip
-YAML
+on_setup_bun "$root" '        bun-download-url: https://example.com/bun-v1.4.2.zip'
 run_check "$root"
 check "any other input on the wrapper fails, since setup-bun prefers them" "$(is "$status" 1)"
 check "names the input" "$(contains "$out" 'bun-download-url')"
 
 root=$(fixture wrapper-no-cache)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-        no-cache: ${{ github.ref != 'refs/heads/main' }}
-YAML
+on_setup_bun "$root" "        no-cache: \${{ github.ref != 'refs/heads/main' }}"
 run_check "$root"
 check "no-cache on the wrapper passes, since it selects no Bun version" "$(is "$status" 0)"
 
 root=$(fixture wrapper-no-cache-and-literal)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-        no-cache: true
-        bun-version: latest
-YAML
+on_setup_bun "$root" '        no-cache: true' '        bun-version: latest'
 run_check "$root"
 check "a version beside no-cache still fails" "$(is "$status" 1)"
 check "names only the version input" "$(contains "$out" 'passes bun-version beside the version file')"
@@ -192,6 +229,7 @@ installers=(
   'npm i --global bun'
   'mise use -g bun@1.4.2'
   'curl -L https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip -o bun.zip'
+  'curl -L https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-1.4.4.tgz -o bun.tgz'
 )
 for index in "${!installers[@]}"; do
   installer=${installers[index]}
@@ -385,6 +423,11 @@ runs:
     - uses: Oven-Sh/setup-bun@v2
       with:
         bun-version: 1.4.2
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        bun=$(command -v bun)
+        ci_tools_verify bun-linux-x64 "$bun" github-release
 YAML
 run_check "$root"
 check "a mis-cased ref with a literal version fails" "$(is "$status" 1)"
@@ -403,28 +446,55 @@ check "a wrapper repointed at a fork fails" "$(is "$status" 1)"
 check "says nothing installs Bun" "$(contains "$out" 'not one')"
 
 root=$(fixture wrapper-twice)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-    - uses: oven-sh/setup-bun@v2
-      with:
-        bun-version: 1.4.2
-YAML
+before_the_check "$root" \
+  '    - uses: oven-sh/setup-bun@v2' \
+  '      with:' \
+  '        bun-version: 1.4.2'
 run_check "$root"
 check "a second setup-bun step in the wrapper fails" "$(is "$status" 1)"
 check "counts them" "$(contains "$out" 'holds 2 oven-sh/setup-bun steps, not one')"
 
 root=$(fixture wrapper-second-step)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-    - shell: bash
-      run: echo "/opt/bun/bin" >> "$GITHUB_PATH"
-YAML
+before_the_check "$root" \
+  '    - shell: bash' \
+  '      run: echo "/opt/bun/bin" >> "$GITHUB_PATH"'
 run_check "$root"
 check "a step of the wrapper prepending \$GITHUB_PATH fails" "$(is "$status" 1)"
 check "says what that path does to a later step" "$(contains "$out" 'prepends \$GITHUB_PATH, which every step after this action keeps')"
 check "and one rule catches it, not two" "$(contains "$out" '1 place(s)')"
 
-# What this branch's wrapper is: the pin read into an output, the cache that version keys
-# restored, then the install. Steps that write no $GITHUB_PATH and no INPUT_* hand a later step
-# nothing, so their number is not the gate's business.
+# Three steps the gate accepts: the install, then the second source the pin decides between,
+# then the check of the binary that ended up installed. A step that writes no $GITHUB_PATH and
+# no INPUT_* hands a later step nothing, so how many of them there are is not the gate's
+# business.
+root=$(fixture wrapper-three-steps)
+cat > "$root/.github/actions/setup-bun/action.yml" <<'YAML'
+name: Setup Bun
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      continue-on-error: true
+      with:
+        bun-version-file: .bun-version
+    - id: bun-second-source
+      shell: bash
+      run: echo "source=npm" >> "$GITHUB_OUTPUT"
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        bun=$(command -v bun)
+        ci_tools_verify bun-linux-x64 "$bun" npm
+YAML
+run_check "$root"
+check "a wrapper of three steps, one of them setup-bun on the version file, passes" "$(is "$status" 0)"
+check "and says every install reads the pin" "$(contains "$out" 'every Bun install reads .bun-version (1.3.14)')"
+
+# What this repository's wrapper is: the pin and the build variant read into outputs, the cache
+# that pair keys restored, the install, and then the check of the binary that ended up
+# installed. A restore is a step like any other to this gate, since it hands a later step
+# neither an input nor a bun of its own, and the check is still the last of them, which is what
+# rule 9 holds.
 root=$(fixture wrapper-reads-pin-and-restores)
 cat > "$root/.github/actions/setup-bun/action.yml" <<'YAML'
 name: Setup Bun
@@ -443,10 +513,55 @@ runs:
       with:
         bun-version-file: .bun-version
         no-cache: true
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        bun=$(command -v bun)
+        ci_tools_verify bun-linux-x64 "$bun" cache
 YAML
 run_check "$root"
 check "a wrapper that reads the pin and restores the cache before installing passes" "$(is "$status" 0)"
 check "and says every install reads the pin" "$(contains "$out" 'every Bun install reads .bun-version (1.3.14)')"
+
+echo "case: rule 9 — the wrapper's last step holds the installed bun to its row"
+# oven-sh/setup-bun verifies no checksum, and this call is the one place the Bun a job runs is
+# held to a digest, so the gate requires it rather than trusting it to survive an edit.
+root=$(fixture wrapper-verifies)
+run_check "$root"
+check "the wrapper as it stands passes" "$(is "$status" 0)"
+
+root=$(fixture wrapper-without-the-check)
+sed -i 's/        ci_tools_verify.*/        echo "the bun is $bun"/' \
+  "$root/.github/actions/setup-bun/action.yml"
+run_check "$root"
+check "a wrapper whose last step drops that call fails" "$(is "$status" 1)"
+check "says what the missing check would let through" \
+  "$(contains "$out" 'oven-sh/setup-bun verifies no checksum, so without that call this action would leave on PATH, for every job of this repository, whatever the download, the cache or the second source wrote')"
+check "and names the file that pins it" "$(contains "$out" '.github/ci-tools.yaml row that pins it')"
+
+# The call has to be run, not described. The real wrapper's last step explains at length why it
+# holds the bun to its row, and a review that deleted the `if ! ci_tools_verify …; fi` block
+# from that step left the comment naming the call behind: a gate reading the script as one
+# string found both words it searched for and passed a wrapper that verified nothing.
+root=$(fixture wrapper-with-the-call-only-in-a-comment)
+sed -i 's|^        ci_tools_verify.*|        # ci_tools_verify bun-linux-x64 "$bun" github-release holds it to its row|' \
+  "$root/.github/actions/setup-bun/action.yml"
+run_check "$root"
+check "a wrapper whose last step keeps the comment and loses the call fails" "$(is "$status" 1)"
+check "saying what the missing check would let through" \
+  "$(contains "$out" 'oven-sh/setup-bun verifies no checksum, so without that call this action would leave on PATH, for every job of this repository, whatever the download, the cache or the second source wrote')"
+
+# The check is the last step because a step after it runs with the bun it allowed on PATH and
+# can put another one there.
+root=$(fixture wrapper-check-not-last)
+cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
+    - shell: bash
+      run: echo "a step after the check"
+YAML
+run_check "$root"
+check "a step after the check fails" "$(is "$status" 1)"
+check "naming the step that must call it" \
+  "$(contains "$out" "the wrapper's last step does not call ci_tools_verify")"
 
 root=$(fixture wrapper-env)
 cat > "$root/.github/actions/setup-bun/action.yml" <<'YAML'
@@ -459,6 +574,11 @@ runs:
         bun-version-file: .bun-version
       env:
         INPUT_BUN-VERSION: 1.4.2
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        bun=$(command -v bun)
+        ci_tools_verify bun-linux-x64 "$bun" github-release
 YAML
 run_check "$root"
 check "an INPUT_* env on the wrapper's step fails" "$(is "$status" 1)"
@@ -466,10 +586,9 @@ check "names the variable" "$(contains "$out" 'INPUT_BUN-VERSION')"
 check "and says it once, in one wording" "$(contains "$out" '1 place(s)')"
 
 root=$(fixture wrapper-env-other)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-      env:
-        BUN_INSTALL: /opt/bun
-YAML
+on_setup_bun "$root" \
+  '      env:' \
+  '        BUN_INSTALL: /opt/bun'
 run_check "$root"
 check "any other env on the wrapper's step fails too" "$(is "$status" 1)"
 check "names it" "$(contains "$out" 'BUN_INSTALL')"
