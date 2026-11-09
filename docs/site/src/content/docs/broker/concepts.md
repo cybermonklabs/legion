@@ -862,8 +862,8 @@ least the grant's lifetime; a grant whose entry lost its `judge`, or whose secon
 that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
 administrator's after the judge decided it ends that grant for good, at the release and at the
 next request that would reuse it: a person approves every release of one, so no judged grant
-goes on releasing it, and taking the tag off again does not bring the grant back — the session
-asks afresh, and the judge refuses it then. The chain check
+goes on releasing it, and taking the tag off again does not bring the grant back: the session
+asks afresh, as a new request, which the judge refuses while the tag stands. The chain check
 ([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
 one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
 key, so a forged record, and one a rules change left behind, release nothing either.

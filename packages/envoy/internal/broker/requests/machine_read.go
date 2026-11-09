@@ -120,7 +120,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 				// revive a grant made while they were off the list. So does a judged grant of a
 				// secret the policy now tags as an administrator's: a person approves every
 				// release of one, so taking the tag off again must not revive a grant no person
-				// ever approved — the session asks again, and the judge refuses it then.
+				// ever approved — the session asks again, as a new request.
 				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
@@ -540,8 +540,8 @@ var errRequesterNotListed = errors.New("requester not listed")
 // policy tags as an administrator's (policy.TagAdmin): the tag was added after the model judge
 // decided the request, and a person approves every release of such a secret. Values and
 // reuseLiveGrant end such a grant for good (endGrant), so taking the tag off again never brings
-// back a grant no person approved; the session asks again, and the judge refuses it at decision
-// time instead.
+// back a grant no person approved; the session asks again, as a new request, which the judge
+// refuses while the tag stands.
 var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,

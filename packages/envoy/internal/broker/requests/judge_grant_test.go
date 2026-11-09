@@ -152,9 +152,9 @@ func deelAsAdmin() secrets.LocalSecret {
 // version, so every release of that grant and every reuse of it re-reads what it was granted.
 // Both refuse it and end the grant for good, rather than let a model's approval go on releasing
 // an administrator's credential for the rest of the seconds the rules gave it. Taking the tag
-// off again leaves the grant ended: the session asks afresh, and the judge refuses it at
-// decision time. A grant of the same secret that its owner approved releases throughout, a
-// person's approval being all the tag asks.
+// off again leaves the grant ended: the session asks afresh, as a new request. A grant of the
+// same secret that its owner approved releases throughout, a person's approval being all the
+// tag asks.
 func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T) {
 	t.Run("a release refuses it and ends it for good", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
