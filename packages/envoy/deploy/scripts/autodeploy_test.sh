@@ -254,8 +254,8 @@ run_statement() {
       ;;
   esac
 }
-# The run's script: the deployer sends it on standard input with -f -, and nothing else is
-# accepted, so a return to -c fails here rather than passing unnoticed.
+# The run's script: the deployer sends it on standard input with -f -, and a run without -f -
+# fails here rather than passing unnoticed.
 script=0
 args=("$@")
 i=0

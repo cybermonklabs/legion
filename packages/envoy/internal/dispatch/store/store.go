@@ -249,32 +249,14 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return fn(ctx, tx) })
 }
 
-// unlockMigrations releases migrationLockKey on conn and gives conn back to the pool, through
-// duty.FreeSessionLock, as every session-level advisory lock Dispatch takes on a pooled
-// connection is given back: it releases conn once Postgres answers true, and on anything else
-// hijacks conn out of the pool and closes it under a bound of its own. A connection that may
-// still hold a session-level key must never serve another caller, who would hand the key on to a
-// request and hold every later boot's migrations behind it.
+// unlockMigrations gives migrationLockKey and conn back through duty.FreeSessionLock, which
+// returns conn to the pool only once Postgres answers true, so a connection that may still hold
+// the key never serves another caller and holds every later boot's migrations behind it.
 //
-// The unlock runs on a context of FreeSessionLock's own, which a cancelled ctx does not cancel,
-// so a boot cancelled between two statements still releases what it took. A boot cancelled
-// inside the transaction releases it another way, by either of two paths. Cancelled while the
-// migration's own statement is in flight - what the test of this exercises
-// (nontransactional_test.go, TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError) -
-// pgx's deadline watcher closes the connection over that statement's failure, and BeginFunc's
-// rollback then fails on a connection already closed. Cancelled between two statements, the
-// rollback itself fails on the cancelled context and pgx closes the connection over that failure
-// (pgx's tx.go, die; internal/dispatch/outbox/lease.go describes the same path for a lease).
-// Either way the session ended and the key went with it, and this unlock meets a closed
-// connection.
-//
-// Which of the two lines below that connection gets is FreeSessionLock's to decide, and it
-// decides it before it sends anything: a connection already closed is answered
-// duty.ErrSessionClosed without an unlock, which is nothing to report. Every other error keeps
-// the ERROR this was written for - the key may still be held by a session the unlock could not
-// reach, a half-open connection whose backend can hold the key until TCP gives up included.
-// Reading IsClosed after a failed unlock, as this once did, cannot tell those apart: pgx closes
-// a connection whose unlock failed too (pgconn's asyncClose, the unlock's own bound included).
+// duty.ErrSessionClosed is logged at INFO: a boot cancelled inside the transaction has already
+// closed the connection, over its in-flight statement's failure or over BeginFunc's rollback on
+// the cancelled context, and the session's end releases the key. Every other error is an ERROR,
+// because the key may still be held by a session the unlock could not reach.
 func unlockMigrations(conn *pgxpool.Conn) {
 	err := duty.FreeSessionLock(conn, "select pg_advisory_unlock($1)", migrationLockKey)
 	switch {
@@ -291,8 +273,7 @@ func unlockMigrations(conn *pgxpool.Conn) {
 // closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like the rest of
 // this runner's waits (pgmigrate.LockTimeout). Its two callers are this runner's own: the failed
 // lock, which hands over the connection it hijacks out of the pool, and the concurrent build,
-// which owns its connection. The unlock's close is bounded too, by duty.FreeSessionLock, under
-// the bound every session lock's unlock gets (duty.LeaseCall).
+// which owns its connection.
 func closeBounded(ctx context.Context, conn *pgx.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()
