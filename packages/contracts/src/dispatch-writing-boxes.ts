@@ -1,11 +1,13 @@
 /**
  * Every box a person writes prose in, and every write each one makes.
  *
- * The dashboard mounts one text field in all of them (`MentionField.tsx`), so the reference
- * picker is in every box rather than in the composer alone. This table is what the three
- * readers of that fact share: each box reads its own hint here at the mount, so the words under
- * a box and the words in this list cannot disagree; a browser row drives each covered box by the
- * name under `reach`; and a box with no picker says here why it has none.
+ * The dashboard mounts one text field in most of them (`MentionField.tsx`), and the two boxes
+ * that are editors of their own - a document's body and an agent's live conversation - host the
+ * same picker in their own way, so the picker is in every box rather than in the composer
+ * alone. This table is what the three readers of that fact share: each box reads its own hint
+ * here at the mount, so the words under a box and the words in this list cannot disagree; a
+ * browser row drives each covered box by the name under `reach`; and a box with no picker says
+ * here why it has none.
  *
  * A row is one write of one box. A box that makes two - a reply box that answers a comment
  * thread or a message thread, an ask card that answers or asks back - has a row for each,
@@ -21,7 +23,9 @@ export type DispatchWritingBox =
   | "margin-composer"
   | "margin-comment-edit"
   | "margin-thread-reply"
+  | "document-body"
   | "agents-row-composer"
+  | "agent-live-composer"
   | "suggestion-replacement"
   | "ask-option-label"
   | "ask-option-description"
@@ -49,6 +53,8 @@ export type DispatchWritingBox =
  * - `message-reply`: a reply in an issue's message thread, delivered to the thread's target.
  * - `agent-message`: a message to one agent's session.
  * - `broadcast`: one message to each selected agent.
+ * - `document-text`: the document's own text, which every reader of that document reads and
+ *   which is sent to nobody.
  * - `issue-spec`: the spec document a new issue is created with.
  * - `approval-reason`: why a reviewer asked for changes on a document.
  * - `architecture-reason`: why an issue touches no component.
@@ -64,6 +70,7 @@ export type DispatchWriting =
   | "message-reply"
   | "agent-message"
   | "broadcast"
+  | "document-text"
   | "issue-spec"
   | "approval-reason"
   | "architecture-reason"
@@ -79,8 +86,10 @@ export interface DispatchWritingBoxRow {
    *  a CSS selector in brackets instead, the attribute the dashboard puts there for the purpose,
    *  and a name that holds an issue key writes that key as `<ISSUE>`. */
   readonly reach: string;
-  /** Whether the box mounts the shared text field, so the picker is in it and a browser row can
-   *  drive it. A box that does not mount it says why in `reason`. */
+  /** Whether the reference picker is in the box, so a browser row can drive it: the boxes that
+   *  mount the shared text field, and the two that host the same picker in an editor of their
+   *  own (the document body, the agent live conversation). A box with no picker says why in
+   *  `reason`. */
   readonly covered: boolean;
   /** Whether Dispatch tells an agent or a role that this write names it. Only a comment does: a
    *  message reaches the session it is addressed to and tells nobody it names, and an ask, an
@@ -223,6 +232,19 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     reach: "Reply",
     write: "comment",
   },
+  // The document itself: the body a reader edits, where the picker is hosted by the editor
+  // rather than by the shared field (`@legion/proof-editor`'s `src/reference-picker.ts`). A
+  // pick is written into the document's own text, so it reaches every reader of the document
+  // and tells nobody.
+  {
+    box: "document-body",
+    covered: true,
+    delivers: false,
+    hint: DISPATCH_WRITING_HINT_QUIET,
+    issueRows: true,
+    reach: "Document editor",
+    write: "document-text",
+  },
   // An Agents row: a message to that session, or, once the reader picks an issue, a comment on
   // it that reaches the agent by naming it.
   {
@@ -253,6 +275,18 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     issueRows: true,
     reach: "Comment",
     write: "message-reply",
+  },
+  // The session's own conversation: the live composer, whose `/` lists the session's commands
+  // and whose three reference doors list the same rows every other box lists. The message
+  // reaches the session it is addressed to, so a picked agent or role is told nothing by it.
+  {
+    box: "agent-live-composer",
+    covered: true,
+    delivers: false,
+    hint: DISPATCH_WRITING_HINT_QUIET,
+    issueRows: false,
+    reach: "[data-agent-message]",
+    write: "agent-message",
   },
   // The replacement text of a suggestion, beside the reason for it: both go in the one comment.
   {

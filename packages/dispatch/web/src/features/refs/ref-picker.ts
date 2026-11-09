@@ -297,8 +297,30 @@ export const REF_PICKER_WORDS: Record<Exclude<RefPickerState, "rows">, string> =
   unreachable: "Could not load references — Dispatch unreachable.",
 };
 
-/** The one row the picker shows for the kinds it cannot list yet: the search route refuses a
- *  query under two characters, so until the reader has typed two the list holds the parties and
- *  the components, and this says what the next two letters will add. */
-export const REF_PICKER_INSTRUCTION =
-  "Type two characters to search issues, documents, asks, comments and messages.";
+/** What the instruction below calls one searched kind's rows. */
+const SEARCHED_KIND_WORDS: Record<SearchResultKind, string> = {
+  ask: "asks",
+  comment: "comments",
+  document: "documents",
+  issue: "issues",
+  message: "messages",
+};
+
+/**
+ * The one row the picker shows for the kinds it cannot list yet: the search route refuses a
+ * query under two characters, so until the reader has typed two the list holds the parties and
+ * the components, and this says what the next two letters will add. It names the kinds this box
+ * offers and no others, since a box that offers no messages would otherwise promise some.
+ */
+export function refPickerInstruction(kinds: readonly RefPickerKind[]): string {
+  const words = REF_PICKER_SEARCHED_KINDS.filter((kind) =>
+    kinds.some((offered) => offered === kind)
+  ).map((kind) => SEARCHED_KIND_WORDS[kind]);
+  if (words.length === 0) return "";
+  const last = words[words.length - 1];
+  const named = words.length === 1 ? last : `${words.slice(0, -1).join(", ")} and ${last}`;
+  return `Type two characters to search ${named}.`;
+}
+
+/** The instruction of a box that offers every kind. */
+export const REF_PICKER_INSTRUCTION = refPickerInstruction(REF_PICKER_KINDS);

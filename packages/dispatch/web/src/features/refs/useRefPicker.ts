@@ -15,7 +15,7 @@ import {
   insertionFor,
   matchesQuery,
   orderedRows,
-  REF_PICKER_INSTRUCTION,
+  REF_PICKER_KINDS,
   REF_PICKER_QUERY_MIN,
   REF_PICKER_SEARCH_LIMIT,
   REF_PICKER_SEARCHED_KINDS,
@@ -28,6 +28,7 @@ import {
   type RefPickerState,
   type RefPickerTrigger,
   readTrigger,
+  refPickerInstruction,
   stepRow,
 } from "./ref-picker";
 import { buildDispatchReference, nodeRouteFromHref, parseNodeReference, shortForm } from "./routes";
@@ -53,6 +54,10 @@ export interface RefPickerOptions {
   /** The project whose components the picker offers; taken from the issue's key when the box
    *  names an issue and no project of its own. */
   readonly project?: string;
+  /** The kinds this box offers, where it offers fewer than all of them (`REF_PICKER_KINDS`).
+   *  The agent live conversation's box leaves out the message and the message block: a message
+   *  of a session's own conversation belongs to no issue, so it has no address to name. */
+  readonly kinds?: readonly RefPickerKind[];
   /** False while the host wants no picker - a field that is disabled, or a send in flight. */
   readonly enabled?: boolean;
 }
@@ -196,9 +201,20 @@ export function useRefPicker({
   caret,
   enabled = true,
   issueKey,
+  kinds = REF_PICKER_KINDS,
   project,
   text,
 }: RefPickerOptions): RefPicker {
+  const offers = useMemo(
+    () => (kind: RefPickerKind) => kinds.some((offered) => offered === kind),
+    [kinds]
+  );
+  // The kinds the route is asked for, which are the searched kinds this box offers: a kind it
+  // does not offer is never asked for and never listed.
+  const searchedKinds = useMemo(
+    () => REF_PICKER_SEARCHED_KINDS.filter((kind) => offers(kind)),
+    [offers]
+  );
   const trigger = enabled ? readTrigger(text.slice(0, caret)) : undefined;
   // The trigger the reader dismissed with Escape stays shut while they type on after it: Escape
   // leaves the character they typed, and the picker must not open again on the next letter.
@@ -220,16 +236,13 @@ export function useRefPicker({
   const searching =
     open &&
     !typing &&
+    searchedKinds.length > 0 &&
     debounced.length >= REF_PICKER_QUERY_MIN &&
     debounced.length <= SEARCH_QUERY_MAX;
   const search = useQuery({
     enabled: searching,
-    queryFn: () =>
-      api.search(debounced, {
-        kind: [...REF_PICKER_SEARCHED_KINDS],
-        limit: REF_PICKER_SEARCH_LIMIT,
-      }),
-    queryKey: ["search", debounced, REF_PICKER_SEARCHED_KINDS, REF_PICKER_SEARCH_LIMIT],
+    queryFn: () => api.search(debounced, { kind: searchedKinds, limit: REF_PICKER_SEARCH_LIMIT }),
+    queryKey: ["search", debounced, searchedKinds, REF_PICKER_SEARCH_LIMIT],
   });
   const live = useAgents(open, true);
   const agentText = useAgentText();
@@ -296,12 +309,13 @@ export function useRefPicker({
         ? []
         : blockRows(openedParts, opened.kind, parts.data);
     // The parties, the people and the components are listed whole and filtered here; the hits
-    // the server ranked for this query are not filtered again (`matchesQuery`).
+    // the server ranked for this query are not filtered again (`matchesQuery`). A kind the box
+    // does not offer is left out whichever source found it.
     return [
       ...[...parties, ...people, ...components].filter((row) => matchesQuery(row, query)),
       ...hits,
       ...blocks,
-    ];
+    ].filter((row) => offers(row.kind));
   }, [
     agentText,
     architecture.data,
@@ -311,6 +325,7 @@ export function useRefPicker({
     live.agents,
     live.current,
     open,
+    offers,
     openedParts,
     parts.data,
     query,
@@ -385,7 +400,10 @@ export function useRefPicker({
     door: open && trigger !== undefined ? trigger.door : undefined,
     groups,
     highlight: setActiveId,
-    instruction: open && query.length < REF_PICKER_QUERY_MIN ? REF_PICKER_INSTRUCTION : undefined,
+    instruction:
+      open && query.length < REF_PICKER_QUERY_MIN && searchedKinds.length > 0
+        ? refPickerInstruction(kinds)
+        : undefined,
     open,
     openedParts,
     openParts: (id: string) => {
