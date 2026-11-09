@@ -844,8 +844,9 @@ var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
 //
 //   - 429 goes to every row admission admits, which is every row but a test hook, a test's own,
 //     and a stream, whose reader holds it open for the run behind it (apiRoute.Streams);
-//   - 503 goes to every row: only a read is bounded by a deadline, so REQUEST_TIMEOUT is named
-//     on a GET alone, and any row's statement can meet a pool with no connection free;
+//   - 503 goes to every row: only a read servedAsRead bounds by a deadline can run past one, so
+//     REQUEST_TIMEOUT is named on a GET that is no test hook alone, and any row's statement can
+//     meet a pool with no connection free;
 //   - 500 COMMIT_OUTCOME_UNKNOWN goes to every row that commits a transaction, which is every
 //     row that is not a GET. It is the one of these that carries no Retry-After: the write may
 //     have landed, so what to do next is the caller's to decide after a read.
@@ -864,7 +865,9 @@ func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
 	}
 	unserved := "Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire " +
 		"bound, so nothing ran."
-	if route.Method == http.MethodGet {
+	// A test hook's GET is not served as a read (serveRoute wraps only a row that is not a test
+	// hook in servedAsRead), so it has no deadline to run past.
+	if route.Method == http.MethodGet && !route.TestHook {
 		unserved = "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or " +
 			"DATABASE_BUSY, no connection of a pool came free within its acquire bound."
 	}

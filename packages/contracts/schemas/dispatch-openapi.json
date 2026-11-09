@@ -988,7 +988,7 @@
             }
           },
           "503": {
-            "description": "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again.",
+            "description": "Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again.",
             "headers": {
               "Retry-After": {
                 "style": "simple",
@@ -1236,7 +1236,7 @@
             }
           },
           "503": {
-            "description": "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again.",
+            "description": "Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again.",
             "headers": {
               "Retry-After": {
                 "style": "simple",
@@ -1535,7 +1535,7 @@
             }
           },
           "503": {
-            "description": "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again.",
+            "description": "Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again.",
             "headers": {
               "Retry-After": {
                 "style": "simple",

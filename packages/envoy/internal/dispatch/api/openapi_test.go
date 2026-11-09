@@ -30,7 +30,8 @@ type openAPIOperationForTest struct {
 
 // openAPIResponseForTest is one answer of one operation, as much of it as these tests read.
 type openAPIResponseForTest struct {
-	Headers map[string]json.RawMessage `json:"headers"`
+	Description string                     `json:"description"`
+	Headers     map[string]json.RawMessage `json:"headers"`
 }
 
 // renderOpenAPI writes the document and hands back its bytes.
@@ -205,10 +206,18 @@ func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
 		plain []string
 		// never are the statuses the server's own layers do not give this row.
 		never []string
+		// timesOut is whether its 503 names REQUEST_TIMEOUT: only a read servedAsRead bounds by
+		// a deadline can run past one.
+		timesOut bool
 	}{
 		{
 			what: "an admitted read", method: "GET", pattern: "/api/v1/issues/{key}",
-			retryable: []string{"429", "503"}, never: []string{"500"},
+			retryable: []string{"429", "503"}, never: []string{"500"}, timesOut: true,
+		},
+		{
+			what: "a test hook's read, which no deadline bounds", method: "GET",
+			pattern:   "/api/v1/artifacts/_test/rooms",
+			retryable: []string{"503"}, never: []string{"429", "500"},
 		},
 		{
 			what: "a write, which commits", method: "POST", pattern: "/api/v1/issues",
@@ -217,7 +226,7 @@ func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
 		{
 			what: "a stream, which takes no admission unit", method: "GET",
 			pattern:   "/api/v1/going/requests/{id}/stream",
-			retryable: []string{"503"}, never: []string{"429"},
+			retryable: []string{"503"}, never: []string{"429"}, timesOut: true,
 		},
 		{
 			what: "a test hook, which is neither admitted nor bounded", method: "POST",
@@ -256,6 +265,10 @@ func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
 					t.Errorf("%s %s answers %s, which the server's own layers never give it",
 						row.method, row.pattern, status)
 				}
+			}
+			if named := strings.Contains(operation.Responses["503"].Description, "REQUEST_TIMEOUT"); named != row.timesOut {
+				t.Errorf("%s %s's 503 names REQUEST_TIMEOUT: %t, want %t: only a read served under a deadline gives it",
+					row.method, row.pattern, named, row.timesOut)
 			}
 		})
 	}

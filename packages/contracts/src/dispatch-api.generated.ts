@@ -5863,7 +5863,7 @@ export interface operations {
           "application/json": components["schemas"]["ResidentRooms"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6022,7 +6022,7 @@ export interface operations {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6227,7 +6227,7 @@ export interface operations {
           "application/json": components["schemas"]["RoomCounters"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
