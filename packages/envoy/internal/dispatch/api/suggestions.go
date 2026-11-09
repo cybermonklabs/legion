@@ -719,9 +719,9 @@ func milliseconds(d time.Duration) *int {
 // check must not offer cannot reach a reader through a statement that answered anything else.
 // The rest carry their ask state (attachAskStates). A failure to read those states leaves every
 // item's nil, and so no Decision, rather than failing the check or keeping the states read
-// before it. Each owner (an issue, or a project document)
-// keeps only its best-ranked item, so an issue matched through its title, its spec and a comment
-// fills one place, not three. Related then takes the best suggestionRelatedCount in
+// before it. Each owner (an issue, or a project document) keeps one item, which the loop below
+// picks, so an issue matched through its title, its spec and a comment fills one place, not
+// three. Related then takes the best suggestionRelatedCount in
 // relatedItemRank's order, keeping the search's order within each rank;
 // Decision is the first answered ask in the search's own order, deliberately not reordered by
 // owner status: an answered question stays the best match for the question asked whether or not
@@ -744,13 +744,15 @@ func (s *server) fillRelatedItems(
 		}
 	}
 
-	// One item per owner, and for an issue's own owner that item is the issue itself wherever
-	// search answered it. An issue and its spec share an owner, so both reach this loop as rows
-	// of one owner, and taking whichever the score put first made the choice turn on the fusion
-	// rather than on what a person is being offered: the row's label reads the issue's key and
-	// title either way, so a document row sends a reader who clicks it to /issues/KEY/spec?q=…
-	// rather than to the issue, with nothing on screen to say so. The issue is the item here -
-	// the thing the check is about - and its document is one place its words live.
+	// One item per owner: the owner's best-ranked row, but for one exchange - an issue's own
+	// document row gives way to the issue row. An issue and its spec share an owner, and the
+	// row's label reads the issue's key and title either way, so taking whichever the score put
+	// first sent a reader who clicked it to /issues/KEY/spec?q=… rather than to the issue, with
+	// nothing on screen to say so. Every other row an issue owns - an ask, a comment, a message -
+	// keeps the place it won, because it carries what the issue row does not: an ask's state most
+	// of all, which is how a filer is told the question is already open, or how it was settled
+	// (suggestionFromResult copies Ask from the row it is given, so an issue row standing in for
+	// an ask row says nothing of either).
 	seen := map[string]int{}
 	related := make([]model.SearchResult, 0, len(candidates))
 	for _, result := range candidates {
@@ -761,7 +763,7 @@ func (s *server) fillRelatedItems(
 			related = append(related, result)
 			continue
 		}
-		if result.Kind == "issue" && related[at].Kind != "issue" {
+		if result.Kind == "issue" && related[at].Kind == "document" {
 			related[at] = result
 		}
 	}

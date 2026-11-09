@@ -1198,3 +1198,62 @@ func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
 			key, item.Kind, item.Href, "/issues/"+key)
 	}
 }
+
+// The one item an issue's owner keeps is the ask, not the issue: an open ask carries its state,
+// which the issue row does not, and the dialog and the CLI show "already asked, still open" only
+// for an item of kind "ask". Only an issue's own document gives way to the issue row
+// (TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument above), because that row offers a
+// reader nothing the issue row does not and lands them on the spec tab. No fixture above catches
+// this: newAskStateFixture's asks sit on issues whose titles share no word with the text, so
+// their owners hold one row each and the loop never chooses.
+//
+// The order the loop meets this owner's rows in is the fixture's doing, not the fusion's. Every
+// row of an issue's owner carries the issue's own updated_at (search.go's ask, comment and
+// document arms read coalesce(i.updated_at, …)), so the page's recency tie-break cannot separate
+// them and the tie falls to the row id, which for an ask is a random uuid: with the three rows
+// level on the fused score the order would be a coin toss. So the decoy below takes first place
+// among issues and among documents - it holds all four of the text's rare words where the issue
+// under test holds two - which leaves that issue's own row and its spec's row second in their
+// kinds, worth 1/(searchFusionK+2), while the ask is its kind's first row at
+// 1/(searchFusionK+1). The ask therefore leads its owner's rows outright, and the loop meets it
+// first every run.
+//
+// Keyword-only, as the document test is: the ordering under test is the keyword leg's and needs
+// no model; the embedder is configured only because the check's server takes one.
+func TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt(t *testing.T) {
+	const title = "Sextant backlash on the tender"
+	const spec = "The sextant backlash grows while the tender rides at anchor."
+	const question = "Should the sextant backlash be measured before the harbour survey?"
+	const decoyTitle = "Sextant backlash spoils the harbour survey log"
+	const decoySpec = "A sextant with backlash spoils every harbour survey the crew records."
+	const text = "Sextant backlash during the harbour survey"
+	handler, database, srv := meaningServer(t, &fakeEmbedder{vectors: map[string][]float32{}})
+	createSuggestionProject(t, handler, "ASKROW")
+	createSearchIssue(t, handler, "ASKROW", decoyTitle, decoySpec)
+	key := createSearchIssue(t, handler, "ASKROW", title, spec)
+	opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/asks", map[string]any{
+		"question": question,
+		"options":  []map[string]string{{"label": "Brass"}, {"label": "Steel"}},
+	}, "alice")
+	if opened.Code != http.StatusCreated {
+		t.Fatalf("open the ask on %s: status=%d body=%s", key, opened.Code, opened.Body.String())
+	}
+	askID := decodeBody[testAskWithSuggestions](t, opened).ID
+	refreshTermStats(t, database, "ASKROW")
+
+	suggestions := srv.relatedCheck(context.Background(),
+		relatedInput{project: "ASKROW", text: text, keywordsOnly: true})
+	if suggestions.Outcome != "found" {
+		t.Fatalf("suggestions = %+v, want the issue's rows found by their own words", suggestions)
+	}
+	index := slices.Index(relatedOwnerKeys(suggestions.Related), key)
+	if index < 0 {
+		t.Fatalf("related = %+v, want an item standing for %s", suggestions.Related, key)
+	}
+	item := suggestions.Related[index]
+	if item.Kind != "ask" || item.ID != askID || item.Ask == nil || item.Ask.State != "open" {
+		t.Fatalf("the item for %s = kind %q id %q ask %+v, want the open ask %s: the check replaced the "+
+			"ask with the issue row, so a filer is no longer told the question is already open",
+			key, item.Kind, item.ID, item.Ask, askID)
+	}
+}
