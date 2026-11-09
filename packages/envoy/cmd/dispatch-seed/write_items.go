@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -200,14 +201,25 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 	}
 	columns := "id, issue_key, artifact_id, author, body, anchor, reply_to, resolved, created_at, ask_id, replies_to_block, edited_at"
 	parameters := "$1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11, $12"
-	argumentCount := 12
+	next := 13
 	if hasAnswers {
 		columns += ", answers"
-		parameters += ", $13"
-		argumentCount++
+		parameters += fmt.Sprintf(", $%d", next)
+		next++
 	}
+	// The address of the comment's own node, which the batch writes before its first row.
+	columns += ", node_kind, node_address"
+	parameters += fmt.Sprintf(", $%d, $%d", next, next+1)
 	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
 	return r.inBatches(ctx, "comments", len(r.plan.comments), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
+		// The nodes the batch's rows project, and what each of them states, written before
+		// any row names one: the composite foreign key on (node_kind, node_address) is
+		// checked inside the statement that writes the row, so a node written after it would
+		// be too late. The seed appends no event of its own, so all of it takes the sentinel.
+		nodes, tuples := r.commentStoreWrite(from, to)
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+			return fmt.Errorf("write the comment nodes of %d to %d: %w", from, to, err)
+		}
 		mentions := newMentionRows("comment")
 		for index := from; index < to; index++ {
 			comment := r.plan.comments[index]
@@ -255,9 +267,13 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if comment.Edited {
 				editedAt = comment.CreatedAt.Add(time.Hour)
 			}
-			arguments := [...]any{comment.ID, issueKey, artifactID, seedActor, body, anchor, replyTo, index%5 == 0,
-				comment.CreatedAt, askID, repliesTo, editedAt, answers}
-			if _, err := tx.Exec(ctx, insert, arguments[:argumentCount]...); err != nil {
+			arguments := []any{comment.ID, issueKey, artifactID, seedActor, body, anchor, replyTo, index%5 == 0,
+				comment.CreatedAt, askID, repliesTo, editedAt}
+			if hasAnswers {
+				arguments = append(arguments, answers)
+			}
+			arguments = append(arguments, commentNodeKind, comment.ID)
+			if _, err := tx.Exec(ctx, insert, arguments...); err != nil {
 				return fmt.Errorf("comment %s: %w", comment.ID, err)
 			}
 			if comment.Edited {
@@ -283,6 +299,51 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// commentNodeKind is what the node and tuple store calls a comment, and commentSupertag the
+// supertag every one of them carries (migration 20261109051232), as the server's own comment
+// write states them (api's commentStoreWrite). A comment's address there is its row's own id.
+const (
+	commentNodeKind = "comment"
+	commentSupertag = "comment"
+)
+
+// commentStoreWrite is what the comments from..to are in the node and tuple store: each
+// comment's node - project-visible, live, made by the seed's author at the row's own time -
+// the two base attributes every node carries, and the artifact the comment is anchored to and
+// the artifact that owns it, each stated only where the comment has one. All of it is drawn
+// from the plan alone, so the batch can state it before it writes a row.
+func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
+	nodes := make([]graphstore.Node, 0, to-from)
+	tuples := make([]graphstore.Tuple, 0, 2*(to-from))
+	for index := from; index < to; index++ {
+		comment := r.plan.comments[index]
+		node := graphstore.Node{
+			Kind: commentNodeKind, ID: comment.ID, Supertag: commentSupertag,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			MadeAt: comment.CreatedAt, MadeBy: seedAuthor, SourceEvent: graphstore.NoEvent,
+		}
+		nodes = append(nodes, node)
+		states := func(kind, toKind, toID string) {
+			tuples = append(tuples, graphstore.Tuple{
+				FromKind: node.Kind, FromID: node.ID, Kind: kind, ToKind: toKind, ToID: toID,
+				At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
+			})
+		}
+		states("visibility", graphstore.KindValue, graphstore.VisibilityProject)
+		states("state", graphstore.KindValue, graphstore.StateLive)
+		if comment.Document >= 0 {
+			// A seeded comment is anchored only to the document it belongs to, which is the
+			// document whose address its row's artifact_id names.
+			address := r.plan.documents[comment.Document].RefKey
+			if comment.Anchored {
+				states("anchored_to", "artifact", address)
+			}
+			states("owned_by", "artifact", address)
+		}
+	}
+	return nodes, tuples
 }
 
 // writeMessages writes the issue threads and indexes each message's blocks. Every fiftieth

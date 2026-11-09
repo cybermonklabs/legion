@@ -1183,11 +1183,32 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
 	turn := thread.replyTurn(actor, nil)
+	// The reply's own id and time, read before the row so its node can be written first.
+	// `created_at` defaults to now(), which is the transaction's own timestamp, so the time
+	// read here is the time the row takes.
+	var rowID string
+	var createdAt time.Time
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the reply is in the node and tuple store. It carries no anchor - a callback reply
+	// names none - and belongs to whatever the comment it answers belongs to.
+	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, nil, comment.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stored.writeNode(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		returning `+commentColumns+`
-	`, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn, block.nodeID(), thread.Answers))
+	`, rowID, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn,
+		block.nodeID(), thread.Answers, commentNodeKind, rowID))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1235,13 +1256,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := refs.Stamp(r.Context(), tx, "comment", reply.ID, event.ID); err != nil {
+	if err := refs.Stamp(r.Context(), tx, commentNodeKind, reply.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the reply states, under the event that stored it: its node's cause, its two base
+	// attributes, and the artifact it is owned by.
+	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// Who wrote the reply, as the node and tuple store holds it: a session answering a mention
 	// is the first write that records that session, so its node is made here (graphstore.Authored).
-	if err := graphstore.Authored(r.Context(), tx, "comment", reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
+	if err := graphstore.Authored(r.Context(), tx, commentNodeKind, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
