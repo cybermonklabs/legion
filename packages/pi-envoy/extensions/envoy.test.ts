@@ -14407,8 +14407,8 @@ console.log(JSON.stringify(args));
       // Before the side turn: the read of the body whole again, which a BTW does before it asks
       // the model. The side turn reads the context the host has now, so the conversation it
       // moved to would answer a question nobody asked it, under the name of the session the
-      // person wrote to. Nothing is asked, and the refusal's released claim puts the BTW back
-      // for the session it names.
+      // person wrote to. Nothing is asked: the person is answered with the refusal, and the BTW
+      // is asked again only if they send it again.
       test("refuses a BTW whose session the host left before its side turn, and asks neither conversation", async () => {
         const prompts: string[] = [];
         const move: { fire?: () => Promise<void> } = {};

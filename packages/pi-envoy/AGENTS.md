@@ -199,7 +199,7 @@ resolves included, keeps the card and posts nothing.
 Every branch of a delivery holds the frame to the one session it was addressed to.
 A `/new`, a `/resume` or a move with no event for it can land in any await before the work, so every branch reads `sessionOpen` again before it acts.
 Those awaits are the acknowledgement, the read of a body the event carried in part, the accept, and the picture load.
-Before the accept nothing is answered: the claim is released, so the listener sends the frame again and it waits for the session it names.
+Before the accept nothing is answered: the claim is released, so a relay frame goes back to the listener, which sends it again to the session it names and to no other; a frame from the core subscription is not sent again live, and reaches that session again only through its replay sweep, as a card.
 Accepting it there would spend that person's attempt for the conversation the host moved to.
 After the accept the attempt is spent, so the person is answered instead, in the words the `!` path uses for the same move.
 A typed Send is answered that the message was not sent, since this session is no longer the one open here, and the host is handed nothing.

@@ -1655,11 +1655,12 @@ export default function envoyExtension(pi: PiApi): void {
   // (`HANDLED_ATTEMPT_ENTRY`, read back on every start, so a restart or a switch to another
   // branch of the tree keeps a delivered attempt from being accepted again), its Dispatch
   // bounded by `USER_TURN_ACCEPT_TIMEOUT_MS`, and these log lines. The entry goes to the
-  // transcript the host has open, the only one this host can write: a switch that lands inside
-  // the accept, before this instance has heard it, puts the addressed session's handled attempt
-  // in the conversation the host moved to, where that session's next start will not read it and
-  // the attempt can be accepted again. The write cannot be aimed at a session, so the loss is
-  // logged, as a delivery that same move keeps out of the ledger is (`recordTaken`). A forged
+  // transcript the host has open, the only one this host can write. For a frame addressed to a
+  // session that is that session's transcript: `acceptUserTurn` calls `handle` before its first
+  // await, and `deliver` calls this in the same run as its `addressedSessionOpen()` check. Only a
+  // frame that addresses no session can have its entry land in another conversation, where that
+  // session's next start will not read it, so that case is logged, as a delivery a move keeps
+  // out of the ledger is (`recordTaken`). A forged
   // frame can name an attempt before Dispatch's frame does and so spend it; what that costs is
   // `packages/pi-envoy/AGENTS.md`'s (the record's limit).
   const acceptedUserTurn = (
@@ -1970,8 +1971,8 @@ export default function envoyExtension(pi: PiApi): void {
           // The session this BTW was asked of is not the one open here any more: the side turn
           // reads the context the host has now, so the conversation it moved to would answer a
           // question nobody asked it, under the name of the session the person wrote to.
-          // Nothing is asked, and the claim the refusal releases puts the BTW back for the
-          // session it names.
+          // Nothing is asked: the person is answered with the refusal, the claim is released, and
+          // the BTW is asked again only if they send it again.
           offWorker(() => refuse(delivery, MOVED_SESSION_REFUSAL));
         } else if (shuttingDown) {
           // A session that is shutting down starts no model call, but a frame can still drain in.
@@ -1993,8 +1994,9 @@ export default function envoyExtension(pi: PiApi): void {
         // A delivery Dispatch addressed to one session, and that session is not the one open
         // here any more: the accept below would spend the person's attempt, and whatever
         // Dispatch then answered would be run and shown in the conversation the host moved to.
-        // So nothing is accepted and the claim goes back: the listener sends the frame again,
-        // and it waits for the session it names rather than being answered by another one.
+        // So nothing is accepted and the claim goes back: a relay frame is sent again by the
+        // listener to the session it names and to no other, and a core frame reaches that session
+        // again only through its replay sweep, as a card - never answered by another session.
         // Nothing is posted either, since Dispatch never recorded this attempt as taken; the
         // line below is what says here that a person's message went back unanswered.
         logger.warn("envoy: a delivery was not taken here; the session it names is closed", {
