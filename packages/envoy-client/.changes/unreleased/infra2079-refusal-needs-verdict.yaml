@@ -56,8 +56,8 @@ body: |-
   discarding everything but a refusal there posted a non-markdown suffix silently while the
   identical bytes under `.md` were held, in a session that had merely lost a verdict. Every
   artifact upload of such a session is now refused in block mode.
-  A refusal that advises sending the write again carries, on the clause that needs it and on no
-  other, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
+  A refusal that advises sending the write again carries, on the clause and in the state that
+  make it true and nowhere else, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
   argv-only marker and an argv-only marker answers no uncertainty. Advice is a lead and an
   optional resend clause, and the renderer appends that caveat to any advice carrying one, so a
   refusal added later cannot describe a resend a subagent cannot make. A changed file is one of
@@ -66,7 +66,10 @@ body: |-
   subagent's call and only a bound marker of its own would get it past. A message announcing that
   the write posted never carries it, since nothing was refused and the resend it would forbid is
   the one that works; nor does a clause that works whatever ran the call, such as sending a
-  corrected write, or resending after the advice's own repair has removed the unreadable marker. The record-recovery
+  corrected write. Repairing a fault the advice names and resending works in a healthy session
+  and not in one whose own uncertainty outlives the repair, so the renderer reads the state and
+  not the clause alone; and an expired marker, which the resend's own mint sweeps, is told apart
+  from one bound to other arguments, which it does not. The record-recovery
   advice is a different case and says so: a subagent returns before the record is rewritten, so
   only the main agent's next call repairs it.
   Three reads on the decision path still answered a fault with a permission. A cross-namespace

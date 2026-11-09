@@ -10,7 +10,15 @@
 // are that suite.
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   clearVerdict,
@@ -236,14 +244,20 @@ describe("every remedy the CLI prints, followed", () => {
       holds: true,
     },
     {
+      // Built by the mechanism that produces it, not field by field: `sweepMarkers` judges age
+      // by the file's mtime and `consumeMarker` by the body's `createdAt`, so a marker aged
+      // only in its body is a state the clock cannot reach — and a row constructing one tests
+      // nothing. Aged by both, the resend's own mint sweeps it and a subagent's posts.
       name: "a marker past its age",
       arrange: (s) => {
         clearVerdict(s.dir(), identity());
-        mintMarker(
+        const file = mintMarker(
           s.store,
           { argv: BASE, args: null, files: [], toolCallId: "x", outcome: "verdict" },
           Date.now() - 3 * MARKER_MAX_AGE_MS
         );
+        const old = (Date.now() - 3 * MARKER_MAX_AGE_MS) / 1000;
+        utimesSync(file, old, old);
       },
       holds: true,
     },
@@ -338,7 +352,7 @@ describe("every remedy the CLI prints, followed", () => {
           const made = call?.(s) ?? { command: COMMAND, argv: BASE };
           const printed = await s.cli(made.argv);
           expect({ name, who, holds: printed.code === 1 }).toEqual({ name, who, holds });
-          const caveat = printed.out.includes("a task subagent's literal write");
+          const caveat = /a task subagent/.test(printed.out);
           repair?.(s);
           // From here the review allows, so only what the resend's marker binds decides.
           s.allow();
@@ -356,6 +370,73 @@ describe("every remedy the CLI prints, followed", () => {
       expect({ name, caveat: sub.caveat }).toEqual({ name, caveat: !sub.posted });
     }, 60_000);
   }
+
+  // Compounds. Every control so far has been single-fault, and the caveat turned out to be a
+  // property of the clause **and** the state: a repair-then-resend is true in a healthy session
+  // and false in a persistently uncertain one, because the repair clears the fault it names and
+  // leaves the verdict fault standing. Each repair-advising state crossed with each persistent
+  // one.
+  for (const repairing of ["a marker of this call that cannot be read", "an unreadable upload"])
+    for (const persistent of ["no verdict capability", "a foreign verdict store", "a lost verdict"])
+      test(`${repairing} with ${persistent}: the repair clears one fault and not the other`, async () => {
+        const s = session();
+        try {
+          expect((await s.gate("main"))?.block).toBe(true);
+          clearVerdict(s.dir(), identity());
+          const made =
+            repairing === "an unreadable upload"
+              ? {
+                  command: "dispatch artifact --issue DSP-1 --name plan --path missing.md",
+                  argv: ["artifact", "--issue", "DSP-1", "--name", "plan", "--path", "missing.md"],
+                }
+              : { command: COMMAND, argv: BASE };
+          if (repairing !== "an unreadable upload")
+            writeFileSync(
+              mintMarker(
+                s.store,
+                { argv: BASE, args: ARGS, files: [], toolCallId: "x", outcome: "verdict" },
+                Date.now()
+              ),
+              "{not-json"
+            );
+          if (persistent === "no verdict capability") {
+            const file = join(
+              s.dir(),
+              "askgate",
+              `${process.pid}-${processStart(process.pid)}-${pidNamespace()}.json`
+            );
+            const record = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+            delete record.caps;
+            writeFileSync(file, JSON.stringify(record));
+          } else if (persistent === "a foreign verdict store") {
+            const older = join(s.dir(), "askgate-verdicts-v9");
+            mkdirSync(older, { recursive: true });
+            writeFileSync(join(older, "deadbeef"), "{}");
+          } else markVerdictsLost(s.dir(), Date.now());
+          const printed = await s.cli(made.argv);
+          expect({ repairing, persistent, code: printed.code }).toEqual({
+            repairing,
+            persistent,
+            code: 1,
+          });
+          // The advice must not promise that repairing one fault is enough.
+          expect(printed.out).toContain("None of that works from a task subagent");
+          // And following it as a subagent is still refused, which is what that says.
+          if (repairing === "an unreadable upload") writeFileSync(join(s.work, "missing.md"), "x");
+          else
+            for (const name of readdirSync(join(s.store, "markers")))
+              rmSync(join(s.store, "markers", name), { force: true });
+          s.allow();
+          const again = await resend(s, "sub", made);
+          expect({ repairing, persistent, posts: again.posts }).toEqual({
+            repairing,
+            persistent,
+            posts: 0,
+          });
+        } finally {
+          s.stop();
+        }
+      }, 60_000);
 
   // The one state no resend clears, for either kind, and the reason it is worse than a refusal:
   // `askgateState` answers `broken`, so no marker is ever reached, and each attempt spends a

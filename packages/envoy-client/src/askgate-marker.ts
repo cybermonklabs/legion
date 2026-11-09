@@ -910,6 +910,12 @@ export type Consumed =
       readonly verdict: "stale";
       readonly why: string;
       readonly changed?: FileOperand;
+      /**
+       * Whether the marker was rejected for its age alone. The caller tells its agent what to
+       * do about it, and an expired marker is swept by the next mint while one bound to other
+       * arguments is not, so the two states differ in whether a resend can clear them.
+       */
+      readonly expired?: boolean;
     }
   | { readonly ok: false; readonly verdict: "unknown"; readonly why: string; readonly path: string }
   | { readonly ok: false; readonly verdict: "none"; readonly why: string };
@@ -1029,7 +1035,12 @@ export function consumeMarker(
       why: "its arguments differ from the ones AskGate reviewed",
     };
   if (expired)
-    return { ok: false, verdict: "stale", why: "its AskGate marker expired before it ran" };
+    return {
+      ok: false,
+      verdict: "stale",
+      why: "its AskGate marker expired before it ran",
+      expired: true,
+    };
   // A readable marker is gone or says no to this call; an unreadable one is read before absence
   // is reported, since a file that will not speak is no proof that nothing was said.
   if (unreadable !== undefined)
@@ -1280,6 +1291,16 @@ export type VerdictRead =
    * mark and `store` the directory that would not take the verdict — the one an operator fixes.
    */
   | { readonly kind: "lost"; readonly path: string; readonly store: string };
+
+/**
+ * Whether this session's own uncertainty outlives any per-write repair: a store of a scheme
+ * this version cannot read, or a mark saying a verdict was lost. Independent of any one write,
+ * so it can be asked where no identity can be computed — an upload whose bytes cannot be read.
+ */
+export function uncertainSession(session: string): boolean {
+  if (foreignVerdicts(session).kind !== "none") return true;
+  return readVerdictFile(join(session, VERDICTS_LOST)) !== "gone";
+}
 
 /** Reads one file of the verdict store, without following a link. */
 function readVerdictFile(file: string): Record<string, unknown> | "gone" | "unreadable" {
