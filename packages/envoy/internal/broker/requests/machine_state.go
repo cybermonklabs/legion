@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -207,6 +208,34 @@ type Decision struct {
 // error never holds the stored value or a token.
 type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error)
 
+// PendingRequest is one credential request Create has just written pending, as it hands it to
+// Machine.Judge: what the broker's model judge reads of a request, and nothing else.
+//
+// It is declared here, in the package that writes it, and the judge takes it as it stands
+// (judge.Runner.Consider): the import runs one way, since Machine.Judge is a func field the
+// broker's main wires up and never a call this package makes into that one, so the judge names
+// this machine's type and this package names no judge.
+type PendingRequest struct {
+	// RecordID is the credential-request record a decision is written against, and
+	// RequestID the request row it belongs to.
+	RecordID, RequestID string
+	// EnrollmentID is the enrollment that asked, which the policy is re-read for, and
+	// SessionID the Envoy session that enrollment recorded, empty for one that names none.
+	EnrollmentID, SessionID string
+	// Secrets are the names the request asks for, in the request's own name order. The judge
+	// decides a request for one.
+	Secrets []string
+	// LifetimeSeconds is the grant's lifetime as the record holds it: the one the requester
+	// signed, else the broker's default for its names (defaultLifetime), and nil for a grant
+	// that lasts until its session ends. An unbounded grant is what the judge's seconds are
+	// there to bound, so the judge decides none.
+	LifetimeSeconds *int
+	// Reason is the requester's own signed reason, which names the Dispatch issue, and
+	// Approver the record's approver: the secret's owner, or record.AnyoneApprover for a
+	// shared one. The judge decides in that approver's place and names it in its log line.
+	Reason, Approver string
+}
+
 type Machine struct {
 	Store      *store.Store
 	Policy     *policy.Current
@@ -248,6 +277,18 @@ type Machine struct {
 	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
 	AirlockProxyURL      string
 	AirlockCACertificate string
+	// Judge, when set, is handed every request Create has just written pending, once that
+	// transaction has committed and the request's grant-log line is out: the broker's model
+	// judge, which may approve such a request in its approver's place (cmd/broker wires it to
+	// judge.Runner.Consider, and nothing else ever sets it). A nil field is no judge at all,
+	// which is every test and every deployment that configures none; a human-tier request
+	// then waits for the person who decides it today, exactly as before.
+	//
+	// It is called for a request this Create wrote pending and never for one it coalesced
+	// onto a pending request already there, so one record is never judged twice. Nothing a
+	// judge does belongs on the requester's path, so the hook must return at once: Consider
+	// starts a goroutine of its own and does.
+	Judge func(PendingRequest)
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -271,9 +312,14 @@ func (m *Machine) missRereadLimiter() *ratelimit.Keyed {
 }
 
 // NewChainVerifier builds the record.ChainVerifier VerifyChain uses, scoped to agent_secret
-// records.
-func NewChainVerifier(st *store.Store, audience string, skew time.Duration) *record.ChainVerifier {
-	return st.ChainVerifier(record.KindAgentSecret, audience, skew)
+// records. rules are the airlock's, the ones the machine itself holds (Machine.Airlock): they
+// reach the verifier as record.ChainVerifier.JudgeSeconds, so a grant the model judge approved
+// re-verifies against the same bound the judge decided under. Zero rules give the judge nothing,
+// which refuses every such approval.
+func NewChainVerifier(st *store.Store, audience string, skew time.Duration, rules airlock.Rules) *record.ChainVerifier {
+	chain := st.ChainVerifier(record.KindAgentSecret, audience, skew)
+	chain.JudgeSeconds = rules.JudgeSeconds
+	return chain
 }
 
 type enrollmentRow struct {
@@ -348,6 +394,9 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // denied request, with a granted one's grant, or a pending request and its credential-request
 // record. A second pending request that overlaps one of its names is refused, so an untrusted
 // session cannot flood an approver's Inbox by varying --ttl.
+//
+// A request it writes pending is handed to Machine.Judge once the transaction has committed, and
+// one it coalesced onto a pending request is not, so the model judge sees each record once.
 func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
@@ -465,6 +514,18 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	}
 	store.LogGrantEvent(r.createdRequestLogEvent(enr))
+	// The model judge, for a request this call has just written pending. It is called here, past
+	// the commit and past the grant-log line, so the judge's own reads find the request and the
+	// record that are now there and nothing it does runs inside the transaction. The coalescing
+	// branch above returns before this point, so a request that joined a pending one is never
+	// handed over a second time and one record is never judged twice. A nil hook is no judge.
+	if m.Judge != nil && r.state == "pending" {
+		m.Judge(PendingRequest{
+			RecordID: deref(req.RecordID), RequestID: r.id, EnrollmentID: enrollmentID,
+			SessionID: enr.SessionID, Secrets: r.names(), LifetimeSeconds: r.lifetime,
+			Reason: r.reason, Approver: deref(req.Approver),
+		})
+	}
 	return req, nil
 }
 
@@ -887,15 +948,214 @@ func (m *Machine) expirePending(ctx context.Context, now time.Time) ([]store.End
 // under both of its locks; the bound on how many are made is the one enroll.Service.Create puts
 // on its own retries.
 func (m *Machine) ApplyDecision(ctx context.Context, recordID string, approve bool, login string) (Decision, error) {
+	return m.applyDecision(ctx, recordID, approve, byPerson(login))
+}
+
+// ApplyJudgeDecision approves recordID as the model judge running as modelID, writing everything
+// a person's approval writes except that no person is named in any of it: the decision event
+// carries a null login and the judge's actor, the request row records that actor as having
+// decided it, and the grant records the record's own approver — the owner's login, or
+// record.AnyoneApprover — since the grant is the one that approver would have made and the judge
+// keeps nothing of it afterwards (D1).
+//
+// judged is the judge's verdict, written as one request.judged audit row inside the approval's
+// own transaction, so a grant and the record of why it exists commit together or not at all
+// (D11). It is a map[string]any rather than this package's own auditDetail because the judge
+// that calls this lives outside the package and must be able to name the type; the two types
+// are one. The row written from it carries one key the judge does not write: applied, set from
+// what this transaction did with the approval rather than from what the judge asked for, since
+// an approval can commit and grant nothing (decider.judgedRow). The caller's own map is left
+// as it was.
+//
+// The judge only ever approves. A record the airlock rules do not let it decide is refused with
+// record.ErrNotJudgeable and nothing is written; a record a person decided first, or one that
+// expired, comes back as ErrTerminal or ErrExpired, which are the ordinary answers for a judge
+// that lost the race and no fault of its (D10). Each of those leaves the request where it was,
+// for the person who decides it today, and the judge records its reasoning with LogJudged.
+func (m *Machine) ApplyJudgeDecision(ctx context.Context, recordID, modelID string, judged map[string]any) (Decision, error) {
+	return m.applyDecision(ctx, recordID, true, byJudge(modelID, auditDetail(judged)))
+}
+
+// applyDecision is the retry loop both entry points share: one attempt, made again when the
+// request moves to another enrollment under it (applyDecisionAttempt's moved).
+func (m *Machine) applyDecision(ctx context.Context, recordID string, approve bool, who decider) (Decision, error) {
 	const maxAttempts = 3
 	for range maxAttempts {
-		decision, moved, err := m.applyDecisionAttempt(ctx, recordID, approve, login)
+		decision, moved, err := m.applyDecisionAttempt(ctx, recordID, approve, who)
 		if moved {
 			continue
 		}
 		return decision, err
 	}
 	return Decision{}, fmt.Errorf("decide record %s: exhausted retries while the request kept moving to another enrollment", recordID)
+}
+
+// judgedKind is the audit kind of the model judge's own verdict on a record: what it was asked,
+// what it answered and why, as the judge wrote it. It is free text in the audit table, as every
+// request.* kind is, and is spelled here alone.
+const judgedKind = "request.judged"
+
+// LogJudged writes the model judge's verdict on recordID alone: one request.judged audit row, in
+// a transaction of its own, against the request the record names and the enrollment that request
+// hangs off now. It writes no decision event, no grant and no state change, and the request it
+// names is left exactly as it was.
+//
+// There are two ways to write that row because a verdict and a decision are two things.
+// ApplyJudgeDecision writes the verdict inside the approval it makes, so the reasoning cannot be
+// lost from the grant it produced (D11). This one is for every verdict that decides nothing: the
+// judge referring a request to the person who decides it today, and an approval the state machine
+// then refused — a record the rules do not let the judge decide, one a person already decided,
+// one that expired — where that transaction rolled back and wrote nothing at all. The reasoning
+// is worth keeping either way: it is the record of what the judge was asked and what it answered.
+func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) error {
+	tx, err := m.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// The enrollment is the one the request hangs off now, never the one the record froze, as
+	// every other read of this package is (the package comment's moved session). No lock and no
+	// liveness test: the row is written for the trail, and a verdict on a request whose box has
+	// gone is as worth keeping as one on a live request.
+	var requestID string
+	var enr enrollmentRow
+	if err := tx.QueryRow(ctx, `select req.id, e.id, e.kind, e.operator, c.service, e.runtime_id, coalesce(e.session_id,'')
+		from requests req join enrollments e on e.id = req.enrollment_id
+		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
+		Scan(&requestID, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
+		return err
+	}
+	detail := judgedDetail(judged)
+	actor := record.JudgeActor(modelID)
+	if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nil, actor, detail); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	logGrantRow(judgedKind, actor, enr, requestID, "", rawJSON(detail))
+	return nil
+}
+
+// judgedDetail is a caller's verdict as the audit row holds it: a copy of what the caller gave,
+// and never nil. Never nil because audit.detail is NOT NULL and a nil map is a null parameter,
+// so a judge that recorded no reasoning records the empty object the column defaults to and
+// the approval it just made is not lost to a constraint. A copy because the row a transaction
+// writes is the transaction's to finish — decider.judgedRow sets applied on it from what that
+// transaction did — and the map a caller passed is still the caller's, held across the retries
+// applyDecision may make. The one spare slot is that applied.
+func judgedDetail(judged map[string]any) auditDetail {
+	row := make(auditDetail, len(judged)+1)
+	maps.Copy(row, judged)
+	return row
+}
+
+// decider is who is deciding a record in one applyDecisionAttempt: a person, named by the login
+// their signed-in session proved, or the model judge, named by the id of the model that decided
+// and carrying the verdict it wrote. Exactly one of the two is ever set, and the constructors
+// below are the only way to build one, so "a judge with a login" and "nobody at all" are not
+// states a caller reaches by filling in a field.
+type decider struct {
+	login   string
+	modelID string
+	// judged is the judge's verdict, written as the request.judged audit row inside the
+	// approval's own transaction (D11); nil for a person, who writes no such row.
+	judged auditDetail
+}
+
+// byPerson is the decider of a decision a person made on the broker's own approval page: the
+// login their Dispatch session names, which the record's approver rule then canonicalizes
+// (record.Body.ApproverLogin).
+func byPerson(login string) decider { return decider{login: login} }
+
+// byJudge is the decider of a decision the model judge made: the id of the model and the verdict
+// it wrote. No login is ever recorded for it — the judge is no person, and the person who would
+// otherwise have decided is named nowhere in what it writes.
+func byJudge(modelID string, judged auditDetail) decider {
+	return decider{modelID: modelID, judged: judged}
+}
+
+// judgedRow is the judge's verdict as the request.judged row of this decision's own transaction
+// records it: what the judge wrote, with applied set from next, the state that transaction is
+// leaving the request in.
+//
+// The judge cannot write that key itself, and the row has to carry it: an approval the judge
+// makes can commit and grant nothing. The current policy may have dropped the requester from
+// the secret's list, which is recorded as the request's own denial under PolicyDeniedActor, and
+// the requesting enrollment may have gone, which is recorded approved and then denied. Both
+// commit, both leave the row beside them, and in both the judge granted nothing — so applied is
+// read off what the transaction did and never off what the judge asked for. The row it builds
+// is a copy (judgedDetail), so neither the judge's own map nor an earlier attempt's answer is
+// what the next attempt writes.
+func (d decider) judgedRow(next string) auditDetail {
+	row := judgedDetail(d.judged)
+	row["applied"] = next == "granted"
+	return row
+}
+
+// isJudge reports whether this decider is the model judge rather than a person.
+func (d decider) isJudge() bool { return d.modelID != "" }
+
+// actor is the audit actor of what this decider writes: "human:<login>" or "judge:<model id>".
+func (d decider) actor() string {
+	if d.isJudge() {
+		return record.JudgeActor(d.modelID)
+	}
+	return record.HumanActor(d.login)
+}
+
+// decidedBy is what the requests row records as having decided it: a person's own login, and for
+// the judge its actor, since that column has no model id of its own and the judge is no login
+// (D1).
+func (d decider) decidedBy() string {
+	if d.isJudge() {
+		return record.JudgeActor(d.modelID)
+	}
+	return d.login
+}
+
+// eventLogin is the credential_request_events.login the decision event carries: the person's
+// canonical login, and null for the judge, whose event names the model in its actor alone. The
+// chain re-check reads which arm admits an approval off that actor and never off the login
+// (record.ChainVerifier.Verify), and a null login is what keeps the judge's approval from ever
+// being read back as some person's.
+func (d decider) eventLogin() *string {
+	if d.isJudge() {
+		return nil
+	}
+	return &d.login
+}
+
+// grantApprover is the approver the grant this decision mints records: the deciding person, and
+// for the judge the record's own approver — the owner's login, or record.AnyoneApprover for a
+// shared secret — since the judge approves in that approver's stead and holds none of their
+// rights over the grant afterwards (D1: the grant's approver is what GrantsForApprover lists and
+// what mayRevoke reads).
+func (d decider) grantApprover(recordApprover string) string {
+	if d.isJudge() {
+		return recordApprover
+	}
+	return d.login
+}
+
+// maySettle reports whether this decider may settle a name the current policy routes to
+// policyApprover, on a record whose own approver is recordApprover (currentPolicyAdmits).
+//
+// A person is held to the rule they are held to everywhere: the policy's own approver for the
+// name must admit them (record.MayDecide). The judge is no login and MayDecide admits none of
+// them, by design; it decides in the record's approver's stead, so what is asked of it is that
+// the current policy still routes the name to that same approver. Equal approvers and no others
+// is the conservative reading of "pass the record's own approver" — and it has to be, since
+// record.AnyoneApprover is no login either and MayDecide refuses it outright, so a shared
+// secret's record could be judged no other way. Where the two disagree — an owner change, a
+// secret that went shared or stopped being shared — the judge settles nothing and the request
+// waits for the person who decides it today. The judge is never admitted where the record's own
+// approver would not be.
+func (d decider) maySettle(policyApprover, recordApprover string) bool {
+	if d.isJudge() {
+		return record.CanonicalLogin(policyApprover) == record.CanonicalLogin(recordApprover)
+	}
+	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login)
 }
 
 // enrollmentHoldsForItsSession is "enrollment e still holds something for its session": a live
@@ -927,11 +1187,12 @@ const enrollmentHoldsForItsSession = `exists (select 1 from grants g where g.enr
 const enrollmentWouldGoDormant = `coalesce(e.session_id,'') <> '' and e.carry_principal is not null and (
 				` + enrollmentHoldsForItsSession + `)`
 
-// applyDecisionAttempt makes one of ApplyDecision's attempts, writing everything that decision
-// writes or nothing at all. moved is true when the request moved to another enrollment between
-// the read that locks the enrollment and the read that locks the request — an adoption
-// committing in that window — in which case the attempt has written nothing and ApplyDecision
-// makes another, which reads the enrollment the request names now.
+// applyDecisionAttempt makes one of applyDecision's attempts for who — the person or the model
+// judge deciding this record — writing everything that decision writes or nothing at all. moved
+// is true when the request moved to another enrollment between the read that locks the
+// enrollment and the read that locks the request — an adoption committing in that window — in
+// which case the attempt has written nothing and applyDecision makes another, which reads the
+// enrollment the request names now.
 //
 // The enrollment row is locked before the request row — the same order every other
 // enrollment-then-request writer in this package takes them in, so none of them deadlock — and
@@ -945,7 +1206,13 @@ const enrollmentWouldGoDormant = `coalesce(e.session_id,'') <> '' and e.carry_pr
 // request's own enrollment_id, and the attempt is abandoned when the two disagree. Nothing is
 // written against a box the session has moved off, and nothing is denied for a move that was
 // already done when the decision arrived.
-func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, approve bool, login string) (_ Decision, moved bool, _ error) {
+func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, approve bool, who decider) (_ Decision, moved bool, _ error) {
+	if who.isJudge() && !approve {
+		// The judge approves a request or leaves it for the person who decides it today; it
+		// never denies, and no caller may ask it to. A denial written under a judge actor would
+		// close, against a person's name nowhere in it, a request no person ever saw.
+		return Decision{}, false, fmt.Errorf("decide record %s: the model judge never denies", recordID)
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Decision{}, false, err
@@ -1004,9 +1271,47 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err != nil {
 		return Decision{}, false, err
 	}
-	login, err = parsed.ApproverLogin(record.KindAgentSecret, "", login)
-	if err != nil {
-		return Decision{}, false, err
+	// obj is the record's embedded request object, verified once per attempt through
+	// verifyObject, by whichever of the two readers below comes first.
+	var obj record.RequestObject
+	objVerified := false
+	verifyObject := func() error {
+		if objVerified {
+			return nil
+		}
+		// now is reset to the record's own creation time: the request object's own iat/exp bound
+		// only how fresh it had to be when the broker first accepted it (up to 10 minutes), never
+		// how long the resulting decision window may stay open (PendingTTL, hours) — re-verifying
+		// it with the real current time would fail every decision made more than a few minutes
+		// after creation.
+		verified, err := record.VerifyRequestObject(parsed.Request, m.Audience, m.Skew, createdAt)
+		if err != nil {
+			return fmt.Errorf("%w: request object no longer verifies: %s", ErrGrantChainInvalid, err)
+		}
+		obj, objVerified = verified, true
+		return nil
+	}
+	if who.isJudge() {
+		// The judge's own check sits exactly where a person's approver check sits: before the
+		// policy re-evaluation and before the state read, so a record the rules do not let the
+		// judge decide is refused on the same reading that refuses a person who is not the
+		// approver. It needs the verified request object, though — its one authorization
+		// detail, the lifetime and the reason are what the rules bound — and a person's decision
+		// does not verify that object until further down. So the judge, and the judge alone,
+		// verifies it here; the verification below is the same one and runs once (verifyObject).
+		// Every other check keeps the order it had, and a person's decision reads them all in
+		// the order it always did.
+		if err := verifyObject(); err != nil {
+			return Decision{}, false, err
+		}
+		if err := record.MayJudge(parsed, obj, m.Airlock.JudgeSeconds); err != nil {
+			return Decision{}, false, fmt.Errorf("judge record %s: %w", recordID, err)
+		}
+	} else {
+		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login)
+		if err != nil {
+			return Decision{}, false, err
+		}
 	}
 	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
 	// and each name's airlock fingerprint, which the request records as what it was decided
@@ -1044,7 +1349,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		if err != nil {
 			return Decision{}, false, err
 		}
-		if err := currentPolicyAdmits(requested, set, requester, login, lifetime); err != nil && !errors.As(err, &denied) {
+		if err := currentPolicyAdmits(requested, set, requester, who, parsed.Approver, lifetime); err != nil && !errors.As(err, &denied) {
 			return Decision{}, false, err
 		}
 	}
@@ -1054,20 +1359,16 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	case state != "pending":
 		return Decision{}, false, ErrTerminal
 	}
-	// now is reset to the record's own creation time: the request object's own iat/exp bound only
-	// how fresh it had to be when the broker first accepted it (up to 10 minutes), never how long
-	// the resulting decision window may stay open (PendingTTL, hours) — re-verifying it with the
-	// real current time would fail every decision made more than a few minutes after creation.
-	obj, err := record.VerifyRequestObject(parsed.Request, m.Audience, m.Skew, createdAt)
-	if err != nil {
-		return Decision{}, false, fmt.Errorf("%w: request object no longer verifies: %s", ErrGrantChainInvalid, err)
+	if err := verifyObject(); err != nil {
+		return Decision{}, false, err
 	}
 
-	event, by := "denied", record.HumanActor(login)
+	event, by := "denied", who.actor()
 	next, detail := "denied", ""
-	// decidedBy is what the requests row records as having decided it: the deciding login,
-	// except where the policy rather than that person made the answer (PolicyDeniedActor).
-	decidedBy := login
+	// decidedBy is what the requests row records as having decided it: the deciding login, the
+	// judge's actor for the judge (D1), except where the policy rather than that decider made
+	// the answer (PolicyDeniedActor).
+	decidedBy := who.decidedBy()
 	if approve {
 		event = "approved"
 		if mayGrant {
@@ -1086,7 +1387,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		return Decision{}, false, err
 	}
 	if _, err := tx.Exec(ctx, `insert into credential_request_events (record_id, event, login, actor, detail) values ($1,$2,$3,$4,$5)`,
-		recordID, event, login, by, nullable(detail)); err != nil {
+		recordID, event, who.eventLogin(), by, nullable(detail)); err != nil {
 		return Decision{}, false, err
 	}
 	var grantID string
@@ -1095,13 +1396,28 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			return Decision{}, false, err
 		}
 		// The grant lasts the lifetime the approved record names, or the default above.
-		if grantID, err = insertGrant(ctx, tx, requestID, enr.ID, login, lifetime); err != nil {
+		if grantID, err = insertGrant(ctx, tx, requestID, enr.ID, who.grantApprover(parsed.Approver), lifetime); err != nil {
 			return Decision{}, false, err
 		}
 	}
 	rowDetail := auditDetail{"detail": detail, "record_id": recordID}
 	if err := audit(ctx, tx, "request."+next, enr.ID, requestID, nullable(grantID), by, rowDetail); err != nil {
 		return Decision{}, false, err
+	}
+	// judged is the row the judge's verdict goes in as, built once here and logged below from
+	// the same object, so the line and the row cannot say different things.
+	var judged auditDetail
+	if who.isJudge() {
+		// D11: the judge's verdict goes in beside the decision, inside the decision's own
+		// transaction, so the grant and the record of why it exists are written together or not
+		// at all. Its actor is the judge even where the policy made the answer
+		// (PolicyDeniedActor above): this row says what the judge decided, not what the request
+		// became. Its applied, though, is what the request became: next, and nothing the judge
+		// wrote (decider.judgedRow).
+		judged = who.judgedRow(next)
+		if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nullable(grantID), who.actor(), judged); err != nil {
+			return Decision{}, false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Decision{}, false, err
@@ -1124,6 +1440,9 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	}
 	ev.Reason, ev.Detail, ev.Raw = obj.Reason, detail, rawJSON(rowDetail)
 	store.LogGrantEvent(ev)
+	if who.isJudge() {
+		logGrantRow(judgedKind, who.actor(), enr, requestID, grantID, rawJSON(judged))
+	}
 	return Decision{RequestID: requestID, State: next, GrantID: grantID, Detail: detail}, false, nil
 }
 
@@ -1174,9 +1493,11 @@ func (e *policyDenial) Error() string {
 // the approver's own login beside it, so the trail still names who pressed approve.
 const PolicyDeniedActor = "broker:policy"
 
-// currentPolicyAdmits refuses login an approval of a request when the current policy wants
-// one of its names approved by someone else (record.MayDecide), since a change of owner since the
-// request was made moves who may approve it: a request waiting on anyone for a secret that is now
+// currentPolicyAdmits refuses who — the person or the model judge deciding — an approval of a
+// request when the current policy wants one of its names approved by someone else
+// (decider.maySettle, which holds a person to record.MayDecide and the judge to recordApprover,
+// the record's own approver), since a change of owner since the request was made moves who may
+// approve it: a request waiting on anyone for a secret that is now
 // a person's is that person's alone to approve, and one waiting on a person for a secret another
 // person must now approve is no one's to approve (its record's approver may still deny it;
 // otherwise it expires, or its session cancels it and asks again). requester carries the names the
@@ -1204,10 +1525,40 @@ const PolicyDeniedActor = "broker:policy"
 // below the request's lifetime, or that now has one the request names none for, is no one's to
 // approve now, as with a withheld name: the session asks again within it.
 //
+// The model judge is held to two rules of its own, ahead of all of this: it settles no withheld
+// name and no administrator's secret, however the policy reads that name now. The run made both
+// checks itself before it asked a model anything (judge's withheld and admin checks), and then
+// spent up to 20 seconds on the model call, so what either of them read could have changed in
+// those seconds, and this transaction is the boundary where it is read again — every other check
+// the run made is made again here or in record.MayJudge.
+//
+// A withheld name is hard to reach, since only names granted automatically are withheld and the
+// name must have changed tier while the request waited. An admin secret is easier: its owner
+// adds the tag while the model is answering, or a deployment writes a judge entry for a name
+// that already carries it, and the judge's own check — made against the policy snapshot of a
+// moment ago — would be the only thing refusing a credential whose tag promises that a person
+// approves every release of it (policy.TagAdmin). That promise is the secret's and not the rules
+// file's to make, so the author of the rules file cannot undo it here either. Both are one
+// comparison to close.
+//
+// A person's path never reaches either guard: a withheld name a person may approve is still
+// theirs to approve, and an admin secret is approved by the person its owner tag names, both on
+// the rules below, which are the rules they have always been held to.
+//
 // set is the one snapshot the whole decision is made against, the one whose airlock fingerprints
 // the request then records as what it was decided under (decidedUnder), and requested the
 // request's names, read once by the approve path that calls this.
-func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester policy.Requester, login string, lifetime *int) error {
+func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester policy.Requester, who decider, recordApprover string, lifetime *int) error {
+	if who.isJudge() {
+		for _, g := range requested {
+			if slices.Contains(requester.Withheld, g.name) {
+				return fmt.Errorf("%w: %s is withheld from this session, and the judge settles no withheld name", record.ErrNotApprover, g.name)
+			}
+			if set.Secrets[g.name].Admin {
+				return fmt.Errorf("%w: %s is an administrator's secret, and a person approves every release of one", record.ErrNotApprover, g.name)
+			}
+		}
+	}
 	for _, g := range requested {
 		d, err := set.Evaluate(g.name, requester)
 		if errors.Is(err, policy.ErrUnknownSecret) {
@@ -1234,7 +1585,7 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if d.Outcome == policy.Deny && slices.Contains(requester.Withheld, g.name) {
 			return fmt.Errorf("%w: %s is withheld from this session and the current policy denies it, so no one may approve it now", record.ErrNotApprover, g.name)
 		}
-		if d.Outcome == policy.Approval && !record.MayDecide(record.KindAgentSecret, d.Approver, "", login) {
+		if d.Outcome == policy.Approval && !who.maySettle(d.Approver, recordApprover) {
 			return fmt.Errorf("%w: the current policy has %s approve %s", record.ErrNotApprover, d.Approver, g.name)
 		}
 	}
@@ -1445,13 +1796,22 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // mayRevoke answers whether login may revoke a grant, and whether as its enrollment's operator,
 // whose revoke withholds (RevokeByApprover), rather than as its approver. The operator is checked
 // first, so an operator who also approved the grant revokes it as the operator.
+//
+// A grant whose approver is the sentinel record.AnyoneApprover is every signed-in person's to
+// end: the model judge approved it in anyone's stead, so it names no person who could end it,
+// and GrantsForApprover lists it to everyone for that same reason. The revoke is the approver's
+// and not the operator's, since whoever ends it stands in for the record's approver and withholds
+// nothing from a session that is not theirs. The sentinel is no signed-in person itself, and
+// neither is an empty login: neither revokes anything.
 func mayRevoke(login string, approver, operator *string) (allowed, asOperator bool) {
 	login = record.CanonicalLogin(login)
 	switch {
-	case login == "":
+	case login == "" || login == record.AnyoneApprover:
 		return false, false
 	case operator != nil && record.CanonicalLogin(*operator) == login:
 		return true, true
+	case approver != nil && record.CanonicalLogin(*approver) == record.AnyoneApprover:
+		return true, false
 	case approver != nil && record.CanonicalLogin(*approver) == login:
 		return true, false
 	}
@@ -1516,10 +1876,11 @@ func audit(ctx context.Context, tx pgx.Tx, kind, enrollmentID, requestID string,
 //
 // It is called after the transaction has committed, never inside it, and once per audit row of a
 // logged kind rather than once per transaction: a writer that ends several grants in one
-// statement (withhold) writes one audit row per grant and so logs one line per grant. Only a
-// request decision and a grant's end are logged — never a grant.used row, of which one session
-// writes one per release, and never an enrollment row, which internal/broker/enroll owns — so
-// the volume is one line per decision and per grant end.
+// statement (withhold) writes one audit row per grant and so logs one line per grant. A request
+// decision, a request.judged row the model judge wrote, and a grant's end are logged — never a
+// grant.used row, of which one session writes one per release, and never an enrollment row,
+// which internal/broker/enroll owns — so the volume is one line per decision, one per judge run
+// that reached a verdict, and one per grant end.
 //
 // A crash between the commit and the line loses the line and not the row.
 func grantLogEvent(kind, actor string, enr enrollmentRow) store.GrantLogEvent {
@@ -1533,13 +1894,16 @@ func grantLogEvent(kind, actor string, enr enrollmentRow) store.GrantLogEvent {
 	}
 }
 
-// logGrantRow logs the grant-log line of one grant row this package has just committed: a
-// grant.revoked or grant.withheld audit row, whose line names the grant, the request it was
-// granted for and the row's own detail beside what grantLogEvent reads off enr, and nothing
-// else. Every writer of such a row goes through it — a session's own revoke (RevokeGrant), a
-// person's and each grant the withhold beside it ended (RevokeByApprover), and the end a
-// release writes when what was granted cannot come back (endGrant) — so the four build the
-// same line. A request's own line sets fields past these three and builds its event itself.
+// logGrantRow logs the grant-log line of one audit row this package has just committed that
+// names a grant or a judge's verdict: a grant.revoked or grant.withheld row, whose line names
+// the grant, the request it was granted for and the row's own detail beside what grantLogEvent
+// reads off enr, and nothing else, or a request.judged row, which names the same fields and
+// leaves the grant empty when the verdict granted nothing. Every writer of such a row goes
+// through it — a session's own revoke (RevokeGrant), a person's and each grant the withhold
+// beside it ended (RevokeByApprover), the end a release writes when what was granted cannot come
+// back (endGrant), and both writers of the judge's verdict (LogJudged and
+// applyDecisionAttempt) — so they all build the same line. A request's own decision line sets
+// fields past these three and builds its event itself.
 func logGrantRow(kind, actor string, enr enrollmentRow, requestID, grantID string, raw json.RawMessage) {
 	ev := grantLogEvent(kind, actor, enr)
 	ev.RequestID, ev.GrantID, ev.Raw = requestID, grantID, raw

@@ -681,8 +681,14 @@ type OperatorGrant struct {
 	Enrollment OperatorGrantEnrollment `json:"enrollment"`
 	Names      []string                `json:"names"`
 	Approver   *string                 `json:"approver"`
-	ExpiresAt  *time.Time              `json:"expires_at"`
-	CreatedAt  time.Time               `json:"created_at"`
+	// DecidedBy is who decided the request this grant rests on: the approving person's own
+	// login, or "judge:<model id>" where the model judge approved it in that person's stead.
+	// Null for an automatic grant, which nobody decided. It differs from Approver for a judged
+	// grant alone, which records the record's own approver — the secret's owner, or anyone —
+	// and that is what makes the two worth printing side by side.
+	DecidedBy *string    `json:"decided_by"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // OperatorGrants is GET /v1/operator/grants's exact response shape.

@@ -138,7 +138,7 @@ var commands = []command{
 	{"machine revoke", "agent-secrets machine revoke <credential_id>",
 		"End one of your own machines' logins under this machine's login, as Dispatch's machine-login\npage does: it enrolls nothing more, and every session it enrolled ends. Revoking this\nmachine's own login ends this machine's broker access too."},
 	{"grant list", "agent-secrets grant list [--json]",
-		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, its session and operator, and\nwhen it expires. Dispatch's Live grants page lists the same."},
+		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
 		"End a grant as its operator or approver, under this machine's login, as Dispatch's Live\ngrants page does. Ending an automatic grant also makes its session ask before it gets those\nsecrets again."},
 	{"login", "agent-secrets login",

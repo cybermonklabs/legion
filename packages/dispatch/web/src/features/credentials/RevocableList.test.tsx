@@ -39,6 +39,7 @@ const sections: Section[] = [
           {
             approver: null,
             created_at: "2026-10-03T12:05:00Z",
+            decided_by: null,
             enrollment: {
               kind: "session",
               operator: "ada@example.com",

@@ -5,8 +5,10 @@
 # (the dispatch-pg container, through dev-postgres.sh), builds the
 # broker, its three clients (agent-secrets, agent-secrets-helper and agent-secrets-devrelay) and
 # dev-oidc-issuer, writes a fake secrets file standing in for Secrets Manager (DEMO_READ_TOKEN,
-# tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking, and
-# DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves), then starts cmd/broker against
+# tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking,
+# DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, and DEMO_SERVICE_TOKEN, tagged
+# owner=SERVICE tier=agent, which every pod session of that registered service gets without
+# asking and no person's session sees), then starts cmd/broker against
 # it. Prints the exports a second shell needs to drive the clients against it.
 #
 # The broker's approval routes, and its introspection route, take the calling service's own
@@ -24,6 +26,14 @@
 # the service login (BROKER_SERVICE_LOGINS) that stands in for the deployment's daemon and
 # registers the pod under the session name it writes as. The broker trusts that issuer for all
 # five.
+#
+# SERVICE is registered under both halves a service needs: BROKER_SERVICE_LOGINS names the
+# account that logs in as it, and BROKER_SERVICES names the account its pods run as
+# (EXCHANGE_ACCOUNT's, the pod this script registers). Both are needed for a service-owned
+# secret: the policy serves a secret tagged owner=<service> only for a service the deployment
+# registered in BROKER_SERVICES, and refuses every other one as owner-tag-malformed on every
+# reread, so without that half DEMO_SERVICE_TOKEN would reach nobody and a pod enrolled under
+# the service login would have no secret of its own to ask for.
 #
 # A secret request is approved on the broker's own page, <broker>/approve/<record>, by a person
 # signed in to the broker (BROKER_SIGNIN_*). The same issuer process stands in for that person's
@@ -104,6 +114,13 @@ API_ACCOUNT="system:serviceaccount:example-ns:example-dispatch"
 LISTENER_ACCOUNT="system:serviceaccount:example-ns:example-listener"
 EXCHANGE_ACCOUNT="system:serviceaccount:example-ns:example-worker"
 REGISTRAR_ACCOUNT="system:serviceaccount:example-ns:example-daemon"
+# The one registered service this stack has, under both halves a service needs: the name the
+# registrar account logs in as (BROKER_SERVICE_LOGINS) and the name the pod account is bound to
+# (BROKER_SERVICES). A secret tagged owner=<service> is served only when the deployment
+# registered that service, so without the second half the policy refuses this stack's
+# service-owned secret as owner-tag-malformed on every reread; with it, the pod a daemon enrolls
+# under that service gets the secret without asking, as a Legion worker pod gets its daemon's.
+SERVICE="legion-daemon"
 EXCHANGE_PROJECT="EXAMPLE"
 # The session name this stack's pod is registered for, the one it exchanges under.
 EXCHANGE_SESSION="example-worker-session"
@@ -201,13 +218,18 @@ for cmd in broker dev-oidc-issuer agent-secrets agent-secrets-helper agent-secre
 done
 
 # --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, one
-# human-tier secret its owner approves. ---
+# human-tier secret its owner approves, and one agent-tier secret the registered service owns,
+# which every pod session of that service gets without asking and no person's session sees. The
+# third one is what BROKER_SERVICES makes servable: a secret owned by a service the deployment
+# never registered is refused owner-tag-malformed by the policy and reaches nobody. ---
 cat > "$FAKE_SECRETS_FILE" <<EOF
 {"secrets": [
   {"name": "${SECRETS_PREFIX}demo-read-token", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
    "tags": {"owner": "${APPROVER_LOGIN}", "tier": "agent"}, "value": "demo-read-token-value"},
   {"name": "${SECRETS_PREFIX}demo-api-key", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
-   "tags": {"owner": "${APPROVER_LOGIN}", "tier": "human"}, "value": "demo-api-key-value"}
+   "tags": {"owner": "${APPROVER_LOGIN}", "tier": "human"}, "value": "demo-api-key-value"},
+  {"name": "${SECRETS_PREFIX}demo-service-token", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
+   "tags": {"owner": "${SERVICE}", "tier": "agent"}, "value": "demo-service-token-value"}
 ]}
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
@@ -254,6 +276,18 @@ if [ -z "$ISSUER_URL" ]; then
   exit 1
 fi
 
+# The uid dev-oidc-issuer bound to the pod it minted POD_TOKEN_FILE for, off its own line for
+# that file: `<file> holds <account>'s token for audience <audience> (pod <uid>)`. An enrolment
+# of that pod names it, so the banner below prints the one command that takes
+# DEMO_SERVICE_TOKEN rather than leaving a reader to find the uid in the issuer's log. The
+# issuer writes every token file and logs every such line before it logs its URL, so the line is
+# there by now.
+POD_UID="$(sed -n "s#^dev-oidc-issuer: ${POD_TOKEN_FILE} holds .* (pod \(.*\))\$#\1#p" "$ISSUER_LOG" | head -n1)"
+if [ -z "$POD_UID" ]; then
+  echo "dev-broker: dev-oidc-issuer logged no pod uid for $POD_TOKEN_FILE" >&2
+  exit 1
+fi
+
 # --- Start the broker: BROKER_LISTEN_ADDR/BROKER_PUBLIC_URL of port 0 (above); its own log names
 # the real address once Listen succeeds. Output is teed to BROKER_LOG (read below) and to this
 # script's own stderr, so a human watching this script sees the broker's log lines live (it keeps
@@ -283,7 +317,8 @@ BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
 BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
 BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
 BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
-BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
+BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
 "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$BROKER_LOG" >&2) 2>&1 &
 BROKER_PID=$!
 
@@ -373,13 +408,27 @@ dev-broker: ready.
   listener token:      $LISTENER_TOKEN_FILE  ($LISTENER_ACCOUNT, the caller "listener")
   exchange token:      $EXCHANGE_TOKEN_FILE  ($EXCHANGE_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE)
   pod token:           $POD_TOKEN_FILE  (the same pod, audience $BROKER_AUDIENCE: what its registration named it by)
-  registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "legion-daemon")
+  registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE")
+  registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
 
   One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and one human-tier secret
   (DEMO_API_KEY, approver: $APPROVER_LOGIN), both owned by $APPROVER_LOGIN, whose sessions ask
-  for them. A grant lasts for the --ttl its request names, else 12 hours.
+  for them, and one agent-tier secret (DEMO_SERVICE_TOKEN) owned by the registered service
+  $SERVICE, which a pod session enrolled under that service gets without asking and a person's
+  session never sees. A grant lasts for the --ttl its request names, else 15 minutes for
+  DEMO_API_KEY and 12 hours for the agent-tier ones.
   Drive it with agent-secrets and agent-secrets-helper in another shell;
   press Ctrl-C here to stop the broker and its issuer.
+
+  This script enrols no pod session of its own. To take DEMO_SERVICE_TOKEN, enrol one as the
+  deployment's daemon does — the registrar token above, and the pod token of the account
+  BROKER_SERVICES binds — from packages/envoy:
+
+    KEYS=\$(mktemp -d)
+    go run ./cmd/dev-airlock-stands enroll-pod --url $PUBLIC_URL --service $SERVICE \\
+      --token-file $REGISTRAR_TOKEN_FILE --pod-token-file $POD_TOKEN_FILE --pod-uid $POD_UID \\
+      --thumbprint "\$(agent-secrets keygen --out "\$KEYS")" | jq -r .enrollment_id >"\$KEYS/enrollment"
+    AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
 
   To approve a pending request for DEMO_API_KEY, open the approve_url agent-secrets prints for
   it (${PUBLIC_URL}/approve/<record>) in a browser: the broker sends you to sign in at

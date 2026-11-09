@@ -1,0 +1,5 @@
+kind: Added
+body: 'The secrets broker can run a model judge over the human-tier requests its airlock rules allow it: one secret, a lifetime inside the entry''s judge seconds and at most 15 minutes, and a reason naming a Dispatch issue that is not done. It approves such a request or leaves it for the person who approves it today, and never denies. Every decision writes a request.judged audit row naming each check, the model, the verdict and the reason. A deployment with none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL and BROKER_JUDGE_DISPATCH_TOKEN_FILE set has no judge and behaves as before.'
+time: 2026-11-08T12:47:06.36184108Z
+custom:
+    Issue: pr2984

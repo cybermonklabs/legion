@@ -8,12 +8,24 @@ import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
-/** How a grant came to be, for its Live grants row: the policy's, or the person who approved it.
- *  The broker writes which of the two on every grant (`granted`, "automatic" or "approval"), so
- *  that field is what this reads; `approver` is the name to show once it says someone approved,
- *  and a grant the policy gave has none. */
+/**
+ * How a grant came to be, for its Live grants row: the policy's, or who decided it. The broker
+ * writes which of the two on every grant (`granted`, "automatic" or "approval"), so that field
+ * is what this reads, and a grant the policy gave was nobody's decision.
+ *
+ * Who decided it is `decided_by` and not `approver`. The two are the same person for a grant a
+ * person approved, and they differ for one the broker's model judge approved: the judge decides
+ * in the record's approver's stead, so the grant records that approver — the secret's owner, or
+ * `anyone` for a shared secret — while `decided_by` names the judge, `judge:<model id>`. Reading
+ * `approver` here named a person who never saw the request. A broker older than `decided_by`
+ * sends none, and such a broker runs no judge, so its grants read as they did: by their
+ * approver.
+ */
 function grantedBy(grant: ApproverGrantResp): string {
-  return grant.granted === "automatic" ? "Automatically" : `Approved by ${grant.approver}`;
+  if (grant.granted === "automatic") {
+    return "Automatically";
+  }
+  return `Approved by ${grant.decided_by ?? grant.approver}`;
 }
 
 /**

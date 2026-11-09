@@ -49,7 +49,8 @@ func (s *server) writeApproverGrants(w http.ResponseWriter, r *http.Request, app
 		}
 		out[i] = wire.ApproverGrantResp{
 			GrantID: g.GrantID, Granted: g.Granted, RecordID: g.RecordID, Enrollment: enrollmentResp(g.Enrollment),
-			Names: names, Approver: strPtr(g.Approver), ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt,
+			Names: names, Approver: strPtr(g.Approver), DecidedBy: strPtr(g.DecidedBy),
+			ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt,
 		}
 	}
 	writeJSON(w, http.StatusOK, approverGrantsResponse{Grants: out})
