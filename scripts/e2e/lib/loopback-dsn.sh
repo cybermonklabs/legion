@@ -17,12 +17,15 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Eight proofs call this before they start anything, because the server must be this machine's:
-# plan-pointer-drive.sh, dispatch-two-builds.sh, verification-results.sh,
-# dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh, envoy-session-states.sh,
-# envoy-session-delivery.sh and dispatch-session-settings.sh. They are not every proof that
-# writes such a server: handoff-records.sh creates and drops a database on the server its own
-# LEGION_TEST_PG_DSN names, and calls neither helper of this file.
+# Nine call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's. Eight are proofs of their own: plan-pointer-drive.sh,
+# dispatch-two-builds.sh, verification-results.sh, dispatch-claimant-delivery.sh,
+# clean-session-stop-tmux.sh, envoy-session-states.sh, envoy-session-delivery.sh and
+# dispatch-session-settings.sh. The ninth is lib/live-daemon-proof.sh, whose prerequisites check
+# reads LEGION_TEST_PG_DSN for each of the seven proofs that make that run: child-adoption.sh,
+# ci-red-no-takeover.sh, claim-compaction.sh, handoff-records.sh, merged-root-waits.sh,
+# no-required-checks.sh and provider-error-retry.sh. No proof that writes a server its caller's
+# DSN names is left outside this guard.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query
@@ -55,6 +58,17 @@
 # version is in use. A raise is a deliberate edit of those files, and this comment is the one
 # text that ties the pin to this guard. Whoever raises pgx moves the safety of those three
 # proofs, and must drive this guard's own cases (lib/loopback-dsn.test.ts) again.
+#
+# The ninth call site's driver reads the DSN again as well. takeOwnDatabase
+# (packages/daemon/internal/daemon/live_agent_proof_test.go:218-254) creates and drops the run's
+# own database with pgx, which the pin above holds to libpq's reading, and then rewrites the DSN
+# with Go's net/url to name that database. net/url ends the user name at the last `@` and starts
+# the query at the first `?`, so for some DSNs this guard takes it reads another host than libpq:
+# measured with Go 1.27.3, postgres://evil.example?@localhost/db, whose host libpq reads as
+# localhost, is rewritten to postgres://evil.example/own_db?@localhost/db. That rewrite is the
+# daemon package's own file, which reads both strings back with pgx before it connects and
+# creates anything (ownDatabaseDSN, packages/daemon/internal/daemon/own_database_dsn_test.go),
+# and this guard reaches no further than the shell.
 #
 # The call runs after the caller's own tool check, because it is python3 that runs the guard.
 # The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection, in its
