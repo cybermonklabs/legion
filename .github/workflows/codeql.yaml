@@ -4,14 +4,12 @@ name: CodeQL
 # (actions/starter-workflows, code-scanning/codeql.yml): a pull request to main, a push to main
 # and one scheduled run a week. The repository is public, so GitHub charges nothing for it.
 #
-# READ THIS BEFORE JUDGING A RED CHECK HERE: while GitHub's default setup for code scanning is
-# still on for this repository, every analysis below runs and then fails to upload, because
-# GitHub refuses results from an advanced configuration while default setup owns the repository's
-# code scanning. So this workflow's check is red on the pull request that adds it, and stays red
-# until a person switches default setup off: Settings -> Code security -> Code scanning -> CodeQL
-# analysis -> Disable CodeQL (then this workflow is the repository's code scanning). No change in
-# this tree can make that switch; it is a repository setting, and only a person with admin rights
-# can make it. A reviewer should expect exactly this one check red, and nothing else.
+# GitHub's default setup for code scanning is off for this repository since 2026-11-05, so this
+# workflow is the repository's code scanning: every analysis below uploads its results, and the
+# alerts of `main` are what the push run writes. While default setup was still on, each analysis
+# ran and then failed to upload, because GitHub refuses results from an advanced configuration
+# while default setup owns a repository's code scanning. That is history: a red check here now is
+# an ordinary failure, read in its own log.
 #
 # What is analysed, and why those languages (counted over the tracked tree):
 #   * go - 2,658 .go files in the two modules go.work binds, packages/daemon and packages/envoy;
@@ -33,9 +31,14 @@ name: CodeQL
 # because it holds 30 TypeScript files the javascript-typescript analysis reads. A change to any
 # of the ignored paths still reaches CodeQL through the push to main and the weekly run.
 #
-# No `merge_group` trigger, though GitHub's documentation adds one: every pull request is scanned
-# on its own pushes, and no rule of this repository requires a scan before a merge, so a scan of
-# the queued group would analyse the same code a second time.
+# No `merge_group` trigger, though GitHub's documentation adds one. A pull request that adds a
+# high-severity finding is held by GitHub's own code-scanning rule on the ruleset of `main`
+# (Settings, then Rules, then Rulesets), which reads the alerts of the pull request's own
+# analysis; that rule is no status check of this workflow, so nothing here has to report on a
+# queued group, and a scan of the group would analyse the same code a second time. The trigger is
+# reserved in any case: .github/scripts/ci_workflow_rules.py's check_one_merge_group_workflow
+# allows it on ci.yaml alone, because a POSTed ci-ok joins the first check suite at that commit
+# and a second merge-group workflow can take that suite.
 on:
   pull_request:
     branches: [main]
