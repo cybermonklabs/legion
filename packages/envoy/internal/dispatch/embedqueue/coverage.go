@@ -90,9 +90,16 @@ func searchableItems(items string) string {
 // never DO UPDATE: a row a trigger inserts between this statement's read and its insert holds
 // text at least as fresh as what this statement read, and DO UPDATE would revert it to the older
 // text.
+//
+// project_key is the issue's own, read through embeddings_owner_project_key (migration
+// 20261109120000) - the expression embeddings_enqueue itself writes, so this insert is still
+// byte for byte the row the trigger would have made. It is the one insert into embeddings that
+// does not go through one of the two enqueue functions, and a row it left unlabelled would be
+// returned by no project-scoped meaning search (api/search.go).
 var insertMissingIssues = `
-	insert into embeddings (kind, id, text_snapshot, content_hash)
-	select $1::text, item.id, item.text, item.hash from (` + issueItems + `) item
+	insert into embeddings (kind, id, text_snapshot, content_hash, project_key)
+	select $1::text, item.id, item.text, item.hash, embeddings_owner_project_key($1::text, item.id)
+	from (` + issueItems + `) item
 	where not exists (select 1 from embeddings e where e.kind = $1::text and e.id = item.id)
 	limit $2
 	on conflict (kind, id) do nothing`

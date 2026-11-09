@@ -1,0 +1,13 @@
+-- The migration adds a nullable column with no default to embeddings, which rewrites no row,
+-- builds one btree over it, and replaces the two functions that write the table so that each
+-- sets the new column. It refuses no row and rewrites no value any reader had before it: the
+-- column is new and no earlier release names it, and the functions keep the signatures and the
+-- behaviour the release before this one calls them for. It cannot count the rows it labels
+-- here, since the census is taken before any migration of the release applies and the column
+-- does not exist yet; those rows are 20261109120100's and its fill's, and they are new data
+-- rather than a rewrite. What this migration holds while it runs is embeddings' ACCESS
+-- EXCLUSIVE lock, taken by the ALTER and held through the index build to the commit, which the
+-- census reports with the table's size: a table of a million 1,536-float vectors is over
+-- pgmigrate.CensusTableLimit, and the up migration's header says why no shape of this change
+-- is under it.
+select 0

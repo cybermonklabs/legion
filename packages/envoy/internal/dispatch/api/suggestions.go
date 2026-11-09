@@ -80,14 +80,23 @@ var (
 		searchQueryBody(relatedKeywordLegs, relatedExcludedOwners(11))
 	// relatedMeaningQuery is the check's stage 2: search's meaning query, which fuses the same
 	// keyword legs with the meaning arms, over the same lexemes and the text's embedding.
-	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes and $13 their idf.
-	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "")
-	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14.
+	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes and $13 their idf. It is
+	// composed twice, as search's own is: scoped, with `e.project_key = $2` in every meaning
+	// arm, and unscoped, with no project predicate in any of them (meaningProjectScope).
+	relatedMeaningQuery       = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "", meaningEveryProject)
+	relatedMeaningScopedQuery = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "", meaningOneProject)
+	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14,
+	// and its scoped counterpart.
 	relatedMeaningExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14))
-	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs.
-	relatedKeywordStatement = relatedStatement{plain: relatedKeywordQuery, excluding: relatedKeywordExcludingQuery}
-	relatedMeaningStatement = relatedStatement{plain: relatedMeaningQuery, excluding: relatedMeaningExcludingQuery}
+		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14), meaningEveryProject)
+	relatedMeaningScopedExcludingQuery = relatedQOpener + relatedTermWeights(12) +
+		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14), meaningOneProject)
+	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs; a check
+	// that names a project runs relatedMeaningScopedStatement in place of the second
+	// (relatedMeaningStatementFor).
+	relatedKeywordStatement       = relatedStatement{plain: relatedKeywordQuery, excluding: relatedKeywordExcludingQuery}
+	relatedMeaningStatement       = relatedStatement{plain: relatedMeaningQuery, excluding: relatedMeaningExcludingQuery}
+	relatedMeaningScopedStatement = relatedStatement{plain: relatedMeaningScopedQuery, excluding: relatedMeaningScopedExcludingQuery}
 )
 
 // relatedStatement is one of the check's two searches in both its shapes: the statement itself,
@@ -612,8 +621,19 @@ func (s *server) relatedMeaningSearch(
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	return s.relatedSearch(ctx, tx, relatedMeaningStatement, project, picked, excluded,
+	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
+}
+
+// relatedMeaningStatementFor is the meaning statement for a check of project: the scoped one,
+// whose meaning arms read `e.project_key = $2`, where a project is named, and the unscoped one,
+// whose arms carry no project predicate, where none is. Search picks between the same two
+// shapes the same way (runMeaningSearch); meaningProjectScope argues why there are two.
+func relatedMeaningStatementFor(project string) relatedStatement {
+	if project == "" {
+		return relatedMeaningStatement
+	}
+	return relatedMeaningScopedStatement
 }
 
 // relatedSearch runs one of the check's two statements with the parameters search passes its own

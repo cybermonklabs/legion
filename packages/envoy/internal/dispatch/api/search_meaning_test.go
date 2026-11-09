@@ -1007,3 +1007,75 @@ func TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments(t *te
 		}
 	}
 }
+
+// crowdCommentWindows writes as many comment windows of project as rows says, every one of
+// them at vector, straight into embeddings: the crowd a project-scoped search has to be
+// answered past.
+// They are settled rows of the configured identity (embedded_hash = content_hash, so the queue
+// has nothing to do with them) under ids of the shape a real window carries,
+// "comment/<uuid>#b1", and they belong to no comment: what a candidate CTE reads of a window is
+// the row itself - its kind, its vector, its model and now its project - so a crowd of rows
+// consumes the arm's candidate limit exactly as a crowd of windows of real comments would, at
+// one statement instead of a thousand writes.
+func crowdCommentWindows(t *testing.T, database *store.Store, embedder embed.Embedder, project string, rows int, vector []float32) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into embeddings (kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, embedded_at, covers, project_key)
+		select 'comment_block', 'comment/' || gen_random_uuid()::text || '#b1', 'a window of another project',
+		       md5(n::text), md5(n::text), $1, $2::vector, now(), array['b1'], $3
+		from generate_series(1, $4) n
+	`, embedder.Identity(), embed.Literal(vector), project, rows); err != nil {
+		t.Fatalf("write %d comment windows of %s: %v", rows, project, err)
+	}
+}
+
+// TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes is INFRA-988's
+// defect, held as a test. The comment arm takes searchWindowCandidates windows through the
+// index; while its project filter stood above that limit, the windows of every project filled
+// the candidate set and the filter then kept whichever of them happened to belong to the
+// project that asked - on the load-test deployment, 2 of the 800 windows a small project held,
+// because another project's 703,365 were nearer. The filter is now a predicate on the window
+// row itself (searchQueryMeaningScoped, migration 20261109120000), so the limit is spent on
+// that project alone.
+//
+// The crowd here is one window more than the arm takes, every one of them nearer to the query
+// than anything the project owns, which is the shape above at the smallest size that has it.
+// The control is the same query with no project: unscoped, the arm's whole candidate set is
+// the crowd, and the project's own comments are returned by nothing - which is what every
+// scoped search met before this change, and what makes the scoped assertion below a test of
+// the predicate's place rather than of the fixture.
+func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	mine := createInteractionIssue(t, handler, "MINE", "This project's issue", "Body text.")
+
+	own := make([]string, 0, 3)
+	for index := range cap(own) {
+		comment := createThreadComment(t, handler, mine.Key,
+			map[string]any{"body": fmt.Sprintf("Remark %d this project wants back.", index)}, "alice")
+		own = append(own, comment.ID)
+		embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 2+index))
+	}
+	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	for _, id := range own {
+		searchHit(t, response, "comment", id)
+	}
+
+	// The control: with no project named, the crowd is the whole candidate set and none of this
+	// project's comments is reachable at all.
+	unscoped := searchResponse(t, handler, "q=wibbleflorp")
+	for _, result := range unscoped.Results {
+		if result.Kind == "comment" && slices.Contains(own, result.ID) {
+			t.Fatalf("the unscoped search returned %s, so the crowd of %d windows does not fill the arm's %d candidates and this test proves nothing",
+				result.ID, searchWindowCandidates+1, searchWindowCandidates)
+		}
+	}
+}

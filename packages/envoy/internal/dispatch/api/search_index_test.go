@@ -15,10 +15,13 @@ import (
 // shape - `order by embedding <=> $qvec limit $k` against embeddings alone, with no shared window
 // spanning every kind, filtered to the query embedder's identity - is what lets pgvector's planner
 // pick an Index Scan on embeddings_cosine (0072_embeddings_core.up.sql's HNSW index) rather than a
-// sequential scan sorted in memory. It explains searchQueryMeaning itself, every parameter bound
-// as runMeaningSearch binds it ($11 the fake embedder's identity), and reads each
+// sequential scan sorted in memory. It explains searchQueryMeaning, the shape a search that
+// names no project runs (meaningProjectScope), every parameter bound as runMeaningSearch binds
+// it for one ($2 empty, $11 the fake embedder's identity), and reads each
 // meaning_<kind>_candidates subtree of the plan, so the statements under test are the ones search
-// runs, not a copy of them. meaningQueryPlan forces enable_seqscan and enable_sort off for this
+// runs, not a copy of them. The scoped shape's own plan is
+// TestTheScopedMeaningStatementReadsTheProjectIndex below. meaningQueryPlan forces
+// enable_seqscan and enable_sort off for this
 // EXPLAIN only: a handful of test rows is too small for the planner to ever prefer the index on
 // cost alone
 // (reading a few rows via its primary key and sorting them in memory is cheaper than any index no
@@ -63,14 +66,25 @@ func TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan(t *testing.T) {
 	}
 }
 
-// meaningQueryPlan is the plan Postgres builds for searchQueryMeaning, every parameter bound as
-// runMeaningSearch binds it: $9 the vector every test query embeds to (queryVector), $11 the
-// embedder's own identity. It runs in a transaction of its own, rolled back when the test ends,
-// with enable_seqscan and enable_sort off for the reason the test above gives: a fixture's
-// handful of rows is read whole and sorted exactly however the statement is written, so without
-// those two the plan says nothing about the statement's shape. It answers the plan's root node
-// and the EXPLAIN output itself, which a failing test prints.
+// meaningQueryPlan is the plan Postgres builds for searchQueryMeaning, the unscoped shape, with
+// every parameter bound as runMeaningSearch binds it for a search that names no project: $2 the
+// empty project, $9 the vector every test query embeds to (queryVector), $11 the embedder's own
+// identity. enable_seqscan and enable_sort are off for the reason the test above gives: a
+// fixture's handful of rows is read whole and sorted exactly however the statement is written,
+// so without those two the plan says nothing about the statement's shape.
 func meaningQueryPlan(t *testing.T, database *store.Store, embedder embed.Embedder) (planNode, []byte) {
+	t.Helper()
+	return meaningPlanOf(t, database, embedder, searchQueryMeaning, "",
+		"set local enable_seqscan = off", "set local enable_sort = off")
+}
+
+// meaningPlanOf is the plan Postgres builds for one of the two meaning statements with project
+// bound as $2, under settings. It runs in a transaction of its own, rolled back when the test
+// ends, and answers the plan's root node and the EXPLAIN output itself, which a failing test
+// prints.
+func meaningPlanOf(
+	t *testing.T, database *store.Store, embedder embed.Embedder, statement, project string, settings ...string,
+) (planNode, []byte) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -78,7 +92,7 @@ func meaningQueryPlan(t *testing.T, database *store.Store, embedder embed.Embedd
 		t.Fatalf("begin: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	for _, setting := range []string{"set local enable_seqscan = off", "set local enable_sort = off"} {
+	for _, setting := range settings {
 		if _, err := tx.Exec(ctx, setting); err != nil {
 			t.Fatalf("%s: %v", setting, err)
 		}
@@ -86,7 +100,7 @@ func meaningQueryPlan(t *testing.T, database *store.Store, embedder embed.Embedd
 
 	const q = "index test"
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+searchQueryMeaning, q, "", searchDefaultLimit, firstTerm(q), headlineOptions,
+	if err := tx.QueryRow(ctx, "explain (format json) "+statement, q, project, searchDefaultLimit, firstTerm(q), headlineOptions,
 		0, contracts.SearchKindDepth, searchFusionK, embed.Literal(queryVector()), searchMeaningFloor, embedder.Identity()).Scan(&planJSON); err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -97,6 +111,52 @@ func meaningQueryPlan(t *testing.T, database *store.Store, embedder embed.Embedd
 		t.Fatalf("decode explain output (%v): %s", err, planJSON)
 	}
 	return plan[0].Plan, planJSON
+}
+
+// TestTheScopedMeaningStatementReadsTheProjectIndex is the other half of the pair above, and
+// the reason there are two statements rather than one predicate (meaningProjectScope). A
+// project-scoped search carries `e.project_key = $2` inside every candidate CTE, and for a
+// project holding few of a kind's rows the plan that answers it is an exact read of those rows
+// through embeddings_kind_project (migration 20261109120000) and a sort of them, not a walk of
+// embeddings_cosine filtered down to them: on the load-test deployment that is 800 of 800
+// windows in 13.7 ms against 2 of 800 in 225 ms (INFRA-988). The unscoped statement's own plan
+// is the test above, which reads embeddings_cosine for all five arms; one "$2 is empty, or it
+// matches" predicate would have to be planned once for both and can lose either.
+//
+// The fixture is the shape the measurement was taken on: one small project beside a crowd of
+// another project's windows, analyzed so the planner's statistics hold the difference.
+// enable_seqscan is off, as every plan test of this package reads its plan; enable_sort is left
+// on, because the exact sort is half of the plan under test.
+func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
+	const title, spec = "A title to embed for the scoped plan", "Body text."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+	}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	issue := createInteractionIssue(t, handler, "SARM", title, spec)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark, so the arm has a window to read."}, "alice")
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.8, 3))
+	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+	if _, err := database.Pool.Exec(context.Background(), "analyze embeddings"); err != nil {
+		t.Fatalf("analyze embeddings: %v", err)
+	}
+
+	root, planJSON := meaningPlanOf(t, database, embedder, searchQueryMeaningScoped, "SARM",
+		"set local enable_seqscan = off")
+	leg := root.find(func(node planNode) bool { return node.Alias == "meaning_comment_candidates" })
+	if leg == nil {
+		t.Fatalf("the plan has no node for meaning_comment_candidates:\n%s", planString(t, planJSON))
+	}
+	scan := leg.find(func(node planNode) bool { return node.IndexName == "embeddings_kind_project" })
+	if scan == nil {
+		t.Fatalf("the scoped comment arm reads no index named embeddings_kind_project, so the project predicate is not what cuts its candidates:\n%s",
+			planString(t, planJSON))
+	}
+	if !strings.Contains(scan.Filter+scan.IndexCond, "project_key") {
+		t.Errorf("the scoped comment arm's scan of embeddings_kind_project carries no project_key condition:\n%s", planString(t, planJSON))
+	}
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a

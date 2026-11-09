@@ -452,9 +452,21 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // one of them that matched (searchPageAndTailSQL).
 //
 // The comment arm is a named piece of its own (searchMeaningCommentArm): it takes its windows
-// through the index under the kind and model filters alone and joins the comment above that
-// limit, where the three window arms beside it join inside the ordered select, and the
-// candidate depth that trade costs a project-scoped search is written there.
+// through the index under the kind, model and project filters alone and joins the comment
+// above that limit, where the three window arms beside it join inside the ordered select.
+//
+// Every arm's project filter is one predicate on the candidate row itself,
+// `e.project_key = $2` (meaningProjectScope), and the statement is composed twice: once
+// scoped, with that predicate in each candidate CTE, and once unscoped, with no project
+// predicate in any of them. runMeaningSearch picks between them by whether the caller named a
+// project. Two statements rather than one predicate reading "$2 is empty, or it is the row's
+// project", because one generic plan of that OR has to serve both cases and can lose the good
+// plan of either: measured on the load-test deployment, the scoped form takes a small
+// project's windows through embeddings_kind_project (800 of 800 rows, 13.7 ms) and the
+// unscoped form takes every project's through embeddings_cosine (INFRA-988, migration
+// 20261109120000's header holds the four measured plans). Both statements take the same eleven
+// parameters with the same meanings; in the unscoped one $2 is read by the keyword legs alone,
+// which keep the project predicate they share with searchQuery.
 //
 // kinds unions searchKeywordLegs - the same five-arm keyword text searchQuery's own kinds CTE
 // uses verbatim, each arm already carrying 'keyword' as list - with the five meaning_* CTEs
@@ -473,18 +485,47 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 //
 // Parameters: $1 q, $2 project, $3 limit, $4 firstTerm, $5 headlineOptions, $6 offset,
 // $7 contracts.SearchKindDepth, $8 searchFusionK, $9 the query's embedding (a vector literal),
-// $10 searchMeaningFloor, $11 the query embedder's identity.
-var searchQueryMeaning = searchQOpener + searchQueryMeaningBody(searchKeywordLegsSQL, "")
+// $10 searchMeaningFloor, $11 the query embedder's identity. Both shapes take all eleven;
+// searchQueryMeaning reads $2 in its keyword legs alone.
+var (
+	searchQueryMeaning       = searchQOpener + searchQueryMeaningBody(searchKeywordLegsSQL, "", meaningEveryProject)
+	searchQueryMeaningScoped = searchQOpener + searchQueryMeaningBody(searchKeywordLegsSQL, "", meaningOneProject)
+)
 
-// searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs)
-// and without or with an exclusion (searchKindsCTE).
-func searchQueryMeaningBody(keywordLegs, exclude string) string {
+// meaningProjectScope is which of the two shapes of the meaning statement is being composed,
+// and candidateProject is the whole of the difference: the project predicate each meaning
+// candidate CTE carries, on the candidate row's own column (migration 20261109120000), or
+// nothing at all. searchQueryMeaningBody's own comment argues the two shapes; every statement
+// built from it is built twice, search's and the related-item check's alike (suggestions.go).
+//
+// What each arm carried before this column, all of it a predicate on a table the arm joined:
+// the issue arm an "$2 is empty, or it matches" over issues.project_key, the document arm the
+// same over `p.key`, the ask arm over `coalesce(i.project_key, p.key)`, the message arm over
+// its issue's `i.project_key`, and the comment arm the same coalesce - but above its candidate
+// limit rather than inside it, which is the recall this replaces (searchMeaningCommentArm).
+type meaningProjectScope bool
+
+const (
+	meaningEveryProject meaningProjectScope = false
+	meaningOneProject   meaningProjectScope = true
+)
+
+func (scope meaningProjectScope) candidateProject() string {
+	if scope == meaningOneProject {
+		return " and e.project_key = $2"
+	}
+	return ""
+}
+
+// searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs),
+// without or with an exclusion (searchKindsCTE), and scoped to one project or to every one.
+func searchQueryMeaningBody(keywordLegs, exclude string, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id
-   where e.kind = 'issue' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
+   where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject() + `
    order by e.embedding <=> $9::vector
    limit $7
 ),
@@ -504,7 +545,7 @@ meaning_document_candidates as (
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true
-   where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and ($2 = '' or p.key = $2)
+   where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject() + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -516,7 +557,7 @@ meaning_document as (
     from meaning_document_candidates where r >= $10
    order by meaning_document_candidates.id, r desc, window_id
 ),
-` + searchMeaningCommentArm + `,
+` + searchMeaningCommentArm(scope) + `,
 meaning_ask_candidates as (
   select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
          i.title as issue_title, i.status as issue_status,
@@ -527,7 +568,7 @@ meaning_ask_candidates as (
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key
-   where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+   where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject() + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -546,7 +587,7 @@ meaning_message_candidates as (
     from embeddings e
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key
-   where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and ($2 = '' or i.project_key = $2)
+   where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject() + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -586,11 +627,11 @@ totals as (
 
 // searchMeaningCommentArm is searchQueryMeaningBody's comment arm, written apart from the three
 // window arms beside it because its order differs from theirs and that order is the whole of
-// it: it takes the nearest comment windows through embeddings_cosine first - under `embedding
-// is not null`, which is that index's own partial predicate, and the kind and model filters,
-// which the scan applies as it walks, so the ordering stays the index's to serve - and joins
-// comments, issues, artifacts and projects above that limit, for the project filter ($2) and
-// the row's own fields.
+// it: it takes the nearest comment windows through the index first - under `embedding is not
+// null`, which is embeddings_cosine's own partial predicate, and the kind, model and project
+// filters, which the scan applies as it walks, so the ordering stays the index's to serve -
+// and joins comments, issues, artifacts and projects above that limit, for the row's own
+// fields alone.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
@@ -604,26 +645,32 @@ totals as (
 // of the statement's 5,351 ms. The document arm, which does the same work the index can serve,
 // read 1,060 rows in 146.8 ms.
 //
-// Searching first and filtering after is paid in candidate depth: comment windows of every
-// project stand in the candidate set that a project-scoped search then filters, so they consume
-// part of it, and such a search can return fewer in-project comments than a filter-first query
-// would. Two things bound what that costs. The arm takes searchWindowCandidates windows, ten
-// times the contracts.SearchKindDepth items it keeps, so an in-project comment is lost only
-// where more than that many comment windows of other projects are nearer to the query than it
-// is. And searchMeaningScan sets hnsw.iterative_scan to relaxed_order, so the index keeps
-// walking until this arm's own LIMIT is met (or hnsw.max_scan_tuples, 20,000, is reached)
-// rather than stopping at the first hnsw.ef_search = 400 vectors, whichever kinds and projects
-// those happen to belong to: the depth is filled rather than cut short.
+// Searching first and filtering after used to be paid in candidate depth, and that was this
+// arm's defect: the project filter was the join's, so it ran above the limit, and the windows
+// of every project consumed the candidate set a project-scoped search then filtered. A project
+// holding 800 windows was answered with 2 of them while another project's were nearer, however
+// deep the candidate set was made. The filter is now a predicate on the candidate row itself
+// (scope.candidateProject, migration 20261109120000), inside the ordered, limited select where
+// the other arms carry theirs: the limit is spent on the project that asked, and the planner
+// chooses between embeddings_kind_project for a small project and the HNSW scan with the
+// predicate inside it for a large one.
+//
+// The depth is still ten times the items the arm keeps (searchWindowCandidates), for the
+// reason that constant gives: one long thread's windows would otherwise fill the arm. And
+// searchMeaningScan sets hnsw.iterative_scan to relaxed_order, so an HNSW scan keeps walking
+// until this arm's own LIMIT is met (or hnsw.max_scan_tuples, 20,000, is reached) rather than
+// stopping at the first hnsw.ef_search = 400 vectors, whichever kinds and projects those
+// happen to belong to: the depth is filled rather than cut short.
 //
 // Everything else is as the other window arms have it. The floor (searchMeaningFloor, $10) and
 // the per-item window dedup - `distinct on` over the comment, its nearest window first, carrying
-// that window's id and covers - run where they ran before, now above the join rather than
-// beside it.
-var searchMeaningCommentArm = `meaning_comment_candidates as (
+// that window's id and covers - run where they ran before, above the join rather than beside it.
+func searchMeaningCommentArm(scope meaningProjectScope) string {
+	return `meaning_comment_candidates as (
   select e.id as window_id, e.covers, ` + windowItemUUID + ` as comment_id,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
-   where e.kind = 'comment_block' and e.embedding is not null and e.model = $11
+   where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` + scope.candidateProject() + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -638,9 +685,10 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key
-   where meaning_comment_candidates.r >= $10 and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+   where meaning_comment_candidates.r >= $10
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
+}
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -760,9 +808,16 @@ func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, lim
 }
 
 // runMeaningSearch is runFusedSearchQuery's counterpart once a query embedding exists: same row
-// shape, searchQueryMeaning in place of searchQuery. Its only caller, runSearch, has already run
-// the numnode check before ever reaching here (so it never pays for an embedding it would throw
-// away); this function assumes nodes > 0.
+// shape, one of the two meaning statements in place of searchQuery. Its only caller, runSearch,
+// has already run the numnode check before ever reaching here (so it never pays for an
+// embedding it would throw away); this function assumes nodes > 0.
+//
+// A named project takes searchQueryMeaningScoped, whose every meaning arm carries
+// `e.project_key = $2`, and no project takes searchQueryMeaning, whose arms carry no project
+// predicate at all (meaningProjectScope says why the choice is made here, in Go, rather than
+// written as one "$2 is empty, or it matches" predicate the planner would have to serve both
+// ways). The arguments are the same eleven either way, $2 among them: the keyword legs read it
+// in both.
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
@@ -777,7 +832,11 @@ func (s *server) runMeaningSearch(ctx context.Context, q, project string, limit,
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	rows, err := tx.Query(ctx, searchQueryMeaning, q, project, limit, firstTerm(q), headlineOptions,
+	statement := searchQueryMeaning
+	if project != "" {
+		statement = searchQueryMeaningScoped
+	}
+	rows, err := tx.Query(ctx, statement, q, project, limit, firstTerm(q), headlineOptions,
 		offset, contracts.SearchKindDepth, searchFusionK, embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
 	if err != nil {
 		return model.SearchResponse{}, err

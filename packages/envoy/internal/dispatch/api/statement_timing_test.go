@@ -212,9 +212,11 @@ func TestStatementTimings(t *testing.T) {
 	// nothing and the gate would compare two designs rather than the one arm this change
 	// rewrote. Main's own text still measures the pre-release schema, in the Before branch
 	// above, where the window kinds and the covers column do not exist.
+	// Both sides are the scoped shape: searchArguments binds the subject's project, and that is
+	// the statement search sends for one (runMeaningSearch, meaningProjectScope).
 	runner.Pair(t, "searchQueryMeaning, over main's document arm",
 		benchtime.Statement{SQL: searchQueryMeaningOverMainsDocumentArm, Args: searchMeaningArguments},
-		benchtime.Statement{SQL: searchQueryMeaning, Args: searchMeaningArguments})
+		benchtime.Statement{SQL: searchQueryMeaningScoped, Args: searchMeaningArguments})
 	// relatedKeywordQuery and relatedMeaningQuery are gated on the document arm they share
 	// rather than on either whole statement. The arm is the piece whose text differs, and it is
 	// a fraction of a second of a statement of about ten, whose other four arms, fusion, page
@@ -246,9 +248,11 @@ func TestStatementTimings(t *testing.T) {
 	runner.Report(t, "relatedKeywordQuery, the whole statement",
 		benchtime.Statement{SQL: mainRelatedKeywordQuery, Args: relatedKeywordArguments},
 		benchtime.Statement{SQL: relatedKeywordExcludingQuery, Args: relatedKeywordExcludingArguments})
+	// The after side is the scoped excluding shape: relatedArguments binds the subject's
+	// project, which is what the check sends such a call (relatedMeaningStatementFor).
 	runner.Report(t, "relatedMeaningQuery, the whole statement, over main's document arm",
 		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
-		benchtime.Statement{SQL: relatedMeaningExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
+		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
 	runner.Pair(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
