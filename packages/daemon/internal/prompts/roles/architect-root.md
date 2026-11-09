@@ -69,8 +69,8 @@ starts you again by itself on that pass. Your resume task says what answered the
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request. Work moved to another root, or fixed as a
-defect, removes no requirement: a person's later request goes into this spec and stays unmet
-until it lands here.
+defect, removes no requirement: a person's later request goes into this spec, even when the new
+version closes the gate and holds the merge, and stays unmet until it lands here.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,
 except the version a human's own answer to a decision block writes when that answer is the whole
 change since the version they approved, and a version whose text is exactly the text of the
