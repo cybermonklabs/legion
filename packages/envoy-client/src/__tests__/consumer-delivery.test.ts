@@ -20,6 +20,7 @@ import {
   type ReplaySnapshot,
   type ReplayState,
 } from "../replay";
+import type { DeliveryAnswer } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -514,6 +515,56 @@ describe("resume point", () => {
       resume: { stream_id: STREAM, seq: 11 },
     });
     expect(setup().delivery.registration()).not.toHaveProperty("resume");
+  });
+
+  // The floor a registration answer leaves: the start the listener created the session's
+  // consumer at, less one. A consumer delivers nothing below its own start, so a session that
+  // has received nothing still holds a point, and comes back where that consumer began rather
+  // than at the stream's end.
+  const answerStarting = (consumerStart?: number): DeliveryAnswer => ({
+    mode: "consumer",
+    subject: deliverSubject(SESSION),
+    stream_id: STREAM,
+    gap: false,
+    ...(consumerStart === undefined ? {} : { consumer_start: consumerStart }),
+  });
+
+  test("the consumer's start the answer carries is the floor the next registration resumes at", () => {
+    const { delivery, persisted } = setup();
+
+    delivery.answered(answerStarting(42), [AGENT]);
+
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 41 });
+    expect(delivery.registration()).toEqual({
+      consumer: true,
+      epoch: delivery.epoch().id,
+      resume: { stream_id: STREAM, seq: 41 },
+    });
+    // `answered` persists, so the floor is in the transcript at once.
+    expect(persisted.at(-1)?.resume).toEqual({ stream_id: STREAM, seq: 41 });
+  });
+
+  test("a consumer start below the point the session already holds does not lower it", () => {
+    const { delivery, handed } = setup();
+    delivery.receive(relay({ seq: 11 }));
+    handed[0]?.done();
+
+    delivery.answered(answerStarting(5), [AGENT]);
+
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 11 });
+  });
+
+  test("an answer with no consumer start, from an earlier listener, changes nothing", () => {
+    const { delivery } = setup();
+    delivery.restore({ resume: { stream_id: STREAM, seq: 11 }, follows: {} });
+    const fresh = setup();
+
+    delivery.answered(answerStarting(), [AGENT]);
+    fresh.delivery.answered(answerStarting(), [AGENT]);
+
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 11 });
+    expect(fresh.delivery.resumePoint()).toBeUndefined();
+    expect(fresh.delivery.registration()).not.toHaveProperty("resume");
   });
 
   test("each epoch is a new random string", () => {

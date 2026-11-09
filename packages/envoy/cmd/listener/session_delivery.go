@@ -69,6 +69,12 @@ type deliveryAnswer struct {
 	// Gap, in consumer mode, is true when this registration created the consumer at a start below
 	// the stream's first sequence: messages it would have delivered are gone.
 	Gap *bool `json:"gap,omitempty"`
+	// ConsumerStart, in consumer mode, is the stream sequence the session's consumer starts at,
+	// which the plugin keeps as the floor of its resume point: a session that has received
+	// nothing holds no point of its own, and with this floor it still asks to resume from where
+	// its consumer began rather than from the stream's end, where every message stored while it
+	// was away would be lost to it.
+	ConsumerStart uint64 `json:"consumer_start,omitempty"`
 	// Reason says why, in core mode.
 	Reason string `json:"reason,omitempty"`
 }
@@ -248,10 +254,11 @@ func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, regi
 	gap := start.Gap
 	return sessionDeliveryOutcome{
 		answer: &deliveryAnswer{
-			Mode:     deliveryModeConsumer,
-			Subject:  bus.DeliverSubject(body.SessionID),
-			StreamID: streamID,
-			Gap:      &gap,
+			Mode:          deliveryModeConsumer,
+			Subject:       bus.DeliverSubject(body.SessionID),
+			StreamID:      streamID,
+			Gap:           &gap,
+			ConsumerStart: start.StartSeq,
 		},
 		epoch:         epoch,
 		consumerStart: start.StartSeq,

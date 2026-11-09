@@ -67,11 +67,12 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 type subscribeAnswer struct {
 	raw      string
 	Delivery *struct {
-		Mode     string `json:"mode"`
-		Subject  string `json:"subject"`
-		StreamID string `json:"stream_id"`
-		Gap      *bool  `json:"gap"`
-		Reason   string `json:"reason"`
+		Mode          string `json:"mode"`
+		Subject       string `json:"subject"`
+		StreamID      string `json:"stream_id"`
+		Gap           *bool  `json:"gap"`
+		ConsumerStart uint64 `json:"consumer_start"`
+		Reason        string `json:"reason"`
 	} `json:"delivery"`
 }
 
