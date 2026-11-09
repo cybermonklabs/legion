@@ -1,0 +1,89 @@
+{
+  "issues/ALX-1/asks?thread=1": [
+    {
+      "id": "ask-old",
+      "author": { "id": "session-architect", "kind": "agent" },
+      "body": "Should we keep the 7-minute TTL?",
+      "created_at": "2026-11-08T21:56:00.000Z"
+    },
+    {
+      "id": "ask-other",
+      "author": { "id": "session-planner", "kind": "agent" },
+      "body": "Should the plan name the rollback?",
+      "created_at": "2026-11-08T21:57:00.000Z"
+    },
+    {
+      "id": "ask-1",
+      "author": { "id": "session-architect", "kind": "agent" },
+      "body": "Should we keep the 7-minute TTL after the move?",
+      "created_at": "2026-11-08T21:58:00.000Z"
+    }
+  ],
+  "issues/ALX-9/asks?thread=1": {
+    "message": "issue ALX-9 not found",
+    "code": "NOT_FOUND"
+  },
+  "asks/ask-1": {
+    "id": "ask-1",
+    "author": { "id": "session-architect", "kind": "agent" },
+    "replies": [
+      { "id": "reply-person", "author": { "id": "user:smoke", "kind": "user" }, "body": "Keep it, and say why." },
+      {
+        "id": "reply-agent",
+        "author": { "id": "session-architect", "kind": "agent" },
+        "body": "Keep the 7-minute TTL: the write-through cache, codename VIOLET-OTTER-88, refills in under a minute. <!-- legion-answer:a1a1a1a1b2b2b2b2 -->"
+      }
+    ]
+  },
+  "asks/ask-2": {
+    "id": "ask-2",
+    "author": { "id": "session-architect", "kind": "agent" },
+    "replies": [
+      { "id": "reply-person", "author": { "id": "user:smoke", "kind": "user" }, "body": "Keep it, and say why." }
+    ]
+  },
+  "issues/ALX-3/comments": [
+    {
+      "id": "comment-77",
+      "author": { "id": "user:smoke", "kind": "user" },
+      "reply_to": null,
+      "body": "@tester which rerun gate did you settle on? (question tester-closed-thread of run 4242)"
+    },
+    {
+      "id": "comment-78",
+      "author": { "id": "session-tester", "kind": "agent" },
+      "reply_to": "comment-77",
+      "body": "The 20-run rerun, marker VIOLET-OTTER-88. <!-- legion-answer:c3c3c3c3d4d4d4d4 -->"
+    },
+    {
+      "id": "comment-79",
+      "author": { "id": "session-planner", "kind": "agent" },
+      "reply_to": "comment-77",
+      "body": "Not mine to answer."
+    }
+  ],
+  "issues/ALX-8/comments": [],
+  "issues/ALX-3/collaborators": {
+    "legion_registry": "available",
+    "agents": [
+      {
+        "session_id": "session-tester-old",
+        "legion": { "role": "tester", "role_token": "ALX-3-tester", "replaced_by": "session-tester" }
+      },
+      {
+        "session_id": "session-tester",
+        "legion": { "role": "tester", "role_token": "ALX-3-tester", "replaced_by": null }
+      },
+      { "session_id": "session-planner", "legion": { "role": "planner", "role_token": "ALX-2-planner", "replaced_by": null } }
+    ]
+  },
+  "issues/ALX-8/collaborators": {
+    "legion_registry": "available",
+    "agents": [
+      {
+        "session_id": "session-tester",
+        "legion": { "role": "tester", "role_token": "ALX-8-tester", "replaced_by": "session-tester-newer" }
+      }
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "repos/sjawhar/legion-smoke/issues/41/comments?per_page=100": [
+    {
+      "id": 9001,
+      "user": { "login": "example-implement[bot]" },
+      "body": "answer-loop-a17-4242-files\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
+    },
+    {
+      "id": 9002,
+      "user": { "login": "smoke" },
+      "body": "a comment of the run's own that holds no marker"
+    }
+  ],
+  "repos/sjawhar/legion-smoke/issues/42/comments?per_page=100": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/issues/comments#list-issue-comments",
+    "status": "404"
+  },
+  "repos/sjawhar/legion-smoke/issues/43/comments?per_page=100": [
+    {
+      "id": 9003,
+      "user": { "login": "example-implement[bot]" },
+      "body": "answer-loop-a17-4242-files\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
+    },
+    {
+      "id": 9004,
+      "user": { "login": "example-implement[bot]" },
+      "body": "answer-loop-a17-4242-files (posted twice)\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
+    }
+  ],
+  "repos/sjawhar/legion-smoke/pulls/41/reviews": [
+    {
+      "id": 2147483648123,
+      "state": "COMMENTED",
+      "user": { "login": "example-review[bot]" },
+      "commit_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+      "body": "A note, no decision. <!-- legion: {\"session\":\"session-reviewer\",\"phase\":\"reviewing\"} -->"
+    },
+    {
+      "id": 2147483648124,
+      "state": "APPROVED",
+      "user": { "login": "example-review[bot]" },
+      "commit_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+      "body": "Approved: nothing to change. <!-- legion: {\"session\":\"session-reviewer\",\"phase\":\"reviewing\"} -->"
+    },
+    {
+      "id": 2147483648125,
+      "state": "APPROVED",
+      "user": { "login": "example-review[bot]" },
+      "commit_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+      "body": "Approved (control: another session's footer). <!-- legion: {\"session\":\"another-session\",\"phase\":\"reviewing\"} -->"
+    }
+  ],
+  "repos/sjawhar/legion-smoke/pulls/42/reviews": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/pulls/reviews#list-reviews-for-a-pull-request",
+    "status": "404"
+  },
+  "repos/sjawhar/legion-smoke/pulls/43/reviews": []
+}

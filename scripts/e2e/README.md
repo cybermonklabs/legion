@@ -1216,353 +1216,258 @@ LEGION_E2E_ANTHROPIC_KEY_FILE=<file holding the key> LEGION_E2E_MODEL_BASE_URL=<
   bash scripts/e2e/answer-loop.sh     # → a summary of every criterion; exit 0 when none FAILs
 ```
 
-The live proof of the daemon's answer loop (docs/kubernetes.md, "The answer loop"): the branch's
-`legion`, `envoy-listener` and `envoy-dispatch`, built from the checkout, run on this host with
-real Anthropic models, once under `runtime: tmux`'s files store and once under
-`runtime.tmux.session_store: postgres`, each pass with its own project, database and state
-directory. It needs no docker, no root and no psql or tmux on the host, so it runs in a Legion
-issue pod as well as on a devbox. CI does not run it.
+The live proof of the daemon's answer loop (docs/kubernetes.md, "The answer loop"):
+the branch's `legion`, `envoy-listener` and `envoy-dispatch`, built from the checkout, run on this host with real Anthropic models, once under `runtime: tmux`'s files store and once under `runtime.tmux.session_store: postgres`, each pass with its own project, database and state directory.
+It needs no docker, no root and no psql or tmux on the host, so it runs in a Legion issue pod as well as on a devbox.
+CI does not run it.
 
-**What it brings up**, every piece pinned and kept in a cache (`$TMPDIR/legion-e2eal-cache`) between
-runs, and every process stopped by its exact pid on exit:
+**What it brings up**, every piece pinned and kept in a cache (`$TMPDIR/legion-e2eal-cache`) between runs, and every process stopped by its exact pid on exit:
 
-- Postgres 17 from the zonky embedded-postgres jar (`embedded-postgres-binaries-linux-amd64`
-  17.6.0, unpacked with Python's `lzma`, sha256 pinned), with Debian trixie's
-  `postgresql-17-pgvector` 0.8.0 copied into it, since Dispatch's migrations create the `vector`
-  extension ([the INFRA-42 note](../../docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md)
-  ran Dispatch on Debian's packages for the same reason). One server holds Dispatch's databases,
-  each daemon's, and the session database the postgres pass's panes keep their Oh My Pi sessions
-  in. SQL goes through Bun's own Postgres client.
-- `nats-server` v2.10.29 (`packages/envoy/go.mod`'s pin), installed with `go install` so its pid
-  is its own; tmux 3.5a from Debian's packages with a wrapper binding its libraries when the host
-  has none ([the worker-pod note](../../docs/solutions/testing/a-worker-pod-ships-no-go-or-tmux-provision-them-under-home-each-relaunch-and-record-every-figure-in-the-handoff.md));
-  Claude Code at the repository's own `.claude-code-pin` (`bun add --exact`, the release
-  `.github/actions/install-claude-code` installs); Oh My Pi from `LEGION_E2E_OMP_BIN`, else
-  `/opt/omp/bin/omp`, else the `.omp-pin` mise resolves (the run prints which, and the pin beside
-  it, since a pod's build can differ from the pin).
+- Postgres 17 from the zonky embedded-postgres jar (`embedded-postgres-binaries-linux-amd64` 17.6.0, unpacked with Python's `lzma`, sha256 pinned), with Debian trixie's `postgresql-17-pgvector` 0.8.0 copied into it, since Dispatch's migrations create the `vector` extension ([the INFRA-42 note](../../docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md) ran Dispatch on Debian's packages for the same reason).
+  One server holds Dispatch's databases, each daemon's, and the session database the postgres pass's panes keep their Oh My Pi sessions in.
+  SQL goes through Bun's own Postgres client.
+
+- `nats-server` v2.10.29 (`packages/envoy/go.mod`'s pin), installed with `go install` so its pid is its own;
+  tmux 3.5a from Debian's packages with a wrapper binding its libraries when the host has none ([the worker-pod note](../../docs/solutions/testing/a-worker-pod-ships-no-go-or-tmux-provision-them-under-home-each-relaunch-and-record-every-figure-in-the-handoff.md));
+  Claude Code at the repository's own `.claude-code-pin` (`bun add --exact`, the release `.github/actions/install-claude-code` installs);
+  Oh My Pi from `LEGION_E2E_OMP_BIN`, else `/opt/omp/bin/omp`, else the `.omp-pin` mise resolves (the run prints which, and the pin beside it, since a pod's build can differ from the pin).
+
 - [`lib/recording-proxy.ts`](lib/recording-proxy.ts), in front of the model route's own endpoint:
-  every model call of the run, the agents' (`/tag/agents`), Claude Code's (`/tag/claude-<store>`)
-  and the daemon's loop's (`/tag/daemon-<store>`), goes through it, and each request and response
-  body is a line of `model-calls.jsonl` in the evidence, the key redacted. A label's ordinal counts
-  every request it proxies, and not all of them are model calls: Claude Code sends a
-  `HEAD /api/hello` reachability preflight as each session starts and an Oh My Pi agent a
-  `GET /v1/models`, both with no body. A check that waits for an agent's next model call, or reads
-  the request it sent, counts and selects the requests that carry a `messages` body (`proxy_count`,
-  `first_request_after`); a hold names an ordinal (`proxy_ordinal`). A hold file per label
-  stops a label's calls past a given ordinal (`<label>.held` names each waiting one), which is how
-  A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply; a
-  stand-in file answers one label with a reply of the proof's own: A12's reply out of form and its
-  first reply that calls the `gh` tool, the two model steps no real model gives on demand.
-- [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts): the inbox of the run's two stand-in sessions, a core
-  NATS subscriber (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each). It
-  watches the asker's own subject, `notifications.agent.<asker>`, and both passes' controller
-  lanes, `notifications.legion.<project token>.controller`, and writes each envelope that lands
-  there as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and
-  its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the
-  payload, `Topic: …`), the same dedupe key never twice. Neither subject can be heard through the
-  listener: it delivers nothing to a port of a session's own (`/v1/interests/subscribe` refuses
-  `port`) and drops a private stream subject, the controller lane included, from a registration.
-- The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch
-  project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and
-  each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`,
-  `DISPATCH_*`, `LEGION_*` and model keys reach none of them. The daemon's `PATH` starts with the
-  run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
-  gh` wrapper script, which the daemon refuses). Ports are picked below the kernel's ephemeral
-  range from `/proc/net/tcp`, since `lib/free-port.sh` needs `ss` and a range above 21000, and a
-  pod has neither.
-- Only for A3's conversation-page leg, the one surface of this proof that is a page: Dispatch's
-  SPA, built from this checkout (`bun run build:web` into `packages/dispatch/web/dist`, which
-  Dispatch serves as `DISPATCH_WEB_DIST`), and Playwright's own Chromium, installed once under
-  `PLAYWRIGHT_BROWSERS_PATH` — the caller's when it names one, else the run's cache, never a
-  pod's home directory, whose disk a browser fills. A run with no workflow (no review App grant,
-  so every answering criterion only waits) and a run narrowed past A3 build and install neither,
-  and Dispatch then serves its API alone. Do not run `bun run build:web` or `bun run e2e` in this
-  checkout while a run is live: either rewrites that directory under the Dispatch process.
+  every model call of the run, the agents' (`/tag/agents`), Claude Code's (`/tag/claude-<store>`) and the daemon's loop's (`/tag/daemon-<store>`), goes through it, and each request and response body is a line of `model-calls.jsonl` in the evidence, the key redacted.
+  A label's ordinal counts every request it proxies, and not all of them are model calls:
+  Claude Code sends a `HEAD /api/hello` reachability preflight as each session starts and an Oh My Pi agent a `GET /v1/models`, both with no body.
+  A check that waits for an agent's next model call, or reads the request it sent, counts and selects the requests that carry a `messages` body (`proxy_count`, `first_request_after`);
+  a hold names an ordinal (`proxy_ordinal`).
+  A hold file per label stops a label's calls past a given ordinal (`<label>.held` names each waiting one), which is how A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply;
+  a stand-in file answers one label with a reply of the proof's own:
+  A12's reply out of form and its first reply that calls the `gh` tool, the two model steps no real model gives on demand.
 
-The daemon's `answers` block names the model route's endpoint through the proxy, keyed by the
-route's own key file or key command, with the list prices (`claude-opus-5-5` 5/25/6.25/0.5 and
-`claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read
-tokens) and the default bounds; the postgres pass adds `runtime.tmux.session_store: postgres` with
-a `session_dsn_file` on the embedded Postgres.
+- [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts):
+  the inbox of the run's two stand-in sessions, a core NATS subscriber (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
+  It watches the asker's own subject, `notifications.agent.<asker>`, and both passes' controller lanes, `notifications.legion.<project token>.controller`, and writes each envelope that lands there as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice.
+  Neither subject can be heard through the listener:
+  it delivers nothing to a port of a session's own (`/v1/interests/subscribe` refuses `port`) and drops a private stream subject, the controller lane included, from a registration.
 
-**The stopped agents, and why this way.** The agents are real Oh My Pi panes (and Claude Code
-panes) the daemon launches through its own claim path, the operator's `legion claims spawn`, with a
-short role prompt and the decision as their first task, on Dispatch issues of the pass's project.
-That is the cheapest real path: the daemon's workflow would also give each agent a workspace,
-pushes to the smoke repository and phases to wait out, while a claim's pane registers, claims its
-Envoy role, titles itself `Legion <role> · <ISSUE>` and keeps its conversation in the pass's store
-exactly as a workflow's does. The rig's issues are a person's (no `legion` label), so the workflow
-admits none of them. An operator's spawn opens a tree's lifecycle only for its root architect, so
-every tree's architect is spawned first (with no task where the tree needs none). Each agent is
-stopped the way the spec's kinds are made:
+- The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`, `DISPATCH_*`, `LEGION_*` and model keys reach none of them.
+  The daemon's `PATH` starts with the run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
+  gh` wrapper script, which the daemon refuses).
+  Ports are picked below the kernel's ephemeral range from `/proc/net/tcp`, since `lib/free-port.sh` needs `ss` and a range above 21000, and a pod has neither.
 
-- the architect, root of the tree: suspended, as a person parking the tree leaves it; with the
-  workflow on it first opens the Dispatch ask A1 replies on;
+- Only for A3's conversation-page leg, the one surface of this proof that is a page:
+  Dispatch's SPA, built from this checkout (`bun run build:web` into `packages/dispatch/web/dist`, which Dispatch serves as `DISPATCH_WEB_DIST`), and Playwright's own Chromium, installed once under `PLAYWRIGHT_BROWSERS_PATH` — the caller's when it names one, else the run's cache, never a pod's home directory, whose disk a browser fills.
+  A run with no workflow (no review App grant, so every answering criterion only waits) and a run narrowed past A3 build and install neither, and Dispatch then serves its API alone.
+  Do not run `bun run build:web` or `bun run e2e` in this checkout while a run is live: either rewrites that directory under the Dispatch process.
+
+The daemon's `answers` block names the model route's endpoint through the proxy, keyed by the route's own key file or key command, with the list prices (`claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens) and the default bounds;
+the postgres pass adds `runtime.tmux.session_store: postgres` with a `session_dsn_file` on the embedded Postgres.
+
+**The stopped agents, and why this way.**
+The agents are real Oh My Pi panes (and Claude Code panes) the daemon launches through its own claim path, the operator's `legion claims spawn`, with a short role prompt and the decision as their first task, on Dispatch issues of the pass's project.
+That is the cheapest real path: the daemon's workflow would also give each agent a workspace, pushes to the smoke repository and phases to wait out, while a claim's pane registers, claims its Envoy role, titles itself `Legion <role> · <ISSUE>` and keeps its conversation in the pass's store exactly as a workflow's does.
+The rig's issues are a person's (no `legion` label), so the workflow admits none of them.
+An operator's spawn opens a tree's lifecycle only for its root architect, so every tree's architect is spawned first (with no task where the tree needs none).
+Each agent is stopped the way the spec's kinds are made:
+
+- the architect, root of the tree: suspended, as a person parking the tree leaves it; with the workflow on it first opens the Dispatch ask A1 replies on;
+
 - the planner, on a child: stopped (retired), as a closed child's claim ends;
-- the tester, on a child: suspended, then its claim's session forgotten as the workflow's issue
-  close forgets it, through the daemon's own operator route (`legion claims forget-session`, which
-  takes the session being abandoned so a newly registered one cannot be cleared by mistake),
-  resumed under a new session that takes a second task (and, with the workflow on, opens the ask
-  A6's first leg replies on), and suspended again: the first session is the replaced one;
-- a Claude Code reviewer the **base commit's** daemon runs, on a child of a tree of its own (the
-  pre-change tree, its architect spawned with no task and suspended with it), on the pass's
-  database and state directory before the branch's daemon boots on both, as an upgrade does: the
-  branch's boot finds it only by its title, the conversation from before the change that A2 names.
-  The base commit (`LEGION_E2E_BASE_REV`, default `main@origin`) is built once from a `git archive`
-  of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with
-  that commit's plugins in a profile of its own.
 
-**The issues' workspaces.** With the workflow on, an operator's spawn spec carries the repository
-the project's mapping gives the issue, `sjawhar/legion-smoke`, and the tmux runtime then works in
-the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>`
-(`workspace.Location`), which must exist already: the workflow's outbox provisions it only for an
-issue it admits. So before each spawn, the pre-change ones included (the branch's daemon resumes
-that reviewer in A10), the run provisions the issue's workspace as an issue pod's init containers
-do, with the branch's own `legion workspace-init`: `fetch` fills the pass's feed from GitHub once
-(`LEGION_REPOSITORY_CACHE_URL` unset), under the read-only installation token of the implement App
-for the smoke repository's owner, released by the App's own `token_command`
-([`lib/app-installation.ts`](lib/app-installation.ts)'s `installationFor`) into a 0600 file in the
-work directory, removed when the fetch ends and never printed; `provision --root <state>` then
-makes the shared clone at
-`<state>/repos/github.com/sjawhar/legion-smoke` and the issue's workspace on `legion/<ISSUE>` from
-`main`, with the credential helper a tmux daemon gives its clones (`!legion git-credential`). The
-run refuses a provisioned directory other than the one the runtime looks in. Both steps log to
-`logs/workspaces-<store>.log`. Claims-only, a spec has no repository and the runtime makes
-`<state>/workspaces/<issue>` itself, so the run provisions nothing.
+- the tester, on a child: suspended, then its claim's session forgotten as the workflow's issue close forgets it, through the daemon's own operator route (`legion claims forget-session`, which takes the session being abandoned so a newly registered one cannot be cleared by mistake), resumed under a new session that takes a second task (and, with the workflow on, opens the ask A6's first leg replies on), and suspended again: the first session is the replaced one;
 
-**Session waits.** A stopped pane does not unregister its session: its entry in the listener's
-session bucket lapses with the bucket's 5-minute TTL. Every wait for a session to leave (after each
-agent is made, and in `suspend_agent`) is 420 s long; `resume_agent` waits for the session to be
-live again. A loop renews the run's asker's registration every minute, so a late answer still
-finds it live: the registration carries no port, and the answer published on the asker's own
-subject is read from NATS by `lib/envoy-inbox.ts`, which also hears each pass's controller lane
-(the operator launches no controller under tmux), so the controller notices the daemons publish
-land in `inbox.jsonl` under the stand-in controller's session.
+- a Claude Code reviewer the **base commit's** daemon runs, on a child of a tree of its own (the pre-change tree, its architect spawned with no task and suspended with it), on the pass's database and state directory before the branch's daemon boots on both, as an upgrade does:
+  the branch's boot finds it only by its title, the conversation from before the change that A2 names.
+  The base commit (`LEGION_E2E_BASE_REV`, default `main@origin`) is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own.
+
+**The issues' workspaces.**
+With the workflow on, an operator's spawn spec carries the repository the project's mapping gives the issue, `sjawhar/legion-smoke`, and the tmux runtime then works in the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>` (`workspace.Location`), which must exist already:
+the workflow's outbox provisions it only for an issue it admits.
+So before each spawn, the pre-change ones included (the branch's daemon resumes that reviewer in A10), the run provisions the issue's workspace as an issue pod's init containers do, with the branch's own `legion workspace-init`:
+`fetch` fills the pass's feed from GitHub once (`LEGION_REPOSITORY_CACHE_URL` unset), under the read-only installation token of the implement App for the smoke repository's owner, released by the App's own `token_command` ([`lib/app-installation.ts`](lib/app-installation.ts)'s `installationFor`) into a 0600 file in the work directory, removed when the fetch ends and never printed;
+`provision --root <state>` then makes the shared clone at `<state>/repos/github.com/sjawhar/legion-smoke` and the issue's workspace on `legion/<ISSUE>` from `main`, with the credential helper a tmux daemon gives its clones (`!legion git-credential`).
+The run refuses a provisioned directory other than the one the runtime looks in.
+Both steps log to `logs/workspaces-<store>.log`.
+Claims-only, a spec has no repository and the runtime makes `<state>/workspaces/<issue>` itself, so the run provisions nothing.
+
+**Session waits.**
+A stopped pane does not unregister its session: its entry in the listener's session bucket lapses with the bucket's 5-minute TTL.
+Every wait for a session to leave (after each agent is made, and in `suspend_agent`) is 420 s long; `resume_agent` waits for the session to be live again.
+A loop renews the run's asker's registration every minute, so a late answer still finds it live:
+the registration carries no port, and the answer published on the asker's own subject is read from NATS by `lib/envoy-inbox.ts`, which also hears each pass's controller lane (the operator launches no controller under tmux), so the controller notices the daemons publish land in `inbox.jsonl` under the stand-in controller's session.
 
 **The checks**, per pass unless said:
 
-- `boot`: the daemon with `answers` set records the pre-change Claude Code conversation as a
-  `scan` row of `agent_conversations`, and the listener's registry holds an entry for each of the
-  architect, planner, replaced tester, tester and pre-change reviewer, on its issue and not live,
-  the replaced tester's `replaced_by` naming the new session; no registry route answered the daemon
-  `404` this boot. `store` (postgres pass): every Oh My Pi pane's session is a row of
-  `omp_session_files`, and no file exists at a claim's session path.
-- A1: a person's reply on the parked architect's ask is answered in the thread in its name within
-  four minutes; no claim or pane of the tree starts.
-- A2: the tester's role topic, its replaced session and the pre-change session each answer on the
-  asker's topic with the answer key; an unregistered session still answers `404`.
-- A3, two legs, both of which must hold. Thread leg: the tester's issue is closed; its role token
-  is read from `GET /issues/{key}/collaborators` (the list the mention picker offers stopped
-  agents from); a person's comment on the closed issue mentions `role:<token>`; the delivery is
-  `sent` to that tester's session and its reply in the thread holds the answer key. Control: a
-  mention of a role no entry names fails as today. Conversation-page leg: the same person, in
-  Playwright's Chromium signed in by the trusted identity header, opens the closed issue's
-  Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one
-  no later session replaced) by its link to `/agents/<session>/live`, sends a second question
-  there in the mode the page offers a stopped agent (Aside), and waits four minutes for the
-  answer; it must hold that question's key both on the page's own thread and in the record the
-  page reads (`GET /agents/{session}/messages`). A screenshot per step goes to `a3/<store>/`, and
-  a Collaborators view that names no such tester, or a link that leads elsewhere, is a FAIL
-  naming every row the page drew.
-- A4, A5: the planner's reply is `not_answered` / `needs_work`, and `legion state` lists the
-  question in `questionsForController`; the planner stays retired.
-- A6: first leg, a person's reply on the replacing tester's ask (a child of the parked tree)
-  decides and asks; the decision reaches the controller stand-in exactly once as an
-  `agent-decision` notice and the daemon logs `answers: decision passed on` once with
-  `to: the controller`. Second leg, a tree whose root architect runs, with a child whose tester
-  opened an ask and was suspended; a person's reply there reaches that architect once (its
-  conversation holds the notice) and not the controller. Each leg's question is answered on the
-  ask's thread with its key. **Departure:** the daemon routes a notice only through the trees it
-  records, and the rig's issues are a person's, so the running tree is written into the daemon's
-  record with the daemon stopped, as admission writes a tree it admits: the root and child
-  `issues` rows (status `in_progress`, phase `implementing`, the Dispatch sequence they are at)
-  and the root's `tree_lifecycles` row, epoch one under the workflow's own authority. Both halves
-  are needed — a tree is live only while that lifecycle stands open, and the next boot's admission
-  pass takes a root at a running status whose tree is not live out of the workflow altogether
-  (`released a root no tree of which runs and nothing would ever start`) — so the tree's architect
-  is spawned before the stop, its operator spawn being what writes the lifecycle row the seeding
-  takes over (an operator's spawn on a tree the workflow holds is refused). The second leg runs
-  only once `legion state` shows the root under `admission.trees` and still at `implementing`,
-  with its architect holding its role again after the restart; otherwise A6 is a FAIL naming the
-  tree that was not live.
-- A7: a question to the resumed, running architect reaches its conversation and the daemon logs no
-  `answers:` line; then, suspended again, a question whose loop model call the proxy holds while
-  the claim is resumed is dropped and forwarded (`... the answer is dropped and the question
-  forwarded`, started), reaches the running architect, and nothing is appended or posted. Appended
-  is counted as a delta over the architect's conversation — the `legion-answer` marker entries an
-  append ends with, counted before the question and again after — because this architect was
-  answered before (A1 appended an exchange to the same conversation), so the count must not move,
-  not be zero.
-- A8: one envelope sent three times under one idempotency key, the third after a restart: the
-  listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as
-  its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the
-  stream stores one copy. One reply on the asker's topic across the three, and the restarted
-  daemon logs no `answers:` line naming that question at all — neither an answer nor a
-  `handed off again`, the question having never been handed to it a second time. A kill -9 the
-  moment the reply lands, a restart and a redelivery still one reply. A question to the planner
-  sent as the replaced tester's session gets the planner's answer, which the listener hands to
-  the daemon because that tester is stopped too (a `listener handed a message to its legion
-  daemon` line naming its session): the loop never answers an answer of its own, so no question
-  and no `answers: answered` line names that tester, no model call's body holds the answer's
-  `legion-answer:<question>` marker and nothing is passed to the controller as `post_refused`;
-  the answer is written into that tester's conversation instead, once — one more `legion-answer`
-  marker entry (`appended_exchanges`), holding the answer's own marker once. A person's edit of
-  A1's comment, on the open root issue (a closed issue refuses every comment edit,
-  `409 ISSUE_CLOSED`), creates no question for the architect.
-- A9: two questions at once are answered in order; the resumed architect's first captured request
-  holds each question once, and its conversation holds exactly one appended exchange per question
-  — the `legion-answer` marker entry naming that question id, which each reply carries in its
-  `<!-- legion-answer:<id> -->` marker. The exchange is counted there and not by the answer's own
-  words in the request, because an architect that answered the same thing itself before it stopped
-  holds those words in its own earlier turns. Its turn after the resume quotes both answers.
-- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime: the
-  first request's effort equals the transcript's last `effort`, every thinking signature in the
-  transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >
-  0`, and the resumed reviewer's first model call holds both exchanges once — its first call, not
-  its first proxied request, which is the reachability preflight Claude Code sends as it starts
-  and which holds nothing. The second question is asked once the first answer is posted and ten
-  seconds after that, since a cache entry is not always readable the moment it is written (in the
-  run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s
-  earlier), and the cache-read clause judges the loop's cache policy, not the provider's
-  propagation delay. Compaction leg: a
-  person's `/compact` from the architect's conversation page (`POST /agents/{session}/messages`,
-  delivery `steer`) puts a `"type":"compaction"` entry in its conversation; a question then is
-  answered from the compacted conversation, and the resumed architect's first request holds that
-  exchange once. The GPT-6.1 leg records WAITING: the OpenAI API is paused
-  (dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19).
-- A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`,
-  `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`): each ends with
-  `answers: question passed to the controller` naming the fault and the daemon's own reply. Two of
-  the five legs are answered by a stand-in reply of the proof's own, each a model step no real
-  model gives on demand: the reply out of form, and the `model_calls` leg's first reply, which
-  calls the `gh` tool, so the one model call that bound allows still called a tool and its
-  `answers: answered` line carries `fault` `model_calls` after `calls` 1. A question cannot be
-  trusted to reach that bound — the loop's prompt tells the model its last call offers no tool and
-  must be the reply, and the `go.mod` question these legs ask is the one A15 had the planner
-  answer earlier in the pass, which the loop answered again from the conversation in one call with
-  no tool.
-- A14: every `answers: answered` line of the run — every boot of it, since A12 restarts the daemon
-  five times before this check and its own boot has answered nothing — has a `costUSD` that
-  recomputes from its tokens at the configured prices, cache writes included.
-- A15 (before every other check that asks the same question, which is why the pass runs it right
-  after A5): the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of
-  the smoke repository read with `gh`; the `answers: gh` line names the review App and owner
-  `sjawhar`, and each conversation holds the call.
-  Asked first, neither agent can answer it from its own conversation, so the loop has to call the
-  tool; asked after A8's own-answer leg and A12's five legs, which send the planner that same
-  question, it is one the loop may rightly answer from the conversation with no call at all, and
-  then the check proves nothing.
-  That is how it failed under postgres in the run of 2026-11-08 (question 405247a2…, `calls: 1`,
-  no `answers: gh` line, the planner's own reply saying it had read the file earlier in the
-  conversation) while passing under files, where the model chose to read again.
-- A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as
-  the implement App) posts the asked comment there as the implement App with its session's footer,
-  logged with App and owner; the rig reads the comment back with a read-only implement-App token of
-  its own (**GitHub** below), the one GitHub read its own `gh` cannot make. The pre-change reviewer
-  asked to write to the second owner's repository gets GitHub's refusal and says so.
-- A18: the proxy holds the loop's model call after the comment's `gh` call; the daemon is killed
-  and restarted (one comment, one answer), and in a second run the claim is resumed there (the
-  question is forwarded with the call, one comment, no reply from the loop).
-- A19: a smoke pull request, the issue's architect (no task) and a Claude Code reviewer told its
-  round is complete, both suspended. **Departure:** with the daemon stopped the run writes the
-  open round into the daemon's record (issue phase `reviewing`, its tree's `tree_lifecycles` row
-  open under the workflow as A6's is, the reviewer's `phases` row with its claim, handoff commit
-  and completion, the `pull_requests` row at the head), as the workflow writes it when a reviewer
-  completes undecided; driving a tree there with real agents is the stage proofs' work. Without
-  the lifecycle row the next boot's admission pass would take the whole round out of the workflow
-  before the control could read it. Control: a review-App approval whose footer names another
-  session leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s. Then
-  the stopped reviewer approves with its `gh` tool: the review App's single approval of the head
-  carries its session's footer, the phase leaves `reviewing`, and `review_seen` is that review's
-  id. The rig reads the approvals back as the implement App, as A17 reads the comments
-  (**GitHub** below).
-- A13 (after both passes): the bus is snapshotted with the stopped agents in it; the branch's
-  listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an
-  `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to
-  its role topic; then the bus is restored and the base commit's three binaries take the same four.
-  Each of the eight answers must say what the base commit's says, byte for byte but for the
-  identifiers a listener mints for an event it accepts; the `envoy_send` must be `404` and both
-  Dispatch deliveries `failed`. The role publish is `404` while the role's holder record has only
-  lapsed and `202` once it has aged out of the bus, which is what both stacks then answer. The
-  control is the daemon's own log: with `answers` removed it writes no conversation to the agent
-  registry and no `answers:` line. It does write the project's answering heartbeat, saying it does
-  not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next
-  boot; on a listener without that route the heartbeat is the one 404 the boot shows.
-  Each daemon of this check boots on a project of its own, so each one maps the smoke repository
-  to that project in the Dispatch running then (`map_repo`): a repository names one project at a
-  time, the second pass's own mapping call moved the mapping off the first pass's project, and
-  with the workflow on a daemon whose project maps no repository exits at boot (`project <key>
-  has no repository mapped in Dispatch`).
-  The base stack's Dispatch is a database of its own, so the base daemon's project is created and
-  mapped there too.
-- A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the
-  daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every
-  `AGENTS.md`, each hit printed; a hit fails unless `questions.json` records it as not about the
-  loop. Then `go test ./internal/answer -run TestTheLoopsToolListHoldsGh`.
+- `boot`: the daemon with `answers` set records the pre-change Claude Code conversation as a `scan` row of `agent_conversations`, and the listener's registry holds an entry for each of the architect, planner, replaced tester, tester and pre-change reviewer, on its issue and not live, the replaced tester's `replaced_by` naming the new session;
+  no registry route answered the daemon `404` this boot.
+  `store` (postgres pass): every Oh My Pi pane's session is a row of `omp_session_files`, and no file exists at a claim's session path.
 
-**PASS, FAIL and WAITING.** A criterion whose prerequisite is missing records WAITING naming it,
-each read from the run rather than assumed: the daemon's workflow, which carries the answer loop
-and boots only with two distinct role Apps (without the review App's grant every answering
-criterion and `boot` wait on it); the listener's hand-off, read from the boot's `404` on the
-heartbeat route; INFRA-448's registry routes, read from the checkout (A3); the OpenAI API (A10's
-GPT-6.1 leg); `LEGION_E2E_REPO_SECOND_OWNER` (A17). Everything else that runs records PASS or
-FAIL, and the run exits non-zero on any FAIL. **Departure:** the review role cannot stand in as
-the implement App to boot the workflow without the review App: the daemon refuses it at boot
-(`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
+- A1: a person's reply on the parked architect's ask is answered in the thread in its name within four minutes; no claim or pane of the tree starts.
+
+- A2: the tester's role topic, its replaced session and the pre-change session each answer on the asker's topic with the answer key;
+  an unregistered session still answers `404`.
+
+- A3, two legs, both of which must hold.
+  Thread leg: the tester's issue is closed;
+  its role token is read from `GET /issues/{key}/collaborators` (the list the mention picker offers stopped agents from);
+  a person's comment on the closed issue mentions `role:<token>`;
+  the delivery is `sent` to that tester's session and its reply in the thread holds the answer key.
+  Control: a mention of a role no entry names fails as today.
+  Conversation-page leg: the same person, in Playwright's Chromium signed in by the trusted identity header, opens the closed issue's Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one no later session replaced) by its link to `/agents/<session>/live`, sends a second question there in the mode the page offers a stopped agent (Aside), and waits four minutes for the answer;
+  it must hold that question's key both on the page's own thread and in the record the page reads (`GET /agents/{session}/messages`).
+  A screenshot per step goes to `a3/<store>/`, and a Collaborators view that names no such tester, or a link that leads elsewhere, is a FAIL naming every row the page drew.
+
+- A4, A5: the planner's reply is `not_answered` / `needs_work`, and `legion state` lists the question in `questionsForController`; the planner stays retired.
+
+- A6: first leg, a person's reply on the replacing tester's ask (a child of the parked tree) decides and asks;
+  the decision reaches the controller stand-in exactly once as an `agent-decision` notice and the daemon logs `answers: decision passed on` once with `to: the controller`.
+  Second leg, a tree whose root architect runs, with a child whose tester opened an ask and was suspended;
+  a person's reply there reaches that architect once (its conversation holds the notice) and not the controller.
+  Each leg's question is answered on the ask's thread with its key.
+  **Departure:** the daemon routes a notice only through the trees it records, and the rig's issues are a person's, so the running tree is written into the daemon's record with the daemon stopped, as admission writes a tree it admits:
+  the root and child `issues` rows (status `in_progress`, phase `implementing`, the Dispatch sequence they are at) and the root's `tree_lifecycles` row, epoch one under the workflow's own authority.
+  Both halves are needed — a tree is live only while that lifecycle stands open, and the next boot's admission pass takes a root at a running status whose tree is not live out of the workflow altogether (`released a root no tree of which runs and nothing would ever start`)
+  — so the tree's architect is spawned before the stop, its operator spawn being what writes the lifecycle row the seeding takes over (an operator's spawn on a tree the workflow holds is refused).
+  The second leg runs only once `legion state` shows the root under `admission.trees` and still at `implementing`, with its architect holding its role again after the restart;
+  otherwise A6 is a FAIL naming the tree that was not live.
+
+- A7: a question to the resumed, running architect reaches its conversation and the daemon logs no `answers:` line;
+  then, suspended again, a question whose loop model call the proxy holds while the claim is resumed is dropped and forwarded (`... the answer is dropped and the question
+  forwarded`, started), reaches the running architect, and nothing is appended or posted.
+  Appended is counted as a delta over the architect's conversation
+  — the `legion-answer` marker entries an append ends with, counted before the question and again after
+  — because this architect was answered before (A1 appended an exchange to the same conversation), so the count must not move, not be zero.
+
+- A8: one envelope sent three times under one idempotency key, the third after a restart:
+  the listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the stream stores one copy.
+  One reply on the asker's topic across the three, and the restarted daemon logs no `answers:` line naming that question at all
+  — neither an answer nor a `handed off again`, the question having never been handed to it a second time.
+  A kill -9 the moment the reply lands, a restart and a redelivery still one reply.
+  A question to the planner sent as the replaced tester's session gets the planner's answer, which the listener hands to the daemon because that tester is stopped too (a `listener handed a message to its legion
+  daemon` line naming its session): the loop never answers an answer of its own, so no question and no `answers: answered` line names that tester, no model call's body holds the answer's `legion-answer:<question>` marker and nothing is passed to the controller as `post_refused`;
+  the answer is written into that tester's conversation instead, once
+  — one more `legion-answer` marker entry (`appended_exchanges`), holding the answer's own marker once.
+  A person's edit of A1's comment, on the open root issue (a closed issue refuses every comment edit, `409 ISSUE_CLOSED`), creates no question for the architect.
+
+- A9: two questions at once are answered in order;
+  the resumed architect's first captured request holds each question once, and its conversation holds exactly one appended exchange per question
+  — the `legion-answer` marker entry naming that question id, which each reply carries in its `<!-- legion-answer:<id> -->` marker.
+  The exchange is counted there and not by the answer's own words in the request, because an architect that answered the same thing itself before it stopped holds those words in its own earlier turns.
+  Its turn after the resume quotes both answers.
+
+- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime:
+  the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >
+  0`, and the resumed reviewer's first model call holds both exchanges once
+  — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
+  The second question is asked once the first answer is posted and ten seconds after that, since a cache entry is not always readable the moment it is written (in the run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s earlier), and the cache-read clause judges the loop's cache policy, not the provider's propagation delay.
+  Compaction leg: a person's `/compact` from the architect's conversation page (`POST /agents/{session}/messages`, delivery `steer`) puts a `"type":"compaction"` entry in its conversation;
+  a question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
+  The GPT-6.1 leg records WAITING: the OpenAI API is paused (dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19).
+
+- A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
+  each ends with `answers: question passed to the controller` naming the fault and the daemon's own reply.
+  Two of the five legs are answered by a stand-in reply of the proof's own, each a model step no real model gives on demand:
+  the reply out of form, and the `model_calls` leg's first reply, which calls the `gh` tool, so the one model call that bound allows still called a tool and its `answers: answered` line carries `fault` `model_calls` after `calls` 1.
+  A question cannot be trusted to reach that bound
+  — the loop's prompt tells the model its last call offers no tool and must be the reply, and the `go.mod` question these legs ask is the one A15 had the planner answer earlier in the pass, which the loop answered again from the conversation in one call with no tool.
+
+- A14: every `answers: answered` line of the run
+  — every boot of it, since A12 restarts the daemon five times before this check and its own boot has answered nothing
+  — has a `costUSD` that recomputes from its tokens at the configured prices, cache writes included.
+
+- A15 (before every other check that asks the same question, which is why the pass runs it right after A5):
+  the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of the smoke repository read with `gh`;
+  the `answers: gh` line names the review App and owner `sjawhar`, and each conversation holds the call.
+  Asked first, neither agent can answer it from its own conversation, so the loop has to call the tool;
+  asked after A8's own-answer leg and A12's five legs, which send the planner that same question, it is one the loop may rightly answer from the conversation with no call at all, and then the check proves nothing.
+  That is how it failed under postgres in the run of 2026-11-08 (question 405247a2…, `calls: 1`, no `answers: gh` line, the planner's own reply saying it had read the file earlier in the conversation) while passing under files, where the model chose to read again.
+
+- A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as the implement App) posts the asked comment there as the implement App with its session's footer, logged with App and owner;
+  the rig reads the comment back with a read-only implement-App token of its own (**GitHub** below), the one GitHub read its own `gh` cannot make.
+  The pre-change reviewer asked to write to the second owner's repository gets GitHub's refusal and says so.
+
+- A18: the proxy holds the loop's model call after the comment's `gh` call;
+  the daemon is killed and restarted (one comment, one answer), and in a second run the claim is resumed there (the question is forwarded with the call, one comment, no reply from the loop).
+
+- A19: a smoke pull request, the issue's architect (no task) and a Claude Code reviewer told its round is complete, both suspended.
+  **Departure:** with the daemon stopped the run writes the open round into the daemon's record (issue phase `reviewing`, its tree's `tree_lifecycles` row open under the workflow as A6's is, the reviewer's `phases` row with its claim, handoff commit and completion, the `pull_requests` row at the head), as the workflow writes it when a reviewer completes undecided;
+  driving a tree there with real agents is the stage proofs' work.
+  Without the lifecycle row the next boot's admission pass would take the whole round out of the workflow before the control could read it.
+  Control: a review-App approval whose footer names another session leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s.
+  Then the stopped reviewer approves with its `gh` tool:
+  the review App's single approval of the head carries its session's footer, the phase leaves `reviewing`, and `review_seen` is that review's id.
+  The rig reads the approvals back as the implement App, as A17 reads the comments (**GitHub** below).
+
+- A13 (after both passes): the bus is snapshotted with the stopped agents in it;
+  the branch's listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to its role topic;
+  then the bus is restored and the base commit's three binaries take the same four.
+  Each of the eight answers must say what the base commit's says, byte for byte but for the identifiers a listener mints for an event it accepts;
+  the `envoy_send` must be `404` and both Dispatch deliveries `failed`.
+  The role publish is `404` while the role's holder record has only lapsed and `202` once it has aged out of the bus, which is what both stacks then answer.
+  The control is the daemon's own log: with `answers` removed it writes no conversation to the agent registry and no `answers:` line.
+  It does write the project's answering heartbeat, saying it does not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next boot;
+  on a listener without that route the heartbeat is the one 404 the boot shows.
+  Each daemon of this check boots on a project of its own, so each one maps the smoke repository to that project in the Dispatch running then (`map_repo`):
+  a repository names one project at a time, the second pass's own mapping call moved the mapping off the first pass's project, and with the workflow on a daemon whose project maps no repository exits at boot (`project <key>
+  has no repository mapped in Dispatch`).
+  The base stack's Dispatch is a database of its own, so the base daemon's project is created and mapped there too.
+
+- A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
+  a hit fails unless `questions.json` records it as not about the loop.
+  Then `go test ./internal/answer -run TestTheLoopsToolListHoldsGh`.
+
+**The reads.**
+Every read a criterion is judged by — the daemon's log boot by boot, the stopped agents' conversations, the asker's inbox, the listener's log, the recording proxy's records, Dispatch, GitHub and the daemon's own state — lives in [`lib/answer-loop-reads.sh`](lib/answer-loop-reads.sh), which the rig sources.
+A read is the one part of this proof a live run cannot check:
+a read that is wrong reports a pass over evidence that holds nothing, and each round of this proof has had one.
+So [`lib/answer-loop-reads.test.ts`](lib/answer-loop-reads.test.ts) runs every one of them, the same functions under the rig's own `set -Eeuo pipefail`, over fixtures of the shapes a run writes ([`lib/testdata/answer-loop`](lib/testdata/answer-loop), small and synthetic, taken from a real run's evidence).
+Each read is given three things: evidence that must pass, evidence that must fail, and an empty input, which it must judge rather than end the run on under `pipefail`.
+The test needs no model, no network, no Postgres and no NATS, runs in seconds with `bun test scripts/e2e/lib` (the `typescript` job of `ci.yaml`), and fails if a read is put back to a bug it names:
+the reachability preflight counted as a model call, the agent's own words counted as the loop's append, an asks body read as an object, a review id compared as a number, a duplicate under one dedupe key counted as one.
+
+**PASS, FAIL and WAITING.**
+A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
+the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
+the listener's hand-off, read from the boot's `404` on the heartbeat route;
+INFRA-448's registry routes, read from the checkout (A3); the OpenAI API (A10's GPT-6.1 leg); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
+Everything else that runs records PASS or FAIL, and the run exits non-zero on any FAIL.
+**Departure:** the review role cannot stand in as the implement App to boot the workflow without the review App:
+the daemon refuses it at boot (`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
 two different Apps`).
 
-**Inputs.** `LEGION_E2E_MODEL_ROUTE` picks the model route, as Stage 2's and Stage 3's proofs take
-it: `key-file`, the default, or `gateway`. Under `key-file` the key comes from
-`LEGION_E2E_ANTHROPIC_KEY_FILE`, `LEGION_E2E_CLAUDE_KEY_FILE` or `ANTHROPIC_API_KEY`, and the
-endpoint it is for from `LEGION_E2E_MODEL_BASE_URL` or `ANTHROPIC_BASE_URL`, Anthropic's own when
-neither is set; the key is copied once into a 0600 file in the work directory, held to
-`model_key_preflight` ([`lib/model-endpoint.sh`](#libmodel-endpointsh): the endpoint takes it and
-refuses a call without one), unset from the run's environment and never printed, and the agents'
-key command, Claude Code's `apiKeyHelper` and the daemon's `api_key_file` all read that copy. The
-work directory goes on every exit. Under `gateway` the endpoint is `LEGION_E2E_MODEL_GATEWAY_URL`
-and `hawk-token` keys all three, the daemon's answers block through `api_key_command`.
+**Inputs.**
+`LEGION_E2E_MODEL_ROUTE` picks the model route, as Stage 2's and Stage 3's proofs take it: `key-file`, the default, or `gateway`.
+Under `key-file` the key comes from `LEGION_E2E_ANTHROPIC_KEY_FILE`, `LEGION_E2E_CLAUDE_KEY_FILE` or `ANTHROPIC_API_KEY`, and the endpoint it is for from `LEGION_E2E_MODEL_BASE_URL` or `ANTHROPIC_BASE_URL`, Anthropic's own when neither is set;
+the key is copied once into a 0600 file in the work directory, held to `model_key_preflight` ([`lib/model-endpoint.sh`](#libmodel-endpointsh):
+the endpoint takes it and refuses a call without one), unset from the run's environment and never printed, and the agents' key command, Claude Code's `apiKeyHelper` and the daemon's `api_key_file` all read that copy.
+The work directory goes on every exit.
+Under `gateway` the endpoint is `LEGION_E2E_MODEL_GATEWAY_URL` and `hawk-token` keys all three, the daemon's answers block through `api_key_command`.
 
 The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and the rig holds no App key:
-every token of the run, the daemon's and the rig's own, comes from an App's `token_command`, which
-runs `agent-secrets` against the broker's github-app secret. The daemon's token commands run under
-`env -i`, so the run writes an `agent-secrets` of its own first on the daemon's `PATH`: it calls
-the real client by its absolute path with this session's `AGENT_SECRETS_URL` and
-`AGENT_SECRETS_KEY_DIR` (paths, never a secret), and tries a broker call that fails with exit 1
-twice more. The run proves the implement App against GitHub (`check_github_apps`) and installed on
-the smoke repository with [`lib/app-installation.ts`](lib/app-installation.ts), whose
-`GET /installation/repositories` under that owner's own installation token names exactly the
-repositories the installation is on, stopping there when the smoke repository is not one. The
-review App's secret is human tier, a person's to grant, and `agent-secrets` cannot say whether a
-grant exists without asking for it (which files a request in the person's inbox), so the run asks
-only with `LEGION_E2E_REVIEW_APP_GRANTED=1`; told so and refused, it cancels its request by id and
-stops. Without it the daemon runs with no `dispatch_url` and no `github_apps`.
-`LEGION_E2E_REPO_SECOND_OWNER` (owner/name) is an operator input, never written in the
-tree. `LEGION_E2E_ANSWER_LOOP_EVIDENCE_DIR` and `LEGION_E2E_ANSWER_LOOP_CACHE` move the evidence
-(default a new directory under `$TMPDIR`) and the cache. While a check is being fixed,
-`LEGION_E2E_ANSWER_LOOP_ONLY` (criteria, e.g. `boot A6 A13`) and `LEGION_E2E_ANSWER_LOOP_STORES`
-(e.g. `files`) narrow a run; the bring-up and the stopped agents are made as always. A run that
-proves the criteria sets neither.
+every token of the run, the daemon's and the rig's own, comes from an App's `token_command`, which runs `agent-secrets` against the broker's github-app secret.
+The daemon's token commands run under `env -i`, so the run writes an `agent-secrets` of its own first on the daemon's `PATH`:
+it calls the real client by its absolute path with this session's `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR` (paths, never a secret), and tries a broker call that fails with exit 1 twice more.
+The run proves the implement App against GitHub (`check_github_apps`) and installed on the smoke repository with [`lib/app-installation.ts`](lib/app-installation.ts), whose `GET /installation/repositories` under that owner's own installation token names exactly the repositories the installation is on, stopping there when the smoke repository is not one.
+The review App's secret is human tier, a person's to grant, and `agent-secrets` cannot say whether a grant exists without asking for it (which files a request in the person's inbox), so the run asks only with `LEGION_E2E_REVIEW_APP_GRANTED=1`;
+told so and refused, it cancels its request by id and stops.
+Without it the daemon runs with no `dispatch_url` and no `github_apps`.
+`LEGION_E2E_REPO_SECOND_OWNER` (owner/name) is an operator input, never written in the tree.
+`LEGION_E2E_ANSWER_LOOP_EVIDENCE_DIR` and `LEGION_E2E_ANSWER_LOOP_CACHE` move the evidence (default a new directory under `$TMPDIR`) and the cache.
+While a check is being fixed, `LEGION_E2E_ANSWER_LOOP_ONLY` (criteria, e.g. `boot A6 A13`) and `LEGION_E2E_ANSWER_LOOP_STORES` (e.g. `files`) narrow a run;
+the bring-up and the stopped agents are made as always.
+A run that proves the criteria sets neither.
 
-**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each),
-`logs/` (each service and daemon), `model-calls.jsonl`, `inbox.jsonl` (the asker's and the
-controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store
-holds it), `a3/<store>/` (the conversation-page leg's screenshots: the Collaborators view, the
-conversation it led to, the question sent and the answer, or the step that failed), and
-`a13/{branch,base}/<store>/` (the bodies A13 compares).
+**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl`, `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it), `a3/<store>/` (the conversation-page leg's screenshots:
+the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), and `a13/{branch,base}/<store>/` (the bodies A13 compares).
 
-**GitHub.** The run reads the smoke repository, and reads it as the implement App: it mints a
-read-only installation token of its own for each read (`smoke_gh`, the token command
-`mint_provision_token` runs) and hands it to the compiled `gh`, since the rig's own `gh` reads
-nothing there — in a Legion pane the first `gh` on `PATH` is the `legion gh` wrapper, and the
-pane's token is narrowed to its own owner, so either answers `{"message":"Not Found",…}`, whose
-body is no array of comments and reads as none. Its writes there are A17's, A18's and A19's: the
-pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App,
-the comments the stopped implementer posts, and A19's approvals; each pull request and comment is
-recorded by id and closed (with its branch) or deleted as the implement App on exit. Each of those
-calls acts under the repository owner's installation token, which the App's own `token_command`
-releases and which stays inside that one process. A17's one write on the second owner's repository
-is the reviewer's, which GitHub refuses. Claims-only, none of these checks runs and the run writes
-nothing to GitHub.
+**GitHub.**
+The run reads the smoke repository, and reads it as the implement App:
+it mints a read-only installation token of its own for each read (`smoke_gh`, the token command `mint_provision_token` runs) and hands it to the compiled `gh`, since the rig's own `gh` reads nothing there
+— in a Legion pane the first `gh` on `PATH` is the `legion gh` wrapper, and the pane's token is narrowed to its own owner, so either answers `{"message":"Not Found",…}`, whose body is no array of comments and reads as none.
+Its writes there are A17's, A18's and A19's:
+the pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App, the comments the stopped implementer posts, and A19's approvals;
+each pull request and comment is recorded by id and closed (with its branch) or deleted as the implement App on exit.
+Each of those calls acts under the repository owner's installation token, which the App's own `token_command` releases and which stays inside that one process.
+A17's one write on the second owner's repository is the reviewer's, which GitHub refuses.
+Claims-only, none of these checks runs and the run writes nothing to GitHub.
 
 
 ## Port admission

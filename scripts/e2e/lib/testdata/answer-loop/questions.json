@@ -1,0 +1,34 @@
+{
+  "questions": [
+    {
+      "id": "architect-decision",
+      "criteria": ["A1"],
+      "agent": "architect",
+      "text": "Which cache strategy did you decide on, under what codename, and why was the alternative rejected?",
+      "must_contain": ["write-through", "VIOLET-OTTER-88"]
+    },
+    {
+      "id": "unanswerable",
+      "criteria": ["A4"],
+      "agent": "planner",
+      "expect_kind": "cannot_answer",
+      "text": "What did the person decide after you stopped?",
+      "must_contain": []
+    }
+  ],
+  "a16": {
+    "phrases": ["no tools", "tool-less"],
+    "unrelated_hits": [
+      {
+        "file": "skills/envoy/SKILL.md",
+        "text": "A peer with no tools of its own still answers.",
+        "why": "Envoy addressing, not the answer loop."
+      },
+      {
+        "file": "docs/reference/tools.md",
+        "starts_with": "The tool-less reader",
+        "why": "A reader of the docs site, not the answer loop."
+      }
+    ]
+  }
+}

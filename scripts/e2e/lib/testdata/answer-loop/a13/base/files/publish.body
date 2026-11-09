@@ -1,0 +1,1 @@
+{"event_id":"22222222222222222222222222222222","source_event_id":"bbbb2222","dedupe_key":"legion.handoff.bbbb2222","trace_id":"trace-bbbb","issued_at":"2026-11-09T00:05:00.000Z","status":"Skipped","reasons":["no consumer holds notifications.role.ALX-1-architect"]}
