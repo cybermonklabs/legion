@@ -490,3 +490,5 @@ jobs:
         with:
           subject-name: ${{ needs.build.outputs.registry }}
           subject-digest: ${{ needs.build.outputs.digest }}
+
+# INFRA-1413 k1 probe, never merged.
