@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -183,6 +184,12 @@ describe("running a person's command", () => {
   // command runs with. A zsh `$SHELL` has a door of its own that no environment closes, since
   // zsh reads `.zshenv` whatever its args; this machine resolves bash, so this row cannot see
   // it, and whether to pass `-f` there is the implementer's to decide.
+  // Corrected with the tester's agreement after its own measurement (2026-11-09): the two lines
+  // this row carried read `procmgr.getShellConfig().env`, the host package's own child-shell
+  // environment, which @oh-my-pi/pi-utils 18.8.3 builds with both names kept, so nothing in this
+  // package could make them hold. The claim is the same one, driven where a person meets it: the
+  // command itself reads neither name. `$ENV` is read by a `sh`, not by the bash this machine
+  // resolves, so what the row shows of it is that the name is absent.
   test("reads no `BASH_ENV` file, so nothing runs before the command", async () => {
     const directory = scratch();
     const home = scratch();
@@ -195,8 +202,11 @@ describe("running a person's command", () => {
     try {
       const result = await runShellCommand("pwd -P", { cwd: directory, limitMs: 10_000 });
       expect(result.output).toBe(realpathSync(directory));
-      expect(procmgr.getShellConfig().env.BASH_ENV).toBeUndefined();
-      expect(procmgr.getShellConfig().env.ENV).toBeUndefined();
+      const names = await runShellCommand('printf "[%s][%s]" "$BASH_ENV" "$ENV"', {
+        cwd: directory,
+        limitMs: 10_000,
+      });
+      expect(names.output).toBe("[][]");
     } finally {
       if (beforeBashEnv === undefined) delete process.env.BASH_ENV;
       else process.env.BASH_ENV = beforeBashEnv;
@@ -206,6 +216,51 @@ describe("running a person's command", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  // zsh reads `~/.zshenv` whatever its other arguments, and no variable closes that door, so a
+  // zsh is given `-f`. This image has no zsh, so the row stands one in: a file named `zsh` that
+  // prints the arguments it was handed. `getShellConfig` resolves it because `SHELL` names it
+  // and this machine can run it, and it caches what it resolved, so the variables are set for a
+  // process of its own that is started with them rather than for this one. What the row proves
+  // is that the flag is passed; that a real zsh then reads no `.zshenv` is zsh's own behaviour,
+  // which no row on this image can show. The last argument is the command with the host's shell
+  // prefix before it, so the row matches the arguments rather than comparing the whole list.
+  test("passes `-f` to a zsh, whose `.zshenv` no environment closes", async () => {
+    const directory = scratch();
+    const shell = join(directory, "zsh");
+    await Bun.write(
+      shell,
+      ["#!/bin/sh", 'for argument in "$@"; do printf "%s\\n" "$argument"; done', ""].join("\n")
+    );
+    chmodSync(shell, 0o755);
+    const printed = join(directory, "argv");
+    const runner = join(directory, "runner.ts");
+    await Bun.write(
+      runner,
+      [
+        `import { runShellCommand } from ${JSON.stringify(join(import.meta.dir, "typed-shell.ts"))};`,
+        'const result = await runShellCommand("printf hi", {',
+        `  cwd: ${JSON.stringify(directory)},`,
+        "  limitMs: 10_000,",
+        "});",
+        `await Bun.write(${JSON.stringify(printed)}, result.output);`,
+        "process.exit(0);",
+      ].join("\n")
+    );
+    try {
+      const runs = Bun.spawn([process.execPath, runner], {
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, SHELL: shell },
+        stderr: "pipe",
+        stdout: "ignore",
+      });
+      await runs.exited;
+      expect(await new Response(runs.stderr).text()).toBe("");
+      expect(runs.exitCode).toBe(0);
+      expect(readFileSync(printed, "utf8").split("\n")).toContain("-f");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   // The environment is the host's own for a child shell, not this process's: the host drops the
   // git location variables from it (`filterChildShellEnv`), because forwarding them makes `git`

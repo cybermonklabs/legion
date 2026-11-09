@@ -317,9 +317,10 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   the line as a shell command: the shell Oh My Pi resolved, the environment it gives a shell
   command of its own, and the session's working directory.
   A few things differ from typing the same `!` line into Oh My Pi's own window.
-  The shell runs your line with `-c` alone: no login profile and no `~/.bashrc` is read,
-  so an alias or a function defined there is not found, and no profile prints a banner or
-  changes the directory your command answers from.
+  Nothing of your shell setup runs before your command: no login profile, no `~/.bashrc`, no
+  file `BASH_ENV` or `ENV` names and no `.zshenv`.
+  So an alias or a function defined in any of them is not found, and none of them prints a
+  banner or changes the directory your command answers from.
   A repository's `.envrc` is not loaded, and Oh My Pi's own `shellPath` setting does not apply.
   `cd` moves only that one command: each runs in a process of its own, so nothing one command
   leaves behind reaches the next.

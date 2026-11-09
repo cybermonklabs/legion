@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { procmgr } from "@oh-my-pi/pi-utils";
@@ -15,11 +16,16 @@ import { procmgr } from "@oh-my-pi/pi-utils";
  * pinned binary's `executeBash` (`exec/bash-executor.ts`):
  *  - `!!` is no second mark here. The mark is one `!`, and what a command printed always reaches
  *    the agent, where the CLI's `!!` hides it: R4 is that the agent reads the output.
- *  - The shell runs as a plain `-c`. For bash, the CLI runs the line in its own embedded shell
- *    for the session, with a snapshot of the aliases, functions and `PATH` of `~/.bashrc`; for
- *    zsh and fish it runs `-l -i -c` under a pty. Here no profile and no `~/.bashrc` is read, so
- *    an alias or a function defined there is not found, and a profile's banner or its `cd`
- *    cannot answer the person in place of their command.
+ *  - The shell reads no startup file of any kind. For bash, the CLI runs the line in its own
+ *    embedded shell for the session, with a snapshot of the aliases, functions and `PATH` of
+ *    `~/.bashrc`; for zsh and fish it runs `-l -i -c` under a pty. Here the shell runs as a
+ *    plain `-c`, so no profile and no `~/.bashrc` is read; its environment carries no
+ *    `BASH_ENV` and no `ENV`, so no file either of those names is read; and a zsh is given
+ *    `-f`, so `.zshenv` is not read. An alias or a function defined in any of them is not
+ *    found, and none of them can print a banner or run a `cd` that answers the person in place
+ *    of their command: R4 is that the command runs in the session's own working directory and
+ *    the answer is the command and what it printed. `shellInvocation` below holds the list of
+ *    those files, which is where a door this one misses is closed.
  *  - `!cd` does not move the session, and nothing else a command leaves behind reaches the next
  *    one: each runs in a process of its own rather than in the host's own shell for the session.
  *  - No pty and no interactive flag, so a command that wants a terminal finds none.
@@ -103,13 +109,31 @@ export function shellCommandFrom(body: string): string | undefined {
  *  passes `-c` and never sets that variable, which is read from the environment this process
  *  holds and would change the shell of every other command this session runs. The other is a
  *  `shellPath` in the host's settings: the host passes it to this same call, and this caller
- *  passes none, so that one setting does not reach a `!command`. */
+ *  passes none, so that one setting does not reach a `!command`.
+ *
+ *  The login shell is one door of several, and this call closes them all: whichever shell
+ *  `getShellConfig` resolved, the command's shell reads no startup file before the command.
+ *  Here is every startup file those shells read, so the one a later shell adds is closed here
+ *  too rather than in a case of its own:
+ *   - the profile of a login shell, which this caller leaves out by passing `-c` without `-l`;
+ *   - the file `BASH_ENV` names, which bash reads in a non-login, non-interactive shell - the
+ *     shell this caller starts - so that name is taken out of the command's environment;
+ *   - the file `ENV` names, which a `sh` reads, and bash too in POSIX mode, so that name is
+ *     taken out with it;
+ *   - `~/.zshenv`, which zsh reads whatever its other arguments and which no variable closes,
+ *     so a zsh is given `-f` (`--no-rcs`) before the `-c`.
+ *  Nothing else of the host's environment changes: the two names are dropped from a copy of
+ *  it, and the command is handed the rest as the host built it. */
 function shellInvocation(command: string): {
   readonly argv: string[];
   readonly env: Record<string, string>;
 } {
   const { shell, env, prefix } = procmgr.getShellConfig();
-  return { argv: [shell, "-c", prefix ? `${prefix} ${command}` : command], env };
+  const childEnv = { ...env };
+  delete childEnv.BASH_ENV;
+  delete childEnv.ENV;
+  const args = basename(shell).includes("zsh") ? ["-f", "-c"] : ["-c"];
+  return { argv: [shell, ...args, prefix ? `${prefix} ${command}` : command], env: childEnv };
 }
 
 /** The shell this module starts: no standard input and no pty, and a pipe of its own for each

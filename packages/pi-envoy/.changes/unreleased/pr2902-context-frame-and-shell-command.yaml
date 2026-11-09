@@ -12,9 +12,10 @@ body: |-
   directory's `.env` files nor `GIT_DIR` and the other git location variables, and its shell
   prefix - in the session's own working directory, and in a process group of its own, stopped
   after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120000 by default) with what it printed
-  kept. The shell runs the line with `-c` alone: no login profile and no `~/.bashrc` is read, so
-  no profile answers in place of the command, and an alias or function defined there is not
-  found; a repository's `.envrc` is not loaded. A bare `!` is no command and reaches the model as
+  kept. The shell reads no startup file before the command - no profile, no `~/.bashrc`, no file
+  `BASH_ENV` or `ENV` names and no `.zshenv` - so none of them answers in place of the command,
+  and an alias or function defined there is not found; a repository's `.envrc` is not loaded. A
+  bare `!` is no command and reaches the model as
   the prompt it is. One such
   command runs for a session at a time, and a second is answered naming the one
   still running. What the command printed goes three ways, each cut at 8,000 characters: to the
