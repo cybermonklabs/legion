@@ -217,18 +217,21 @@ An account on that list also registers which pod may write under which session n
 (`POST /v1/oauth/exchange/pod-sessions`), which is how a deployment's daemon tells the broker that
 a pod it has just started owns an issue's session. That is a second authority the list carries, so
 weigh it before listing an account. The request carries the pod's own projected ServiceAccount
-token, which the broker verifies with the verifier an enrolling pod's token goes through, so a
-listed account registers a pod whose token it holds and no other; that verifier accepts a token
-bound to no pod, which the exchange then refuses as `400 POD_NOT_BOUND`. A caller whose own token
-names a pod may not register that pod, `403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row
-would pick the session name it writes under, including a name a sibling pod holds. The refusal
-reads the caller's own token, so it never holds a caller whose token names no pod, such as one
+token, which the broker verifies against the cluster's issuer as it verifies an enrolling pod's,
+bar the one check it does not make here, that the token names a pod: such a token verifies and
+the exchange then refuses the registration `400 POD_NOT_BOUND`. So a listed account registers a
+pod whose token it holds and no other. A caller whose own token names a pod may not register
+that pod, `403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row would pick the session
+name it writes under, including a name a sibling pod holds. The refusal reads the caller's own
+token, so it never holds a caller whose token names no pod, such as one
 `kubectl create token` mints: whoever mints one for a listed account registers every pod of it
 whose token they hold, the pod they run in included. So listing a session account, which the
 paragraph above describes, does not in itself give its pods that authority over one another: each
 holds one token, its own, which names it, and that is the pod the refusal takes away. The
-authority is as wide as the cluster's own rights to mint or read a pod's token — the same kind of
-access over that pod's account as the paragraph below names over a listed one — and no wider. A
+authority goes no wider than the cluster's own rights to mint or read a pod's token — the same
+kind of access over that pod's account as the paragraph below names over a listed one — and it
+stops short of them: the caller needs a `BROKER_SERVICE_LOGINS` token of its own, and the pod's
+account must be one `BROKER_EXCHANGE_ACCOUNTS` lists, `403 POD_ACCOUNT_NOT_LISTED`. A
 deployment that does not want that lists no such account.
 A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that

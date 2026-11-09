@@ -533,10 +533,12 @@ func (s *Service) tokenLoginListed(subject, service string) bool {
 // (IssueTokenLoginTx), so a login landing between the proof's own lookup (AuthenticateLauncher)
 // and this read moves the row out from under the proof: a read by launcher id alone would hand
 // the caller whatever identity the row then holds, and Revoke's own-account branch would judge
-// the request as the pod that row names. A pod's own re-login moves its own row's key under the
-// same id, so the race is there whether an account's pods hold one credential row between them
-// or one each. A row whose key has moved is no credential of this caller's, and the route
-// refuses it (401 LAUNCHER_INVALID) rather than acting under another pod's identity.
+// the request as the pod that row names. A login bound to no pod takes one row per subject on
+// either schema (IssueTokenLoginTx's pod-less conflict target), so another login of that
+// subject still moves this caller's row, and a pod's own re-login moves its own row's key
+// under the same id, so the pair is right on either schema. A row whose key has moved is no
+// credential of this caller's, and the route refuses it (401 LAUNCHER_INVALID) rather than
+// acting under another pod's identity.
 func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (Credential, error) {
 	var cred Credential
 	err := s.Store.Pool.QueryRow(ctx, `select id, operator, service, host, subject, coalesce(pod_uid,'') from launcher_credentials where id=$1 and key_thumbprint=$2`, id, thumbprint).

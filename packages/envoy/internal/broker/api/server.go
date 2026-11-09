@@ -313,9 +313,9 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 		// own key and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx),
 		// so a login landing between the proof's own lookup and this read moves the row out
 		// from under the proof, and a read by id alone would hand the handler whatever
-		// identity the row then holds. A pod's own re-login moves its own row under the
-		// same id, so the race is there whether an account's pods hold one credential row
-		// between them or one each (enroll.Service.CredentialForKey).
+		// identity the row then holds. A login bound to no pod takes one row per subject on
+		// either schema, and a pod's own re-login moves its own row under the same id, so
+		// the pair is right on either (enroll.Service.CredentialForKey).
 		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
 		switch {
 		case errors.Is(err, enroll.ErrNoCredential):

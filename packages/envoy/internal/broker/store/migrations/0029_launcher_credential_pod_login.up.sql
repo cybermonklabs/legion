@@ -36,14 +36,20 @@
 -- enrollments running to their leases with nothing able to revoke them.
 --
 -- The release-scoped fact -- that while 0015's launcher_credentials_live_subject is here, two
--- pods of one account share one credential row, so a login of either moves it -- is written in
--- this file alone, because this file is what the drop visits. The prose on the guards it names
+-- pods of one account share one credential row, so a login of either moves it -- is also
+-- written wherever the staging itself is described: enroll.Service.IssueTokenLoginTx's doc,
+-- packages/envoy/AGENTS.md's section on the two schemas, store/storetest.PerPodLoginSchema,
+-- and the test prose below. What is written here alone is this list, because this file is what
+-- the drop visits. No guard's reason rests on the fact: the prose on the guards named below
 -- states only what holds on either schema, so the drop leaves none of it false. What the drop
 -- has to re-read, with what to check in each:
 --
 --   - enroll.Service.CredentialForKey's doc and api's authLauncher comment. The read by id and
---     thumbprint stays right afterwards, because a pod's own re-login moves its own row's key
---     under the same id; check that each still gives that re-login race as its reason.
+--     thumbprint stays right afterwards: a login bound to no pod takes one row per subject on
+--     either schema, and a pod's own re-login moves its own row's key under the same id. What
+--     the drop narrows is the harm to a pod-bound row, where afterwards only that pod's own
+--     re-login moves it, so the pair buys key currency there rather than another pod's
+--     identity; check that each still gives a reason that holds on the schema the drop leaves.
 --   - enroll.Service.Revoke's doc and its ownPod branch. The pod uid refuses a sibling pod's
 --     enrollment on either schema, since cred.PodUID is the caller's own pod, and after the drop
 --     it is left refusing only the enrollments made under a shared row: Create lets a credential
