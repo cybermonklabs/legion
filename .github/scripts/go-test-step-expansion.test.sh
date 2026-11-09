@@ -96,4 +96,35 @@ print(sum(1 for line in lines
   check "$file holds a go test line this reader reads" "$(is "$found" "1")"
 done
 
+# Both `-skip` steps of this repository are the daemon's, and the rule expands the envoy module
+# alone, so neither form below is reachable from today's workflows. The parse is what these
+# cases hold: measured at b9e4127d0d78, `-skip '<pattern>'` left the pattern in the command's
+# packages, where `go list` refuses it as a malformed import path and the whole run stops at
+# exit 2 naming a `go list` failure rather than the flag; `-skip=<pattern>` was dropped whole,
+# and the step was reported as running every test of its packages, the skipped ones included,
+# which is the shape that makes the exactly-once rule wrong: a test that runs nowhere reads as
+# covered, and one the step skips reads as a duplicate.
+echo "case: a -skip is read rather than dropped, in either form a step may write it"
+pattern='^(TestTheShippedWordsNameTheWaitingLineBand)$'
+for form in "-skip '$pattern'" "-skip=$pattern"; do
+  read -r in_packages retained <<<"$(py 'step = ex.Step(workflow="(a test case)", job="(a job)",
+               name="(a step)", workdir="packages/envoy", script="")
+text = f"go test -count=1 {sys.argv[1]} ./internal/textcheck/"
+try:
+    command = ex.parse_go_test(step, text, [])
+except ex.Refused:
+    # A refusal by name is a reading: the pattern reaches no package list and no count.
+    print("no yes")
+else:
+    # `text` is the line itself and holds the pattern whatever the parse made of it, so the
+    # question is whether any field the parse writes holds it.
+    parsed = {name: value for name, value in vars(command).items()
+              if name not in ("step", "text", "packages", "resolved")}
+    print("yes" if sys.argv[2] in command.packages else "no",
+          "yes" if any(sys.argv[2] in str(value) for value in parsed.values()) else "no")' \
+    "$form" "$pattern")"
+  check "$form does not leave its pattern among the packages" "$(is "$in_packages" "no")"
+  check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
+done
+
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
