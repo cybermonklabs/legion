@@ -1993,11 +1993,13 @@ worker_boot() {
     sessions_dir=$R/sessions
   fi
   mkdir -p "$sessions_dir"
-  # The record of what Envoy accepted gets a line for this agent's start, which opens the window
-  # of the file its own sends sit in: the run's agents never overlap, since the one before this
-  # has exited and its stand-in is stopped just above, so every message after this line and
-  # before the next is this agent's (record-publishes.ts, score.ts's `publishes`).
-  [ -z "$R" ] || printf '{"at":"%s","boot":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$role" >>"$R/published.jsonl"
+  # Where the run keeps a record of what Envoy accepted (the two scenarios cmd_run starts the
+  # recorder for), it gets a line for this agent's start, which opens the window of the file its
+  # own sends sit in: the run's agents never overlap, since the one before this has exited and
+  # its stand-in is stopped just above, so every message after this line and before the next is
+  # this agent's (record-publishes.ts, score.ts's `publishes`).
+  [ ! -f "$R/published.jsonl" ] ||
+    printf '{"at":"%s","boot":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$role" >>"$R/published.jsonl"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
@@ -2185,12 +2187,27 @@ cmd_run() {
   # What Envoy accepted on this run's role topics, recorded by a subscriber of the bus rather than
   # read out of an agent's own code afterwards (record-publishes.ts): `<run>/published.jsonl` is
   # what the score and reviewer_wake both read, so neither works out what was sent from what the
-  # agent wrote. Started before any agent of the run, stopped with the run (stop_run).
-  : >"$R/published.jsonl"
-  start_process record bun "$here/record-publishes.ts" "$R/published.jsonl" \
-    "legion-$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")-"
-  await_start record "$record_pid" 30 "the publish recorder to subscribe" \
-    grep -q '^recording ' "$R/logs/record.log"
+  # agent wrote. Started before any agent of the run, stopped with the run (stop_run), and only
+  # for the two scenarios whose score reads what an agent sent: every other scenario measures one
+  # agent that publishes nothing, so a recorder there would be a bus dependency its runs do not
+  # have. The run reads the bus from its batch's services file, since `rig.sh run` is a process
+  # of its own and the URL the batch resolved is recorded there and in no variable of this one.
+  case $scenario in
+    reviewer-text-findings | threads-closed)
+      : >"$R/published.jsonl"
+      start_process record env \
+        "SKILL_SCENARIOS_NATS_URL=$(sed -n 's/^ENVOY_NATS_URL=//p' "$services_env")" \
+        bun "$here/record-publishes.ts" "$R/published.jsonl" \
+        "legion-$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")-"
+      await_start record "$record_pid" 30 "the publish recorder to subscribe" \
+        grep -q '^recording ' "$R/logs/record.log"
+      ;;
+  *)
+    # Said in the run's own log, so a reader of a run with no `published.jsonl` knows the recorder
+    # was never wanted rather than that it failed.
+    printf 'no publish recorder: %s scores no message of an agent\n' "$scenario" >"$R/logs/record.log"
+    ;;
+  esac
   case $scenario in
   ask-on-message) run_ask_on_message "$name" ;;
   measure-before-ask) run_measure_before_ask "$name" ;;
