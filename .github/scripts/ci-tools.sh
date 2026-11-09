@@ -16,17 +16,35 @@
 #   the source that served those bytes named, and reads nothing else.
 #
 # Every exit, success or failure, names the source that served the bytes: `github-release`,
-# `ghcr-mirror` or `npm`. A failure leaves no file at the destination, so a call site that checks
-# the exit status never runs a half-written or unverified file, and one that does not check it
-# finds nothing to run.
-# Those three words are the whole vocabulary of a source, and a row's own `second_source` is
-# written in the two of them a second source is read with, so a line, a refusal and the manifest
-# say one word for one source. A call site takes the word from the row with ci_tools_source_name
-# below and writes none of its own: a row that moved to another source while an action held the
-# old word would name a service that served no byte of what it installed.
-# `github-release` is every row's primary and no row's second source, and ci_tools__second_fetch
-# below is the one list of the words a `second_source:` may hold, so no word is printed for a row
-# and then refused when the bytes are fetched.
+# `ghcr-mirror`, `npm`, `pypi` or `pulumi-releases`. A failure leaves no file at the destination,
+# so a call site that checks the exit status never runs a half-written or unverified file, and
+# one that does not check it finds nothing to run.
+# Those five words are the whole vocabulary of a source, and a row writes one of them on each of
+# its two sides, in `primary_source` and in `second_source`, so a line, a refusal and the
+# manifest say one word for one source. A call site takes the word from the row with
+# ci_tools_source_name below and writes none of its own: a row that moved to another source
+# while an action held the old word would name a service that served no byte of what it
+# installed.
+# ci_tools__source_fetch below is the one list of those words, and it is read for both sides, so
+# no word is printed for a row and then refused when the bytes are fetched. What each word reads
+# is the row's own fields for the side the word is written on:
+#
+#   github-release          `primary` or `second_url`, through the CI_TOOLS_GITHUB_BASE seam.
+#                           It is most rows' primary, and it is a second source as well: Pulumi
+#                           publishes the CLI tarball as a release asset and serves those same
+#                           bytes from get.pulumi.com.
+#   pypi, pulumi-releases   the same two URL fields, through the CI_TOOLS_URL_BASE seam. Two
+#                           words for the one fetch ci_tools__fetch_url makes, because the word
+#                           is the service a line and a refusal name and PyPI is not
+#                           get.pulumi.com: PyPI serves uv's wheel, get.pulumi.com serves the
+#                           docker provider plugin's tarball and the CLI's.
+#   ghcr-mirror             the row's blob in the package `registry:` names.
+#   npm                     the row's `npm_package` and `npm_member`.
+#
+# `ghcr-mirror` and `npm` are second sources and no row's primary — a copy this repository fills
+# is no origin of the bytes, and npm is where Bun publishes a second copy of a binary GitHub
+# serves first — so a row whose `primary_source` names one is refused by the same sentence that
+# refuses a word this file has never heard of, with the side it was written on named.
 #
 # Two more words a line may say and no row may hold: `cache` and `existing-install`.
 # .github/actions/setup-bun writes both itself, where it installed nothing and read what
@@ -94,25 +112,74 @@
 #                                         names <source>. It is what an action calls to hold an
 #                                         installed binary to its row, so it leaves the file where
 #                                         it is, whichever way it answers.
-#   ci_tools_fetch <row> <dest>           the primary first, then the second source.
+#   ci_tools_fetch <row> <dest>           the primary first, then the second source. Where the
+#                                         row names a `primary_member`, what reaches <dest> is
+#                                         that member of the primary's archive.
+#   ci_tools_fetch_primary <row> <dest>   the primary alone, and the archive rather than the
+#                                         member: the bytes that URL serves, held to the row's
+#                                         `primary_digest` where it names one and to its own
+#                                         `digest` where it does not. It reads no second source.
+#                                         .github/scripts/ci-tools-proof.sh stages a row's
+#                                         primary bytes with it, which for a row whose `digest`
+#                                         is of a member is not the file ci_tools_fetch leaves.
 #   ci_tools_fetch_fallback <row> <dest>  the second source alone, for a row whose primary bytes a
 #                                         third party fetches: setup-bun fetches Bun's zip and
 #                                         mise fetches jj's tarball, so there is no primary here
 #                                         to try.
 #
-# THE FOUR SEAMS, each read with a default, so a CI job sets none of them:
+# THE FIELDS OF A ROW THOSE FETCHES READ, beyond the `digest` and the `max_time` every row
+# carries:
+#
+#   primary_source     the word the row's primary is read with, which is the word every line and
+#                      every refusal of it says. Every row carries it, a row whose primary bytes
+#                      a third party fetches included, since that row's action says this word
+#                      about the bytes it installed.
+#   primary            the URL that source serves the primary's bytes at, and "" where a third
+#                      party fetches them, which sends ci_tools_fetch straight to the second
+#                      source.
+#   second_source      the word the row's second source is read with.
+#   second_url         where that source serves this row's bytes, written whole, because a
+#                      service has no one prefix every row of it begins with the way a release
+#                      asset has https://github.com.
+#   second_member      the member to take out of what `second_url` served, and "" to keep the
+#                      whole file. A `.whl` or a `.zip` is read with python3's zipfile and
+#                      anything else with `tar -xzO`, as the npm fetch reads its tarball.
+#   primary_digest     the sha256 of the bytes the PRIMARY URL serves, for the row whose own
+#                      `digest` is of something inside them: uv's `digest` is of the binary,
+#                      which PyPI's wheel and GitHub's tarball each hold, so the archive GitHub
+#                      serves has a digest of its own and this is it. A mismatch on it is the
+#                      supply-chain signal a mismatch on `digest` is, and the second source is
+#                      not read after one. "" where the primary serves exactly the bytes the row
+#                      pins, which is every other row.
+#   primary_digest_of  the prose saying what `primary_digest` is of, which the refusal of a
+#                      mismatch on it says. "" where unused.
+#   primary_member     the member to take out of the primary's archive, by the suffix rule
+#                      above, before the row's own `digest` is checked, so the digest answers
+#                      for the member and the archive reaches no destination. "" where unused.
+#
+# THE FIVE SEAMS, each read with a default, so a CI job sets none of them:
 #
 #   CI_TOOLS_MANIFEST      the manifest. Default: the ci-tools.yaml beside this file's directory,
 #                          resolved from ${BASH_SOURCE[0]}, so a composite action that sources
 #                          this file by any path finds the manifest without naming it.
-#   CI_TOOLS_GITHUB_BASE   default https://github.com. A row's `primary` and `mirror_from` begin
-#                          with that string, and this file replaces exactly that prefix.
+#   CI_TOOLS_GITHUB_BASE   default https://github.com. The URL a `github-release` side of a row
+#                          writes — its `primary`, its `second_url` — and a row's `mirror_from`
+#                          begin with that string, and this file replaces exactly that prefix.
 #   CI_TOOLS_GHCR_BASE     default https://ghcr.io, read by ci_tools__ghcr alone, so every
 #                          address of the package is built the one way.
 #   CI_TOOLS_NPM_BASE      default https://registry.npmjs.org.
+#   CI_TOOLS_URL_BASE      default empty, which fetches the URL a `pypi` or `pulumi-releases`
+#                          side of a row writes exactly as the row wrote it. Set, it replaces
+#                          that URL's scheme and host and keeps its path, so
+#                          https://files.pythonhosted.org/packages/u/uv.whl under
+#                          CI_TOOLS_URL_BASE=http://127.0.0.1:9/url is fetched at
+#                          http://127.0.0.1:9/url/packages/u/uv.whl. It replaces a scheme and a
+#                          host rather than one literal prefix, because every row of such a
+#                          source writes an address of its own. Read by ci_tools__seamed_url
+#                          alone, so every such URL is fetched the one way.
 #
-# .github/scripts/ci-tools.test.sh serves all three sources from a local HTTP origin through those
-# four seams, so every case runs this file's own code and no case reaches the network.
+# .github/scripts/ci-tools.test.sh serves all four sources from a local HTTP origin through those
+# five seams, so every case runs this file's own code and no case reaches the network.
 
 # ci_tools__error <sentence>: a refusal, as a GitHub annotation on stderr.
 ci_tools__error() {
@@ -209,6 +276,24 @@ ci_tools__read() {
   return 1
 }
 
+# ci_tools__read_optional <variable> <row> <field>: that field of that row into <variable>, and
+# an empty string where the row carries no such field. It is how the fields a row writes only
+# where it uses them are read — `primary_digest`, `primary_digest_of` and `primary_member` — so
+# a row that uses none of them is read without a refusal about a field it was never going to
+# carry, and a row that leaves one out is read as the "" a row that does not use it writes.
+ci_tools__read_optional() {
+  local __variable=$1 __row=$2 __field=$3 __key __value
+  ci_tools__row "$__row" || return 1
+  printf -v "$__variable" '%s' ''
+  while IFS=$'\t' read -r __key __value; do
+    if [ "$__key" = "$__field" ]; then
+      printf -v "$__variable" '%s' "$__value"
+      return 0
+    fi
+  done <<<"$ci_tools__row_fields"
+  return 0
+}
+
 # ci_tools_field <row> <field>: one field of that row, printed. It is what a call site outside
 # this file reads a row with.
 ci_tools_field() {
@@ -227,40 +312,38 @@ ci_tools_field() {
 # from, so no action holds a source word of its own and a row that moves to another second source
 # moves every sentence about it with one edit.
 #
-# `second` is the row's own `second_source`, and a word ci_tools__second_fetch below has no
-# fetch function for is refused rather than printed: that one case decides which words a second
-# source is written in, so a word this file would name and then refuse to fetch — which
-# `github-release` was, since it is every row's primary and no row's second source — cannot
-# exist, and a new second source is one edit in one place.
+# `second` is the row's own `second_source` and `primary` is its own `primary_source`, and a
+# word ci_tools__source_fetch below reads no source of that side with is refused rather than
+# printed: that one case decides which words each side of a row is written in, so a word this
+# file would name and then refuse to fetch cannot exist, and a new source is one edit in one
+# place.
 #
-# `primary` is `github-release` for every row, because every row's primary is a GitHub release
-# asset: this helper fetches it for crane, changie and mise, and a third party fetches it for jj
-# (mise) and for Bun (oven-sh/setup-bun), which is why those rows carry an empty `primary`. The
-# row is read all the same, so a call site that names no row of the manifest is refused here
-# rather than printing a word about a tool this file knows nothing of.
+# Neither side is a constant. Most rows' primary is a GitHub release asset and the pulumi CLI's
+# is get.pulumi.com, and a third party fetches the primary bytes of jj (mise) and of Bun
+# (oven-sh/setup-bun), which is why those rows carry an empty `primary` and a `primary_source`
+# all the same: the word is what their action says about bytes it did not fetch here. The row is
+# read either way, so a call site that names no row of the manifest is refused here rather than
+# answered with a word about a tool this file knows nothing of.
 ci_tools_source_name() {
   if [ "$#" -ne 2 ]; then
     ci_tools__error "ci_tools_source_name takes a row and primary or second, and this call gave $#"
     return 1
   fi
-  local row=$1 which=$2 second fetch
-  ci_tools__row "$row" || return 1
+  local row=$1 which=$2 word fetch
   case "$which" in
-    primary)
-      printf '%s\n' github-release
-      ;;
-    second)
-      ci_tools__read second "$row" second_source || return 1
-      # The word is printed only where a fetch answers to it, and which function that is has no
-      # use here: reading it is the whole check.
-      ci_tools__second_fetch "$row" "$second" fetch || return 1
-      printf '%s\n' "$second"
-      ;;
+    primary) ci_tools__read word "$row" primary_source || return 1 ;;
+    second) ci_tools__read word "$row" second_source || return 1 ;;
     *)
+      # The row first, so a call that names no row of the manifest is refused by its own name.
+      ci_tools__row "$row" || return 1
       ci_tools__error "ci_tools_source_name reads the primary or the second source of a row, and this call asked for '$which'"
       return 1
       ;;
   esac
+  # The word is printed only where a fetch of that side answers to it, and which function that
+  # is has no use here: reading it is the whole check.
+  ci_tools__source_fetch "$row" "$which" "$word" fetch || return 1
+  printf '%s\n' "$word"
 }
 
 # ci_tools_digest <row>: that row's pinned digest.
@@ -308,6 +391,38 @@ PY
   [ -z "$names" ] || printf '%s\n' "$names"
 }
 
+# ci_tools__hold <row> <file> <source> <digest> <what that digest is of>: holds <file> to that
+# digest, saying nothing where it holds and refusing where it does not. It is the one digest
+# comparison this file makes: ci_tools__verify_as below answers a row's own `digest` with it and
+# ci_tools__primary_check answers a row's `primary_digest` with it, so no two checks of this
+# repository can disagree about what a match is or about what a mismatch says.
+# The fifth argument is the prose saying what the digest is of, which the refusal names. It is
+# empty where the digest is of the bytes themselves, which is every row's own `digest`, and the
+# sentence then carries no clause.
+ci_tools__hold() {
+  local row=$1 file=$2 source=$3 want=$4 of=$5 read_back
+  read_back=$(sha256sum -- "$file") || {
+    ci_tools__error "$row: $source left no file this run can read at $file — refusing"
+    return 1
+  }
+  read_back=${read_back%% *}
+  if [ "$read_back" != "$want" ]; then
+    ci_tools__error "$row: the bytes from $source are not the pinned ones${of:+ for $of} (pinned sha256 $want, read sha256 $read_back) — refusing"
+    return 1
+  fi
+  return 0
+}
+
+# ci_tools__verify_as <row> <file> <source> <digest> <what that digest is of>: that comparison
+# and the line that names <source>. ci_tools_verify below answers a row's own `digest` with it,
+# ci_tools__place writes the line of every fetch with it, and ci_tools_fetch_primary names the
+# primary's own digest through it, so one spelling of that line serves every exit.
+ci_tools__verify_as() {
+  local row=$1 file=$2 source=$3 want=$4 of=$5
+  ci_tools__hold "$row" "$file" "$source" "$want" "$of" || return 1
+  printf 'ci-tools: %s: %s served the bytes, sha256 %s\n' "$row" "$source" "$want"
+}
+
 # ci_tools_verify <row> <file> <source>: holds <file> to the row's digest, and says so either way.
 # It never deletes the file: an action calls it to hold an installed binary to its row, and the
 # caller that fetched the file is the one that owns it.
@@ -316,18 +431,9 @@ ci_tools_verify() {
     ci_tools__error "ci_tools_verify takes a row, a file and a source, and this call gave $#"
     return 1
   fi
-  local row=$1 file=$2 source=$3 want read_back
+  local row=$1 file=$2 source=$3 want
   ci_tools__read want "$row" digest || return 1
-  read_back=$(sha256sum -- "$file") || {
-    ci_tools__error "$row: $source left no file this run can read at $file — refusing"
-    return 1
-  }
-  read_back=${read_back%% *}
-  if [ "$read_back" != "$want" ]; then
-    ci_tools__error "$row: the bytes from $source are not the pinned ones (pinned sha256 $want, read sha256 $read_back) — refusing"
-    return 1
-  fi
-  printf 'ci-tools: %s: %s served the bytes, sha256 %s\n' "$row" "$source" "$want"
+  ci_tools__verify_as "$row" "$file" "$source" "$want" ''
 }
 
 # ci_tools__tempfile <row>: a file under the runner's own temporary directory. Every path below
@@ -376,12 +482,39 @@ ci_tools_github_url() {
   esac
 }
 
-# ci_tools__place <row> <file> <dest> <source>: the one end of a successful fetch. It verifies the
-# digest before the bytes reach <dest>, so a mismatch leaves nothing there, and it removes <file>
-# on every path that does not move it.
+# ci_tools__seamed_url <url>: that URL with the CI_TOOLS_URL_BASE seam in place of its scheme and
+# host, and the URL as it was written where that seam is empty, which is every CI job. It is the
+# one reader of that seam, as ci_tools__ghcr is of CI_TOOLS_GHCR_BASE.
+# It replaces a scheme and a host where ci_tools_github_url replaces one literal prefix, because
+# a row's `second_url` is the whole address one service serves that row's bytes at and no one
+# prefix every such row begins with: PyPI's host is not get.pulumi.com's.
+ci_tools__seamed_url() {
+  local url=$1 base=${CI_TOOLS_URL_BASE:-} path
+  if [ -z "$base" ]; then
+    printf '%s\n' "$url"
+    return 0
+  fi
+  path=${url#*://}
+  case "$path" in
+    */*) path=/${path#*/} ;;
+    *) path='' ;;
+  esac
+  printf '%s%s\n' "${base%/}" "$path"
+}
+
+# ci_tools__place <row> <file> <dest> <source> [<digest> [<what that digest is of>]]: the one end
+# of a successful fetch. It verifies the digest before the bytes reach <dest>, so a mismatch
+# leaves nothing there, and it removes <file> on every path that does not move it.
+# With no digest it is the row's own, which is the digest every fetch of a row's bytes places
+# them under. ci_tools_fetch_primary names the primary's own digest instead, because the archive
+# it places is not the file that row's `digest` is of.
 ci_tools__place() {
-  local row=$1 file=$2 dest=$3 source=$4
-  if ! ci_tools_verify "$row" "$file" "$source"; then
+  local row=$1 file=$2 dest=$3 source=$4 digest=${5:-} of=${6:-}
+  if [ -z "$digest" ] && ! ci_tools__read digest "$row" digest; then
+    rm -f -- "$file"
+    return 1
+  fi
+  if ! ci_tools__verify_as "$row" "$file" "$source" "$digest" "$of"; then
     rm -f -- "$file"
     return 1
   fi
@@ -521,12 +654,14 @@ ci_tools_blob_url() {
   printf '%s/blobs/sha256:%s\n' "$registry_url" "$digest"
 }
 
-# ci_tools__fetch_ghcr <row> <max_time> <file>: the row's blob from the copy in the package the
-# manifest's `registry:` names, read with the anonymous pull token above. The blob is already the
-# bytes the digest names, so nothing is taken out of it.
+# ci_tools__fetch_ghcr <row> <side> <max_time> <file>: the row's blob from the copy in the
+# package the manifest's `registry:` names, read with the anonymous pull token above. The blob
+# is already the bytes the digest names, so nothing is taken out of it.
+# The side is the second argument of every source fetch and this one does not read it: the list
+# in ci_tools__source_fetch reads `ghcr-mirror` as a second source and no row's primary.
 # Prints what happened, and returns non-zero, where the service did not serve the bytes.
 ci_tools__fetch_ghcr() {
-  local row=$1 max_time=$2 file=$3
+  local row=$1 max_time=$3 file=$4
   local url token status=0
   url=$(ci_tools_blob_url "$row") || return 1
   # The token helper prints what went wrong in place of a token, and this is the caller that
@@ -543,12 +678,14 @@ ci_tools__fetch_ghcr() {
   return 0
 }
 
-# ci_tools__fetch_npm <row> <max_time> <file>: the row's binary out of the npm package upstream
-# publishes it in. npm needs no copy of ours: it is a service every job already reaches, and it
-# holds the same binary upstream puts in the GitHub zip.
+# ci_tools__fetch_npm <row> <side> <max_time> <file>: the row's binary out of the npm package
+# upstream publishes it in. npm needs no copy of ours: it is a service every job already
+# reaches, and it holds the same binary upstream puts in the GitHub zip.
+# The side goes unread here for the reason it goes unread above: `npm` is a second source and
+# no row's primary.
 # Prints what happened, and returns non-zero, where the service did not serve the bytes.
 ci_tools__fetch_npm() {
-  local row=$1 max_time=$2 file=$3
+  local row=$1 max_time=$3 file=$4
   local base=${CI_TOOLS_NPM_BASE:-https://registry.npmjs.org}
   local package version member tarball status=0
   ci_tools__read package "$row" npm_package || return 1
@@ -575,55 +712,229 @@ ci_tools__fetch_npm() {
   return 0
 }
 
-# ci_tools__second_fetch <row> <second source word> <variable>: the function that reads that
-# second source, into <variable>, and a refusal naming the row and the word where this file has
-# none. It is the one list of the words a second source is written in: ci_tools__second_source
-# below fetches a row's bytes with the function it answers, and ci_tools_source_name above
-# prints a row's word only where it answers one, so a word the manifest carries and no source
-# of this file reads is refused by both, in one sentence, and a new second source is one case
-# here rather than three lists that can disagree.
-ci_tools__second_fetch() {
-  local row=$1 second=$2 __variable=$3
-  case "$second" in
-    ghcr-mirror) printf -v "$__variable" '%s' ci_tools__fetch_ghcr ;;
-    npm) printf -v "$__variable" '%s' ci_tools__fetch_npm ;;
+# ci_tools__extract <archive> <member> <destination> <url>: that member of that archive at
+# <destination>. The address the archive came from decides how it is read, and not the archive's
+# own path, which is a temporary file of this run and carries no suffix: a `.whl` or a `.zip`
+# with python3's zipfile, which this file already reads every row of the manifest with, and
+# anything else with `tar -xzO`, as the npm fetch above reads its tarball.
+# Prints what happened, and returns non-zero, where the archive holds no such member, so the
+# caller refuses by the member and the archive rather than by the digest of an empty file.
+ci_tools__extract() {
+  local archive=$1 member=$2 destination=$3 url=$4 name status=0
+  # The suffix is read off the address with no query and no fragment, which PyPI writes.
+  name=${url%%\?*}
+  name=${name%%#*}
+  case "$name" in
+    *.whl | *.zip)
+      PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import shutil
+import sys
+import zipfile
+
+archive, member, destination = sys.argv[1:4]
+with zipfile.ZipFile(archive) as held, held.open(member) as source, open(destination, "wb") as sink:
+    shutil.copyfileobj(source, sink)
+' "$archive" "$member" "$destination" 2>/dev/null || status=$?
+      if [ "$status" -ne 0 ]; then
+        printf 'the archive at %s holds no %s (python3 exit %s)\n' "$url" "$member" "$status"
+        return 1
+      fi
+      ;;
     *)
-      ci_tools__error "$row: the manifest's second_source is '$second', and this file reads ghcr-mirror and npm"
+      tar -xzOf "$archive" "$member" > "$destination" || status=$?
+      if [ "$status" -ne 0 ]; then
+        printf 'the archive at %s holds no %s (tar exit %s)\n' "$url" "$member" "$status"
+        return 1
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# ci_tools__fetch_address <row> <side> <max_time> <file> <seam>: the bytes one URL of the row
+# serves, into <file>, with that URL put through <seam> first. It is how every source this file
+# reads at an address of its own is fetched, and the word decides only which seam that is:
+# ci_tools__fetch_release below passes ci_tools_github_url and ci_tools__fetch_url passes
+# ci_tools__seamed_url.
+#
+# The side decides which fields are read. `second` reads `second_url` and takes `second_member`
+# out of what arrived, because the bytes the row's own `digest` answers for are that member.
+# `primary` reads `primary` and takes nothing out: the archive is held to the row's
+# `primary_digest` first, and ci_tools__primary_check does that and then takes `primary_member`
+# out, so one place takes the primary's member out whatever word the primary is written in.
+#
+# Prints what happened, and returns non-zero, where the service did not serve the bytes.
+ci_tools__fetch_address() {
+  local row=$1 side=$2 max_time=$3 file=$4 seam=$5
+  local url member='' archive='' target=$4 report status=0
+  if [ "$side" = primary ]; then
+    ci_tools__read url "$row" primary || return 1
+  else
+    ci_tools__read url "$row" second_url || return 1
+    ci_tools__read member "$row" second_member || return 1
+  fi
+  if [ -n "$member" ]; then
+    archive=$(ci_tools__tempfile "$row-archive") || {
+      printf 'this run could not make a temporary file for the archive at %s\n' "$url"
+      return 1
+    }
+    target=$archive
+  fi
+  ci_tools_curl "$target" "$max_time" "$("$seam" "$url")" || status=$?
+  if [ "$status" -ne 0 ]; then
+    [ -z "$archive" ] || rm -f -- "$archive"
+    # The word of the source stands before this sentence wherever it is printed, so what is
+    # left to say is what curl did, which is what the primary's line has said since this file
+    # read one source.
+    printf 'curl exit %s\n' "$status"
+    return 1
+  fi
+  [ -n "$member" ] || return 0
+  report=$(ci_tools__extract "$archive" "$member" "$file" "$url") || status=$?
+  rm -f -- "$archive"
+  if [ "$status" -ne 0 ]; then
+    printf '%s\n' "$report"
+    return 1
+  fi
+  return 0
+}
+
+# ci_tools__fetch_release <row> <side> <max_time> <file>: the `github-release` word on either
+# side, which is a release asset read through the CI_TOOLS_GITHUB_BASE seam.
+ci_tools__fetch_release() {
+  ci_tools__fetch_address "$1" "$2" "$3" "$4" ci_tools_github_url
+}
+
+# ci_tools__fetch_url <row> <side> <max_time> <file>: the `pypi` and `pulumi-releases` words on
+# either side, which is the whole address the row writes, read through the CI_TOOLS_URL_BASE
+# seam.
+ci_tools__fetch_url() {
+  ci_tools__fetch_address "$1" "$2" "$3" "$4" ci_tools__seamed_url
+}
+
+# ci_tools__source_fetch <row> <primary|second> <source word> <variable>: the function that
+# reads that word on that side, into <variable>, and a refusal naming the row, the field it was
+# written in and the words that side is written in where this file reads none.
+# It is the one list of the words a source is written in, and it is read for both sides:
+# ci_tools_fetch and ci_tools__second_source fetch a row's bytes with the function it answers,
+# and ci_tools_source_name above prints a row's word only where it answers one, so a word the
+# manifest carries and no source of this file reads is refused by both, in one sentence, and a
+# new source is one case here rather than several lists that can disagree.
+# `ghcr-mirror` and `npm` answer on the second side alone, which is what makes a row whose
+# `primary_source` is one of them a refusal that names the side it was written on.
+ci_tools__source_fetch() {
+  local row=$1 side=$2 word=$3 __variable=$4
+  case "$side/$word" in
+    */github-release) printf -v "$__variable" '%s' ci_tools__fetch_release ;;
+    */pypi | */pulumi-releases) printf -v "$__variable" '%s' ci_tools__fetch_url ;;
+    second/ghcr-mirror) printf -v "$__variable" '%s' ci_tools__fetch_ghcr ;;
+    second/npm) printf -v "$__variable" '%s' ci_tools__fetch_npm ;;
+    primary/*)
+      ci_tools__error "$row: the manifest's primary_source is '$word', and this file reads github-release, pypi and pulumi-releases as a primary"
+      return 1
+      ;;
+    *)
+      ci_tools__error "$row: the manifest's second_source is '$word', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases"
       return 1
       ;;
   esac
 }
 
-# ci_tools__second_source <row> <dest> <what the primary did>: the second source alone. The third
-# argument is empty where there was no primary to try, and the refusal then names one source.
+# ci_tools__second_source <row> <dest> <the primary's word> <what the primary did>: the second
+# source alone. The last two arguments are empty where there was no primary to try, and the
+# refusal then names one source.
 ci_tools__second_source() {
-  local row=$1 dest=$2 primary_report=$3
+  local row=$1 dest=$2 primary_word=$3 primary_report=$4
   local second source fetch max_time file report status=0
   ci_tools__read second "$row" second_source || return 1
   ci_tools__read max_time "$row" max_time || return 1
   # The row's own word is the source a line and a refusal name, so nothing here translates it,
-  # and the mapper above decides the one thing left: which function reads that source. A word
-  # the manifest carries and no fetch answers to is refused there rather than left to fetch
-  # nothing, since an empty temporary file would be refused by the digest check instead, which
-  # is the wrong refusal for the wrong reason.
+  # and the list above decides the one thing left: which function reads that source on this
+  # side. A word the manifest carries and no fetch answers to is refused there rather than left
+  # to fetch nothing, since an empty temporary file would be refused by the digest check
+  # instead, which is the wrong refusal for the wrong reason.
   source=$second
-  ci_tools__second_fetch "$row" "$second" fetch || return 1
+  ci_tools__source_fetch "$row" second "$second" fetch || return 1
   file=$(ci_tools__tempfile "$row") || {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1
   }
-  report=$("$fetch" "$row" "$max_time" "$file") || status=$?
+  report=$("$fetch" "$row" second "$max_time" "$file") || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$file"
     [ -n "$report" ] || report="the fetch failed (exit $status)"
-    if [ -n "$primary_report" ]; then
-      ci_tools__error "$row: no source served the bytes; github-release: $primary_report; $source: $report"
+    if [ -n "$primary_word" ]; then
+      ci_tools__error "$row: no source served the bytes; $primary_word: $primary_report; $source: $report"
     else
       ci_tools__error "$row: no source served the bytes; $source: $report"
     fi
     return 1
   fi
   ci_tools__place "$row" "$file" "$dest" "$source"
+}
+
+# ci_tools__primary_digest <row> <digest variable> <prose variable>: the digest the bytes the
+# primary serves are held to, and the prose saying what it is of, into those two variables.
+# A row whose `primary_digest` is not empty pins the archive there, because its own `digest` is
+# of something inside that archive: uv's `digest` is of the binary, which GitHub's tarball and
+# PyPI's wheel each hold, so the bytes GitHub serves have a digest of their own and that field
+# is it. A row that leaves it empty is served exactly the bytes it pins, so the digest of what
+# the primary serves is the row's own `digest` and the prose is empty.
+# It is the one statement of that rule: ci_tools__primary_check below holds the archive to it
+# before the member is taken out, and ci_tools_fetch_primary holds to it the archive it leaves
+# at the destination, so the two cannot disagree about what the primary's bytes are.
+ci_tools__primary_digest() {
+  local __row=$1 __digest=$2 __of=$3 __named
+  ci_tools__read_optional __named "$__row" primary_digest || return 1
+  if [ -n "$__named" ]; then
+    printf -v "$__digest" '%s' "$__named"
+    ci_tools__read_optional "$__of" "$__row" primary_digest_of || return 1
+    return 0
+  fi
+  printf -v "$__of" '%s' ''
+  ci_tools__read "$__digest" "$__row" digest
+}
+
+# ci_tools__primary_check <row> <file> <url> <the primary's word>: what stands between the bytes
+# the primary served and the digest check of the row, for a row that names one or both of two
+# fields. <url> is the address those bytes came from: it decides how an archive is read, and it
+# is what a refusal names, together with the word that source is written in. A row that names
+# neither field leaves <file> exactly as it arrived.
+#
+# `primary_digest` is the sha256 of the bytes the primary serves, and the archive is held to it
+# here, before anything is taken out of it. A mismatch is the supply-chain signal a mismatch on
+# the row's own `digest` is, so the caller answers for the bytes that arrived and reads no
+# second source after one.
+#
+# `primary_member` is the member of that archive the row's own `digest` is of, and it replaces
+# the archive at <file>, so what ci_tools__place then verifies and moves is the member and the
+# archive reaches no destination.
+ci_tools__primary_check() {
+  local row=$1 file=$2 url=$3 word=$4
+  local named digest of member extracted report status=0
+  ci_tools__read_optional named "$row" primary_digest || return 1
+  if [ -n "$named" ]; then
+    ci_tools__primary_digest "$row" digest of || return 1
+    ci_tools__hold "$row" "$file" "$word" "$digest" "$of" || return 1
+  fi
+  ci_tools__read_optional member "$row" primary_member || return 1
+  [ -n "$member" ] || return 0
+  extracted=$(ci_tools__tempfile "$row-member") || {
+    ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+    return 1
+  }
+  report=$(ci_tools__extract "$file" "$member" "$extracted" "$url") || status=$?
+  if [ "$status" -ne 0 ]; then
+    rm -f -- "$extracted"
+    ci_tools__error "$row: $word served the bytes, and $report — refusing"
+    return 1
+  fi
+  if ! mv -f -- "$extracted" "$file"; then
+    rm -f -- "$extracted"
+    ci_tools__error "$row: $word served the bytes, and this run could not keep the $member it took out of them — refusing"
+    return 1
+  fi
+  return 0
 }
 
 # ci_tools_fetch <row> <dest>: the row's bytes at <dest>, from the primary where it serves them
@@ -633,29 +944,77 @@ ci_tools_fetch() {
     ci_tools__error "ci_tools_fetch takes a row and a destination, and this call gave $#"
     return 1
   fi
-  local row=$1 dest=$2 primary max_time file status=0
+  local row=$1 dest=$2 primary word fetch max_time file report status=0
   ci_tools__read primary "$row" primary || return 1
   if [ -z "$primary" ]; then
     # A third party fetches this row's primary bytes, so there is nothing here to try first.
-    ci_tools__second_source "$row" "$dest" ''
+    ci_tools__second_source "$row" "$dest" '' ''
     return
   fi
+  ci_tools__read word "$row" primary_source || return 1
   ci_tools__read max_time "$row" max_time || return 1
+  # Which source reads that URL is the row's own `primary_source`, and the list answers it
+  # before a byte is fetched, so a word no primary is read with is refused here rather than
+  # after an outage has sent this row to its second source.
+  ci_tools__source_fetch "$row" primary "$word" fetch || return 1
   file=$(ci_tools__tempfile "$row") || {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1
   }
-  ci_tools_curl "$file" "$max_time" "$(ci_tools_github_url "$primary")" || status=$?
+  report=$("$fetch" "$row" primary "$max_time" "$file") || status=$?
   if [ "$status" -eq 0 ]; then
     # The bytes arrived. Whatever they are, this call answers for them: a mismatch here is a
-    # supply-chain signal, and the second source is never read after one.
-    ci_tools__place "$row" "$file" "$dest" github-release
+    # supply-chain signal, and the second source is never read after one, which holds for the
+    # row's `primary_digest` as much as for its own `digest`.
+    if ! ci_tools__primary_check "$row" "$file" "$primary" "$word"; then
+      rm -f -- "$file"
+      return 1
+    fi
+    ci_tools__place "$row" "$file" "$dest" "$word"
     return
   fi
   rm -f -- "$file"
-  printf 'ci-tools: %s: github-release did not serve the bytes (curl exit %s); trying the second source\n' \
-    "$row" "$status"
-  ci_tools__second_source "$row" "$dest" "curl exit $status"
+  [ -n "$report" ] || report="the fetch failed (exit $status)"
+  printf 'ci-tools: %s: %s did not serve the bytes (%s); trying the second source\n' \
+    "$row" "$word" "$report"
+  ci_tools__second_source "$row" "$dest" "$word" "$report"
+}
+
+# ci_tools_fetch_primary <row> <dest>: the row's primary bytes at <dest>, as the primary serves
+# them: the archive and not the member, held to the row's `primary_digest` where it names one
+# and to its own `digest` where it does not, and fetched through whichever word the row's
+# `primary_source` names. It reads no second source, because the question it answers is what
+# that one URL served.
+# .github/scripts/ci-tools-proof.sh stages a row's primary bytes with it: a row whose `digest`
+# is of a member needs the archive the primary actually serves, which is not the file
+# ci_tools_fetch leaves at a destination.
+ci_tools_fetch_primary() {
+  if [ "$#" -ne 2 ]; then
+    ci_tools__error "ci_tools_fetch_primary takes a row and a destination, and this call gave $#"
+    return 1
+  fi
+  local row=$1 dest=$2 primary word fetch max_time digest of file report status=0
+  ci_tools__read primary "$row" primary || return 1
+  if [ -z "$primary" ]; then
+    ci_tools__error "$row: a third party fetches this row's primary bytes, so this file has no primary URL to read them from — refusing"
+    return 1
+  fi
+  ci_tools__read word "$row" primary_source || return 1
+  ci_tools__read max_time "$row" max_time || return 1
+  ci_tools__source_fetch "$row" primary "$word" fetch || return 1
+  ci_tools__primary_digest "$row" digest of || return 1
+  file=$(ci_tools__tempfile "$row") || {
+    ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+    return 1
+  }
+  report=$("$fetch" "$row" primary "$max_time" "$file") || status=$?
+  if [ "$status" -ne 0 ]; then
+    rm -f -- "$file"
+    [ -n "$report" ] || report="the fetch failed (exit $status)"
+    ci_tools__error "$row: $word did not serve the bytes ($report) — refusing"
+    return 1
+  fi
+  ci_tools__place "$row" "$file" "$dest" "$word" "$digest" "$of"
 }
 
 # ci_tools_fetch_fallback <row> <dest>: the second source alone, for the rows whose primary bytes a
@@ -666,5 +1025,5 @@ ci_tools_fetch_fallback() {
     ci_tools__error "ci_tools_fetch_fallback takes a row and a destination, and this call gave $#"
     return 1
   fi
-  ci_tools__second_source "$1" "$2" ''
+  ci_tools__second_source "$1" "$2" '' ''
 }

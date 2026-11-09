@@ -3,18 +3,27 @@
 # not serve sends the fetch to the second source, a primary that serves other bytes than the row
 # pins stops the fetch there and the second source is never read, a second source that serves
 # other bytes is refused the same way, a refusal of both names both sources, and no refusal of any
-# kind leaves a file at the destination. It also runs the repository's own .github/ci-tools.yaml
-# through the helper, so a row this file cannot parse fails here rather than in a job.
+# kind leaves a file at the destination. A row whose second source writes an address of its own is
+# served whole or by the member it names, a row whose primary carries a `primary_digest` is held
+# to it before its `primary_member` is taken out, and ci_tools_fetch_primary leaves the archive
+# the primary served rather than that member. It also runs the repository's own
+# .github/ci-tools.yaml through the helper, so a row this file cannot parse fails here rather
+# than in a job.
 #
 # NO CASE REACHES THE NETWORK. Each case starts an HTTP origin of its own on 127.0.0.1, at a port
 # the kernel picks, serving a directory this file builds: `github/…` for the release asset,
-# `ghcr/token` and `ghcr/v2/…/blobs/sha256:…` for the package copy, and `npm/@scope/…tgz` for the
-# npm package. The case points the helper's four seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE,
-# CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE) at that origin and at a fixture manifest of six rows:
+# `ghcr/token` and `ghcr/v2/…/blobs/sha256:…` for the package copy, `npm/@scope/…tgz` for the npm
+# package, and `url/…` for a second source the row writes a whole address for. The case points
+# the helper's five seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE,
+# CI_TOOLS_NPM_BASE, CI_TOOLS_URL_BASE) at that origin and at a fixture manifest of ten rows:
 # a ghcr-mirror row with a primary, a ghcr-mirror row without one (jj's shape, where mise fetches
 # the primary bytes), an npm row (Bun's shape), a row whose `primary:` the manifest leaves null,
-# a row whose `second_source` is a word this repository does not write, and a row whose
-# `second_source` is `github-release`, which it does write and reads no second source from.
+# a row whose `second_source` is a word this repository does not write, a row whose
+# `primary_source` is a word no primary is read with, a pypi row whose primary serves an archive
+# with a digest of its own (uv's shape), a pulumi-releases row its second source serves whole
+# (the docker provider plugin's shape), a pulumi-releases row whose second source serves a
+# .tar.gz the row names a member of, and a row whose primary is a pulumi-releases address and
+# whose second source is that same tarball's release asset (the pulumi CLI's shape).
 # The origin writes every path it is asked for to a log, which is how a case says where a run
 # went and, for the mismatch case, where it did not go.
 #
@@ -98,7 +107,70 @@ tar -czf "$work/payloads/packaged.tgz" -C "$work/npm-build" package/bin/packaged
 cp "$work/payloads/packaged.changed" "$work/npm-build/package/bin/packaged"
 tar -czf "$work/payloads/packaged.changed.tgz" -C "$work/npm-build" package/bin/packaged
 
+# The uv-shaped payload: one binary, in a release tarball under one member and in a wheel under
+# another. The row's own `digest` is of that binary, so the archive the primary serves has a
+# digest of its own, which is what a row's `primary_digest` holds.
+printf 'the uv-like binary a tarball and a wheel both hold\n' > "$work/payloads/wheeled"
+WHEELED=$(digest_of "$work/payloads/wheeled")
+mkdir -p "$work/wheel-build/wheeled-7.0.0" "$work/wheel-build/wheeled-7.0.0.data/scripts" \
+  "$work/wheel-build/wheeled-7.0.0.dist-info"
+cp "$work/payloads/wheeled" "$work/wheel-build/wheeled-7.0.0/wheeled"
+cp "$work/payloads/wheeled" "$work/wheel-build/wheeled-7.0.0.data/scripts/wheeled"
+printf 'Name: wheeled\n' > "$work/wheel-build/wheeled-7.0.0.dist-info/METADATA"
+tar -czf "$work/payloads/wheeled.tar.gz" -C "$work/wheel-build" wheeled-7.0.0/wheeled
+# Another archive holding that same member: the bytes the row pins are inside it and it is not
+# the archive `primary_digest` names, which is what a case holds the archive's own digest to.
+printf 'a release note the pinned tarball does not hold\n' > "$work/wheel-build/wheeled-7.0.0/NOTES"
+tar -czf "$work/payloads/wheeled.other.tar.gz" -C "$work/wheel-build" \
+  wheeled-7.0.0/wheeled wheeled-7.0.0/NOTES
+WHEELED_TARBALL=$(digest_of "$work/payloads/wheeled.tar.gz")
+WHEELED_OTHER=$(digest_of "$work/payloads/wheeled.other.tar.gz")
+
+# zip_of <zip> <member…>: those members of $work/wheel-build in a zip, which is the archive a
+# wheel is. python3 writes it, as the helper reads it, so the case needs no zip command.
+zip_of() {
+  local archive=$1
+  shift
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$archive" "$work/wheel-build" "$@" <<'PY'
+import sys
+import zipfile
+
+archive, root = sys.argv[1:3]
+with zipfile.ZipFile(archive, "w") as held:
+    for member in sys.argv[3:]:
+        held.write(f"{root}/{member}", member)
+PY
+}
+zip_of "$work/payloads/wheeled.whl" \
+  wheeled-7.0.0.data/scripts/wheeled wheeled-7.0.0.dist-info/METADATA
+zip_of "$work/payloads/wheeled.no-member.whl" wheeled-7.0.0.dist-info/METADATA
+
+# The plugin tarball a second source serves whole, and a tarball whose member is the row's bytes,
+# which is the member rule on an archive that is no wheel.
+mkdir -p "$work/plugin-build" "$work/tarmember-build"
+printf 'the provider plugin binary, archive and all\n' > "$work/plugin-build/pulumi-resource-plugin"
+tar -czf "$work/payloads/plugin.tar.gz" -C "$work/plugin-build" pulumi-resource-plugin
+PLUGIN=$(digest_of "$work/payloads/plugin.tar.gz")
+cp "$work/payloads/jjlike" "$work/tarmember-build/jjlike"
+tar -czf "$work/payloads/tarmembered.tar.gz" -C "$work/tarmember-build" ./jjlike
+
+# The CLI tarball: one archive two services serve, which is the row whose primary is a service
+# of its own and whose second source is the release asset.
+mkdir -p "$work/cli-build"
+printf 'the CLI two services serve the same bytes of\n' > "$work/cli-build/clitool"
+tar -czf "$work/payloads/clitool.tar.gz" -C "$work/cli-build" clitool
+CLITOOL=$(digest_of "$work/payloads/clitool.tar.gz")
+
 ASSET_PATH=github/example/tarred/releases/download/v1.0.0/tarred.tar.gz
+WHEELED_ASSET_PATH=github/example/wheeled/releases/download/v7.0.0/wheeled.tar.gz
+PLUGIN_ASSET_PATH=github/example/plugin/releases/download/v8.0.0/plugin-v8.0.0-linux-amd64.tar.gz
+# The three paths the `url/…` subtree serves, which are the paths of the addresses the rows below
+# write: the CI_TOOLS_URL_BASE seam keeps a second_url's path and replaces its scheme and host.
+WHEEL_PATH=url/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
+PLUGIN_URL_PATH=url/plugins/plugin-v8.0.0-linux-amd64.tar.gz
+TARMEMBER_URL_PATH=url/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
+CLITOOL_URL_PATH=url/releases/sdk/clitool-v10.0.0-linux-x64.tar.gz
+CLITOOL_ASSET_PATH=github/example/clitool/releases/download/v10.0.0/clitool-v10.0.0-linux-x64.tar.gz
 cat > "$manifest" <<YAML
 registry: $REGISTRY
 
@@ -107,6 +179,7 @@ tools:
     version: 1.0.0
     digest: $TARRED
     digest_of: the fixture's release tarball, whole
+    primary_source: github-release
     primary: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
     second_source: ghcr-mirror
     max_time: 7
@@ -116,6 +189,7 @@ tools:
     version: 2.0.0
     digest: $JJLIKE
     digest_of: the binary inside the fixture's release tarball
+    primary_source: github-release
     primary: ""
     second_source: ghcr-mirror
     max_time: 7
@@ -125,6 +199,7 @@ tools:
     version: 3.0.0
     digest: $PACKAGED
     digest_of: the binary the package holds
+    primary_source: github-release
     primary: ""
     second_source: npm
     max_time: 7
@@ -137,6 +212,7 @@ tools:
     version: 4.0.0
     digest: $TARRED
     digest_of: the fixture's release tarball, whole
+    primary_source: github-release
     primary:
     second_source: ghcr-mirror
     max_time: 7
@@ -148,18 +224,70 @@ tools:
     version: 5.0.0
     digest: $TARRED
     digest_of: the fixture's release tarball, whole
+    primary_source: github-release
     primary: ""
     second_source: s3
     max_time: 7
-  # A row whose second source is `github-release`: a word this repository writes for a primary
-  # and reads no second source from. One reader decides which words a second source is written
-  # in, so the name and the fetch refuse this row in the same sentence.
-  - name: secondrelease
-    version: 6.0.0
+  # The pulumi CLI's shape: the primary is a service of its own and the second source is the
+  # release asset of the same tarball, so each side is a word and a URL of its own.
+  - name: clitool
+    version: 10.0.0
+    digest: $CLITOOL
+    digest_of: the CLI tarball, whole
+    primary_source: pulumi-releases
+    primary: https://get.example.com/releases/sdk/clitool-v10.0.0-linux-x64.tar.gz
+    second_source: github-release
+    second_url: https://github.com/example/clitool/releases/download/v10.0.0/clitool-v10.0.0-linux-x64.tar.gz
+    second_member: ""
+    max_time: 7
+  # A row whose `primary_source` is a word this file reads as a second source and as no row's
+  # primary, which is refused by the side it is written on.
+  - name: oddprimary
+    version: 11.0.0
     digest: $TARRED
     digest_of: the fixture's release tarball, whole
+    primary_source: ghcr-mirror
+    primary: https://github.com/example/oddprimary/releases/download/v11.0.0/oddprimary.tar.gz
+    second_source: ghcr-mirror
+    max_time: 7
+  # uv's shape: the row's `digest` is of the binary, the primary serves a tarball holding it
+  # under one member, and PyPI serves a wheel holding it under another.
+  - name: wheeled
+    version: 7.0.0
+    digest: $WHEELED
+    digest_of: the binary the fixture's release tarball and its wheel both hold
+    primary_source: github-release
+    primary: https://github.com/example/wheeled/releases/download/v7.0.0/wheeled.tar.gz
+    primary_digest: $WHEELED_TARBALL
+    primary_digest_of: the release tarball wheeled-7.0.0.tar.gz, whole
+    primary_member: wheeled-7.0.0/wheeled
+    second_source: pypi
+    second_url: https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
+    second_member: wheeled-7.0.0.data/scripts/wheeled
+    max_time: 7
+  # The provider plugin's shape: one service serves the whole archive the row pins, at an
+  # address of its own.
+  - name: plugin
+    version: 8.0.0
+    digest: $PLUGIN
+    digest_of: the plugin tarball, whole
+    primary_source: github-release
+    primary: https://github.com/example/plugin/releases/download/v8.0.0/plugin-v8.0.0-linux-amd64.tar.gz
+    second_source: pulumi-releases
+    second_url: https://releases.example.com/plugins/plugin-v8.0.0-linux-amd64.tar.gz
+    second_member: ""
+    max_time: 7
+  # A row whose second source serves a .tar.gz it names a member of, which is the member rule on
+  # an archive that is no wheel. A third party fetches its primary bytes, as jj's does.
+  - name: tarmembered
+    version: 9.0.0
+    digest: $JJLIKE
+    digest_of: the binary inside the tarball the second source serves
+    primary_source: github-release
     primary: ""
-    second_source: github-release
+    second_source: pulumi-releases
+    second_url: https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
+    second_member: ./jjlike
     max_time: 7
 YAML
 
@@ -194,7 +322,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
 PY
 
 # origin <name>: this case's origin, holding the bytes every row pins, with its server running and
-# its port read. Sets `root`, `log` and `base`, which the three base seams are built from. Each
+# its port read. Sets `root`, `log` and `base`, which the four base seams are built from. Each
 # case names its own origin: two cases sharing a name would share a directory, so a repeated name
 # is refused here rather than surfacing as one case seeing another's edits.
 origin() {
@@ -205,13 +333,23 @@ origin() {
     echo "  FAIL: the origin name '$name' is already taken by an earlier case" >&2
     return 1
   fi
-  mkdir -p "$root/$(dirname "$ASSET_PATH")" "$root/ghcr/v2/$REGISTRY_PATH/blobs" \
+  mkdir -p "$root/$(dirname "$ASSET_PATH")" "$root/$(dirname "$WHEELED_ASSET_PATH")" \
+    "$root/$(dirname "$PLUGIN_ASSET_PATH")" "$root/$(dirname "$CLITOOL_ASSET_PATH")" \
+    "$root/$(dirname "$WHEEL_PATH")" "$root/$(dirname "$PLUGIN_URL_PATH")" \
+    "$root/$(dirname "$CLITOOL_URL_PATH")" "$root/ghcr/v2/$REGISTRY_PATH/blobs" \
     "$root/npm/@fixture/packaged/-"
   : > "$log"
   cp "$work/payloads/tarred" "$root/$ASSET_PATH"
   printf '{"token":"fixture-token"}\n' > "$root/ghcr/token"
   cp "$work/payloads/tarred" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED"
   cp "$work/payloads/jjlike" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$JJLIKE"
+  cp "$work/payloads/wheeled.tar.gz" "$root/$WHEELED_ASSET_PATH"
+  cp "$work/payloads/plugin.tar.gz" "$root/$PLUGIN_ASSET_PATH"
+  cp "$work/payloads/clitool.tar.gz" "$root/$CLITOOL_ASSET_PATH"
+  cp "$work/payloads/wheeled.whl" "$root/$WHEEL_PATH"
+  cp "$work/payloads/plugin.tar.gz" "$root/$PLUGIN_URL_PATH"
+  cp "$work/payloads/tarmembered.tar.gz" "$root/$TARMEMBER_URL_PATH"
+  cp "$work/payloads/clitool.tar.gz" "$root/$CLITOOL_URL_PATH"
   cp "$work/payloads/packaged.tgz" "$root/npm/@fixture/packaged/-/packaged-3.0.0.tgz"
   python3 "$work/origin.py" "$root" "$work/origins/$name/port" "$log" &
   servers+=("$!")
@@ -235,6 +373,7 @@ run() {
     CI_TOOLS_GITHUB_BASE="$base/github" \
     CI_TOOLS_GHCR_BASE="$base/ghcr" \
     CI_TOOLS_NPM_BASE="$base/npm" \
+    CI_TOOLS_URL_BASE="$base/url" \
     PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
     bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
@@ -409,7 +548,7 @@ check "and prints nothing" "$(is "$out" "")"
 run ci_tools_digest crane
 check "an unknown row fails" "$(is "$status" 1)"
 check "naming the row and what the manifest holds" \
-  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: jjlike, nullprimary, oddsource, packaged, secondrelease, tarred)$")"
+  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: clitool, jjlike, nullprimary, oddprimary, oddsource, packaged, plugin, tarmembered, tarred, wheeled)$")"
 run ci_tools_field tarred npm_package
 check "a field this row does not carry fails" "$(is "$status" 1)"
 check "naming the row and the field" \
@@ -453,22 +592,30 @@ run ci_tools_source_name packaged second
 check "for an npm row too" "$(is "$out" "npm")"
 run ci_tools_source_name oddsource second
 check "a word no second source is read from fails" "$(is "$status" 1)"
-check "naming the row, the word and the two" \
-  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads ghcr-mirror and npm$")"
-# `github-release` is every row's primary and no row's second source. One reader decides which
-# words a second source is written in, so this row is refused by the name and by the fetch in
-# one sentence, rather than named here and refused where the bytes are read.
-run ci_tools_source_name secondrelease second
-check "github-release as a second source fails" "$(is "$status" 1)"
-check "in the sentence the fetch refuses it with" \
-  "$(contains "$out" "^::error::ci-tools: secondrelease: the manifest's second_source is 'github-release', and this file reads ghcr-mirror and npm$")"
-run ci_tools_source_name secondrelease primary
-check "while that row's primary is still that word" "$(is "$out" "github-release")"
-run ci_tools_fetch_fallback secondrelease "$work/dest/secondrelease"
+check "naming the row, the word and the five" \
+  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases$")"
+# Each side is the row's own word and neither is the other's default: this row's primary is a
+# service of its own, and `github-release` is its second source, which is a word a row may now
+# write on either side.
+run ci_tools_source_name clitool primary
+check "a primary that is no release asset is the row's own word" "$(is "$out" "pulumi-releases")"
+run ci_tools_source_name clitool second
+check "and a second source that is one says so" "$(is "$out" "github-release")"
+run ci_tools_source_name wheeled second
+check "a pypi row's second source is its own word" "$(is "$out" "pypi")"
+run ci_tools_source_name plugin second
+check "and a pulumi-releases row's is its own" "$(is "$out" "pulumi-releases")"
+# One list decides the words of both sides, so a word this file reads as a second source and as
+# no row's primary is refused by the side it was written on, here and where the bytes are read.
+run ci_tools_source_name oddprimary primary
+check "a word no primary is read with fails" "$(is "$status" 1)"
+check "naming the row, the field and the words a primary is written in" \
+  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi and pulumi-releases as a primary$")"
+run ci_tools_fetch oddprimary "$work/dest/oddprimary"
 check "and the fetch of that row fails" "$(is "$status" 1)"
 check "with the same sentence" \
-  "$(contains "$out" "^::error::ci-tools: secondrelease: the manifest's second_source is 'github-release', and this file reads ghcr-mirror and npm$")"
-check "and nothing is at the destination" "$(nothing_at "$work/dest/secondrelease")"
+  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi and pulumi-releases as a primary$")"
+check "and nothing is at the destination" "$(nothing_at "$work/dest/oddprimary")"
 run ci_tools_source_name tarred both
 check "a mode that is neither primary nor second fails" "$(is "$status" 1)"
 check "naming what the call asked for" \
@@ -517,6 +664,141 @@ run ci_tools_verify tarred "$work/payloads/tarred.changed" github-release
 check "a file whose digest does not match fails" "$(is "$status" 1)"
 check "naming the source and both digests" \
   "$(contains "$out" "^::error::ci-tools: tarred: the bytes from github-release are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
+
+echo "case: pulumi-releases — the second source serves the archive whole"
+origin url-whole
+rm -- "$root/$PLUGIN_ASSET_PATH"
+dest="$work/dest/url-whole"
+run ci_tools_fetch plugin "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$PLUGIN")"
+check "says the primary did not serve them" \
+  "$(contains "$out" '^ci-tools: plugin: github-release did not serve the bytes (curl exit 22); trying the second source$')"
+check "names the source that did" \
+  "$(contains "$out" "^ci-tools: plugin: pulumi-releases served the bytes, sha256 $PLUGIN$")"
+check "read the address the row writes, under the seam" \
+  "$(is "$(asked_for "$log" "/$PLUGIN_URL_PATH")" true)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: pypi — the member of a .whl is the row's bytes"
+origin url-wheel
+rm -- "$root/$WHEELED_ASSET_PATH"
+dest="$work/dest/url-wheel"
+run ci_tools_fetch wheeled "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the member's bytes" "$(is "$(digest_of "$dest")" "$WHEELED")"
+check "names the source that served them" \
+  "$(contains "$out" "^ci-tools: wheeled: pypi served the bytes, sha256 $WHEELED$")"
+check "read the wheel" "$(is "$(asked_for "$log" "/$WHEEL_PATH")" true)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: pulumi-releases — the member of a .tar.gz is the row's bytes"
+# The same member rule on an archive that is no wheel, which tar reads as the npm fetch does.
+origin url-tar-member
+dest="$work/dest/url-tar-member"
+run ci_tools_fetch tarmembered "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the member's bytes" "$(is "$(digest_of "$dest")" "$JJLIKE")"
+check "names the source that served them" \
+  "$(contains "$out" "^ci-tools: tarmembered: pulumi-releases served the bytes, sha256 $JJLIKE$")"
+check "read the address the row writes" "$(is "$(asked_for "$log" "/$TARMEMBER_URL_PATH")" true)"
+check "and read no release asset, this row having no primary" \
+  "$(is "$(asked_for "$log" "/github/")" false)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: github-release — the primary carries a digest of its own and a member"
+# uv's shape: the archive is held to `primary_digest`, the row's own `digest` is of the member
+# inside it, and the member is what reaches the destination.
+origin primary-member
+dest="$work/dest/primary-member"
+run ci_tools_fetch wheeled "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the member, not the archive" \
+  "$(is "$(digest_of "$dest")" "$WHEELED")"
+check "the line names the row's own digest" \
+  "$(contains "$out" "^ci-tools: wheeled: github-release served the bytes, sha256 $WHEELED$")"
+check "the release asset was read" "$(is "$(asked_for "$log" "/$WHEELED_ASSET_PATH")" true)"
+check "and no second source was" "$(is "$(asked_for "$log" "/url/")" false)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: github-release — the primary serves another archive than its primary_digest pins"
+# That archive holds the member the row pins and is not the archive the row pins, which is what
+# says the archive's own digest is checked and not the member's alone. A mismatch is a
+# supply-chain signal, so the second source is not read after one.
+origin primary-digest-changed
+cp "$work/payloads/wheeled.other.tar.gz" "$root/$WHEELED_ASSET_PATH"
+dest="$work/dest/primary-digest-changed"
+run ci_tools_fetch wheeled "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source, what that digest is of and both digests" \
+  "$(contains "$out" "^::error::ci-tools: wheeled: the bytes from github-release are not the pinned ones for the release tarball wheeled-7.0.0.tar.gz, whole (pinned sha256 $WHEELED_TARBALL, read sha256 $WHEELED_OTHER) — refusing$")"
+check "the second source was not read" "$(is "$(asked_for "$log" "/url/")" false)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: pypi — the archive holds no such member"
+# An archive without the member is a refusal naming the member and the archive, and not an empty
+# file the digest check would refuse for the wrong reason.
+origin url-member-missing
+rm -- "$root/$WHEELED_ASSET_PATH"
+cp "$work/payloads/wheeled.no-member.whl" "$root/$WHEEL_PATH"
+dest="$work/dest/url-member-missing"
+run ci_tools_fetch wheeled "$dest"
+check "fails" "$(is "$status" 1)"
+check "names both sources, the member and the archive" \
+  "$(contains "$out" '^::error::ci-tools: wheeled: no source served the bytes; github-release: curl exit 22; pypi: the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl holds no wheeled-7.0.0.data/scripts/wheeled (python3 exit 1)$')"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: ci_tools_fetch_primary places the archive the primary served"
+# What .github/scripts/ci-tools-proof.sh needs: a row whose `digest` is of a member is staged as
+# the archive that URL serves, held to the row's `primary_digest`.
+origin fetch-primary
+dest="$work/dest/fetch-primary"
+run ci_tools_fetch_primary wheeled "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the archive" "$(is "$(digest_of "$dest")" "$WHEELED_TARBALL")"
+check "with the member still inside it" \
+  "$(is "$(tar -xzOf "$dest" wheeled-7.0.0/wheeled | sha256sum | awk '{ print $1 }')" "$WHEELED")"
+check "and the line names the primary's own digest" \
+  "$(contains "$out" "^ci-tools: wheeled: github-release served the bytes, sha256 $WHEELED_TARBALL$")"
+check "and no second source was read" "$(is "$(asked_for "$log" "/url/")" false)"
+dest="$work/dest/fetch-primary-plain"
+run ci_tools_fetch_primary tarred "$dest"
+check "a row that names no primary_digest is held to its own" "$(is "$status" 0)"
+check "and the destination holds those bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+run ci_tools_fetch_primary jjlike "$work/dest/fetch-primary-third-party"
+check "a row whose primary bytes a third party fetches fails" "$(is "$status" 1)"
+check "saying this file has no primary URL for it" \
+  "$(contains "$out" "^::error::ci-tools: jjlike: a third party fetches this row's primary bytes, so this file has no primary URL to read them from — refusing$")"
+check "and nothing is at that destination" \
+  "$(nothing_at "$work/dest/fetch-primary-third-party")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: a pulumi-releases primary and a github-release second source"
+# The pulumi CLI's shape: each side is a word and a URL of its own, read through its own seam.
+origin two-sided
+dest="$work/dest/two-sided"
+run ci_tools_fetch clitool "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$CLITOOL")"
+check "the line names the primary's own word" \
+  "$(contains "$out" "^ci-tools: clitool: pulumi-releases served the bytes, sha256 $CLITOOL$")"
+check "the primary's address was read" "$(is "$(asked_for "$log" "/$CLITOOL_URL_PATH")" true)"
+check "and the release asset was not" "$(is "$(asked_for "$log" "/$CLITOOL_ASSET_PATH")" false)"
+origin two-sided-primary-refuses
+rm -- "$root/$CLITOOL_URL_PATH"
+dest="$work/dest/two-sided-second"
+run ci_tools_fetch clitool "$dest"
+check "the fetch exits 0 where the primary did not serve" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$CLITOOL")"
+check "the line names the primary that did not serve them" \
+  "$(contains "$out" '^ci-tools: clitool: pulumi-releases did not serve the bytes (curl exit 22); trying the second source$')"
+check "and the release asset that did" \
+  "$(contains "$out" "^ci-tools: clitool: github-release served the bytes, sha256 $CLITOOL$")"
+check "which was read through the github seam" \
+  "$(is "$(asked_for "$log" "/$CLITOOL_ASSET_PATH")" true)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: the repository's own .github/ci-tools.yaml"
 # The default manifest seam, and every row of the real file, read off that file rather than
