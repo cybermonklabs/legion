@@ -317,3 +317,5 @@ const (
 	// not clear, or a stream that broke after its first byte.
 	FaultProviderError Fault = "provider_error"
 )
+
+// INFRA-1413 selection probe, never merged.
