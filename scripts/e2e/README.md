@@ -1438,14 +1438,23 @@ land in `inbox.jsonl` under the stand-in controller's session.
   calls the `gh` tool, so the one model call that bound allows still called a tool and its
   `answers: answered` line carries `fault` `model_calls` after `calls` 1. A question cannot be
   trusted to reach that bound — the loop's prompt tells the model its last call offers no tool and
-  must be the reply, and the `go.mod` question these legs ask is one the planner answered earlier
-  in the run, which the loop answered again from the conversation in one call with no tool.
+  must be the reply, and the `go.mod` question these legs ask is the one A15 had the planner
+  answer earlier in the pass, which the loop answered again from the conversation in one call with
+  no tool.
 - A14: every `answers: answered` line of the run — every boot of it, since A12 restarts the daemon
   five times before this check and its own boot has answered nothing — has a `costUSD` that
   recomputes from its tokens at the configured prices, cache writes included.
-- A15: the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of the
-  smoke repository read with `gh`; the `answers: gh` line names the review App and owner `sjawhar`,
-  and each conversation holds the call.
+- A15 (before every other check that asks the same question, which is why the pass runs it right
+  after A5): the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of
+  the smoke repository read with `gh`; the `answers: gh` line names the review App and owner
+  `sjawhar`, and each conversation holds the call.
+  Asked first, neither agent can answer it from its own conversation, so the loop has to call the
+  tool; asked after A8's own-answer leg and A12's five legs, which send the planner that same
+  question, it is one the loop may rightly answer from the conversation with no call at all, and
+  then the check proves nothing.
+  That is how it failed under postgres in the run of 2026-11-08 (question 405247a2…, `calls: 1`,
+  no `answers: gh` line, the planner's own reply saying it had read the file earlier in the
+  conversation) while passing under files, where the model chose to read again.
 - A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as
   the implement App) posts the asked comment there as the implement App with its session's footer,
   logged with App and owner; the rig reads the comment back with a read-only implement-App token of
@@ -1479,6 +1488,13 @@ land in `inbox.jsonl` under the stand-in controller's session.
   registry and no `answers:` line. It does write the project's answering heartbeat, saying it does
   not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next
   boot; on a listener without that route the heartbeat is the one 404 the boot shows.
+  Each daemon of this check boots on a project of its own, so each one maps the smoke repository
+  to that project in the Dispatch running then (`map_repo`): a repository names one project at a
+  time, the second pass's own mapping call moved the mapping off the first pass's project, and
+  with the workflow on a daemon whose project maps no repository exits at boot (`project <key>
+  has no repository mapped in Dispatch`).
+  The base stack's Dispatch is a database of its own, so the base daemon's project is created and
+  mapped there too.
 - A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the
   daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every
   `AGENTS.md`, each hit printed; a hit fails unless `questions.json` records it as not about the

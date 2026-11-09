@@ -816,6 +816,21 @@ answer_holds() {
   done < <(question "$1" | jq -r '.must_contain[]?')
 }
 
+# ---- the pass's Dispatch project -------------------------------------------------------------------
+# map_repo PROJECT points the smoke repository at PROJECT in the Dispatch that runs now, as its
+# default, and the second owner's repository at it too, never as the default: every rig issue works
+# the smoke repository, and A17 names the second one in its question. Dispatch keys a mapping by
+# repository, so a repository names one project at a time and the second pass's call moves the
+# mapping off the first pass's project. A workflow daemon reads the mapping at boot and exits when
+# its project has none (`project <key> has no repository mapped in Dispatch`), so every boot on a
+# pass's project — A13's second round of daemons as much as the pass's own — maps the repository to
+# that project first.
+map_repo() {
+  dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$1" '{project: $project, default: true}')" >/dev/null
+  [ -z "$second_repo" ] ||
+    dispatch_human PUT "settings/repo-projects/$second_repo" "$(jq -cn --arg project "$1" '{project: $project, default: false}')" >/dev/null
+}
+
 # ---- producing the stopped agents ------------------------------------------------------------------
 # A Dispatch issue of the pass's project, as a person writes one (backlog, Dispatch's default): no
 # `legion` label, so a workflow daemon admits nothing of it; its claims are the operator's (legion
@@ -2145,7 +2160,7 @@ check_a10() {
 #   called a tool (agentloop's FaultCalls, "the last of 1 model calls still called a tool", the
 #   daemon's model_calls). A real question cannot be trusted to reach that bound: the loop's own
 #   prompt tells the model its last call offers no tool and must be the reply, and the go.mod
-#   question the other legs ask is one the planner already answered earlier in the run, which the
+#   question these legs ask is the one A15 had the planner answer earlier in the pass, which the
 #   loop answered again from the conversation in one call with no tool (`calls: 1`, `fault: ""`,
 #   the answer posted) in the run of 2026-11-08. The tool call is never run: the loop reads the
 #   bound off the reply that made it. Both replies report usage, since an answer the provider
@@ -2212,23 +2227,31 @@ check_a14() {
   fi
 }
 
+# check_a15 asks each of the two stopped agents to read go.mod at a fixed commit of the smoke
+# repository, which neither can answer from its own conversation: the loop must call the gh tool,
+# as the review App for the repository's owner, and the answer must come back with the file's
+# words. That holds only while this is the first time the pass asks it — A8's own-answer leg and
+# A12's five legs ask the same question later, and a conversation that already holds the file is
+# one the loop may answer with no call at all — so the matrix runs this check before them.
 check_a15() {
   criterion A15 "an answer read from the repository with gh, the log naming App and owner, the call in the conversation; the same for the Claude Code worker" || return 0
-  local gh_line ok_omp=0 ok_claude=0
+  local gh_line ok_omp=0 ok_claude=0 unread=
   if ask_and_expect "planner, repository file" session "${agent[$store:planner.session]}" repository-file; then
     gh_line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "planner")' | tail -1)
     note "gh line: $gh_line"
+    [ -n "$gh_line" ] || unread="$unread the planner"
     jq -e '.owner == "sjawhar" and .app == "review"' <<<"$gh_line" >/dev/null && conversation_text planner | grep -qF 'stage4b-fixture' && ok_omp=1
   fi
   if ask_and_expect "Claude Code reviewer, repository file" session "${agent[$store:pre_change.session]}" repository-file; then
     gh_line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "reviewer")' | tail -1)
     note "gh line: $gh_line"
+    [ -n "$gh_line" ] || unread="$unread the Claude Code reviewer"
     jq -e '.owner == "sjawhar" and .app == "review"' <<<"$gh_line" >/dev/null && conversation_text pre_change | grep -qF 'stage4b-fixture' && ok_claude=1
   fi
   if [ "$ok_omp$ok_claude" = 11 ]; then
     record_result A15 PASS "both answered from go.mod with gh as the review App on sjawhar; each conversation holds the call"
   else
-    record_result A15 FAIL "Oh My Pi planner $ok_omp, Claude Code reviewer $ok_claude (1 = answered with the call in the log and the conversation)"
+    record_result A15 FAIL "Oh My Pi planner $ok_omp, Claude Code reviewer $ok_claude (1 = answered with the call in the log and the conversation)${unread:+; the loop made no gh call this boot for:$unread}"
   fi
 }
 
@@ -2537,10 +2560,7 @@ for store in $stores; do
   state=$work/state-$store
   mkdir -p "$state"
   dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Answer loop proof $project" '{key: $key, name: $name}')" >/dev/null
-  dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project: $project, default: true}')" >/dev/null
-  # The second owner's repository joins the project's mapping, never as its default: every rig issue
-  # works the smoke repository, and A17 names the second one in its question.
-  [ -z "$second_repo" ] || dispatch_human PUT "settings/repo-projects/$second_repo" "$(jq -cn --arg project "$project" '{project: $project, default: false}')" >/dev/null
+  map_repo "$project"
   agent[$store:root]=$(new_rig_issue "Answer loop proof tree ($store)")
   agent[$store:planner.issue]=$(new_rig_issue "Answer loop proof child: the plan" "${agent[$store:root]}")
   agent[$store:tester.issue]=$(new_rig_issue "Answer loop proof child: the tests" "${agent[$store:root]}")
@@ -2564,6 +2584,15 @@ for store in $stores; do
   wanted A3 && check_a3
   wanted A4 && check_passed_on unanswerable A4
   wanted A5 && check_passed_on working-copy A5
+  # A15 before every other check that asks the planner to read go.mod: A8's own-answer leg and
+  # A12's five legs ask that same question (`repository-file`), and once the planner's conversation
+  # holds the file the loop is right to answer from it with no tool call at all, which is no proof
+  # of a `gh` read. Under postgres in the run of 2026-11-08 that is what happened (question
+  # 405247a2bac791f9503bd9b5dbf175f8, `calls: 1`, no `answers: gh` line, the reply itself saying it
+  # had read the file earlier in the conversation), while the same check passed under files, where
+  # the model chose to read again. Asked first, the question is one neither conversation can answer
+  # without the tool.
+  wanted A15 && check_a15
   wanted A6 && check_a6
   wanted A7 && check_a7
   wanted A8 && check_a8
@@ -2571,7 +2600,6 @@ for store in $stores; do
   wanted A10 && check_a10
   wanted A12 && check_a12
   wanted A14 && check_a14
-  wanted A15 && check_a15
   wanted A17 && check_a17
   wanted A18 && check_a18
   wanted A19 && check_a19
@@ -2600,6 +2628,10 @@ run_a13() {
     project=${project^^}
     daemon_db=legion_${store}_$run_tag
     state=$work/state-$store
+    # The pass's project maps the smoke repository again before its daemon boots: a repository
+    # names one project at a time, so the other pass's own call moved the mapping off this one,
+    # and with the workflow on a daemon whose project maps nothing exits at boot (map_repo).
+    map_repo "$project"
     write_legion_config "$work/plain-$store.yaml" no
     start_daemon "$work/branch/legion" "$work/plain-$store.yaml" "$evidence/logs/daemon-$store.log" "$branch_home" "$branch_profile" \
       "$branch_plugin"
@@ -2620,6 +2652,10 @@ run_a13() {
   daemon_db=legion_base_$run_tag
   state=$work/state-base
   mkdir -p "$state"
+  # The base stack's Dispatch is a database of its own, so the base daemon's project is made and
+  # mapped there as each pass's is in the branch stack's Dispatch.
+  dispatch_human POST projects "$(jq -cn --arg key "$project" '{key: $key, name: "A13 base daemon"}')" >/dev/null
+  map_repo "$project"
   write_legion_config "$work/base-a13.yaml" base
   start_daemon "$work/base/legion" "$work/base-a13.yaml" "$evidence/logs/base-daemon-a13.log" "$base_home" "$base_profile" \
     "$base_plugin"
