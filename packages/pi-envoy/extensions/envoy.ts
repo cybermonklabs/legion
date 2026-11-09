@@ -1366,10 +1366,11 @@ export default function envoyExtension(pi: PiApi): void {
   };
 
   // Runs a person's `!command` for them (`../src/typed-shell`). The host is handed nothing: the
-  // session runs the rest of the line as the CLI's own bang command runs it, in its own working
-  // directory, and what it
-  // printed goes three ways - the live view's conversation, as the person's own user message, since
-  // they ran it and the host wrote nothing; their message on Dispatch, as its reply, which every
+  // session runs the rest of the line under the host's own shell configuration, in its own
+  // working directory (what still differs from the CLI's own bang command is listed in
+  // `../src/typed-shell`'s header), and what it printed goes three ways - the live view's
+  // conversation, as the person's own user message, since they ran it and the host wrote
+  // nothing; their message on Dispatch, as its reply, which every
   // such message gets; and the agent's transcript, which it reads at its next turn with no turn
   // started for it. The command runs on this detached promise and never inside the queued delivery
   // task, which takes a pass deadline a two-minute command would blow, holding every other Dispatch

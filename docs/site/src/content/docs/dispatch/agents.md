@@ -314,12 +314,13 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   Use the arrow keys to choose, **Tab** or **Enter** to pick, and **Escape** to close the list.
   BTW offers no commands.
 - On an Oh My Pi session, a **Send** or an **Aside** whose first character is `!` runs the rest of
-  the line as a shell command, under the session's own shell settings: the shell Oh My Pi
-  resolved, the environment it gives a shell command of its own, and the session's working
-  directory.
+  the line as a shell command: the shell Oh My Pi resolved, the environment it gives a shell
+  command of its own, and the session's working directory.
   A few things differ from typing the same `!` line into Oh My Pi's own window.
-  The shell is not a login shell, so no profile of the session's home prints a banner or changes
-  the directory your command answers from.
+  The shell runs your line with `-c` alone: no login profile and no `~/.bashrc` is read,
+  so an alias or a function defined there is not found, and no profile prints a banner or
+  changes the directory your command answers from.
+  A repository's `.envrc` is not loaded, and Oh My Pi's own `shellPath` setting does not apply.
   `cd` moves only that one command: each runs in a process of its own, so nothing one command
   leaves behind reaches the next.
   The command gets no terminal, and nothing is sent to its standard input.
@@ -328,6 +329,8 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   A `!` with nothing after it is no command and reaches the agent as the message it is.
   What it printed appears in the conversation as your own message, is posted as the reply to your
   message, and is given to the agent to read at its next turn; it starts no turn.
+  If the session moves to another conversation (`/new`, `/resume`) while the command runs, the
+  agent is not given it, so the other conversation never reads output that is not its own.
   One command runs for a session at a time, and a second while one is running is answered naming
   the command it is waiting on.
   A command is stopped after two minutes with what it printed kept, and output longer than 8,000

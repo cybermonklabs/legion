@@ -74,9 +74,10 @@ describe("the command a person's message says to run", () => {
 
 describe("running a person's command", () => {
   // The host builds its shell configuration once and keeps it until it refreshes it
-  // (`procmgr.refreshShellConfigCache()`, which `extensions/envoy.ts` calls at session start), so
-  // a row that changes this process's environment must drop what was built before it, and leave
-  // nothing of its own behind for the next row or the next file.
+  // (`procmgr.refreshShellConfigCache()`: the host after a session event, `extensions/envoy.ts`
+  // after a move with no event), so a row that changes this process's environment must drop
+  // what was built before it, and leave nothing of its own behind for the next row or the next
+  // file.
   beforeEach(() => {
     procmgr.__resetShellConfigCacheForTests();
   });

@@ -234,29 +234,17 @@ detached promise, never inside the
 queued delivery task, whose pass deadline a two-minute command would blow while holding every
 other Dispatch message for the session behind it.
 It runs under the host's own shell configuration, read from the host itself
-(`procmgr.getShellConfig()` of `@oh-my-pi/pi-utils`, which `extensions/envoy.ts` also refreshes
-at a session change): the shell it resolved, its shell prefix (`PI_SHELL_PREFIX`) before the
-command, and the environment it builds for a child shell, which is the session's own less the
-values the launch directory's `.env` files loaded and less `GIT_DIR`, `GIT_WORK_TREE`,
-`GIT_INDEX_FILE` and the rest of the git location variables, which would make a `git` the
-command runs ignore its `cwd` and write to another worktree or index (`filterChildShellEnv`),
-plus the five the host adds (`SHELL`, `GIT_EDITOR=true`, `GPG_TTY=not a tty`, `OMPCODE=1`,
-`CLAUDECODE=1`, and `CI=true` unless `PI_BASH_NO_CI` or `CLAUDE_BASH_NO_CI` is set), in the
-directory `SessionContext.cwd` names.
-What this caller still does differently from the same line typed at the CLI is listed in
-`src/typed-shell.ts`'s own header and is this: `!!` is no second mark, since the mark is one `!`
-and what a command printed always reaches the agent, where the CLI's `!!` hides it (R4 is that
-the agent reads the output); the shell is not a login shell, since the host's own args are
-`-l -c` and this caller passes `-c` in their place, so no profile of the session's HOME prints a
-banner or runs a `cd` in the command's answer (the variable `PI_BASH_NO_LOGIN` is never written
-into `process.env` for it, which would change every other command the session runs); `!cd` moves
-no session, each command being a process of its own rather than the host's own shell for the
-session; there is no pty and no interactive flag; no `user_bash` extension hook runs; and four
-things answering through a Dispatch reply needs, which a person at a terminal does not, are kept
-on top, each labelled as that in `src/typed-shell.ts`: a process group of its own, both streams
-pipes read to their end with the first 32,000 bytes kept and the rest thrown away, so a command
-that prints without end writes no file and fills no disk, the ignored standard input, and the
-stop after `ENVOY_SHELL_COMMAND_LIMIT_MS` (default 120000) with what it printed kept.
+(`procmgr.getShellConfig()` of `@oh-my-pi/pi-utils`, which the host refreshes after a session
+event and `extensions/envoy.ts` after a move with no event): the shell it resolved, its shell
+prefix (`PI_SHELL_PREFIX`) before the command, and the environment it builds for a child shell
+(`filterChildShellEnv`, which leaves out the launch directory's `.env` values and the git
+location variables), with `-c` in place of the host's args and in the directory
+`SessionContext.cwd` names. `PI_BASH_NO_LOGIN` is never written into `process.env` for it,
+which would change every other command the session runs.
+What this caller still does differently from the same line typed at the CLI, and the bounds it
+keeps of its own (a process group, both streams pipes read to their end with the first 32,000
+bytes kept, the ignored standard input, and the stop after `ENVOY_SHELL_COMMAND_LIMIT_MS`,
+default 120000, with what it printed kept), is listed once, in `src/typed-shell.ts`'s header.
 One command runs for a
 session at a time, and a `!` that arrives while one runs is answered naming the command still
 running. The group is also killed as this process exits and at `session_shutdown`, which holds

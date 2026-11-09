@@ -13077,10 +13077,9 @@ console.log(JSON.stringify(args));
     });
 
     // A person's `!command` (R4 of dispatch://INFRA-812). The host is never handed the line: the
-    // session runs the rest of it as the CLI's own bang command runs it, in its own working
-    // directory, and what it
-    // printed goes three ways - the live view's conversation, the person's message on Dispatch,
-    // and the agent's transcript for its next turn.
+    // session runs the rest of it under the host's own shell configuration, in its own working
+    // directory, and what it printed goes three ways - the live view's conversation, the
+    // person's message on Dispatch, and the agent's transcript for its next turn.
     describe("a person's shell command", () => {
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];

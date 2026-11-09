@@ -12,10 +12,13 @@ body: |-
   directory's `.env` files nor `GIT_DIR` and the other git location variables, and its shell
   prefix - in the session's own working directory, and in a process group of its own, stopped
   after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120000 by default) with what it printed
-  kept. The shell is not a login shell, so no profile of the session's HOME answers in place of
-  the command. A bare `!` is no command and reaches the model as the prompt it is. One such
+  kept. The shell runs the line with `-c` alone: no login profile and no `~/.bashrc` is read, so
+  no profile answers in place of the command, and an alias or function defined there is not
+  found; a repository's `.envrc` is not loaded. A bare `!` is no command and reaches the model as
+  the prompt it is. One such
   command runs for a session at a time, and a second is answered naming the one
   still running. What the command printed goes three ways, each cut at 8,000 characters: to the
   live view as the person's own message, to their message on Dispatch as its reply, and to the
-  agent's transcript, which it reads at its next turn with no turn started for it. A line typed
+  agent's transcript, which it reads at its next turn with no turn started for it, unless the
+  session moved to another conversation while the command ran. A line typed
   at the session's own terminal reaches none of this and keeps the host's shell mode.

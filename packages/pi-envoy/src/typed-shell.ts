@@ -11,28 +11,37 @@ import { procmgr } from "@oh-my-pi/pi-utils";
  * rest is the command whatever it starts with, so `!!printf hi` runs `!printf hi` and is answered
  * with that shell's own failure.
  *
- * What this caller still does differently from the same line typed at the CLI:
+ * What this caller still does differently from the same line typed at the CLI, read from the
+ * pinned binary's `executeBash` (`exec/bash-executor.ts`):
  *  - `!!` is no second mark here. The mark is one `!`, and what a command printed always reaches
  *    the agent, where the CLI's `!!` hides it: R4 is that the agent reads the output.
- *  - The shell is not a login shell. The host's own args are `-l -c`; this caller passes `-c`.
- *    A profile that prints a banner or runs a `cd` of its own would otherwise answer the person
- *    in place of their command, and `!pwd -P` would not name the session's own directory.
+ *  - The shell runs as a plain `-c`. For bash, the CLI runs the line in its own embedded shell
+ *    for the session, with a snapshot of the aliases, functions and `PATH` of `~/.bashrc`; for
+ *    zsh and fish it runs `-l -i -c` under a pty. Here no profile and no `~/.bashrc` is read, so
+ *    an alias or a function defined there is not found, and a profile's banner or its `cd`
+ *    cannot answer the person in place of their command.
  *  - `!cd` does not move the session, and nothing else a command leaves behind reaches the next
  *    one: each runs in a process of its own rather than in the host's own shell for the session.
  *  - No pty and no interactive flag, so a command that wants a terminal finds none.
- *  - No `user_bash` extension hook runs for it.
- *  - Four things answering through a Dispatch reply needs, which a person at a terminal does not:
- *    the output bound, the time limit, the process group and its kill, and the ignored standard
- *    input. Each is labelled as that where it is written below, and as nothing of its own.
+ *  - No direnv: the CLI loads a repository's `.envrc` (`bash.direnv`, `auto` by default), and
+ *    this caller does not.
+ *  - No output minimizer, and no `user_bash` extension hook runs for it.
+ *  - The host's `shellPath` setting, and its use of a fish `$SHELL`, do not apply: the shell is
+ *    the one `procmgr.getShellConfig()` resolves with no `shellPath`.
+ *  - Bounds of its own, which answering through a Dispatch reply needs: the output is cut at
+ *    `SHELL_OUTPUT_MAX` characters, where the CLI keeps a head of it and saves the rest as an
+ *    artifact; the command is stopped after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120 s by default),
+ *    where the CLI's bash timeout is 300 s by default; it runs in a process group of its own,
+ *    killed with it; and its standard input is ignored.
  *
  * This module runs the command and writes the three texts it becomes; which messages reach it, and
- * where its texts go, is `extensions/envoy.ts`'s (`runTypedInput`). A line typed at the session's
- * own terminal never reaches here, so it keeps the host's own shell mode.
+ * where its texts go, is `extensions/envoy.ts`'s (`runShellCommandTurn`). A line typed at the
+ * session's own terminal never reaches here, so it keeps the host's own shell mode.
  */
 
 /** Characters of a command's output each of the three texts carries; past it the text is cut and
- *  says so. The CLI shows a command's output in a terminal and bounds nothing; this is what
- *  answering through a Dispatch reply needs, whose body is bounded. */
+ *  says so. The CLI keeps a head of a command's output and saves the rest as an artifact; this
+ *  bound is the one answering through a Dispatch reply needs, whose body is bounded. */
 export const SHELL_OUTPUT_MAX = 8_000;
 
 /** Bytes of a command's output this module keeps, for the same reason the character cut has. Four
@@ -105,8 +114,8 @@ function shellInvocation(command: string): {
 
 /** The shell this module starts: no standard input and no pty, and a pipe of its own for each
  *  output stream, which this module reads to its end so the command is never blocked by a full
- *  one. The CLI gives its bang command a pty; these two are what answering through a Dispatch
- *  reply needs, where the answer is text and there is no terminal and nobody at one. */
+ *  one. The CLI gives a zsh or fish bang command a pty; these two are what answering through a
+ *  Dispatch reply needs, where the answer is text and there is no terminal and nobody at one. */
 type ShellSubprocess = Bun.Subprocess<"ignore", "pipe", "pipe">;
 
 /** Kills every process the command started, which its own process group holds. */
@@ -215,12 +224,13 @@ async function drained(reads: readonly StreamRead[]): Promise<void> {
  * `cwd`, and answers with what it printed and how it ended.
  *
  * It is stopped after `limitMs` with what it printed kept, which is what answering through a
- * Dispatch reply needs: nobody watches a terminal for this command and nothing else would end
- * one that never ends. It runs in a process group of its own for the same reason, so nothing it
- * left running outlives it or holds the session: the group is killed when the command ends, when
- * `stop` is called before it ends, and as this process exits, which is the only handle anything
- * has on a detached group. A `stop` that arrives after the command ended is nothing: the command
- * answered for itself, and a session shutting down in that moment must not report it stopped.
+ * Dispatch reply needs: nobody watches a terminal for this command, and the CLI's own bash
+ * timeout (300 s by default) does not reach it. It runs in a process group of its own for the
+ * same reason, so nothing it left running outlives it or holds the session: the group is killed
+ * when the command ends, when `stop` is called before it ends, and as this process exits, which
+ * is the only handle anything has on a detached group. A `stop` that arrives after the command
+ * ended is nothing: the command answered for itself, and a session shutting down in that moment
+ * must not report it stopped.
  *
  * Both streams are pipes this module reads to their end, keeping the first `SHELL_OUTPUT_BYTES`
  * and throwing the rest away, so `!yes` or `!cat /dev/urandom` costs the session those bytes of
