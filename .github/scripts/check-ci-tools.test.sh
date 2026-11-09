@@ -415,6 +415,37 @@ check "names the http:// spelling of a tagged asset" \
 check "names the www.github.com spelling of a tagged asset" \
   "$(contains "$out" '^.github/workflows/spellings.yaml:11: this file fetches a release asset of other/thing at https://www.github.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
 
+echo "case: rule 3 — the host is case-insensitive and the path is not"
+# A URL's host is not case-sensitive and github.com's release path is, measured against
+# github.com on 2026-11-09: https://GitHub.com/<o>/<r>/releases/download/<tag>/<asset> answered
+# 302 with the asset, and so did https://GITHUB.COM/<o>/<r>/releases/latest/download/<asset>,
+# while /RELEASES/download/ and /releases/DOWNLOAD/ each answered 404. So the two spellings that
+# serve the asset are refused and the one that serves nothing is not: a rule that reads the whole
+# address without regard to case would refuse an address github.com does not answer, which is a
+# false refusal of its own. The count assertion is what holds those two apart.
+root=$(fixture reach-host-case)
+cat > "$root/.github/workflows/host-case.yaml" <<'YAML'
+name: Host case
+on: [push]
+jobs:
+  host-case:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O https://GitHub.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+          curl -fsSL -O https://GITHUB.COM/other/thing/releases/latest/download/thing.tar.gz
+          curl -fsSL -O https://github.com/other/thing/RELEASES/download/v3.0.0/thing-3.0.0.tar.gz
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the mixed-case host" \
+  "$(contains "$out" '^.github/workflows/host-case.yaml:9: this file fetches a release asset of other/thing at https://GitHub.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+check "names the upper-case host on the latest permalink" \
+  "$(contains "$out" '^.github/workflows/host-case.yaml:10: this file fetches a release asset of other/thing at https://GITHUB.COM/other/thing/releases/latest/download/thing.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+check "and refuses those two alone, leaving the upper-case path github.com answers 404 for" \
+  "$(contains "$out" '^::error::2 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
+
 echo "case: rule 3 — a workflow that fetches Bun's own release asset"
 # No bun row carries a primary, because oven-sh/setup-bun fetches that asset. So this URL is a
 # release asset no row and no entry names, and the gate refuses it as it refuses any other,
