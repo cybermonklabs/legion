@@ -1,18 +1,40 @@
 #!/usr/bin/env python3
-"""The Go test functions each `go test` step of ci.yaml's router runs, and every one two steps run.
+"""The test functions each `go test` step of ci.yaml's router runs, which two run and which none.
 
 This is the tool check k1 of dispatch://INFRA-1408 asks for (its A1): it expands every `go test`
 step of `.github/workflows/ci.yaml`, and of every workflow a job of it calls, whose working
-directory is `packages/envoy` or `packages/envoy/infra` into the test functions the step really
-runs - through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with
-`go test -list` - and prints every (package, function) pair more than one step runs. It exits 1
-on a pair no declared exception covers, and 0 when every such pair is declared with the
-requirement that makes it run twice (EXCEPTIONS below).
+directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test
+functions the step really runs - through the step's own packages, `-tags`, `-race`, `-run` and
+`-skip`, with `go test -list` - and prints two verdicts over them:
 
-No CI job runs it, and none should. It compiles every test binary of both modules, the `-race`
-ones included: minutes of compile on a warm module cache, and tens of minutes on a cold one, for
-an answer a person needs twice per change (at the head and at the merge base) rather than once per
-run. The checks it serves run by hand, before the merge.
+  * every (package, function) pair more than one step runs;
+  * every pair some expanded step compiles and no expanded step runs: the package is in that
+    step's resolved package list, so the step's test binary holds the function, and no step runs
+    it. A `-skip` naming a test no other step's `-run` covers leaves exactly that behind, and
+    nothing else here looks for it.
+
+The second verdict is over the packages the expansion already touches, never over every test of
+the three modules. A package no step lists at all is outside both verdicts: a tag-gated live
+proof no job runs would read as unrun, which is true and tells a reader nothing. A test that is
+unrun because its package is only ever listed under a `-run` that leaves it out is the ordinary
+case this prints.
+
+It exits 1 when either verdict holds a pair nothing accounts for, and 0 when every pair two
+steps run is declared with the requirement that makes it run twice (EXCEPTIONS below) and no
+pair is unrun. EXCEPTIONS covers the first verdict alone: an entry is keyed on exactly the steps
+that run the pair, and its requirement answers what makes it run twice, so neither field has an
+answer to give about a pair no step runs. An unrun pair is a hole to close where it is - give
+the function to some step's `-run`, or take its package off the step that only builds it - and
+the tree held none of them when this verdict was written.
+
+No CI job runs it, and none should. It compiles every test binary of all three modules, the
+`-race` ones included. Measured in a Legion pod on a warm module and build cache, the daemon
+module alone costs about six minutes of that: `go test -count=1 -list '.*' ./...` over
+packages/daemon takes 135 s and prints 4,644 names, and the race listing over
+`./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/` takes 234 s and prints 933.
+Five whole runs in that pod took 648 s, 402 s, 387 s, 461 s and 430 s, and a cold cache costs
+tens of minutes, for an answer a person needs twice per change (at the head and at the merge
+base) rather than once per run. The checks it serves run by hand, before the merge.
 
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the
@@ -52,25 +74,33 @@ How it reads a step:
     workflow's `defaults.run.working-directory`, else the repository root, as GitHub reads it and
     as check-ci-filters.sh reads it (`ci_filter_coverage.step_workdir`);
   * a `go vet`, `go build`, `go list` or `go install` line runs no test and is skipped; a line it
-    cannot read stops the run, since silently skipping a `go test` would hide a duplicate;
+    cannot read stops the run, since silently skipping a `go test` would hide both a duplicate
+    and a function that step is the only one to compile;
   * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
     in the step's own directory, and its output used; a step looping over packages
     (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
-  * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from its
-    listing; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
+  * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
+    the step runs and left in what it compiles, since the binary holds a skipped test and never
+    runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
+  * what a step compiles is a second `go test -list` over the same packages under the same build
+    flags and the pattern `.*`, run where the step carries a `-run`, because `-list` answers the
+    pattern it is given and a `-run` listing names only the functions the step runs. The second
+    listing reuses the first's build, so it costs the test binaries' own run and no compile;
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
   * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
-  * a `Benchmark…` name a listing prints is left out: no step passes `-bench`, so `go test` builds
-    those functions and runs none of them.
+  * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
+    so `go test` builds those functions and runs none of them, and reading every one of them as
+    compiled and unrun would say that over and over and name no hole anyone can close.
 
-What it prints: the steps it expanded, the pairs more than one step runs, the declared exceptions
-it applied and the ones it did not need, and every pair, one per line behind a `PAIR` marker for
-the diff above. Exit 0 when no pair is run twice undeclared, 1 when one is, 2 when it cannot read
-a step or a `go` command fails.
+What it prints: the steps it expanded, the pairs more than one step runs, the pairs some step
+compiles and no step runs, the declared exceptions it applied and the ones it did not need, and
+every pair a step runs, one per line behind a `PAIR` marker for the diff above. Exit 0 when no
+pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot read a step or a
+`go` command fails.
 """
 
 from __future__ import annotations
@@ -88,8 +118,12 @@ from ci_filter_coverage import called_workflows, script_lines, step_workdir
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
 WORKFLOW = ".github/workflows/ci.yaml"
-# The two Go modules this check covers. A step of packages/daemon is another job's business.
-MODULE_DIRS = ("packages/envoy", "packages/envoy/infra")
+# The three Go modules this check covers. packages/daemon joined them with the first pair of
+# steps in this repository that share a package through a `-run` and a `-skip` naming the same
+# three tests (ci-job-plugin-pack.yaml and ci-job-daemon-go.yaml's race step): the pairing is
+# what makes each of the three run exactly once, and a check that cannot see both steps cannot
+# see it.
+MODULE_DIRS = ("packages/envoy", "packages/envoy/infra", "packages/daemon")
 
 
 @dataclass(frozen=True)
@@ -101,6 +135,10 @@ class Exception_:
     import path, `functions` the function names (None: every function of that package those steps
     share). An entry whose `requirement` is empty is refused: a duplicate with no requirement
     written beside it is a duplicate, not an exception.
+
+    Nothing here declares an unrun pair. Both fields above ask after the steps that run the
+    pair, and no step runs that one; the answer to a function a step compiles and none runs is a
+    change to the step, not a line here.
     """
 
     steps: frozenset[tuple[str, str]]
@@ -324,9 +362,9 @@ def documents() -> dict:
 
 def steps_of(found: dict) -> list[Step]:
     """Every step of those documents whose run: holds a `go test` and whose directory is one of
-    the two modules. The directory and the comment-free lines are read with check-ci-filters.sh's
-    own helpers (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree
-    on what a step runs and where."""
+    the three modules. The directory and the comment-free lines are read with
+    check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so this
+    tool and the gate agree on what a step runs and where."""
     steps = []
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
@@ -499,14 +537,12 @@ def resolve(command: GoTest) -> None:
         raise Refused(f"{command.step.label}: `{command.text}` lists no package")
 
 
-def list_tests(command: GoTest) -> dict[str, list[str]]:
-    """What each package of one command runs: `go test -list` under the command's own flags,
-    less the names its -skip leaves out. `-list` answers the -run pattern alone and prints the
-    names a -skip would keep from running, so they are subtracted here rather than there."""
-    pattern = command.run or ".*"
-    skipped = set(skip_names(command.skip) or ())  # the parse refused every other shape
+def listing(command: GoTest, pattern: str) -> dict[str, list[str]]:
+    """The names each package of one command prints for one `go test -list` pattern, under the
+    command's own build flags."""
     out = go(["go", "test", "-count=1", "-list", pattern, *build_flags(command), *command.resolved],
-             command.step.directory, f"{command.step.label}: go test -list of `{command.text}`")
+             command.step.directory,
+             f"{command.step.label}: go test -list {pattern} of `{command.text}`")
     names: dict[str, list[str]] = {}
     pending: list[str] = []
     for line in out.splitlines():
@@ -520,7 +556,7 @@ def list_tests(command: GoTest) -> dict[str, list[str]]:
         kind, package = status.group(1), status.group(2)
         if kind == "FAIL":
             raise Refused(f"{command.step.label}: `go test -list` failed on {package}\n{indent(out)}")
-        names[package] = [name for name in pending if name not in skipped]
+        names[package] = pending
         pending = []
     missing = [p for p in command.resolved if p not in names]
     if missing:
@@ -529,40 +565,77 @@ def list_tests(command: GoTest) -> dict[str, list[str]]:
     return names
 
 
-def expansion() -> tuple[list[Step], dict[tuple[str, str], list[Step]], list[str]]:
-    """Every (package, function) pair, with the steps that run it, and a line per step."""
+def list_tests(command: GoTest) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """What each package of one command runs, and what it compiles.
+
+    `go test -list` answers the pattern it is given, so what the step runs is a listing under the
+    step's own `-run` and what its test binary holds is a listing under `.*`: the same packages
+    under the same build flags, and a second run of binaries the first listing already built. A
+    command carrying no `-run` lists once, and both answers are that one listing.
+
+    A `-skip` prints in either listing, since `-list` names the tests a `-skip` would keep from
+    running, so it is subtracted from what the step runs and left in what it compiles - which is
+    what a skipped test is: built into the binary and never run by it.
+    """
+    compiled = listing(command, ".*")
+    skipped = set(skip_names(command.skip) or ())  # the parse refused every other shape
+    run = compiled if not command.run else listing(command, command.run)
+    return ({package: [name for name in names if name not in skipped]
+             for package, names in run.items()}, compiled)
+
+
+Expansion = tuple[list[Step], dict[tuple[str, str], list[Step]],
+                  dict[tuple[str, str], list[Step]], list[str]]
+
+
+def expansion() -> Expansion:
+    """Every (package, function) pair, the steps that run it, the steps whose test binary holds
+    it whether they run it or not, and a line per step. A step runs no function it does not
+    compile, so the second map holds every key of the first and the pairs no step runs besides."""
     found = documents()
     steps = steps_of(found)
     if not steps:
         raise Refused(f"{WORKFLOW} and the {len(found) - 1} workflow(s) its jobs call have no "
                       f"`go test` step in {' or '.join(MODULE_DIRS)}")
     pairs: dict[tuple[str, str], list[Step]] = {}
+    built: dict[tuple[str, str], list[Step]] = {}
     report = []
     for step in steps:
         commands = commands_of(step)
         functions = 0
+        compiled_count = 0
         packages: set[str] = set()
         for command in commands:
             resolve(command)
-            for package, names in list_tests(command).items():
+            run, compiled = list_tests(command)
+            for package, names in compiled.items():
                 packages.add(package)
                 for name in names:
                     if name.startswith("Benchmark"):
                         continue  # no step passes -bench, so no step runs it
+                    compiled_count += 1
+                    holders = built.setdefault((package, name), [])
+                    if step not in holders:
+                        holders.append(step)
+            for package, names in run.items():
+                for name in names:
+                    if name.startswith("Benchmark"):
+                        continue
                     functions += 1
                     runners = pairs.setdefault((package, name), [])
                     if step not in runners:
                         runners.append(step)
         report.append(f"  {step.label}")
         report.append(f"      in {step.workdir}: {len(commands)} go test command(s), "
-                      f"{len(packages)} package(s), {functions} function(s)")
+                      f"{len(packages)} package(s), {functions} function(s) run of "
+                      f"{compiled_count} compiled")
         for command in commands:
             report.append(f"      -run {command.run or '(none)'}"
                           f"{' -skip ' + command.skip if command.skip else ''}"
                           f"{' -tags ' + command.tags if command.tags else ''}"
                           f"{' -race' if command.race else ''}"
                           f": {len(command.resolved)} package(s)")
-    return steps, pairs, report
+    return steps, pairs, built, report
 
 
 def match_exception(package: str, name: str, runners: list[Step]) -> Exception_ | None:
@@ -586,15 +659,15 @@ def main() -> int:
             return 2
 
     try:
-        steps, pairs, report = expansion()
+        steps, pairs, built, report = expansion()
     except Refused as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2
 
     print(f"# go test step expansion of {WORKFLOW} and the workflows its jobs call, under {ROOT}")
-    print("# Every test function each go test step of packages/envoy and packages/envoy/infra")
-    print("# runs, through go test -list over the step's own packages, -tags, -race, -run")
-    print("# and -skip.")
+    print("# Every test function each go test step of packages/envoy, packages/envoy/infra and")
+    print("# packages/daemon runs, through go test -list over the step's own packages, -tags,")
+    print("# -race, -run and -skip, and every function such a step compiles and no step runs.")
     print("# Run it at two commits and compare the pair sets:")
     print("#   grep '^PAIR' head.txt > head.pairs; grep '^PAIR' base.txt > base.pairs")
     print("#   diff base.pairs head.pairs      (empty: the two commits run the same functions)")
@@ -626,6 +699,16 @@ def main() -> int:
             print(f"      declared by exception {numbered[entry]} below")
     print()
 
+    unrun = sorted(pair for pair in built if pair not in pairs)
+    print(f"== pairs some step compiles and no step runs ({len(unrun)}) ==")
+    if not unrun:
+        print("  none")
+    for package, name in unrun:
+        print(f"  {package} {name}")
+        for step in sorted(built[(package, name)], key=lambda s: s.label):
+            print(f"      compiled by {step.label}")
+    print()
+
     print(f"== declared exceptions ({len(EXCEPTIONS)}) ==")
     for entry in EXCEPTIONS:
         names = ", ".join(entry.functions) if entry.functions else "every function both steps run"
@@ -641,17 +724,22 @@ def main() -> int:
             print("      not needed: no pair of these steps matched it")
     print()
 
-    print(f"== every pair ({len(pairs)}) ==")
+    print(f"== every pair a step runs ({len(pairs)}) ==")
     for package, name in sorted(pairs):
         print(f"PAIR\t{package}\t{name}")
     print()
 
-    if undeclared:
-        print(f"{len(undeclared)} pair(s) run by more than one step and declared by none; "
-              "each is a test two steps of one run run.", file=sys.stderr)
+    if undeclared or unrun:
+        if undeclared:
+            print(f"{len(undeclared)} pair(s) run by more than one step and declared by none; "
+                  "each is a test two steps of one run run.", file=sys.stderr)
+        if unrun:
+            print(f"{len(unrun)} pair(s) some step compiles and no step runs; each is a test a "
+                  "step of this run builds into its binary and no step of this run calls.",
+                  file=sys.stderr)
         return 1
-    print(f"No undeclared duplicate: {len(pairs)} pair(s) over {len(steps)} step(s), "
-          f"{len(duplicates)} of them declared.")
+    print(f"No undeclared duplicate and no unrun pair: {len(pairs)} pair(s) run over "
+          f"{len(steps)} step(s), {len(duplicates)} of them declared.")
     return 0
 
 

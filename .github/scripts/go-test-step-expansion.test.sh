@@ -96,8 +96,9 @@ print(sum(1 for line in lines
   check "$file holds a go test line this reader reads" "$(is "$found" "1")"
 done
 
-# Both `-skip` steps of this repository are the daemon's, and the rule expands the envoy module
-# alone, so neither form below is reachable from today's workflows. The parse is what these
+# The one `-skip` line of this repository is daemon-go's race step, and the rule expands
+# packages/daemon now, so the space form below is reachable from a real step and the equals form
+# from none, which is why this case holds both. The parse is what these
 # cases hold: measured at b9e4127d0d78, `-skip '<pattern>'` left the pattern in the command's
 # packages, where `go list` refuses it as a malformed import path and the whole run stops at
 # exit 2 naming a `go list` failure rather than the flag; `-skip=<pattern>` was dropped whole,

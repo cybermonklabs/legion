@@ -683,6 +683,15 @@ Each item below names a task and where its code is, then notes on it.
   A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
   `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
 
+- Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
+
+  The by-hand tool of dispatch://INFRA-1408's check k1.
+  It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and gives two verdicts, exiting 1 on either:
+  every (package, function) pair more than one step runs, which no `EXCEPTIONS` entry declares with the requirement that makes it run twice, and every pair some expanded step compiles while no step runs it.
+  The second verdict is fixed to the packages the expansion already touches, never to every test of the three modules, because a tag-gated live proof no step runs is true and useless; an unrun pair is closed in the workflow rather than declared, by giving the function to a step's `-run` or taking its package off the step that only builds it.
+  The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413): a check that sees one of the two steps and not the other proves nothing about them.
+  No CI job runs it and none should — it compiles every test binary of all three modules, the `-race` ones included, which the script's own header times.
+
 - Documentation site — `docs/site/`
 
   Astro Starlight.
