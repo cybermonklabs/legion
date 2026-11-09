@@ -26,6 +26,9 @@ Treat the numbers as order-of-magnitude figures.
 - The single-issue burst: 100 events on one issue, every one of them bound for the same three
   destinations.
 - The rate is (events marked published) / (time from start until none is left).
+- The peak reading is the most sends the outbox held outstanding at any one moment over the
+  drain, counted by a wrapper around every window its batches publish through
+  (`outstandingSends`).
 
 ## Results
 
@@ -38,13 +41,15 @@ Treat the numbers as order-of-magnitude figures.
 | Chains, role routes forwarded to the holder with a receipt (#2395, two runs on 2026-10-27) | 196-199 ev/s | 171-188 ev/s | 73-74 ev/s | 71-72 ev/s | 17.3-17.6 ev/s | 6.2 ev/s |
 | The same, the #2395 head `891e854b`, same machine as the harness-commit row | 175.5 ev/s | 183.9 ev/s | 71.3 ev/s | 70.5 ev/s | 16.7 ev/s (100 in 5.99 s) | 6.2 ev/s (100 in 16.2 s) |
 
-The test requires 25 ev/s of the backlog cases and holds the burst cases to no rate. The old
-design fails it in every case. Chains cost one round trip per event per destination of one issue:
-a batch of the backlog holds five events of each issue, so it takes five round trips, and a burst
-on one issue takes one round trip per event, which is the price of each destination taking an
-issue's events in order whatever fails (`planChains`). With role routes forwarded to the holder
-and answered by its receipt, the backlog cases took about 1.6 times as long as with role routes
-published to the role's topic, and the burst cases about as long.
+The test requires at least 20 sends outstanding at the peak in the backlog cases
+(`minOutstanding`) and asserts no rate; the burst cases, where one issue is one chain, assert
+neither. Both readings are logged, and `throughput_test.go` carries the peaks measured and the
+readings that floor was drawn from. Chains cost one round trip per event per destination of one
+issue: a batch of the backlog holds five events of each issue, so it takes five round trips, and
+a burst on one issue takes one round trip per event, which is the price of each destination
+taking an issue's events in order whatever fails (`planChains`). With role routes forwarded to
+the holder and answered by its receipt, the backlog cases took about 1.6 times as long as with
+role routes published to the role's topic, and the burst cases about as long.
 
 ## Two real processes at the production step and ten times it
 

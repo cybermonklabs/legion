@@ -340,8 +340,6 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
-	// sends counts the sends the outbox has outstanding, set by the row that reads it.
-	sends *outstandingSends
 	// role is every forward the role's holder received, in arrival order.
 	roleMu sync.Mutex
 	role   []int64
@@ -498,9 +496,10 @@ func (r *throughputRig) roleArrivals() []int64 {
 //
 // The reading is how many sends the outbox held outstanding at once, at its peak over the drain
 // (outstandingSends, minOutstanding). The rate is logged beside it and nothing is asserted of it:
-// a floor of 25 events/s failed 20 of 20 runs that published every event, at 9.6 to 104.9
-// events/s, under 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather
-// than the outbox.
+// a floor of 25 events/s failed in 20 of 20 runs that published every event, each run in at
+// least one of its cases: 118 of the 240 readings were below 25 events/s, the slowest 9.6, under
+// 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather than the
+// outbox.
 //
 // The burst cases put a batch of messages on one issue, the shape whose events share every
 // destination, so each destination takes them one round trip after another, and log the drain
@@ -518,8 +517,10 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// cut to 1 and the sends unchanged held 50, 55 and 60 too, so the reading is one batch's
 		// own overlap and not the scan's batches running side by side. A drain patched to issue
 		// one chain and wait for its answer before the next held 3 in every non-burst case. The
-		// floor sits between the two: 20 is 6.7 times the serialized drain's 3 and 2.5 times
-		// below the lowest healthy peak of 50.
+		// floor sits between the two: 20 is 6.7 times the serialized drain's 3, and the lowest
+		// healthy peak measured is 45, which is 2.25 times the floor. That 45 was read once
+		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
+		// 2026-11-09; every other reading of it was 50, 55 or 60.
 		minOutstanding = 20
 		waitTime       = 3 * time.Minute
 	)
@@ -580,8 +581,8 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					}
 
 					started := time.Now()
-					rig.sends = &outstandingSends{Publisher: rig.client}
-					stop := runOutboxThrough(t, outboxStore, rig.client, rig.sends, rig.broker)
+					sends := &outstandingSends{Publisher: rig.client}
+					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
 					defer stop()
 					deadline := started.Add(waitTime)
 					for unpublishedCount(t, rig.database) > 0 && time.Now().Before(deadline) {
@@ -590,7 +591,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					elapsed := time.Since(started)
 					left := unpublishedCount(t, rig.database)
 					rate := float64(count-left) / elapsed.Seconds()
-					peak := rig.sends.peakOutstanding()
+					peak := sends.peakOutstanding()
 					if tc.burst {
 						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
 					} else {

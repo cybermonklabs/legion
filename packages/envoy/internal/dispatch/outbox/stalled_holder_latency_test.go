@@ -30,7 +30,7 @@ func TestAHolderThatNeverAnswersDoesNotDelayAnotherIssuesEvents(t *testing.T) {
 	const (
 		silentRole, silentHolder = "silent-reviewer", "ses_never_answers"
 		liveRole, liveHolder     = "live-reviewer", "ses_answers"
-		// What the outbox waits for the silent holder's receipt (Deps.RoleReceiptTimeout). It
+		// What the outbox waits for the silent holder's receipt (Deps.receiptWait). It
 		// outlasts the whole test, so the wait the live holder's send must not queue behind is
 		// still running when the verdict below is read, however slow the machine is.
 		silentHolderWait = 10 * time.Minute
@@ -47,7 +47,7 @@ func TestAHolderThatNeverAnswersDoesNotDelayAnotherIssuesEvents(t *testing.T) {
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
-	deps.RoleReceiptTimeout = silentHolderWait
+	deps.receiptWait = silentHolderWait
 	stop := runDeps(t, deps, 15*time.Second)
 	defer stop()
 

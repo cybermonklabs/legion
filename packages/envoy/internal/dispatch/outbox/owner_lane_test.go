@@ -31,28 +31,6 @@ func (r *roleRig) laterEvent(t *testing.T, key string, actor model.Actor) model.
 	})
 }
 
-// settledState is what the outbox has recorded of event id's sends: the attempts counted against
-// it, why its last attempt failed and whether it is published, as a line for a failure message,
-// and whether any of the three has been recorded at all. A forward still waiting for its holder's
-// receipt has none of them, which is what the two rows that read the order of two forwards assert
-// of the silent holder's event. The publish time is read here rather than in eventState, which
-// its other callers read for the three columns they already name.
-func settledState(t *testing.T, database *store.Store, id int64) (settled bool, state string) {
-	t.Helper()
-	attempts, failure, _ := eventState(t, database, id)
-	var published *time.Time
-	if err := database.Pool.QueryRow(context.Background(),
-		`select published_at from events where id = $1`, id).Scan(&published); err != nil {
-		t.Fatalf("read event %d's publish time: %v", id, err)
-	}
-	reason := "none"
-	if failure != nil {
-		reason = *failure
-	}
-	return attempts != 0 || failure != nil || published != nil,
-		fmt.Sprintf("attempts %d, publish error %s, published %t", attempts, reason, published != nil)
-}
-
 // An owner is given back as its own sends settle, not when its batch ends: an issue read in the
 // same batch as a silent holder's, whose own forward was answered, has its later event - one
 // committed while the silent holder's receipt wait is still running - forwarded while that wait
@@ -70,7 +48,7 @@ func TestAnOwnerOfTheSilentHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T
 	const (
 		silentRole, silentHolder = "silent-reviewer", "ses_never_answers"
 		liveRole, liveHolder     = "live-reviewer", "ses_answers"
-		// What the outbox waits for the silent holder's receipt (Deps.RoleReceiptTimeout). It
+		// What the outbox waits for the silent holder's receipt (Deps.receiptWait). It
 		// outlasts the whole test, so the wait is still running when the verdict below is read
 		// and a batch that held its owners until it ended could not end during this test at all,
 		// however slow the machine is.
@@ -92,7 +70,7 @@ func TestAnOwnerOfTheSilentHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
-	deps.RoleReceiptTimeout = silentHolderWait
+	deps.receiptWait = silentHolderWait
 	stop := runDeps(t, deps, 15*time.Second)
 	defer stop()
 
