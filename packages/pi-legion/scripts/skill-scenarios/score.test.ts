@@ -28,6 +28,18 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
+// A hang guard, not a bound on the work: what can hang is draining the stagings, which builds a
+// repository — the pushed-code run's clone source, its git init, its commits and all. Timed round
+// the body on this two-CPU pod: 1376.98 / 1394.75 / 1591.83 ms (min / median / max) over 3 idle
+// runs of this file, and 28259.94 / 43733.27 / 74782.68 ms over 10 runs at 96 busy loops (48 per
+// CPU), this suite's calibrated rung. Bun's unwritten 5 s default for a hook is what failed
+// correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms; at that default this
+// hook failed 10 of those 10 loaded runs, charged 31550.05 ms in the first, and Bun killed the
+// git commit still running inside it. Three times the worst is 224 s, which does fit under the
+// 600 s the pi-legion job's timeout-minutes: 10 allows (.github/workflows/ci.yaml); 180_000, 2.4
+// times that worst, is the value taken because this change already carries 180_000 on
+// claude-envoy's hook row, so there is one precedent rather than two. It leaves the job room to
+// redden with this test named instead of cancelling, which names nothing.
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -36,7 +48,7 @@ beforeAll(() => {
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-});
+}, 180_000);
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -3083,11 +3095,21 @@ for (const [n, faults] of [2, 4, 3].entries())
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
+// A hang guard, not a bound on the work: what can hang is the `score.ts runs` subprocess this
+// hook spawns over the staged world. Timed round the body on this two-CPU pod: 2213.74 / 2243.03
+// / 2319.58 ms (min / median / max) over 3 idle runs, and 24833.04 / 60288.11 / 60932.92 ms over
+// the 7 of 10 runs at 96 busy loops (48 per CPU) that reached it. Bun's unwritten 5 s default for
+// a hook is what failed correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms,
+// and at that default no loaded run reached this hook at all: the drain above it was charged past
+// the default first. 180_000 is 3.0 times the worst measured here and the number the hook above
+// carries, and sits well inside the pi-legion job's timeout-minutes: 10 (600 s), so a subprocess
+// that never returns reddens with this test named instead of cancelling the job, which names
+// nothing.
 beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-});
+}, 180_000);
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
