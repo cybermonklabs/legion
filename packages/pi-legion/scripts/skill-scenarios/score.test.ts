@@ -36,7 +36,12 @@ beforeAll(() => {
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-});
+  // Bun's default hook bound is 5s, and this one writes every run of the file and clones a bare
+  // repository for each threads-closed run: it ran in about 4s before this round added three
+  // runs, and on a loaded pod it then timed out with the clone killed and its stderr empty,
+  // which reads as a git failure rather than as the hook's own bound. 120s is the whole file's
+  // staging, not one run's.
+}, 120_000);
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
