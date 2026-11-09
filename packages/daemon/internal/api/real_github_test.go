@@ -27,12 +27,12 @@ const realGitHubProofEnabled = "LEGION_REAL_GITHUB"
 // TestRealGitHubCredentialSurface keeps the Stage 3 credential proof beside the real App it
 // drives: the implement App's token, rendered as the gh files the daemon writes
 // (internal/ghconfig), is whose login a plain gh reports, and a git clone through gh's own
-// credential helper reads those files. It acts as the implement App alone, since the review
-// App's broker secret is human tier and every run that named it would wait for a person. It is
-// the lower-level proof of the rendered files against real GitHub; the helper a shared clone
-// runs, `legion git-credential`, and the `legion gh` wrapper are proven against the real gh and
-// git in cmd/legion (TestRealGhAndGitSendTheTargetOwnersToken). It is intentionally gated: CI
-// has no Legion App keys, whereas the devbox command is a release gate.
+// credential helper reads those files. It acts as the implement App alone, since the review App
+// has no default credential, and reading that role would make every run here need the operator's
+// key command. It is the lower-level proof of the rendered files against real GitHub; the helper
+// a shared clone runs, `legion git-credential`, and the `legion gh` wrapper are proven against
+// the real gh and git in cmd/legion (TestRealGhAndGitSendTheTargetOwnersToken). It is
+// intentionally gated: CI has no Legion App keys, whereas the devbox command is a release gate.
 func TestRealGitHubCredentialSurface(t *testing.T) {
 	if os.Getenv(realGitHubProofEnabled) != "1" {
 		t.Skip("set LEGION_REAL_GITHUB=1 to run the real GitHub App credential proof")
@@ -88,15 +88,15 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 }
 
 // githubAppsLib is the live proofs' App lib, scripts/e2e/lib/github-apps.sh: the one place this
-// deployment's App pair, the checks on the four inputs that override it, and the token command
-// are written.
+// deployment's App pair, the checks on the three inputs that override it and on the review App's
+// key command, which it requires and no default stands behind, and the token command are written.
 var githubAppsLib = filepath.Join("..", "..", "..", "..", "scripts", "e2e", "lib", "github-apps.sh")
 
 // liveProofAppInputs is the two inputs githubAppsLib reads for the implement role, each
 // overriding one default: the App's numeric id and the name of the secrets broker's github-app
-// secret that mints its token. The lib reads a review pair too, which the shell stage proofs
-// take; the proofs here act as the implement App alone and name neither of those inputs, so no
-// run of them raises a request on the review App's human-tier secret.
+// secret that mints its token. The lib reads the review role's inputs too, which the shell stage
+// proofs set; the proofs here act as the implement App alone and name none of them, so no run of
+// them needs the operator's review key command.
 var liveProofAppInputs = []string{
 	"LEGION_E2E_IMPLEMENT_APP_ID", "LEGION_E2E_IMPLEMENT_APP_SECRET",
 }
@@ -127,9 +127,9 @@ func runGitHubAppsLib(lib string, environ []string, script string, args ...strin
 // liveProofImplementApp resolves the implement App by running githubAppsLib's own
 // require_app_inputs and app_token_command in an environment of environ, so the gated proofs here
 // take the lib's default, its input checks and its token command, and no second copy of any of
-// them exists to drift. It asks for the implement role alone: the review App's secret is human
-// tier, so naming it would put a person's approval in front of every run. A refusal returns the
-// lib's message, which names the input and never its value.
+// them exists to drift. It asks for the implement role alone: the review App has no default
+// credential, so naming that role would make every run of these proofs need the operator's key
+// command. A refusal returns the lib's message, which names the input and never its value.
 func liveProofImplementApp(environ []string) (implement liveProofApp, err error) {
 	return liveProofImplementAppFrom(githubAppsLib, environ)
 }
@@ -193,8 +193,9 @@ check_github_apps implement`
 // same two implement inputs the stage proofs read, the App's id and the secrets broker
 // github-app secret whose release the token command prints, as liveProofImplementApp reads them from the
 // lib, and the block it returns proved against GitHub before a proof acts as it. The review App
-// is left out: its secret is human tier, and the proofs here act as the implement App alone. The
-// daemon runs the token command itself (appauth's token mode), so no key is resolved here.
+// is left out: it has no default credential, so reading that role would make every run need the
+// operator's key command, and the proofs here act as the implement App alone. The daemon runs
+// the token command itself (appauth's token mode), so no key is resolved here.
 func realGitHubApps(t *testing.T) config.GitHubApps {
 	t.Helper()
 	// go test's result cache keys a test on the variables it looks up and the files it opens, and

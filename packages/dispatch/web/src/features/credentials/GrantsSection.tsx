@@ -2,14 +2,17 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
-import type { CredentialGrant } from "../../api/types";
+import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
-/** How a grant came to be, for its Live grants row: the policy's, or the person who approved it. */
-function grantedBy(grant: CredentialGrant): string {
+/** How a grant came to be, for its Live grants row: the policy's, or the person who approved it.
+ *  The broker writes which of the two on every grant (`granted`, "automatic" or "approval"), so
+ *  that field is what this reads; `approver` is the name to show once it says someone approved,
+ *  and a grant the policy gave has none. */
+function grantedBy(grant: ApproverGrantResp): string {
   return grant.granted === "automatic" ? "Automatically" : `Approved by ${grant.approver}`;
 }
 
@@ -28,13 +31,13 @@ function grantedBy(grant: CredentialGrant): string {
  * unchanged. `mayRevoke` reads both as nobody, since a login that canonicalizes to the empty
  * string matches no person, so this reads both as nobody too.
  */
-function unrevocable(grant: CredentialGrant): string | null {
+function unrevocable(grant: ApproverGrantResp): string | null {
   const approver = (grant.approver ?? "").trim();
   const operator = (grant.enrollment.operator ?? "").trim();
   return approver === "" && operator === "" ? "Ends with its machine login" : null;
 }
 
-const columns: readonly RevocableColumn<CredentialGrant>[] = [
+const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
   {
     cell: (grant) => (
       <>
@@ -48,7 +51,7 @@ const columns: readonly RevocableColumn<CredentialGrant>[] = [
     ),
     header: "Enrollment",
   },
-  { cell: (grant) => grant.names.join(", "), header: "Names" },
+  { cell: (grant) => (grant.names ?? []).join(", "), header: "Names" },
   { cell: grantedBy, header: "Granted" },
   { cell: (grant) => <Timestamp at={grant.created_at} />, header: "Created" },
   {
@@ -76,7 +79,7 @@ const columns: readonly RevocableColumn<CredentialGrant>[] = [
  */
 export function GrantsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants });
+  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
 
   return (
     <RevocableList

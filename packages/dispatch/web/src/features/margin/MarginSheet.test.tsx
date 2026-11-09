@@ -16,6 +16,8 @@ const specArtifact: Artifact = {
   kind: "doc",
   name: "Spec",
   primary: true,
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };

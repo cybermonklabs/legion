@@ -46,6 +46,8 @@ function session(overrides: Partial<Agent> & { session_id: string }): Agent {
     machine_id: "listener",
     open_asks: 0,
     roles: [],
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title: overrides.session_id,
     ...overrides,
   };

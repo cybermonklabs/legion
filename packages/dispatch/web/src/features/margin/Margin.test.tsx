@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
@@ -746,7 +747,9 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
       text: "Because it is precise.",
       user: "alice",
     },
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-10T00:00:00Z",
     edited_at: null,
     id: "ask-answered",
@@ -771,7 +774,9 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
       version: 1,
     },
     answer: null,
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-10T00:02:00Z",
     edited_at: null,
     id: "ask-open",
@@ -1909,7 +1914,7 @@ function renderDocumentMargin(comments: Comment[]) {
   const commentBlocks = spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
     blocks: [],
     indexed: false,
-    item: { id, kind: "comment" },
+    item: graphNode({ id, kind: "comment" }),
   }));
   // A save refetches the margin's own reads: the document's asks and the viewer's inbox, both
   // empty here as the cache was seeded.
