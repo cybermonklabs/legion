@@ -3347,7 +3347,9 @@ func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string) uint64 
 // scan had completed, because nothing recorded its size. The two counts are disjoint on purpose:
 // restored is the claims that got their grace back, delete_markers is what the scan streamed past
 // to find them and is what grows without bound. A single total of both would read as claims the
-// restart failed to restore, which is the misreading this whole issue was filed on.
+// restart failed to restore, which is the misreading this whole issue was filed on. It reads the
+// registry's own logger (WithLogger) rather than the process's default, so what it reads is its
+// own Open's line alone and it runs beside the other tests.
 func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
@@ -3375,8 +3377,8 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 		}
 	}
 
-	logs := captureRegistryLogs(t)
-	registry, err := Open(conn, WithReplicas(1))
+	logs := &lockedBuffer{}
+	registry, err := Open(conn, WithReplicas(1), WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}

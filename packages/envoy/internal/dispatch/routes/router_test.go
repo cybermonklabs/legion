@@ -568,8 +568,11 @@ func TestDomainSignInAdmitsAVerifiedAccountOfTheDomain(t *testing.T) {
 // An account outside the domain, one whose email Google has not verified, and one with no email
 // each reach Dispatch's refusal page with their reason; none gets a session or a recorded sign-in,
 // and each refusal is logged with the email and hd.
+//
+// Serial: it swaps process-wide state, the default logger it reads each refusal line out of
+// (captureRouterLogs, docs/testing.md); the router logs through slog's default, so it has no
+// logger of its own to read instead.
 func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(claims map[string]any)

@@ -521,8 +521,12 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 //
 // Real time, at natsLossGrace: the cut is of a TCP proxy in front of a live NATS server, which no
 // synctest bubble can hold.
+//
+// Serial: it measures the process, waiting for the cut process to release the publisher hold
+// within natsLossGrace and a little, and a measurement that shares the machine with the rest of a
+// parallel batch reads that batch's load rather than the grace (dispatch://INFRA-1075; the same
+// reason this file's other measurements give).
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
-	t.Parallel()
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
 	proxied := proxy.URL()

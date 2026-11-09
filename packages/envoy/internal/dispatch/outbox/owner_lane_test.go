@@ -38,8 +38,12 @@ func (r *roleRig) laterEvent(t *testing.T, key string, actor model.Actor) model.
 // TestAHolderThatNeverAnswersDoesNotDelayAnotherIssuesEvents covers two owners in two batches;
 // this covers two owners in one, which only a per-owner release reaches. Both issues' events are
 // committed before the outbox runs, so its first batch reads both owners.
+//
+// Serial: it measures the process, asserting that the answering holder's later forward reaches it
+// within a second of its commit, and a measurement that shares the machine with the rest of a
+// parallel batch reads that batch's load rather than this lane's release (dispatch://INFRA-1075;
+// the same reason lease_test.go and throughput_test.go give).
 func TestAnOwnerOfTheSilentHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T) {
-	t.Parallel()
 	const (
 		silentRole, silentHolder = "silent-reviewer", "ses_never_answers"
 		liveRole, liveHolder     = "live-reviewer", "ses_answers"

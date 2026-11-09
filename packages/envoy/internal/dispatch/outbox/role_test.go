@@ -760,8 +760,13 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 // live window; a holder nothing dates and a read that failed hold a forward pending the same way
 // (forwardOf), and the event is backed off as TestARoleRouteToAnUnresponsiveHolderStaysPending
 // holds.
+//
+// Serial: it swaps process-wide state, the default logger it reads that back-off line out of
+// (docs/testing.md), and the filter it reads through is no guard against another test's lines:
+// it keeps the records holding "event_id=<n> " for its own row's id, and every test here opens
+// a database of its own whose events are numbered from 1 as well, so a test logging beside this
+// one hands it another event's ERROR line under the same id.
 func TestAForwardHeldByItsHoldersResolutionIsAWaitNotAFailure(t *testing.T) {
-	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_stale_counted"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
