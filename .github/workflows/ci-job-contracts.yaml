@@ -50,3 +50,5 @@ jobs:
           job: contracts
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
+
+# probe for dispatch://INFRA-1413, never merged
