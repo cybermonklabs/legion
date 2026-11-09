@@ -234,11 +234,13 @@ type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
 	// Holds says the issue held a slot row when the line was built, which the grant reads
-	// (admit's slotFor): such a candidate is promoted without taking a second row. Two kinds
-	// can hold one — an answered root and an issue at admitted the daemon has started, which is
-	// a tree's own root whose gate has opened, a root that arrived from another tree with the
-	// row of the tree it left, and a child set back to todo — so the line carries the fact
-	// rather than making each reader read the slots again.
+	// (admit's slotFor): such a candidate is promoted without taking a second row. Three kinds
+	// of entry can hold one: an answered root (LineAnswered); a root that arrived from another
+	// tree with the row it held there (LineQueuedRoot), in whatever phase it carries; and a
+	// first phase at admitted (LineFirstPhase) of an issue the daemon has started — a tree's own
+	// root whose gate has opened, or a child a person set back to todo. This is the one list of
+	// them in the daemon's code: its other comments on a holder in the line point here, and the
+	// line carries the fact rather than making each reader read the slots again.
 	Holds bool
 }
 
@@ -570,9 +572,9 @@ func KeepsSlot(issue Issue) bool {
 // call it: admission releases the slot of every issue it answers false for (admit's
 // releaseSlots), and the waiting line offers a returning issue a slot only where it answers
 // true (Waiting). root is the record of the issue's tree root; live is whether the tree is
-// live (LiveRoots). The design gate is read by no part of this, now that the phase half is
-// KeepsSlot: a gate open or closed changes neither whether the tree runs nor whether the
-// issue's phase keeps a row. The slot is accounting only: taking one away suspends no claim,
+// live (LiveRoots). The design gate is read by no part of this: a gate open or closed changes
+// neither whether the tree runs nor whether the issue's phase keeps a row (KeepsSlot). The slot
+// is accounting only: taking one away suspends no claim,
 // moves no phase and writes no Dispatch status.
 func NeedsSlot(issue, root Issue, live bool) bool {
 	return live && !root.Lingers() && KeepsSlot(issue)
@@ -674,13 +676,10 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // nothing. The slot does not say it either, for the reason the queued-root loop states at the
 // skip it guards below.
 //
-// An issue holding a slot row is in the line where its promotion needs more than that row: an
-// answered root, whose architect resumes; an issue at admitted the daemon has started, whose
-// first phase starts — a tree's own root under an open gate, and a child a person set back to
-// todo; and a root that arrived from another tree with its row, whose promotion opens the tree
-// of its own. Each is promoted without taking a second slot, and the entry it stands in says
-// it holds one (LineEntry.Holds, which admit's slotFor reads). A row does take an owed start
-// out of the line, because the row is what releases that start (SuperviseRequest.NeedsSlot)
+// An issue holding a slot row is in the line where its promotion needs more than that row, the
+// three kinds LineEntry.Holds names, and each is promoted without taking a second slot: the
+// entry says it holds one, and admit's slotFor reads that. A row does take an owed start out of
+// the line, because the row is what releases that start (SuperviseRequest.NeedsSlot)
 // and an issue holding one waits for nothing here, and it takes out a queued root the daemon
 // granted that row in this tree, whose architect is writing the spec and whose second
 // promotion would reopen an open tree. An issue whose tree is not live, or whose root lingers,

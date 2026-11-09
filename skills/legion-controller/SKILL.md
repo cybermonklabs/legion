@@ -130,9 +130,10 @@ roots of the live trees. The free slots are `admission.cap`, less every issue in
 daemon counts a slot a waiting issue will take as taken already, and an issue in
 `admission.blocked` waits on a blocker rather than on a slot. Count no issue twice. An issue
 that holds a slot and waits for a promotion stands in both lists — a root a person answered,
-a tree's own root at `admitted` under a design gate a person has opened, and a root another
-tree handed over with the slot it held there — and subtracting such an issue a second time
-would hide a slot that is free. Every move to `todo` you make is one of these:
+a tree's own root at `admitted` under a design gate a person has opened, a root another tree
+handed over with the slot it held there, and a child the daemon started that a person set back
+to `todo` — and subtracting such an issue a second time would hide a slot that is free. Every
+move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);

@@ -326,14 +326,11 @@ type Admission struct {
 	// while one in awaiting_merge is in neither list.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
-	// oldest first — an owed start, which holds no row and waits here for one, an answered
-	// awaiting_person root and a tree's own root at admitted whose gate has opened, which each
-	// hold the row they were started with — then the issues whose first phase can start, by
-	// their tree root's Dispatch rank, which hold no row either, but for a root another tree
-	// handed over with the row it held there. It carries children as well as roots, for the
-	// same reason `active` does, and an issue that holds a row and waits for a promotion
-	// stands in both lists: an answered root, a tree's own root at admitted under an open gate
-	// and a root handed over from another tree each do until the pass that promotes them.
+	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
+	// rank. It carries children as well as roots, for the same reason `active` does. An owed
+	// start in it holds no row and waits for one; an issue in it that holds a row already (the
+	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
+	// which takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root

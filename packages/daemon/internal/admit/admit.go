@@ -325,8 +325,7 @@ const todoWakeDelay = 30 * time.Second
 // will take none, and neither will one that already holds a row or whose phase keeps none
 // (slotFor), so none of them hides free capacity from the project: the controller hears of the
 // slot and may hand Legion work that can actually run. A candidate already holding a row is no
-// taker: the line carries issues that hold one — an answered root, an issue at admitted the
-// daemon has started, a root that arrived from another tree with its row — and counting such a
+// taker: the line carries holders (the kinds record.LineEntry.Holds names), and counting such a
 // candidate would say the cap was full while rows stood free, so the wake would not fire. The
 // controller is woken about it and takes nothing for it; only a person hands Legion work
 // (skill://legion-controller, "Free slots").
@@ -1328,10 +1327,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			}
 			now := a.now()
 			if takes {
-				// The line holds each issue once, and an entry carries whether its issue held a
-				// row when the line was built (record.LineEntry.Holds), so no grant here
-				// changes the answer slotFor gives a candidate behind it; what the grant does
-				// change, the count against the cap, is own, which grows with it.
+				// An entry carries whether its issue held a row when the line was built
+				// (record.LineEntry.Holds), and the line this loop reads holds each issue once,
+				// so no grant here changes the answer slotFor gives a candidate behind it; what
+				// the grant does change, the count against the cap, is own, which grows with
+				// it. finishFencedStarts keeps the line to one entry an issue, not record.Waiting:
+				// Waiting would list an issue at admitted that holds no row and still owes a start
+				// both as a return and as a first phase, but every owed start names a worker
+				// phase, and finishFencedStarts ends each one whose phase is not the issue's own
+				// before the line is built, so none is left owed at admitted.
 				slot := record.Slot{Issue: issue.Key, Index: nextSlotIndex(slots), AdmittedAt: now}
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
@@ -1489,19 +1493,15 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
 // it in, and the two agree wherever this is asked: KeepsSlot refuses done and awaiting_merge
-// alone, and no promotion leaves an issue in either. A first phase starts at phase.Planning
-// from a record standing at admitted, an answered root goes from awaiting_person back to
-// admitted, a returning issue keeps the worker phase it stands in, and a root whose tree is
-// opened keeps the phase its record carries — which is the one candidate the phase test
-// refuses, a root another tree handed to Legion carrying awaiting_merge, and it carries that
-// phase before the promotion as well as after it.
+// alone, and no promotion moves an issue into or out of either. A first phase starts at
+// phase.Planning from a record standing at admitted, an answered root goes from
+// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
+// a root whose tree is opened keeps the phase its record carries, awaiting_merge included,
+// which makes such a root the one candidate the phase test refuses.
 //
-// A candidate that holds a row takes no second one: an issue keeps the row it has from its
-// start until it is done, leaves the workflow or waits only for its merge, so the line carries
-// holders — an answered root, an issue at admitted the daemon has started, and a root that
-// arrived from another tree with the row of the tree it left. A candidate that takes no slot
-// is promoted whatever the cap: holding it back would bound nothing and would leave its tree
-// closed for no reason.
+// A candidate that holds a row takes no second one: the line carries holders (the kinds
+// record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
+// holding it back would bound nothing and would leave its tree closed for no reason.
 func slotFor(entry record.LineEntry) bool {
 	return !entry.Holds && record.KeepsSlot(entry.Issue)
 }

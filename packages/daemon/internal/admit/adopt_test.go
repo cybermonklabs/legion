@@ -631,8 +631,9 @@ func TestAnAnsweredRootIsNotHeldByTheChainItQueuedUnder(t *testing.T) {
 	}
 
 	// The root waits on a person and is answered, holding no row: a root the daemon started keeps
-	// its row through that wait (record.KeepsSlot), so this is the state the change finds on a
-	// deployment that ran the old rule, which the fixture reaches by taking the row away itself.
+	// its row through that wait (record.KeepsSlot), so this is the state an upgrade leaves from a
+	// release that freed the row at awaiting_person, which the fixture reaches by taking the row
+	// away itself.
 	// Meanwhile the ancestor on its old chain is a live root holding a row of its own.
 	at := fixedNow
 	promoted.Phase = phase.AwaitingPerson
@@ -640,7 +641,7 @@ func TestAnAnsweredRootIsNotHeldByTheChainItQueuedUnder(t *testing.T) {
 	putIssue(t, pool, promoted)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().ReleaseSlot(context.Background(), tx, root); err != nil {
-			t.Fatalf("take the root's row away, as the rule that ran before this one did: %v", err)
+			t.Fatalf("take the root's row away, as a release that freed it at awaiting_person did: %v", err)
 		}
 	})
 	seedSlotted(t, pool, ancestor, "A")
