@@ -3,7 +3,7 @@ import type {
   Actor,
   Ask,
   Comment,
-  Event,
+  DispatchEvent,
   HandoffSummary,
   IssueAskThreadRow,
   Message,
@@ -18,12 +18,17 @@ import {
   matchesFilter,
 } from "./conversation-model";
 
-const session: Actor = { id: "session-1", kind: "session" };
+// A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
+// read states a plain string, so this one is written as the literal it is: a `block.invalid`
+// frame below names it, and so do the route reads here.
+const session = { id: "session-1", kind: "session" } as const satisfies Actor;
 const bob: Actor = { id: "bob", kind: "user" };
 
 const baseAsk: Ask = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  block_id: null,
   author: session,
   created_at: "2026-09-10T09:00:00Z",
   edited_at: null,
@@ -63,6 +68,9 @@ function askRow(ask: Partial<Ask> = {}, replies: Comment[] = []): IssueAskThread
 function comment(overrides: Partial<Comment> & Pick<Comment, "id" | "created_at">): Comment {
   return {
     anchor: null,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     ask_id: null,
     author: bob,
     body: `body of ${overrides.id}`,
@@ -83,6 +91,8 @@ function comment(overrides: Partial<Comment> & Pick<Comment, "id" | "created_at"
 function message(overrides: Partial<Message> & Pick<Message, "id" | "created_at">): Message {
   return {
     author: bob,
+    broadcast_id: null,
+    reply_block: null,
     body: `body of ${overrides.id}`,
     deliveries: [],
     in_reply_to: null,
@@ -436,7 +446,7 @@ test("a proof that is not a list is one row, and a body that is not a JSON objec
 // The activity line is the Activity tab's (`features/activity/activity-model.ts`); these cases
 // moved here with the Conversation's own and still describe the one writer of that text.
 test("describes a malformed decision block", () => {
-  const event: Extract<Event, { type: "block.invalid" }> = {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
     actor: session,
     created_at: "2026-09-13T17:00:00Z",
     id: 9,
@@ -467,7 +477,7 @@ test("describes a status change out of Done as reopening the issue", () => {
     payload: { status: "backlog" },
     seq: 2,
     type: "issue.updated",
-  } as Event;
+  } as DispatchEvent;
 
   expect(activityDescription(reopened, "done")).toEqual(["reopened the issue into backlog"]);
 });
@@ -480,7 +490,7 @@ const claimOf = (id: string, title: string) => ({
   at: "2026-09-24T06:00:00Z",
 });
 
-type ClaimEvent = Extract<Event, { type: "issue.claimed" | "issue.released" }>;
+type ClaimEvent = Extract<DispatchEvent, { type: "issue.claimed" | "issue.released" }>;
 
 function claimEvent(
   type: ClaimEvent["type"],
@@ -501,7 +511,7 @@ function claimEvent(
 }
 
 // A line that names another holder keeps that holder's actor as a part, for `AgentName` to draw.
-const releaseCases: Array<[string, Event, AgentPart[]]> = [
+const releaseCases: Array<[string, DispatchEvent, AgentPart[]]> = [
   [
     "a session releasing its own claim",
     claimEvent("issue.released", claimOf("session-one", "Implementer").actor, {
@@ -579,7 +589,7 @@ test("an answer that replaced an earlier one reads as a change in the activity l
     payload: { ...baseAsk, answer, state: "answered" },
     seq: 5,
     type: "ask.answered",
-  } as Event;
+  } as DispatchEvent;
   expect(activityDescription(answered)).toEqual(["answered “Ship it?”"]);
   expect(
     activityDescription({
@@ -590,6 +600,6 @@ test("an answer that replaced an earlier one reads as a change in the activity l
         previous_answer: { ...answer, at: "2026-09-10T09:01:00Z", selected: ["Ship"] },
         state: "answered",
       },
-    } as Event)
+    } as DispatchEvent)
   ).toEqual(["changed the answer to “Ship it?”"]);
 });

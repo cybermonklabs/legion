@@ -4,13 +4,20 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError, api, type ListEventsOptions } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
-import type { Actor, Agent, Event, UserIssueState, UserState } from "../../api/types";
+import type { Query } from "../../api/paths";
+import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
-function message(seq: number, by?: Actor): Event {
+// The writer of a frame is one of the kinds Dispatch writes, not the open `Actor` a route's
+// read answers with: these are `message.created` frames, so the payload's own reading of its
+// author is what names the writer here.
+function message(
+  seq: number,
+  by?: Extract<DispatchEvent, { type: "message.created" }>["payload"]["author"]
+): DispatchEvent {
   const actor = by ?? { id: "alice", kind: "user" as const };
   return {
     actor,
@@ -21,6 +28,8 @@ function message(seq: number, by?: Actor): Event {
     payload: {
       author: actor,
       body: `Message ${seq}`,
+      broadcast_id: null,
+      reply_block: null,
       created_at: "2026-09-09T00:00:00Z",
       deliveries: [],
       id: `message-${seq}`,
@@ -83,7 +92,7 @@ test("ActivityTab lists the issue's events under its own label and writes no rea
 test("ActivityTab's Load older fetches the page before the oldest event it holds", async () => {
   const user = userEvent.setup();
   const firstPage = Array.from({ length: 200 }, (_, index) => message(200 - index));
-  const calls: ListEventsOptions[] = [];
+  const calls: Query<"/api/v1/issues/{key}/events", "get">[] = [];
   const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
     calls.push(options ?? {});
     return options?.before === undefined ? firstPage : [message(0)];
@@ -119,6 +128,7 @@ function running(sessionId: string, title: string): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    state: "live",
     title,
   };
 }

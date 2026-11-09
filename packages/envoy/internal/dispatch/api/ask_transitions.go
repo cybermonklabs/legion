@@ -173,6 +173,19 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 	return &value, nil
 }
 
+// answerAskInput is the body of POST /api/v1/asks/{id}/answer.
+type answerAskInput struct {
+	Selected []string `json:"selected"`
+	Text     *string  `json:"text"`
+	// ExpectedEditedAt is required: an answer names the wording it answers, and a body without
+	// the field is refused (400 ASK_REVISION_REQUIRED, answerAsk below). Null is the
+	// precondition that the ask has never been edited, so the field is required and nullable
+	// both, which is why the handler holds the bytes unparsed (rawFieldSchemas).
+	ExpectedEditedAt json.RawMessage `json:"expected_edited_at" required:"true"`
+	ExpectedAnswerAt json.RawMessage `json:"expected_answer_at"`
+	Actor            *model.Actor    `json:"actor"`
+}
+
 func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -181,13 +194,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "ask") {
 		return
 	}
-	var input struct {
-		Selected         []string        `json:"selected"`
-		Text             *string         `json:"text"`
-		ExpectedEditedAt json.RawMessage `json:"expected_edited_at"`
-		ExpectedAnswerAt json.RawMessage `json:"expected_answer_at"`
-		Actor            *model.Actor    `json:"actor"`
-	}
+	var input answerAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -292,7 +299,14 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newAskRead(ask, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.
+type resolveAskInput struct {
+	Kind   string       `json:"kind" required:"true"`
+	Reason string       `json:"reason" required:"true"`
+	Actor  *model.Actor `json:"actor"`
 }
 
 func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
@@ -302,11 +316,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "ask") {
 		return
 	}
-	var input struct {
-		Kind   string       `json:"kind"`
-		Reason string       `json:"reason"`
-		Actor  *model.Actor `json:"actor"`
-	}
+	var input resolveAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -367,7 +377,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newAskRead(ask, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
 func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ASK_URGENCIES, DOC_EDIT_OPS } from "./dispatch-tools";
+import type { ASK_URGENCIES } from "./dispatch-tools";
 import { GATED_STEPS } from "./legion-roles";
 
 /**
@@ -24,7 +24,6 @@ export type DisplayTree = {
 export const DisplayTreeSchema: z.ZodType<DisplayTree> = z.looseObject({ type: z.string() });
 
 export type AskUrgency = (typeof ASK_URGENCIES)[number];
-export type DocEditOp = (typeof DOC_EDIT_OPS)[number];
 
 export const ActorOriginSchema = z
   .strictObject({
@@ -36,8 +35,6 @@ export const ActorOriginSchema = z
     session_title: z.string().optional(),
   })
   .readonly();
-
-export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
  *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
@@ -63,8 +60,6 @@ export const ActorActSchema = z
     scopes: z.array(z.enum(DISPATCH_SCOPES)).optional(),
   })
   .readonly();
-
-export type ActorAct = z.output<typeof ActorActSchema>;
 
 export const ActorSchema = z.union([
   z
@@ -95,8 +90,6 @@ export const ActorSchema = z.union([
    *  (`{kind: "system", id: "architecture-importer"}`). */
   z.strictObject({ kind: z.literal("system"), id: z.string() }).readonly(),
 ]);
-
-export type Actor = z.output<typeof ActorSchema>;
 
 /**
  * An actor as a bus frame carries it, in the three readings the inbound parsers need.
@@ -140,74 +133,9 @@ export function serviceSubjectLabel(subject: string): string {
   return subject;
 }
 
-export interface AgentToken {
-  readonly id: string;
-  readonly name: string;
-  readonly prefix: string;
-  /** The OAuth scopes the token holds (`DISPATCH_SCOPES`). A token holding `approve` holds
-   *  `person` too; `[]` is a token that acts as nobody. */
-  readonly scopes: DispatchScope[];
-  readonly created_at: string;
-  readonly last_used_at: string | null;
-  readonly revoked_at: string | null;
-}
-
-export interface CreatedAgentToken extends AgentToken {
-  readonly token: string;
-}
-
-/** `POST /api/v1/me/agent-tokens`: the new token's name, and the scopes it is to hold. Omitting
- *  `scopes` gives it the set the minting credential holds itself; `[]` gives it none. A scope the
- *  minter does not hold is 403 OAUTH_SCOPE_REQUIRED, and `approve` without `person` is 400
- *  TOKEN_SCOPES_INPUT. The answer is the one time the token's plaintext is shown. */
-export interface CreateAgentTokenInput {
-  readonly name: string;
-  readonly scopes?: DispatchScope[];
-}
-
-/** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set the token is to hold, with the mint's
- *  refusals. It is required, since it replaces the set rather than adding to it. */
-export interface UpdateAgentTokenScopesInput {
-  readonly scopes: DispatchScope[];
-}
-
 /** What a credential request's kind is, as the secrets broker names it: a secret an agent asked
  *  its person for, or a machine login a launcher asked to enrol. */
 export type CredentialRequestKind = "agent_secret" | "launcher_credential";
-
-/** A credential request's two possibly-differing session ids, read independently by the broker:
- *  `request` is the id the request itself stated (an unsigned override in its body at create
- *  time), `enrollment` is the id its requesting enrollment stated when it enrolled. Either is
- *  null when that id was never set; a machine login (`launcher_credential`, which has no request
- *  row and no requesting enrollment) always answers both null. Optional so an older broker's
- *  response, with no `session` field at all, resolves the same as a request that names neither
- *  id. */
-export interface CredentialSession {
-  readonly request: string | null;
-  readonly enrollment: string | null;
-}
-
-/** One row of `GET /api/v1/credential-requests?approver=me`: a request the caller may decide,
- *  as the dashboard's Inbox and `dispatch inbox` both read it. */
-export interface CredentialPendingRow {
-  readonly record_id: string;
-  readonly kind: CredentialRequestKind;
-  /** Secret rule keys, or `[hostname]` for a `launcher_credential`. */
-  readonly identifiers: string[];
-  /** RFC3339. */
-  readonly requested_at: string;
-  readonly session?: CredentialSession;
-  /** An `agent_secret` row's page on the secrets broker, where a person signed in to the broker
-   *  decides it (`<BROKER_PUBLIC_URL>/approve/<record>`). Absent on a machine login's row, and on
-   *  every row from a broker older than that page. */
-  readonly approve_url?: string;
-}
-
-/** `GET /api/v1/credential-requests?approver=me`, which answers null where the deployment has no
- *  secrets broker. */
-export interface CredentialPendingResponse {
-  readonly pending: CredentialPendingRow[];
-}
 
 export const anchorFields = {
   artifact_id: z.string(),
@@ -221,30 +149,12 @@ export const anchorFields = {
 
 export const AnchorSchema = z.strictObject(anchorFields).readonly();
 
-export type Anchor = z.output<typeof AnchorSchema>;
-
-export type AnchorInput =
-  | {
-      readonly artifact: string;
-      readonly quote: string;
-      readonly occurrence?: number;
-      readonly mark_id?: never;
-    }
-  | {
-      readonly artifact: string;
-      readonly mark_id: string;
-      readonly quote?: never;
-      readonly occurrence?: never;
-    };
-
 /** One node on a block's path from the document's top-level block down to the block: its type,
  *  its block id ("" for a node the live document has not stamped yet) and its index among its
  *  parent's children. */
 export const BlockPathEntrySchema = z
   .strictObject({ type: z.string(), id: z.string(), index: z.number().int() })
   .readonly();
-
-export type BlockPathEntry = z.output<typeof BlockPathEntrySchema>;
 
 /** Where a block stands in the table holding it. `row` is the row's index (0 is the header row)
  *  and `column` the cell's index in its row — the indexes `delete_row` and `delete_column` take.
@@ -262,8 +172,6 @@ export const TablePositionSchema = z
   })
   .readonly();
 
-export type TablePosition = z.output<typeof TablePositionSchema>;
-
 /** Where a block stands in its document: `GET /api/v1/artifacts/{id}/blocks/{block_id}`'s answer,
  *  and a comment's or ask's `anchor_block`. `table` is present for a table block and for every
  *  block inside one. */
@@ -275,8 +183,6 @@ export const BlockPathSchema = z
     table: TablePositionSchema.optional(),
   })
   .readonly();
-
-export type BlockPath = z.output<typeof BlockPathSchema>;
 
 /** Where meaning search stands on one block: every window of blocks covering it is embedded at
  *  the text it holds now, one of them is still waiting for its vector, or no window covers the
@@ -309,8 +215,6 @@ export const ExternalLinkSchema = z
   .strictObject({ url: z.string(), kind: z.string().optional() })
   .readonly();
 
-export type ExternalLink = z.output<typeof ExternalLinkSchema>;
-
 /** A design-gate step a Legion deployment gates, as Dispatch stores it: `decisions` names the
  *  root issue's decisions document, `criteria` its Verification document, `spec` its primary
  *  document. */
@@ -331,8 +235,6 @@ export const ProjectSchema = z
   })
   .readonly();
 
-export type Project = z.output<typeof ProjectSchema>;
-
 /**
  * A project's default assignee: the last step of an issue create's assignee chain, reached when
  * the create named nobody, the session acts for nobody, and no parent carries one. `assignee` is
@@ -342,14 +244,6 @@ export type Project = z.output<typeof ProjectSchema>;
 export const ProjectDefaultAssigneeSchema = z
   .strictObject({ project: z.string(), assignee: z.string().nullable() })
   .readonly();
-
-export type ProjectDefaultAssignee = z.output<typeof ProjectDefaultAssigneeSchema>;
-
-/** The body of `PUT /api/v1/projects/{key}/default-assignee`: the person the project's unowned
- *  work lands on, or null to clear the default. */
-export interface ProjectDefaultAssigneeInput {
-  readonly assignee: string | null;
-}
 
 export const RepoProjectSchema = z
   .strictObject({
@@ -370,8 +264,6 @@ export const RepoProjectSchema = z
     created_at: z.string(),
   })
   .readonly();
-
-export type RepoProject = z.output<typeof RepoProjectSchema>;
 
 /**
  * One repository a project's architecture documents are imported from (directory
@@ -395,8 +287,6 @@ export const ArchitectureSourceSchema = z
     components: z.number().int(),
   })
   .readonly();
-
-export type ArchitectureSource = z.output<typeof ArchitectureSourceSchema>;
 
 export const RepoProjectUpdatedEventPayloadSchema = z
   .strictObject({ mapping: RepoProjectSchema, deleted: z.boolean() })

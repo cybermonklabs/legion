@@ -645,18 +645,18 @@ func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifa
 // comment in its thread — the same last_reply the inbox row carries — so the
 // issue header can show who spoke last beside the ask's waiting_on.
 type issueOpenAsk struct {
-	askRead
+	shapedAsk
 	LastReply *model.AskLastReply `json:"last_reply"`
 }
 
 // issueOpenAsksOf pairs each ask with the newest reply in its thread, the shape the detail
 // response lists; an ask nobody has replied to carries a null last_reply. Each ask is read as
-// the dashboard reads one (askRead.shape), its texts registered with the request's reader.
+// the dashboard reads one (shapedAsk.shape), its texts registered with the request's reader.
 func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, reader *displayTreeReader) []issueOpenAsk {
 	openAsks := make([]issueOpenAsk, len(asks))
 	for index, ask := range asks {
-		openAsks[index].askRead.Ask = ask
-		openAsks[index].askRead.shape(reader)
+		openAsks[index].shapedAsk.Ask = ask
+		openAsks[index].shapedAsk.shape(reader)
 		if reply, ok := replies[ask.ID]; ok {
 			openAsks[index].LastReply = &reply
 		}

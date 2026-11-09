@@ -46,7 +46,7 @@ func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ..
 // of what was read:
 //
 //	reader := s.readDisplayTrees(r.Context(), trees, issueKey)
-//	rows := commentReads(comments, reader)
+//	rows := shapedComments(comments, reader)
 //	reader.resolve()
 //	WriteJSON(w, http.StatusOK, rows)
 //

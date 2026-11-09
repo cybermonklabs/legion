@@ -1,10 +1,10 @@
 import type {
-  Ask,
   AskRead,
   AskUrgency,
   CreateAskInput,
   EditAskInput,
   OpenAsk,
+  ShapedAsk,
 } from "@legion/contracts";
 import { ASK_URGENCIES, isIdPrefix } from "@legion/contracts";
 import { textHead } from "../ask-answer";
@@ -36,7 +36,10 @@ function askUrgency(args: ToolArguments): AskUrgency | undefined {
 }
 const askHintLimit = 8;
 
-function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], scope: string): string {
+function askIDInputProblem(
+  asks: readonly Pick<ShapedAsk, "id" | "question">[],
+  scope: string
+): string {
   const hints = asks
     .slice(0, askHintLimit)
     .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
@@ -76,7 +79,7 @@ export async function invalidReplyToAskProblem(
 ): Promise<string> {
   if (owner.kind === "issue") {
     const issue = resolved?.issue ?? (await client.getIssue(owner.issue));
-    return askIDInputProblem(issue.open_asks, "this issue's");
+    return askIDInputProblem(issue.open_asks ?? [], "this issue's");
   }
   if (resolved === undefined) throw new Error("project document is missing its resolved artifact");
   return askIDInputProblem(
@@ -97,7 +100,7 @@ export async function readAskRef(
   id: string,
   ownerName: string,
   client: DispatchClient,
-  list: () => Promise<readonly Pick<Ask, "id" | "block_id">[]>
+  list: () => Promise<readonly Pick<ShapedAsk, "id" | "block_id">[]>
 ): Promise<AskRead> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) {
@@ -140,7 +143,7 @@ async function sessionOpenAsks(
 ): Promise<readonly Pick<OpenAsk, "id" | "question">[]> {
   const session = sessionId?.trim();
   if (!session) throw new Error("host session id is required to read this session's open asks");
-  return (await client.openAsks(session)).asks;
+  return (await client.openAsks(session)).asks ?? [];
 }
 
 /** The asks a refused ask id can be corrected to, in the server's own hint shape. */

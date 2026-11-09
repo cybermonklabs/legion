@@ -2,8 +2,8 @@ import type { AgentStreamResponder } from "./agent-stream";
 import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
-  DeliveryTimelineResponse,
-} from "./dispatch-api-delivery";
+  DeliveryTimelineWithMeasures,
+} from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
 
 /**
@@ -109,7 +109,7 @@ export interface LiveUnsubscribe {
 export type LiveClientFrame = LiveSubscribe | LiveUnsubscribe;
 
 export type DeliveryLiveBody =
-  | DeliveryTimelineResponse
+  | DeliveryTimelineWithMeasures
   | DeliveryMeasuresResponse
   | DeliveryPipelineResponse;
 
@@ -126,7 +126,7 @@ export interface DeliveryLiveSnapshot {
 }
 /** One list's changes: its items that are new or changed, whole, and the ids of those that left. */
 export interface DeliveryLiveItemChanges<L extends DeliveryLiveList> {
-  readonly upsert: DeliveryTimelineResponse[L];
+  readonly upsert: NonNullable<DeliveryTimelineWithMeasures[L]>;
   readonly remove: readonly string[];
 }
 export interface DeliveryLiveDelta {
@@ -140,7 +140,7 @@ export interface DeliveryLiveDelta {
   /** A key's new value, or null when it left. */
   readonly maps: {
     readonly [M in DeliveryLiveMap]?: Readonly<
-      Record<string, DeliveryTimelineResponse[M][string] | null>
+      Record<string, NonNullable<DeliveryTimelineWithMeasures[M]>[string] | null>
     >;
   };
   /** A count's new value, or null when it left. */
@@ -156,7 +156,7 @@ export interface DeliveryLiveDelta {
  *  otherwise. */
 export interface DeliveryLiveFreshness {
   readonly type: "freshness";
-  readonly freshness: DeliveryTimelineResponse["freshness"];
+  readonly freshness: DeliveryTimelineWithMeasures["freshness"];
   /** The sources past their threshold: "prs", "runs", "ci", "events". */
   readonly stale: readonly string[];
 }

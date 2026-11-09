@@ -12,7 +12,6 @@ import type {
   ArtifactText,
   ArtifactUploadResponse,
   ArtifactVersionText,
-  Ask,
   AskRead,
   CheckResultRecorded,
   ClaimedIssue,
@@ -27,12 +26,13 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
+  DocumentAdvised,
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
-  Event,
   GraphEdgeKind,
   GraphReferences,
   Handoff,
@@ -61,6 +61,7 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
+  ShapedAsk,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -871,7 +872,7 @@ export class DispatchClient {
     project: string,
     input: CreateArtifactInput,
     key?: string
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<DocumentAdvised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "projects", project, "artifacts"], input, key);
   }
 
@@ -885,7 +886,7 @@ export class DispatchClient {
   async agentArtifact(
     sessionId: string,
     input: CreateArtifactInput
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<Advised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "agents", sessionId, "artifacts"], input);
   }
 
@@ -951,7 +952,11 @@ export class DispatchClient {
     );
   }
 
-  async getIssueEvents(issue: string, after = 0, limit = ISSUE_EVENTS_PAGE_MAX): Promise<Event[]> {
+  async getIssueEvents(
+    issue: string,
+    after = 0,
+    limit = ISSUE_EVENTS_PAGE_MAX
+  ): Promise<DispatchEvent[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "events"],
@@ -974,7 +979,7 @@ export class DispatchClient {
         : requested === "all"
           ? issue.last_seq
           : Math.min(requested, issue.last_seq);
-    const events: Event[] = [];
+    const events: DispatchEvent[] = [];
     let after = Math.max(0, issue.last_seq - count);
     while (events.length < count) {
       const limit = Math.min(ISSUE_EVENTS_PAGE_MAX, count - events.length);
@@ -994,7 +999,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Advised<ShapedAsk>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1186,7 +1191,7 @@ export class DispatchClient {
     ]);
   }
 
-  async resolveAsk(id: string, input: ResolveAskInput): Promise<Ask> {
+  async resolveAsk(id: string, input: ResolveAskInput): Promise<ShapedAsk> {
     return this.#json("POST", ["api", "v1", "asks", id, "resolve"], input);
   }
 
@@ -1240,7 +1245,7 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "results"]);
   }
 
-  async editAsk(id: string, input: EditAskInput): Promise<Ask> {
+  async editAsk(id: string, input: EditAskInput): Promise<ShapedAsk> {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
@@ -1253,7 +1258,7 @@ export class DispatchClient {
   }
 
   /** Every ask on an issue (all states unless narrowed). */
-  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<ShapedAsk[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1262,7 +1267,7 @@ export class DispatchClient {
     );
   }
 
-  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<ShapedAsk[]> {
     return this.#json(
       "GET",
       ["api", "v1", "artifacts", id, "asks"],
@@ -1271,7 +1276,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<ShapedAsk>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
@@ -1410,7 +1415,9 @@ export class DispatchClient {
     issue: string,
     input: CreateArtifactInput
   ): Promise<
-    ArtifactUploadResponse & { readonly artifact: Artifact & { readonly issue_key: string } }
+    Advised<ArtifactUploadResponse> & {
+      readonly artifact: Artifact & { readonly issue_key: string };
+    }
   > {
     return this.#upload(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"],
@@ -1488,7 +1495,11 @@ export class DispatchClient {
    * AskGate's one append per decision, which a resumed session must not write twice — and replaces
    * the key this call would mint for itself. It must match `IDEMPOTENCY_KEY_PATTERN`.
    */
-  async docEdit(id: string, input: EditArtifactInput, key?: string): Promise<EditArtifactResponse> {
+  async docEdit(
+    id: string,
+    input: EditArtifactInput,
+    key?: string
+  ): Promise<Advised<EditArtifactResponse>> {
     return this.#json(
       "POST",
       ["api", "v1", "artifacts", id, "edits"],
@@ -1503,7 +1514,7 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "artifacts", id, "versions"], input);
   }
 
-  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<Event[]> {
+  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<DispatchEvent[]> {
     return this.#json("GET", ["api", "v1", "artifacts", id, "events"], undefined, { after, limit });
   }
 

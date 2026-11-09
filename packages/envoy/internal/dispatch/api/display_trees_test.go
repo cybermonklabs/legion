@@ -463,11 +463,11 @@ func commentsToFill() []model.Comment {
 	return comments
 }
 
-// builtCommentReads is a comment list shaped over a reader that reads every text where it
+// builtShapedComments is a comment list shaped over a reader that reads every text where it
 // stands, which is the list route's shaping with no table behind it.
-func builtCommentReads(comments []model.Comment, trees bool) []commentRead {
+func builtShapedComments(comments []model.Comment, trees bool) []shapedComment {
 	reader := builtDisplayTrees(trees)
-	reads := commentReads(comments, reader)
+	reads := shapedComments(comments, reader)
 	reader.resolve()
 	return reads
 }
@@ -476,7 +476,7 @@ func builtCommentReads(comments []model.Comment, trees bool) []commentRead {
 // trees, each against its own row, in the order the rows came in (buildDisplayTrees).
 func TestTheParallelFillAnswersTheTreeOfEveryRowInOrder(t *testing.T) {
 	comments := commentsToFill()
-	reads := builtCommentReads(comments, true)
+	reads := builtShapedComments(comments, true)
 	if len(reads) != len(comments) {
 		t.Fatalf("the read list holds %d rows, want %d", len(reads), len(comments))
 	}
@@ -493,7 +493,7 @@ func TestTheParallelFillAnswersTheTreeOfEveryRowInOrder(t *testing.T) {
 
 // A list with no trees asked for has no reader at all and carries none.
 func TestAListWithoutTheHeaderCarriesNoTree(t *testing.T) {
-	for index, read := range builtCommentReads(commentsToFill(), false) {
+	for index, read := range builtShapedComments(commentsToFill(), false) {
 		if read.BodyTree != nil {
 			t.Fatalf("row %d carries a tree without the header: %s", index, read.BodyTree)
 		}
@@ -505,14 +505,14 @@ func TestAListWithoutTheHeaderCarriesNoTree(t *testing.T) {
 // (displayTreeBuilds). Run under -race, this is the check that the reading is safe.
 func TestReadersOfOneListAtOnceAreAnsweredTheSameTrees(t *testing.T) {
 	comments := commentsToFill()
-	want := builtCommentReads(comments, true)
-	answers := make([][]commentRead, 8)
+	want := builtShapedComments(comments, true)
+	answers := make([][]shapedComment, 8)
 	var readers sync.WaitGroup
 	for reader := range answers {
 		readers.Add(1)
 		go func() {
 			defer readers.Done()
-			answers[reader] = builtCommentReads(comments, true)
+			answers[reader] = builtShapedComments(comments, true)
 		}()
 	}
 	readers.Wait()

@@ -37,7 +37,7 @@
 {{- end}}
 {{- if not $r.MachineLogin}}
 <dt>Reason</dt>
-<dd>{{if $r.Reason}}{{$r.Reason}}{{else}}No reason given{{end}}</dd>
+<dd>{{$r.Reason}}</dd>
 {{- end}}
 <dt>Lasts once approved</dt>
 <dd>{{$r.Lifetime}}</dd>

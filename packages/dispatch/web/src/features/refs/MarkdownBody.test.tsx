@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type {
@@ -819,6 +820,8 @@ test("a bare dispatch ask reference renders an inline link to the ask route with
   await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
+      artifact_id: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
@@ -880,6 +883,7 @@ test("a block reference reads as the headline of its text: the pinned version's,
   );
   const getIssue = spyOn(api, "getIssue");
   const node = {
+    ...graphNodeFields(),
     block_id: "p1",
     changed_version: 3,
     document: "dispatch://CORE-1/spec",
@@ -965,6 +969,8 @@ test("two references in one body each resolve their own inline link and title, r
   await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
+      artifact_id: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
@@ -1052,6 +1058,8 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
   await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
+      artifact_id: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",

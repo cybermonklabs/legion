@@ -9,7 +9,7 @@ import (
 // AskTextField names the field one of an ask's stored texts stands in. A caller that needs only
 // the text ignores it (a write's store, the background fill), one that answers a text by its path
 // builds that path from it (AskText.Path, api's event trees), and one that holds a tree field for
-// each text finds the field from it (api's askRead.shape): a walk that answered a path alone
+// each text finds the field from it (api's shapedAsk.shape): a walk that answered a path alone
 // would leave that last caller matching strings.
 type AskTextField uint8
 
@@ -85,7 +85,7 @@ func AskEditPreviousContent(previous model.AskEditPrevious) AskContent {
 // the question, each option's label and description, the answer's text and the resolution's
 // reason. It is the one list of an ask's stored texts, which every path that touches one walks:
 // the write that stores their trees (AskWrittenTexts, api's asks), the read that registers them
-// with its request's reader (api's askRead.shape and askEditReads), the event path that answers
+// with its request's reader (api's shapedAsk.shape and askEditReads), the event path that answers
 // them by path (api's event trees) and the background fill that stores the trees of an ask's row
 // (texttreefill). A text named by one of them and not another would be a tree re-read on every
 // request, or one stored for no reader.

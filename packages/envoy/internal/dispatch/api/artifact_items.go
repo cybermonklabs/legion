@@ -30,7 +30,7 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("id"))
-	reads := askReads(asks, reader)
+	reads := shapedAsks(asks, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
 }

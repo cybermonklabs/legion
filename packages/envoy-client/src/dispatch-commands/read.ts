@@ -82,7 +82,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const thread = await client.getMessageThread(messageIdOf(message) as string, sessionId);
     const issueKey = thread.message.issue_key;
     const [pictures, graph] = await Promise.all([
-      picturesOf(datedBodies([thread.message, ...thread.replies])),
+      picturesOf(datedBodies([thread.message, ...(thread.replies ?? [])])),
       issueKey === null
         ? []
         : graphSections(
@@ -151,7 +151,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     );
     const commentRef = refTarget(ref, "comment", id);
     const [pictures, graph] = await Promise.all([
-      picturesOf(datedBodies([comment.comment, ...comment.replies])),
+      picturesOf(datedBodies([comment.comment, ...(comment.replies ?? [])])),
       graphSections(client, commentRef),
     ]);
     return {
@@ -177,7 +177,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       ownerArguments.ref.id
     );
     const [pictures, graph] = await Promise.all([
-      picturesOf(datedBodies([messageRead.message, ...messageRead.replies])),
+      picturesOf(datedBodies([messageRead.message, ...(messageRead.replies ?? [])])),
       graphSections(client, messageRef),
     ]);
     return {
@@ -267,7 +267,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
           ? []
           : [`Issue: ${resolved.issue.key} [${resolved.issue.status}] ${resolved.issue.title}`]),
         `Reference: ${documentRef}`,
-        `Versions: ${artifact.versions.length}`,
+        `Versions: ${(artifact.versions ?? []).length}`,
         ...(approval === undefined ? [] : [approval]),
         ...(await graphSections(client, documentRef)),
       ].join("\n"),
@@ -314,7 +314,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     graphSections(client, dispatchIssueRef(read.issue.key)),
     liveAgents(client, holdsSession(read.issue.claim) || routeHeldBySession(read.issue)),
     picturesOf([
-      ...read.issue.open_asks.map((ask) => ({ text: ask.question, at: ask.created_at })),
+      ...(read.issue.open_asks ?? []).map((ask) => ({ text: ask.question, at: ask.created_at })),
       ...(await eventTextsWhole(client, read.events)),
     ]),
     issueCoverageOrReason(client, read.issue.key),

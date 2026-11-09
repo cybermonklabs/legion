@@ -1,12 +1,12 @@
 import type {
   Actor,
   ArtifactBlock,
-  Ask,
   GraphEdge,
   GraphNode,
   GraphReferences,
   IssueCoverage,
   IssueReferences,
+  ShapedAsk,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
@@ -20,8 +20,9 @@ import { dispatchAnswered } from "./failures";
  *  queried end. */
 function referenceLines(read: GraphReferences | string): string[] {
   if (typeof read === "string") return [`- ${read}`];
-  if (read.edges.length === 0) return ["- none"];
-  return read.edges.map(edgeLine);
+  const edges = read.edges ?? [];
+  if (edges.length === 0) return ["- none"];
+  return edges.map(edgeLine);
 }
 
 /** Whether `kind`, a graph node's, is one of the items whose blocks are its own (`ITEM_KINDS`):
@@ -137,8 +138,8 @@ export function graphSectionLines(
  */
 function nodeLine(node: GraphNode): string[] {
   if (node.made_by === undefined) return [];
-  const fact = (by: Actor[] | undefined, time: string | null | undefined) =>
-    `${by === undefined || by.length === 0 ? "nobody recorded" : by.map(actorText).join(", ")}${time == null ? "" : ` at ${time}`}`;
+  const fact = (by: Actor[] | null | undefined, time: string | null | undefined) =>
+    `${by == null || by.length === 0 ? "nobody recorded" : by.map(actorText).join(", ")}${time == null ? "" : ` at ${time}`}`;
   const made = fact(node.made_by, node.made_at);
   const changed = fact(node.changed_by, node.changed_at);
   const { parent } = node;
@@ -242,12 +243,12 @@ export async function typedBlockOf(
  * indexed yet, or the index stands on other options than the row now holds), or the reference is
  * pinned to a part the ask has since removed.
  */
-export function askPartNoun(ask: Ask, node: GraphNode, blockID: string): string {
+export function askPartNoun(ask: ShapedAsk, node: GraphNode, blockID: string): string {
   if (ask.answer?.id === blockID) return "Answer";
-  if (ask.options.some((option) => option.id === blockID)) return "Option";
+  if ((ask.options ?? []).some((option) => option.id === blockID)) return "Option";
   const placed =
     (ask.revision ?? 0) > 0 &&
-    ask.options.every((option) => option.id !== undefined) &&
+    (ask.options ?? []).every((option) => option.id !== undefined) &&
     (ask.answer === null || ask.answer.id !== undefined);
   return placed && node.pin?.state !== "removed" ? "Question" : "Part";
 }

@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { type Actor, ActorSchema, type DisplayTree, InboundActorSchema } from "./dispatch-api-core";
-import { DELIVERY_CAPABILITIES, type MessageDeliveryMode } from "./dispatch-api-limits";
+import type { ReplyBlock, ShapedMessage } from "./dispatch-api.generated";
+import { ActorSchema, type DisplayTree, InboundActorSchema } from "./dispatch-api-core";
+import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   ReplyBlockSchema,
@@ -60,16 +61,6 @@ export const messageDeliveryFields = {
 
 export const MessageDeliverySchema = z.strictObject(messageDeliveryFields).readonly();
 
-export type MessageDelivery = z.output<typeof MessageDeliverySchema>;
-
-/**
- * `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`'s answer: the attempt it accepted, and
- * the body of the message as Dispatch stored it.
- */
-export interface AcceptedMessageDelivery extends MessageDelivery {
-  readonly body: string;
-}
-
 export const messageFields = {
   id: z.string(),
   issue_key: z.string().nullable(),
@@ -91,91 +82,15 @@ export const messageFields = {
 
 export const MessageSchema = z.strictObject(messageFields).readonly();
 
-export type Message = z.output<typeof MessageSchema>;
+/** The message row without the tree a dashboard read carries: the body the route table holds
+ *  (`ShapedMessage`) with the block it answers back to the shape the bus payload carries. */
+export type Message = Omit<ShapedMessage, "body_tree" | "reply_block"> & {
+  readonly reply_block: ReplyBlock | null;
+};
 
 /** A message as the web app reads it, shaped exactly as a comment is: the tree of its body, and
  *  the block it answers carrying the tree of that block's excerpt. */
-export type MessageWithTrees = Omit<Message, "reply_block"> & {
-  readonly body_tree?: DisplayTree;
-  readonly reply_block?: ReplyBlockWithTrees | null;
-};
-
-/** What `POST /api/v1/messages/{id}/reply` answers for a body: the message, with `duplicate`
- *  when the route posted nothing and handed back one the conversation already holds (the
- *  answered attempt's stored reply, or a follow-up whose text the session already posted). A
- *  Dispatch that predates follow-ups never sets it. */
-export interface MessageReplyResult extends Message {
-  readonly duplicate?: boolean;
-}
-
-export interface MessageRead {
-  readonly message: MessageWithTrees;
-  readonly replies: MessageWithTrees[];
-  /** `GET /api/v1/agents/{session_id}/messages` only: whether this conversation holds a reply
-   *  the caller has not read. The server's own verdict, from the definition `unread_replies`
-   *  counts; a client never derives it from timestamps. Absent means no. */
-  readonly unread?: boolean;
-}
-
-/**
- * One human message sent to many sessions at once. A broadcast is a grouping over the
- * targeted messages Dispatch already sends, not a second delivery mechanism: every recipient
- * gets an ordinary issue-less `Message` aimed at its own session, so each recipient's thread,
- * retry and reply behave exactly as they do for a message sent from one agent card. This row
- * is what they share.
- */
-export interface Broadcast {
-  readonly id: string;
-  readonly author: Actor;
-  readonly body: string;
-  /** The display tree of `body`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly body_tree?: DisplayTree;
-  readonly delivery: MessageDeliveryMode;
-  readonly created_at: string;
-}
-
-/** A broadcast list row: the send, how many sessions it reached, and how many answered. */
-export interface BroadcastSummary extends Broadcast {
-  readonly recipients: number;
-  readonly replies: number;
-}
-
-/** One session's copy of a broadcast: the message it was sent, with its delivery attempts,
- *  and the replies threaded under it. Attempt 1 is opened pending in the same transaction as
- *  the message; delivery runs behind the create response and settles it. */
-export interface BroadcastRecipient {
-  readonly session_id: string;
-  readonly message: MessageWithTrees;
-  readonly replies: MessageWithTrees[];
-}
-
-export interface BroadcastRead extends Broadcast {
-  /** In the order the send named them, after exclusions. A broadcast written before that order
-   *  was stored (before migration 0052, or by an older server during a rollout) falls back to
-   *  `created_at, id`. */
-  readonly recipients: BroadcastRecipient[];
-}
-
-/** A session the sender selected that was not sent to. A recipient that does not advertise
- *  the chosen mode is excluded, never switched to another one: the mode is part of what the
- *  sender said. Exclusions are reported here and never stored. */
-export interface BroadcastExclusion {
-  readonly session_id: string;
-  readonly title: string;
-  readonly reason: string;
-}
-
-export interface BroadcastCreated extends BroadcastRead {
-  readonly excluded: BroadcastExclusion[];
-}
-
-export interface CreateBroadcastInput {
-  readonly body: string;
-  readonly delivery: MessageDeliveryMode;
-  /** The sessions the human selected. A session named twice is one recipient; one that is no
-   *  longer live, or that does not advertise `delivery`, comes back under `excluded`. */
-  readonly session_ids: readonly string[];
-}
+export type MessageWithTrees = ShapedMessage;
 
 /** `thread_logins` is carried by `message.created` and `message.answered`: on an issue message
  *  the logins with a Replies row on its thread root (up `in_reply_to`), and on a direct

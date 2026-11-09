@@ -1,5 +1,4 @@
 import type {
-  Ask,
   AskRead,
   BlockPath,
   Comment,
@@ -9,6 +8,7 @@ import type {
   MessageRead,
   OpenAsk,
   OpenAsksResponse,
+  ShapedAsk,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -36,10 +36,10 @@ export function askSummary(
   outgoing: GraphReferences | string
 ): string {
   const answer = ask.answer;
-  const earlierAnswers = answers.slice(0, -1);
+  const earlierAnswers = (answers ?? []).slice(0, -1);
   const parts = askPartEdges(ask, incoming);
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
-  const chain = replies.flatMap((reply) => [
+  const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     `Body: ${reply.body}`,
   ]);
@@ -47,9 +47,9 @@ export function askSummary(
     `Question: ${ask.question}`,
     ...anchorLines(ask),
     "Options:",
-    ...(ask.options.length === 0
+    ...((ask.options ?? []).length === 0
       ? ["- none"]
-      : ask.options.flatMap((option) => [
+      : (ask.options ?? []).flatMap((option) => [
           `- ${option.label}${option.description ? ` — ${option.description}` : ""}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
           ...partReferenceLines(parts.at, option.id),
         ])),
@@ -61,7 +61,7 @@ export function askSummary(
       ? ["- none"]
       : [
           `- By: ${actorActText(answer.user, answer.act)}`,
-          `- Selected: ${answer.selected.length === 0 ? "none" : answer.selected.join(", ")}`,
+          `- Selected: ${(answer.selected ?? []).length === 0 ? "none" : (answer.selected ?? []).join(", ")}`,
           ...(answer.text === null ? [] : [`- Text: ${answer.text}`]),
           ...(answer.id === undefined ? [] : [`- Reference: ${partRef(answer.id)}`]),
           ...partReferenceLines(parts.at, answer.id),
@@ -96,18 +96,18 @@ export function askSummary(
  *  no block: the line above it is that part. A graph the server could not serve is passed on as
  *  it is, and so is one read of an ask whose parts carry no id. */
 function askPartEdges(
-  ask: Ask,
+  ask: ShapedAsk,
   incoming: GraphReferences | string
 ): { at: Map<string, GraphEdge[]>; rest: GraphReferences | string } {
   const ids = new Set(
-    [...ask.options.map((option) => option.id), ask.answer?.id].filter(
+    [...(ask.options ?? []).map((option) => option.id), ask.answer?.id].filter(
       (id): id is string => id !== undefined
     )
   );
   const at = new Map<string, GraphEdge[]>();
   if (typeof incoming === "string" || ids.size === 0) return { at, rest: incoming };
   const rest: GraphEdge[] = [];
-  for (const edge of incoming.edges) {
+  for (const edge of incoming.edges ?? []) {
     const part = edge.block?.block_id;
     if (part === undefined || !ids.has(part)) {
       rest.push(edge);
@@ -150,8 +150,8 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
   if (response.count === 0) {
     return ["There are no unanswered asks for this session.", `Scope: ${scope}.`].join("\n");
   }
-  const waitingOnHuman = response.asks.filter((ask) => ask.waiting_on === "human");
-  const waitingOnAgent = response.asks.filter((ask) => ask.waiting_on === "agent");
+  const waitingOnHuman = (response.asks ?? []).filter((ask) => ask.waiting_on === "human");
+  const waitingOnAgent = (response.asks ?? []).filter((ask) => ask.waiting_on === "agent");
   return [
     `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"} you authored on active issues and project documents.`,
     "",
@@ -172,7 +172,7 @@ export function commentSummary(
     ...replyBlockLines(comment),
     `Body: ${comment.body}`,
   ];
-  const chain = replies.flatMap((reply) => [
+  const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
     ...replyBlockLines(reply),
@@ -223,9 +223,9 @@ function anchorLines(
  *  index where no header cell covers it. */
 export function positionText(block: BlockPath): string {
   const { table, path } = block;
-  const segments = path.map((entry) => `${entry.type}[${entry.index}]`);
+  const segments = (path ?? []).map((entry) => `${entry.type}[${entry.index}]`);
   if (table === undefined || table.row === null) return segments.join(" › ");
-  const tableAt = path.findIndex((entry) => entry.type === "table");
+  const tableAt = (path ?? []).findIndex((entry) => entry.type === "table");
   const cells = table.cells ?? [];
   const label = (table.column === null ? cells : cells.slice(0, table.column))
     .map((cell) => cell.trim())
@@ -248,7 +248,7 @@ export function messageSummary(
     ...replyBlockLines(message),
     `Body: ${message.body}`,
   ];
-  const chain = replies.flatMap((reply) => [
+  const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...replyBlockLines(reply),
     `Body: ${reply.body}`,

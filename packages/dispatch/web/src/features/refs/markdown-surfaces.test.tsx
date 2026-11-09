@@ -561,7 +561,14 @@ test("a search hit's snippet renders formatted with the matched words still high
     snippet: marked.markdown,
     snippet_tree: marked.snippet,
   };
-  const search = spyOn(api, "search").mockResolvedValue({ results: [hit], took_ms: 1 });
+  const search = spyOn(api, "search").mockResolvedValue({
+    limit: 20,
+    offset: 0,
+    reachable: 1,
+    results: [hit],
+    took_ms: 1,
+    total: 1,
+  });
   const view = render(
     <Providers>
       <KeymapProvider>
@@ -935,7 +942,14 @@ describe("a Dispatch picture on every surface", () => {
       snippet: marked.markdown,
       snippet_tree: marked.snippet,
     };
-    const search = spyOn(api, "search").mockResolvedValue({ results: [hit], took_ms: 1 });
+    const search = spyOn(api, "search").mockResolvedValue({
+      limit: 20,
+      offset: 0,
+      reachable: 1,
+      results: [hit],
+      took_ms: 1,
+      total: 1,
+    });
     const view = render(
       <Providers>
         <KeymapProvider>

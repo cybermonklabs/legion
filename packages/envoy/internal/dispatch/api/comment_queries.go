@@ -75,7 +75,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), trees, name)
-	reads := commentReads(comments, reader)
+	reads := shapedComments(comments, reader)
 	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
@@ -172,6 +172,12 @@ func commentHasOwner(comment model.Comment, owner owner) bool {
 	return owner.ArtifactID != nil && comment.ArtifactID != nil && *comment.ArtifactID == *owner.ArtifactID
 }
 
+// commentRead is the body GET /api/v1/comments/{id} answers.
+type commentRead struct {
+	Comment shapedComment   `json:"comment"`
+	Replies []shapedComment `json:"replies"`
+}
+
 func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
 		return
@@ -197,10 +203,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), comment.ID)
-	read := struct {
-		Comment commentRead   `json:"comment"`
-		Replies []commentRead `json:"replies"`
-	}{Replies: commentReads(replies, reader)}
+	read := commentRead{Replies: shapedComments(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)
 	reader.resolve()

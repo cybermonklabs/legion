@@ -15,7 +15,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 ## Layout
 
 - `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
-- `web/src/api/types.ts` mirrors the Dispatch JSON entities.
+- `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
   the strings are not fixed-width and sort wrongly as text, and `Date.parse` drops their
@@ -593,7 +593,7 @@ The `Children` tab (`features/issue/ChildrenTab.tsx`) lists the issue's direct c
 
 An issue's own progress (`features/issue/ProgressChips.tsx`) is the `progress` object every issue read and list row carries (LEGION-542): `tasks`, the task-list items (`- [ ]` / `- [x]`, nested lists and callouts included) of its primary document's latest version, read from its markdown for the checkboxes alone (`pmdoc.CountTasksMarkdown`), so a spec holding a table the Proof schema refuses is still counted; stored on the issue with the version it was counted from by every version write (`docs.RecordTaskProgress`) and counted again once when the server starts, for every row whose stored version is not the document's latest - the rows the migration found, a version a build predating LEGION-542 wrote, and a row another writer held, retried briefly (`docs.Service.RunTaskProgressReconciliation`); and `children`, its direct children, every status, done being `status = 'done'`, computed from the children's statuses on each read. Each is `null` when the issue has none, and the component renders nothing for a null, or for a response with no `progress` at all (an older server during a deploy's overlap), so a list of plain issues stays quiet. The issue header shows each as a thin bar filled to done/total beside `3/7 tasks` (the `bar` prop; a count of one reads `1/1 task`, `0/1 child`), in the wrapping state row with the status, priority and claim, since the metadata rail below clips; a List row and a Board card show each as a `label` pill beside the claim chip. The bar's fill is `progressBarFill` in `theme/classes.ts`. The Children tab's per-child `D/N done` is a different count — that child's whole subtree — and stays.
 
-The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts (2)`; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`) for the `EventBody` fallback.
+The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`) for the `EventBody` fallback.
 
 Project pages keep their name, linked project key, project tabs, and, on issue routes, the keyboard-reachable List/Board control in a dense responsive header. At `md` and above these controls form one strip; on smaller screens the name, key, and blocker pill form the first row, with tabs and the view control below. When an open ask waits on the viewer, the header's `Blocked on you · N` pill links to the Inbox; it is absent when no asks are waiting.
 
@@ -1054,12 +1054,13 @@ offers no button that can only fail.
 `GrantsSection.tsx` renders on `/settings` only where the pending list is not `null`: every live
 grant of a session the viewer operates, automatic or approved by anyone, and every grant the viewer
 approved (`grants.ts`'s `credentialGrantsQuery`, `?approver=me`). Each row names how it was
-granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; `CredentialGrant`
-is a union on `granted`, so an automatic grant has a null approver and record and an approved one
-has both), a pod enrollment's slot under its enrollment - the broker's `enrollment.slot`
-(`implementer-g3`, null without one), which is what tells two roles' grants in one pod apart, since
-they share the pod's kind and runtime id - and has a Revoke button that POSTs `{}` to
-`/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
+granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; the generated
+`ApproverGrantResp.granted` is the closed union `"automatic" | "approval"`, which the Go field's
+`enum` tag states, so the page reads the discriminant the broker writes rather than inferring it
+from a null approver), a pod enrollment's slot under its enrollment - the broker's
+`enrollment.slot` (`implementer-g3`, null without one), which is what tells two roles' grants in
+one pod apart, since they share the pod's kind and runtime id - and has a Revoke button that POSTs
+to `/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
 one makes that session ask before it gets those secrets again: its other automatic grants of them
 end with it.
 The list also holds, for every signed-in person, every live grant that belongs to no person: one
@@ -1754,12 +1755,33 @@ owns the claim — a bun test under `e2e/__tests__/` for a harness module of thi
 directory (`e2e/__tests__/round-robin-proxy.test.ts` is the shape to follow: it
 spawns the module with `Bun.spawn`, waits for its listening line, drives it
 against stub upstreams and kills it in `afterAll`), that package's own tests for
-a command, and a Go test for a claim about the server (INFRA-1404). Two rows
-still in this suite take no page fixture: `e2e/cli-reply-answers.e2e.ts:10`,
-which drives the CLI, and `e2e/two-builds.multiprocess.e2e.ts:723`, which waits
-out the two-build block index's window. Both sit outside the ten rows
-INFRA-1404 moved and are tracked as dispatch://INFRA-1554, so they are
-exceptions on record rather than the shape to copy.
+a command, and a Go test for a claim about the server (INFRA-1404). Every row
+of this suite binds `page`, `browser` or `context`, and
+`cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
+check that decides it: it reads every call of `e2e/**/*.e2e.ts` whose callee
+TypeScript types as @playwright/test's `TestType`, or types as one of the
+title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of one — so
+a `test` extended by `test.extend`, renamed on import, reached through a
+namespace or bound to another name declares its rows like `test` itself, and a
+member bound to another name, by `const only = test.only` or
+`const { skip } = test`, declares its row like `test.only` and `test.skip`,
+since each is decided by the type the callee carries and not by the name it is
+written under — for the fixtures its callback binds, and refuses a row that
+binds none of the three. A callback written in the call is read there, and one
+passed by name is read where TypeScript's own checker says that name is bound:
+in its own scope, and in the module an import leads to, so a `for`-of `const`,
+a parameter or an import is never read as a same-named function declared
+elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
+the program cannot resolve — leaves its row refused with no fixtures, since
+fixtures the check did not read are not fixtures it saw. It reads the three
+Playwright listings first, to prove it scanned the files the suite runs. A row
+may stand all the same as a named exemption with its reason, written in
+`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
+exemption too — one naming a row the suite no longer holds, or one that drives
+a browser now — so the rule cannot come to lie in the other direction either.
+INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
+agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
+two-build rollout row.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
@@ -2471,6 +2493,153 @@ than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that pr
 over real time - that no request happens within a second - needs no such project: contention
 cannot make that claim false. A project whose dependency has a failing row does not run at all,
 so a red run leaves these rows unrun rather than measured beside a retry.
+
+## Accessibility and visual review
+
+Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
+every pull request and a containerised visual review that runs on the full lane. Each entry of
+that table carries the router path it stands for, the URL to open against `e2e/review-seed.ts`'s
+corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
+count of pages each covers is a program's answer rather than a sentence here.
+
+`e2e/accessibility.e2e.ts` opens every page of that table's scan set, in light and in dark, and
+scans each with `@axe-core/playwright` at `wcag2a`, `wcag2aa`, `wcag21a` and `wcag21aa` - WCAG
+2.0 and 2.1 at levels A and AA, and no best-practice rule, since a best practice is not a
+conformance failure and this gate refuses a pull request. One row per page reads both schemes,
+a reset, a seed and a sign-in paid once rather than twice, and each (route, scheme) prints an
+`A11Y …` line with its counts by impact and attaches the whole axe result to the report. A row
+fails on any serious or critical finding no exclusion entry covers. The rows are untagged, so
+`chromium` runs them and the pass reaches every pull request. What axe decides is the part of
+WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
+somewhere sensible, a reading order a person judges, a label that is present and wrong rather
+than missing, a focus order that is legal and useless - none of those are findings, and all of
+them stay the work of the browser rows that drive the page. A green accessibility pass says no
+machine-decidable conformance failure, never that the page is usable without a mouse.
+
+One bound on that is worth knowing before you reason about what this gate would have caught, and
+it was found by driving the check's own negative control rather than by reading the rules. A
+control's accessible name has more than one source, and axe takes `title` when nothing better is
+there. `components/PinButton.tsx` is icon-only and sets both `aria-label` and `title`: with the
+`aria-label` deleted the scan stayed at `critical=0 serious=0` and the row passed, because the
+name had not gone, it had fallen back. Only with both gone did the page report `button-name`
+(critical). So on a control that carries a `title`, a missing label is invisible here - and a
+negative control that deletes one and reads a green pass has measured nothing.
+
+The visual layer has the same trap in its own shape. A control of it does not go in
+`web/src/theme/palette.ts`: a `Swatch` there feeds contrast arithmetic alone - `pair()` builds
+the `{light, dark}` objects `CONTRAST_CHECKS` reads - while every colour a page actually draws
+is a static Tailwind literal such as `bg-slate-200`, whose value is Tailwind's own. So moving a
+swatch's OKLCH numbers changes no pixel, and a run that compares baselines after one passes
+with nothing different. A control that moves a rendered colour edits a class literal in
+`web/src/theme/classes.ts` together with its paired swatch, or a hex in `web/src/styles.css`.
+Keep the other layers green while you do it: `sky-700` in place of `slate-700` drops the
+offline pill below AA and reddens the unit step, and a control whose earlier step is red hides
+the reading it exists to take.
+
+Four rules follow from what controls of this layer have measured. The figures are in
+`e2e/visual.e2e.ts`'s comment on the bound, which owns them; they are not repeated here.
+
+**What bounds this layer is a count, not a per-pixel distance.** `threshold` is `0` and
+`maxDiffPixels` is `20`. A per-pixel threshold cannot be the bound, because the renderer's own
+drift moves a pixel further than the smallest real re-colour does, so any threshold that
+absorbs the drift blinds the layer. Read the count, and read what the layer therefore cannot
+see - a colour change confined to fewer than about 20 pixels - rather than a margin quoted from
+the widest token, which overstates it by three orders of magnitude.
+
+**A swatch and a class literal are many-to-one, so a control must move the literal the page
+actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
+`card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
+mappings table: a control on `surfaceBg` left both `settings` shots untouched where the `card`
+control reddened them. It is the `palette.ts` trap above in a second shape - a clean comparison
+told you nothing about the token, only about the string you edited. So never read a clean
+comparison as proof that a token is absent from a baseline.
+
+**A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
+gives twice the failures a hard assertion inside the `SCHEMES` loop gives, and nothing in the
+suite pins that behaviour, so a both-scheme control is the only check of it there is.
+
+**The host cannot read these baselines at all.** They are the pinned container's rendering,
+which is what the spec's `SKIP_REASON` says, and the skip is defeated by setting
+`DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
+every row at thousands of pixels. Every figure a control of this layer reports comes from a
+container run, and the way to know the rig is honest is to run it once with nothing changed.
+
+A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
+disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
+entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
+can judge, and the `dispatch://KEY` that owns the fix; the gate matches a finding to an entry on
+the first three. It also fails on an entry that matched nothing in the rows that ran, judged per
+worker over the routes that worker scanned (`test.afterAll`), so an entry left behind by a fix
+cannot sit there hiding the regression it once accepted. An entry is written only where the fix
+would change what another row of the suite claims - where the accessible page and the behaviour
+the product was asked for disagree - and that is a product judgement, so it goes to the
+architect with the rule, the DOM and the rows it would move, and is written once the architect
+has answered. Every other finding is fixed in `web/src`, in the change that found it.
+
+`e2e/visual.e2e.ts` compares the same table's shot set against committed baselines, in light
+and in dark, at the 1280x800 desktop width and, for the pages a phone width rearranges
+(`"shoot-phone"`), again on an iPhone 13. One spec, two projects: the phone rows carry the
+` @phone` tag, `visual-phone` greps it and `visual` inverts it, so each row runs once and
+reads its own project's baseline directory. Which pages are shot and which are excluded is
+`e2e/review-routes.ts` and nowhere else. An entry's `layers` says which layers read it: a page
+whose pixels cannot be held still is scanned and not shot,
+which is where `/machines`, `/machines/:machine` and `/credentials/machine` are - a registry's
+freshness, a tmux layout the seed carries none of and a capability probe that blinks each make
+a comparison flake and none of them touches a scan, which reads the DOM. An excluded entry is
+read by neither and carries the reason, a redirect, a live socket, a page another entry draws -
+and `e2e/__tests__/review-routes.test.ts` is what keeps that list honest: it holds every entry
+to a route of the router through `e2e/two-builds-routes.ts` and refuses a router route that no
+entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or
+written off, never silently unreviewed. `toHaveScreenshot` detects a change against a file
+somebody committed; it binds no element to the swatch `web/src/theme/classes.ts` names for it,
+which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-request lane.
+
+Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
+person takes and a baseline CI compares must be the same rendering, and a host's browser build,
+fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it seeds on the
+host, where `psql` is, starts the container and runs those two projects in it. Run it through
+the harness from this package, and give it `--update-snapshots` to take the baselines again:
+
+```sh
+bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
+```
+
+Outside that container the rows reach the runner and every one of them skips itself, since
+`DISPATCH_E2E_VISUAL_SEED` is unset.
+
+**That command needs a container runtime, and this package's pods have none, so from a pod the
+baselines come out of CI's own run.** The `visual` job is on the full lane alone, so a change
+that moves any shot page passes the pull-request lane and is caught by the merge queue or the
+nightly instead; the recovery from either is the same four steps.
+
+1. Read the full-lane run that refused the change: the merge queue's, or the nightly's. To
+   check the new baselines before the queue reads them again, add the `full-ci` label and push:
+   checking a fix for a failure that took the pull request out of the queue is the case the
+   root `AGENTS.md` gives the label. It takes effect at the next push, not when it is added,
+   and it is taken off again once that run has passed.
+2. Download what the job uploaded: `gh run download <run id> --repo <owner>/<repo> --name
+   dispatch-browser-visual-<attempt>`. The attempt is the run attempt, so a re-run's artifact
+   is `-2`.
+3. The archive holds the repository path, so every shot the comparison wrote is under
+   `<download>/…/packages/dispatch/e2e/test-results/`, one directory per failing row, named by
+   Playwright from the spec, the row's title and the project (`…-baseline-in-light-and-dark-
+   visual/`), with the file inside it called `<route>-<scheme>-actual.png`. `find <download>
+   -name '*-actual.png'` is the way to list them. Playwright writes an `-actual.png` for a
+   FAILING row only; a row that passed wrote nothing and its baseline is already right.
+4. Read the difference before you take it. Open the `-actual.png` beside the committed
+   `e2e/__screenshots__/<project>/<route>-<scheme>.png` and satisfy yourself that every pixel
+   that moved is one this change meant to move - a run of the same tree twice, byte for byte
+   identical, is what tells a real change from a page that has not settled. Then copy the
+   `-actual.png` over the baseline and commit it with the reason in the message.
+
+A baseline lives at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and is committed. It is
+the one file a spec of this suite reads that is not under `testInfo.outputPath()`, and the
+reason is what it is for: an output of a row is a debugging artefact the workflow uploads when
+the row fails, while a baseline is an input a person reads in a review and a reviewer approves
+as part of the diff. The path template drops the `{platform}` segment Playwright's default adds,
+since every shot is taken in that one pinned Linux image and the segment would say the same
+thing on every file. A route this layer gains has no baseline at all until a run writes one,
+which is the same four steps above with every row of the new route failing rather than one.
 
 ## Phone acceptance
 

@@ -121,7 +121,7 @@ func displayBoundBodies() []string {
 }
 
 // commentRow is the JSON one row of `GET /api/v1/issues/{key}/comments` carries: model.Comment
-// with api's commentRead over it, filled as a thread of plain replies fills it.
+// with api's shapedComment over it, filled as a thread of plain replies fills it.
 type commentRow struct {
 	ID         string          `json:"id"`
 	IssueKey   string          `json:"issue_key"`

@@ -1,16 +1,15 @@
 import { z } from "zod";
+import type { Comment, ShapedComment } from "./dispatch-api.generated";
 import { askFields } from "./dispatch-api-asks";
 import {
   ActorSchema,
   AnchorSchema,
   anchorFields,
   anchorPositionFields,
-  type BlockEmbedding,
   type DisplayTree,
   InboundActorSchema,
 } from "./dispatch-api-core";
-import type { GraphNode } from "./dispatch-api-graph";
-import { ASK_TURNS, type AskTurn, DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
+import { ASK_TURNS, DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   ReplyBlockSchema,
@@ -32,8 +31,6 @@ export const commentMentionFields = {
 };
 
 export const WrittenCommentMentionSchema = z.strictObject(commentMentionFields).readonly();
-
-export type CommentMention = z.output<typeof WrittenCommentMentionSchema>;
 
 /** A mention as a bus frame carries it: the same three fields, with anything else dropped. */
 export const CommentMentionSchema = z.object(commentMentionFields);
@@ -59,8 +56,6 @@ export const commentDeliveryFields = {
 
 export const WrittenCommentDeliverySchema = z.strictObject(commentDeliveryFields).readonly();
 
-export type CommentDelivery = z.output<typeof WrittenCommentDeliverySchema>;
-
 /** One delivery attempt as a bus frame carries it. A stripping object: without `duplicate`
  *  declared the flag is dropped from every agent-bound comment frame, since this schema is
  *  nested inside the passthrough payload schemas. */
@@ -72,8 +67,6 @@ export const suggestionFields = {
 };
 
 export const SuggestionSchema = z.strictObject(suggestionFields).readonly();
-
-export type Suggestion = z.output<typeof SuggestionSchema>;
 
 export const commentFields = {
   ...anchorPositionFields,
@@ -110,69 +103,9 @@ export const commentFields = {
 
 export const CommentSchema = z.strictObject(commentFields).readonly();
 
-export type Comment = z.output<typeof CommentSchema>;
-
 /** A comment as the web app reads it: the comment, the tree of its body, and the block it
  *  answers carrying the tree of that block's excerpt. */
-export type CommentWithTrees = Omit<Comment, "reply_block"> & {
-  readonly body_tree?: DisplayTree;
-  readonly reply_block?: ReplyBlockWithTrees | null;
-};
-
-/** What `GET /api/v1/comments/{id}/blocks` and `GET /api/v1/messages/{id}/blocks` answer: the
- *  comment or message as a graph node, the comment's revision (absent for a message, which is
- *  never edited), whether its blocks are indexed from the body it stores, and its current blocks
- *  in body order. While the item is owed an index, or was indexed from another body than it
- *  stores, `indexed` is false and `blocks` is empty (the read writes nothing): an editor then
- *  edits the comment without carrying block ids. */
-export interface ItemBlocks {
-  readonly item: GraphNode;
-  readonly revision?: number;
-  readonly indexed: boolean;
-  readonly blocks: readonly ItemBlock[];
-}
-
-/** One current block of a comment or message: its id (`b2`), its type, its whole text as its
- *  author wrote it, its reference (absent for a block of a direct message, which has no address),
- *  and `from`/`to`, where it starts and ends in the stored body in UTF-16 code units (a JavaScript
- *  string index). A comment block also carries the revision its text last changed in and that
- *  revision's time; a message block has neither. */
-export interface ItemBlock {
-  readonly id: string;
-  readonly type: string;
-  readonly text: string;
-  readonly ref?: string;
-  readonly from: number;
-  readonly to: number;
-  readonly changed_revision?: number;
-  readonly changed_at?: string;
-  /** Where meaning search stands on the block. Absent on a hit from a Dispatch older than block
-   *  windows. */
-  readonly embedding?: BlockEmbedding;
-}
-
-/** What a route that writes a comment answers (`POST /api/v1/issues/{key}/comments`,
- *  `POST /api/v1/artifacts/{id}/comments`, and the delivery callback
- *  `POST /api/v1/comments/{id}/reply`): the comment row and, on a reply to an open ask, whom that
- *  ask waits on now that the reply is its newest. It is the value the comment's event carries
- *  under the same name, and may differ from `turn`: an agent's reply on a moved approval request
- *  leaves that request waiting on the agent. A replayed delivery callback, which writes nothing,
- *  answers the stored reply without it. */
-export interface CommentWriteResponse extends Comment {
-  readonly ask_waiting_on?: AskTurn;
-}
-
-/**
- * `POST /api/v1/comments/{id}/accept` answers the comment plus whether the live document already
- * lacks the text the accept wrote: a concurrent browser change removed it after the accept's
- * version was rendered and before the write reached the room, which is past undoing (LEGION-269).
- * A loss inside the earlier window is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` instead, and leaves the
- * suggestion open. `null` is a check that reached no verdict, which is not the same statement as
- * `false`; `undefined` is a Dispatch server predating the check.
- */
-export interface AcceptSuggestionResponse extends Comment {
-  readonly lost?: boolean | null;
-}
+export type CommentWithTrees = ShapedComment;
 
 /**
  * The payload of every `comment.*` event. It is the comment row as it stood when the event was

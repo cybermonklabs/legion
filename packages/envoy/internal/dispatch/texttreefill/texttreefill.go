@@ -472,7 +472,7 @@ func textColumn(ctx context.Context, fill *store.Pool, kind, query string, args 
 // askTexts reads back every stored text an ask holds: its question, the label and description of
 // each of its options, the text of the answer it carries and the reason it was resolved with.
 // The list itself is texttrees.VisitAskTexts, the one walk every path over an ask's texts makes
-// (api's askRead.shape is the read's), so the pass stores the trees that read answers and no
+// (api's shapedAsk.shape is the read's), so the pass stores the trees that read answers and no
 // others. The three jsonb columns are decoded here rather than read as columns because that is
 // how the row holds them.
 //

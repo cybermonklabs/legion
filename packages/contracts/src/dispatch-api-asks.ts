@@ -1,4 +1,16 @@
 import { z } from "zod";
+import type {
+  AskAnswer,
+  AskAnswerWithTree,
+  AskEditPrevious,
+  AskEditPreviousRead,
+  AskEditRead,
+  AskOption,
+  AskOptionRead,
+  AskResolution,
+  AskResolutionRead,
+  ShapedAsk,
+} from "./dispatch-api.generated";
 import {
   ActorActSchema,
   ActorSchema,
@@ -10,7 +22,7 @@ import {
   InboundWriterSchema,
 } from "./dispatch-api-core";
 import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
-import { type Issue, type IssueRouteReach, issueFields } from "./dispatch-api-issues";
+import { type IssueRouteReach, issueFields } from "./dispatch-api-issues";
 import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
 import { ASK_URGENCIES } from "./dispatch-tools";
@@ -37,15 +49,10 @@ export const askOptionFields = {
 
 export const AskOptionSchema = z.strictObject(askOptionFields).readonly();
 
-export type AskOption = z.output<typeof AskOptionSchema>;
-
 /** One answer choice as the web app reads it: the option with the display tree of each of its
  *  texts. The option itself is a message-bus payload type and gains no field; a tree rides on
  *  this reading of it, which every route that answers the dashboard serves. */
-export type AskOptionWithTrees = AskOption & {
-  readonly label_tree?: DisplayTree;
-  readonly description_tree?: DisplayTree;
-};
+export type AskOptionWithTrees = AskOptionRead;
 
 export const askAnswerFields = {
   /** The part the ask's current answer is stored as, read as an option's `id` is and never
@@ -62,12 +69,8 @@ export const askAnswerFields = {
 
 export const AskAnswerSchema = z.strictObject(askAnswerFields).readonly();
 
-export type AskAnswer = z.output<typeof AskAnswerSchema>;
-
 /** A human's answer as the web app reads it, with the tree of the text they wrote with it. */
-export type AskAnswerWithTrees = AskAnswer & {
-  readonly text_tree?: DisplayTree;
-};
+export type AskAnswerWithTrees = AskAnswerWithTree;
 
 export const askResolutionFields = {
   /** `withdrawn` is written by the server alone, when the ask's issue is closed; no caller can
@@ -80,12 +83,8 @@ export const askResolutionFields = {
 
 export const AskResolutionSchema = z.strictObject(askResolutionFields).readonly();
 
-export type AskResolution = z.output<typeof AskResolutionSchema>;
-
 /** Why an ask no longer needs an answer, as the web app reads it, with the tree of that reason. */
-export type AskResolutionWithTrees = AskResolution & {
-  readonly reason_tree?: DisplayTree;
-};
+export type AskResolutionWithTrees = AskResolutionRead;
 
 export const askEditPreviousFields = {
   question: z.string(),
@@ -96,21 +95,18 @@ export const askEditPreviousFields = {
 
 export const AskEditPreviousSchema = z.strictObject(askEditPreviousFields).readonly();
 
-export type AskEditPrevious = z.output<typeof AskEditPreviousSchema>;
-
 /** The content an ask had before an edit, as the web app reads it: the question's tree and the
  *  trees of the options that edit replaced. */
-export type AskEditPreviousWithTrees = Omit<AskEditPrevious, "options"> & {
-  readonly question_tree?: DisplayTree;
-  readonly options: AskOptionWithTrees[];
-};
+export type AskEditPreviousWithTrees = AskEditPreviousRead;
 
 /** One recorded rewording of an ask: what the question was before this edit, who edited, when. */
 export const AskEditSchema = z
   .strictObject({ previous: AskEditPreviousSchema, edited_by: ActorSchema, at: z.string() })
   .readonly();
 
-export type AskEdit = z.output<typeof AskEditSchema>;
+/** One recorded rewording as the route table holds it (`AskEditRead`), with the content it
+ *  replaced back to the shape the bus payload carries. */
+export type AskEdit = Omit<AskEditRead, "previous"> & { readonly previous: AskEditPrevious };
 
 /** One recorded rewording as the web app reads it, the content it replaced carrying its trees. */
 export type AskEditWithTrees = Omit<AskEdit, "previous"> & {
@@ -126,33 +122,23 @@ export const askAnchorArtifactFields = {
 
 export const AskAnchorArtifactSchema = z.strictObject(askAnchorArtifactFields).readonly();
 
-export type AskAnchorArtifact = z.output<typeof AskAnchorArtifactSchema>;
-
 export const AskBlockArtifactSchema = z
   .strictObject({ id: z.string(), slug: z.string(), primary: z.boolean() })
   .readonly();
-
-export type AskBlockArtifact = z.output<typeof AskBlockArtifactSchema>;
 
 export const AskLastReplySchema = z
   .strictObject({ author: ActorSchema, created_at: z.string() })
   .readonly();
 
-export type AskLastReply = z.output<typeof AskLastReplySchema>;
-
 export const InboxDocumentSchema = z
   .strictObject({ project: z.string(), slug: z.string(), name: z.string() })
   .readonly();
-
-export type InboxDocument = z.output<typeof InboxDocumentSchema>;
 
 /** The approval an approval request follows: the version a human approved, when (RFC 3339 UTC,
  *  the review's `created_at`) and who. */
 export const AskApprovalApprovedSchema = z
   .strictObject({ version: z.number().int(), at: z.string(), by: ActorSchema })
   .readonly();
-
-export type AskApprovalApproved = z.output<typeof AskApprovalApprovedSchema>;
 
 /** What an approval ask names: `documents`, one entry per document the request covers, each at
  *  the version it names. A request opened on a spec with `include_verification` names the spec
@@ -176,8 +162,6 @@ export const AskApprovalSchema = z
     documents: z.array(AskApprovalDocumentSchema).optional(),
   })
   .readonly();
-
-export type AskApproval = z.output<typeof AskApprovalSchema>;
 
 export const askFields = {
   ...anchorPositionFields,
@@ -242,17 +226,20 @@ export const askFields = {
 
 export const AskSchema = z.strictObject(askFields).readonly();
 
-export type Ask = z.output<typeof AskSchema>;
+/** The ask row without the trees a dashboard read carries: the body the route table holds
+ *  (`ShapedAsk`) with each shaped field back to the shape the bus payload carries. One family,
+ *  so an `Ask` is an `AskWithTrees` wherever one is wanted and the zod schemas above stay the
+ *  reading of a frame rather than a second spelling of the row. */
+export type Ask = Omit<ShapedAsk, "question_tree" | "options" | "answer" | "resolution"> & {
+  readonly options: AskOption[] | null;
+  readonly answer: AskAnswer | null;
+  readonly resolution?: AskResolution;
+};
 
 /** An ask as the web app reads it: the ask, the tree of its question, and the trees carried by
  *  each option, by its answer's text and by its resolution's reason. Every tree is absent unless
  *  the request sent `Dispatch-Trees: 1`, so this reading is an `Ask` wherever one is wanted. */
-export type AskWithTrees = Omit<Ask, "answer" | "options" | "resolution"> & {
-  readonly question_tree?: DisplayTree;
-  readonly options: AskOptionWithTrees[];
-  readonly answer: AskAnswerWithTrees | null;
-  readonly resolution?: AskResolutionWithTrees;
-};
+export type AskWithTrees = ShapedAsk;
 
 /** Whom besides the followers a person's answer and replies on an ask reach, as every ask read
  *  carries it: the single-ask read (`AskRead`) and each list row's thread (`AskThread`).
@@ -275,26 +262,6 @@ export interface AskReach extends IssueRouteReach {
   readonly route: string | null;
 }
 
-/** One ask of `GET /api/v1/issues/{key}/asks`. The row is an ask as the web app reads it
- *  (`AskWithTrees`) plus the one field a list surface cannot compute for itself: `last_reply`,
- *  the sort key for ordering a page by its newest reply. It carries no thread: the list is
- *  unpaged, and the readers that render the ask alone - a document's decision blocks and the
- *  review margin - would pay for every reply body, follower and answer on the issue to draw
- *  none of them. */
-export type IssueAskRow = AskWithTrees & {
-  /** The newest reply in this ask's thread, or null when nobody has replied. */
-  readonly last_reply: AskLastReply | null;
-};
-
-/** What `PUT /api/v1/me/asks/{id}/snooze` answers: the stored moment the row returns. */
-export interface AskSnooze {
-  readonly snoozed_until: string;
-}
-
-export type OpenAskOwner =
-  | { readonly issue: Pick<Issue, "key" | "title"> }
-  | { readonly document: InboxDocument };
-
 /**
  * A session that receives an ask's answer, edits, resolution, and replies on its own
  * agent topic: the asker, every session that replied, and any session a human added.
@@ -303,8 +270,6 @@ export type OpenAskOwner =
 export const AskFollowerSchema = z
   .strictObject({ session_id: z.string(), since: z.string() })
   .readonly();
-
-export type AskFollower = z.output<typeof AskFollowerSchema>;
 
 /** Every `ask.*` event payload is the ask row, flat, plus what the write moved in the reference
  *  graph. `restored` is true on the `ask.opened` or `ask.answered` settlement appends when an edit

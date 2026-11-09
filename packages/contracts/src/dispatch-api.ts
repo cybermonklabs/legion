@@ -1,7 +1,20 @@
 /**
- * The Dispatch HTTP and event-bus contract, one module per area. This file is the entry every
- * caller imports (`@legion/contracts` re-exports it whole); nothing outside the package names a
- * module of the split by path.
+ * The Dispatch HTTP and event-bus contract. This file is the entry every caller imports
+ * (`@legion/contracts` re-exports it whole); nothing outside the package names a module of the
+ * split by path.
+ *
+ * The wire shapes are generated from the Go route table through `schemas/dispatch-openapi.json`:
+ * `dispatch-api.generated.ts` is the one definition of every HTTP request and response body of
+ * that table, and this file re-exports it whole. What the route table does not hold is written
+ * by hand, one module per area:
+ *   - the Dispatch event payloads and the event envelope, which travel the message bus;
+ *   - the `GET /ws/live` socket's frames, a route the table does not carry, held against Go by
+ *     `fixtures/live/` and the server's `delivery_live_diff_test.go`;
+ *   - the closed string enums the OpenAPI document widens to `string`, with the `const` arrays
+ *     they are read from and the limits and header names `scripts/gen-go.ts` renders into Go;
+ *   - the readings the dashboard takes of a generated row (`AskWithTrees` and the rest), and the
+ *     helpers and client-side composites no route answers (`Advised`, `IssueRead`,
+ *     `ArtifactVersionContent`, `CreateArtifactInput`, …).
  *
  * An event payload is read two ways, and one rule names the two schemas. The tolerant reading,
  * what a reader of the bus makes of a frame, carries the plain name - `CommentEventPayloadSchema`
@@ -26,6 +39,7 @@
  * value of that this release does not know (`kind`, `urgency`, an actor's `kind`, a writer's
  * `id`).
  */
+export * from "./dispatch-api.generated";
 export * from "./dispatch-api-asks";
 export * from "./dispatch-api-comments";
 export * from "./dispatch-api-core";

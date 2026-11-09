@@ -4,6 +4,7 @@ import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type {
   AnswerAskInput,
@@ -27,7 +28,7 @@ beforeEach(() => {
   });
   getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: "ask-1", kind: "ask" },
+    node: graphNode({ id: "ask-1", kind: "ask" }),
   });
   // A change card with an issue names who the ask reaches, which reads the issue's subscribers;
   // nobody is subscribed here, so the card lists its followers alone.
@@ -72,7 +73,9 @@ function answeredAsk(answer: AskAnswer, overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer,
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
     id: "ask-1",

@@ -124,7 +124,7 @@ func TestAnAskEventCarriesEveryAskTextUnderItsPath(t *testing.T) {
 func TestTheAskReadShapesRegisterEveryAskText(t *testing.T) {
 	ask, previous := askWithEveryText()
 	reader := builtDisplayTrees(true)
-	asks := askReads([]model.Ask{ask}, reader)
+	asks := shapedAsks([]model.Ask{ask}, reader)
 	edits := askEditReads([]model.AskEdit{{Previous: previous}}, reader)
 	reader.resolve()
 	trees := map[string]json.RawMessage{}

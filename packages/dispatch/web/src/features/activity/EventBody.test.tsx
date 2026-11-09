@@ -4,10 +4,10 @@ import { screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { AskAnswer, Event } from "../../api/types";
+import type { AskAnswer, DispatchEvent } from "../../api/types";
 import { EventBody } from "./EventBody";
 
-const markdownMessage: Event = {
+const markdownMessage: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
   created_at: "2026-09-10T00:00:00Z",
   id: 1,
@@ -16,6 +16,8 @@ const markdownMessage: Event = {
   payload: {
     author: { id: "alice", kind: "user" },
     body: "# Status\n\nThe **document** is [ready](https://example.com).",
+    broadcast_id: null,
+    reply_block: null,
     created_at: "2026-09-10T00:00:00Z",
     deliveries: [],
     id: "message-1",
@@ -60,7 +62,7 @@ test("EventBody renders unsupported raw HTML as literal text", async () => {
 });
 
 test("EventBody shows the answer a change replaced, struck through", async () => {
-  const changed: Extract<Event, { type: "ask.answered" }> = {
+  const changed: Extract<DispatchEvent, { type: "ask.answered" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-11T00:00:00Z",
     id: 3,
@@ -68,6 +70,8 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
     notify: true,
     payload: {
       anchor: null,
+      artifact_id: null,
+      block_id: null,
       answer: { at: "2026-09-11T00:00:00Z", selected: ["Hold"], text: null, user: "alice" },
       author: { id: "session-1", kind: "session" },
       created_at: "2026-09-10T00:00:00Z",
@@ -107,13 +111,17 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
 // An answer an agent gave for its person is recorded as the person's, so the feed names the
 // agent beside them: a reader must not take the agent's answer for the person's own words.
 test("EventBody names the agent an answer was given through, beside the person", async () => {
-  const alice: AskAnswer = {
+  // The answer below is a frame's payload, not a route's read of one: the route states
+  // `selected` as a nilable list because the Go field is a nilable slice, while an answer
+  // Dispatch writes always carries the list (`model.AskAnswer` normalises nil to `[]`). So it
+  // is stated as the payload states it rather than borrowed from the read's wider type.
+  const alice = {
     at: "2026-09-11T00:00:00Z",
     selected: ["Ship"],
     text: null,
     user: "alice",
-  };
-  const answered: Extract<Event, { type: "ask.answered" }> = {
+  } satisfies AskAnswer;
+  const answered: Extract<DispatchEvent, { type: "ask.answered" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-11T00:00:00Z",
     id: 5,
@@ -121,6 +129,8 @@ test("EventBody names the agent an answer was given through, beside the person",
     notify: true,
     payload: {
       anchor: null,
+      artifact_id: null,
+      block_id: null,
       answer: { ...alice, act: { session: "0123456789abcdef", scopes: ["person"] } },
       author: { id: "session-1", kind: "session" },
       created_at: "2026-09-10T00:00:00Z",
@@ -138,7 +148,9 @@ test("EventBody names the agent an answer was given through, beside the person",
     seq: 5,
     type: "ask.answered",
   };
-  const answeredWith = (answer: AskAnswer): Extract<Event, { type: "ask.answered" }> => ({
+  const answeredWith = (
+    answer: Extract<DispatchEvent, { type: "ask.answered" }>["payload"]["answer"]
+  ): Extract<DispatchEvent, { type: "ask.answered" }> => ({
     ...answered,
     payload: { ...answered.payload, answer },
   });
@@ -160,7 +172,7 @@ test("EventBody names the agent an answer was given through, beside the person",
 });
 
 test("EventBody names how an ask was resolved: a withdrawal by the close, a retraction with its reason", async () => {
-  const withdrawn: Extract<Event, { type: "ask.resolved" }> = {
+  const withdrawn: Extract<DispatchEvent, { type: "ask.resolved" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-10-25T00:00:00Z",
     id: 4,
@@ -168,6 +180,8 @@ test("EventBody names how an ask was resolved: a withdrawal by the close, a retr
     notify: true,
     payload: {
       anchor: null,
+      artifact_id: null,
+      block_id: null,
       answer: null,
       author: { id: "session-1", kind: "session" },
       created_at: "2026-10-24T00:00:00Z",
@@ -236,7 +250,7 @@ test("EventBody names how an ask was resolved: a withdrawal by the close, a retr
 // An ask.answered event written before answers stored an empty list holds null where the
 // contract says a list; the body reads it as no option chosen rather than throwing.
 test("EventBody reads a null selected list on an answer and its previous answer as empty", async () => {
-  const stored: Extract<Event, { type: "ask.answered" }> = {
+  const stored: Extract<DispatchEvent, { type: "ask.answered" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-11T00:00:00Z",
     id: 4,
@@ -244,6 +258,8 @@ test("EventBody reads a null selected list on an answer and its previous answer 
     notify: true,
     payload: {
       anchor: null,
+      artifact_id: null,
+      block_id: null,
       answer: {
         at: "2026-09-11T00:00:00Z",
         selected: null as unknown as string[],
@@ -287,7 +303,7 @@ test("EventBody reads a null selected list on an answer and its previous answer 
 // `body_truncated`. The row then shows the text it has and a link to the item's own page, which
 // reads the stored body whole; an event that carries its body whole shows nothing extra.
 test("EventBody links to the whole item when the event carried the body in part", async () => {
-  const cut: Event = {
+  const cut: DispatchEvent = {
     ...markdownMessage,
     payload: { ...markdownMessage.payload, body: "The first part.", body_truncated: true },
   };
@@ -309,7 +325,7 @@ test("EventBody links to the whole item when the event carried the body in part"
 
 // A comment's link reads "Read the whole comment" and opens the comment's own page.
 test("EventBody links to the whole comment when a comment event carried its body in part", async () => {
-  const cut: Event = {
+  const cut: DispatchEvent = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-10T00:00:00Z",
     id: 2,
@@ -317,6 +333,9 @@ test("EventBody links to the whole comment when a comment event carried its body
     notify: true,
     payload: {
       anchor: null,
+      answers: null,
+      artifact_id: null,
+      reply_block: null,
       artifact_name: "",
       ask_id: null,
       author: { id: "alice", kind: "user" },
@@ -355,7 +374,7 @@ test("EventBody links to the whole comment when a comment event carried its body
 // A comment on a project document belongs to no issue: its link opens the document with the
 // comment in view, the address every other in-app link to one uses.
 test("EventBody links a cut comment on a project document through that document", async () => {
-  const cut: Event = {
+  const cut: DispatchEvent = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-10T00:00:00Z",
     id: 3,
@@ -363,6 +382,8 @@ test("EventBody links a cut comment on a project document through that document"
     notify: true,
     payload: {
       anchor: null,
+      answers: null,
+      reply_block: null,
       artifact_id: "artifact-1",
       artifact_name: "runbook.md",
       artifact_slug: "runbook",

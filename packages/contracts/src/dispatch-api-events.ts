@@ -1,19 +1,17 @@
 import { z } from "zod";
+import type { Actor, AskResolution, Project } from "./dispatch-api.generated";
 import type {
   AskAnsweredEventPayload,
   AskEditEventPayload,
   AskEventPayload,
   AskFollowerEventPayload,
-  AskResolution,
 } from "./dispatch-api-asks";
 import type { CommentDeliveryEventPayload, CommentEventPayload } from "./dispatch-api-comments";
 import type {
-  Actor,
   ArchitectureSourceUpdatedEventPayload,
   ArchitectureSyncedEventPayload,
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
-  Project,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -51,30 +49,6 @@ import type {
  * The event log: one entry per committed write, its type naming the payload it carries, and the
  * framing a reader of the bus validates before it looks at that payload.
  */
-
-/**
- * One phase handoff without its body: what `GET /api/v1/issues/{key}/handoffs` lists, newest
- * first, and what `POST /api/v1/issues/{key}/handoffs/{phase}` answers. `phase` is a lowercase slug
- * (Legion writes `plan`, `implement`, `test` and `review`), `version` counts from 1 within the
- * issue and phase, and `author` is the session that wrote it.
- */
-export interface HandoffSummary {
-  readonly id: string;
-  readonly issue_key: string;
-  readonly phase: string;
-  readonly version: number;
-  readonly author: Actor;
-  readonly created_at: string;
-}
-
-/**
- * One phase handoff with its body, as `GET /api/v1/issues/{key}/handoffs/{phase}/latest` and
- * `GET /api/v1/handoffs/{id}` answer it. `body` is the exact text the session wrote: one JSON
- * object of at most `DISPATCH_HANDOFF_BODY_MAX` bytes, never reformatted.
- */
-export interface Handoff extends HandoffSummary {
-  readonly body: string;
-}
 
 /**
  * `handoff.recorded`: a session recorded version `version` of the issue's `phase` handoff, the
@@ -325,7 +299,6 @@ export type DispatchEvent =
       readonly payload: AskFollowerEventPayload;
     });
 
-export type Event = DispatchEvent;
 export type EventType = DispatchEvent["type"];
 
 /**

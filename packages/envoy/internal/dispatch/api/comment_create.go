@@ -31,7 +31,7 @@ type commentInput struct {
 	ReplyToBlock *string `json:"reply_to_block"`
 	AskID        *string `json:"ask_id"`
 	Mentions     []struct {
-		Target string `json:"target"`
+		Target string `json:"target" required:"true"`
 	} `json:"mentions"`
 	Delivery *string `json:"delivery"`
 	// Turn is who holds the turn after this ask reply: "agent" for a progress note
@@ -969,5 +969,5 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 		comment.Deliveries = append(comment.Deliveries, attempts[index])
 	}
-	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{commentRead: newCommentRead(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
+	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
 }

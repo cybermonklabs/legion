@@ -56,7 +56,11 @@ const results: SearchResult[] = [
 function searchAnswer(hits: SearchResult[]): SearchResponse & SearchResultsPage {
   const read = hits.map((hit) => ({
     ...hit,
-    ...(hit.ask?.state === "answered" && hit.ask.answer.text !== null
+    // A hit's ask states its answer as optional, because the route does: an answered ask
+    // carries one, and this says so rather than taking it for granted.
+    ...(hit.ask?.state === "answered" &&
+    hit.ask.answer !== undefined &&
+    hit.ask.answer.text !== null
       ? {
           ask: {
             ...hit.ask,

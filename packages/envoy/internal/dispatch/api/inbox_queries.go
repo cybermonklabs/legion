@@ -95,7 +95,7 @@ func (s *server) loadAskThreads(ctx context.Context, askIDs []string, reader *di
 	threads := make(map[string]askThread, len(askIDs))
 	for _, askID := range askIDs {
 		threads[askID] = askThread{
-			Replies:   []commentRead{},
+			Replies:   []shapedComment{},
 			Edits:     []askEditRead{},
 			Answers:   []model.AskAnswerWithTree{},
 			Followers: []model.AskFollower{},
@@ -126,7 +126,7 @@ func (s *server) loadAskThreads(ctx context.Context, askIDs []string, reader *di
 	// request that asked for them, so the replies' and the rewordings' texts ride in that one
 	// read of the table and what it did not hold is stored back once.
 	for askID, thread := range threads {
-		thread.Replies = commentReads(replies[askID], reader)
+		thread.Replies = shapedComments(replies[askID], reader)
 		thread.Edits = askEditReads(edits[askID], reader)
 		thread.Followers = followers[askID]
 		thread.askReach = reaches[askID]

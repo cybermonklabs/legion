@@ -1,5 +1,11 @@
 import { resolve as resolvePath } from "node:path";
-import type { Artifact, ArtifactBlock, Ask, EditOp, EditPrecondition } from "@legion/contracts";
+import type {
+  Artifact,
+  ArtifactBlock,
+  EditOp,
+  EditPrecondition,
+  ShapedAsk,
+} from "@legion/contracts";
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
@@ -47,12 +53,12 @@ async function blockAsks(
   client: DispatchClient,
   resolved: ResolvedArtifact,
   state?: "all" | "open" | "answered"
-): Promise<Array<Ask & { readonly block_id: string }>> {
+): Promise<Array<ShapedAsk & { readonly block_id: string }>> {
   const asks = await (resolved.issue === undefined
     ? client.getArtifactAsks(resolved.artifact.id, state)
     : client.listIssueAsks(resolved.issue.key, state));
   return asks.filter(
-    (ask): ask is Ask & { readonly block_id: string } =>
+    (ask): ask is ShapedAsk & { readonly block_id: string } =>
       typeof ask.block_id === "string" && ask.block_artifact?.id === resolved.artifact.id
   );
 }
@@ -78,7 +84,8 @@ async function readUploadedFile(
   owner: string,
   shown: Set<string> | undefined
 ): Promise<DispatchToolResult> {
-  const latest = Math.max(0, ...artifact.versions.map((version) => version.number));
+  const versions = artifact.versions ?? [];
+  const latest = Math.max(0, ...versions.map((version) => version.number));
   const number = requested ?? latest;
   const of = number === latest ? "" : ` of ${latest}`;
   const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
@@ -88,7 +95,7 @@ async function readUploadedFile(
       `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}`,
     details,
   });
-  const stated = artifact.versions.find((version) => version.number === number);
+  const stated = versions.find((version) => version.number === number);
   if (
     artifact.kind === "image" &&
     stated?.size !== undefined &&
@@ -192,11 +199,11 @@ async function listDocumentBlocks(
           `${indent}  This Dispatch does not report table rows yet, so no row or column index is listed.`
         );
       } else {
-        for (const row of block.table.rows) {
+        for (const row of block.table.rows ?? []) {
           lines.push(
             `${indent}  row ${row.index}, ${row.id === "" ? "no id yet" : `id ${row.id}`}`
           );
-          for (const cell of row.cells) {
+          for (const cell of row.cells ?? []) {
             const under = cell.header === "" ? "" : `, under ${JSON.stringify(cell.header)}`;
             lines.push(
               `${indent}    row ${cell.row} column ${cell.column}, ${cell.id === "" ? "no id yet" : `id ${cell.id}`}${under}: ${cell.text === "" ? "(empty)" : cell.text}`

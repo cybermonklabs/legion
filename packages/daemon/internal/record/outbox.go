@@ -288,6 +288,9 @@ type Notice struct {
 	ResendOf int64 `json:"resend_of,omitempty"`
 	// CatchUp is a catch-up notice's account of the tree, and absent from every other kind.
 	CatchUp *CatchUp `json:"catch_up,omitempty"`
+	// WaitingForSlot is which wait a waiting-for-slot notice was written for, and absent from
+	// every other kind.
+	WaitingForSlot *WaitingForSlot `json:"waiting_for_slot,omitempty"`
 	// OpenCapabilities names every open row of the deployment's capability report
 	// (capabilities.Deployment.Open) when the daemon reports them: a deployment row with no
 	// decision, or a live row a live session's check failed (LEGION-663). Only a tick controller
@@ -451,13 +454,44 @@ type CatchUpIssue struct {
 	Status string      `json:"status"`
 }
 
+// WaitingForSlot is the wait a waiting-for-slot notice was written for, named by the moment a
+// person's act answered it (Awaiting.AnsweredAt). A wait is answered once and that moment never
+// moves while the wait stands, so it names the wait; the root's next wait is answered at another
+// moment, and a wait no act has answered earns no such notice at all.
+//
+// The row carries it because the notice can outlive its wait. The publish is held while no
+// session holds the architect's role, and in that window the root can be resumed, wait again, be
+// answered and be told again. With nothing on the row to say which wait it speaks of, the held
+// row would read the new wait's answer and the new wait's mark, and publish beside that wait's
+// own notice: two notices for one wait, the older one naming the old answer and a place from
+// before the resume. The daemon publishes a held row only while the record's wait is still the
+// one answered here (the daemon's stillWaitsForSlot).
+//
+// It is the daemon's own bookkeeping of which wait the row belongs to, and the architect reads
+// none of it: what the notice says is its Reason, which names the answer in words
+// (workflow.WaitingForSlotNotice). It goes out with the publish all the same, as a catch-up's
+// account of its tree does and unlike the pacing's two moments (Published): a re-held copy is
+// built from the payload the publish carried, read back off the listener's report (the daemon's
+// exceptionNotice, reholdNotice), so a field dropped there is a field the copy would be refused
+// for want of.
+type WaitingForSlot struct {
+	AnsweredAt time.Time `json:"answered_at"`
+}
+
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 
 // Published is the notice the runner publishes for outbox row id, and the dedupe key it goes under:
 // a re-held copy goes under the key of the row it copies, and without ResendOf. The reserved
 // moment and the moment it was reserved from go out with neither: all three are the daemon's own
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
-// notice (the daemon's wakeRan writes it to the log instead).
+// notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
+// the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
+// and puts nothing back, and only the receipt-timeout path restores the two paced moments by
+// hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
+// (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
+// as it requires WaitingForSlot of a waiting-for-slot notice, is stripped here only together
+// with a restore of its own there, or every re-hold of that kind is refused for want of it
+// (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
 	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
 	if n.ResendOf == 0 {
@@ -746,18 +780,41 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // (ghautomerge.Submit). Warned is the row having told the issue's architect once that GitHub has
 // not completed the merge it submitted (merge-waiting, the daemon's mergeWaitWarn), which keeps it
 // from telling again however much longer it waits, and Queued is the moment the workflow queued
-// this submission, which that wait is measured from. A queue of the same issue and head starts the
-// row over unarmed, unwarned and at a fresh Queued (readyMergeConflict): the upsert replaces the
-// payload, so a reopen resets the clock and the once-flag together and the two can never disagree,
-// as they would were the wait measured from the row's created_at, which the upsert leaves at the
-// original queueing. A row a daemon before Queued enqueued carries the zero time, and its executor
-// measures that one from created_at, which is what it was measured from then.
+// this submission, which that wait is measured from. Unmergeable is the moment of the first read
+// that found the merge queue's entry for Head UNMERGEABLE while the queue had built it on
+// UnmergeableBase, the commit named there, which that read found to be the tip of the pull
+// request's own base branch: an entry built on its base branch's tip has nothing ahead of it in
+// the queue to blame, so its own head is what the queue cannot merge, and a mark that still
+// stands at the same base commit once the daemon's queueConflictBound has passed sends the issue
+// back to implementing. The two are written and read together, so an entry GitHub rebuilds onto
+// another base replaces the pair and starts the clock again. Resubmitted is the row having spent
+// its one further submission at Head after GitHub's merge queue took the entry out for a conflict
+// (merge_conflict) while GitHub reported the head mergeable, which is the queue having conflicted
+// the head with an entry ahead of it rather than with the base: nothing else would ever submit
+// that merge again, so the row submits it once more and marks the mark spent, and a second such
+// removal of the same head ends the row with the architect told. Only a queue of a new READY at a
+// new head clears it, by replacing the whole payload; the daemon's own re-submission never does,
+// which is what keeps the re-submission from becoming the loop a merge submitted again whenever
+// its arm vanishes falls into (LEGION-800). ConflictUnknown is the moment of the first read after
+// such a removal in which GitHub answered the merge state UNKNOWN, having computed none: nothing
+// is decided on an answer GitHub did not give, so the row asks again on its own backoff until the
+// daemon's conflictUnknownBound has passed from that moment and then ends with the architect
+// told. A queue of the same issue and head starts the row over unarmed, unwarned, with no mark at
+// all and at a fresh Queued (readyMergeConflict): the upsert replaces the whole payload, so a
+// reopen resets the clock, the once-flag and the marks together and they can never disagree, as
+// they would were the wait measured from the row's created_at, which the upsert leaves at the
+// original queueing. A row a daemon before Queued enqueued carries the zero time, and its
+// executor measures that one from created_at, which is what it was measured from then.
 type ReadyMerge struct {
-	Number int       `json:"number"`
-	Head   string    `json:"head"`
-	Armed  bool      `json:"armed,omitempty"`
-	Warned bool      `json:"warned,omitempty"`
-	Queued time.Time `json:"queued,omitzero"`
+	Number          int       `json:"number"`
+	Head            string    `json:"head"`
+	Armed           bool      `json:"armed,omitempty"`
+	Warned          bool      `json:"warned,omitempty"`
+	Queued          time.Time `json:"queued,omitzero"`
+	Unmergeable     time.Time `json:"unmergeable,omitzero"`
+	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool      `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time `json:"conflictUnknown,omitzero"`
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }
@@ -1052,6 +1109,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
+		if (value.Kind == "waiting-for-slot") != (value.WaitingForSlot != nil) {
+			return fmt.Errorf("a %s notice names the wait it was written for only when it is a waiting-for-slot notice", value.Kind)
+		}
+		if wait := value.WaitingForSlot; wait != nil && wait.AnsweredAt.IsZero() {
+			return fmt.Errorf("a waiting-for-slot notice names the moment its wait was answered")
+		}
 		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
@@ -1170,13 +1233,32 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	return nil
 }
 
+// validNoticeKinds is the set of notice kinds the validation accepts: a kind reaches the outbox
+// only by being on this list, since validNoticeKind decides from it alone and NewOutboxRow
+// refuses a notice of any other kind. It is a list rather than a switch so a test can range over
+// it, and a kind added here turns up as a row that test is missing rather than as a kind nobody
+// checked.
+var validNoticeKinds = []NoticeKind{
+	"phase-finished", "worker-died", "worker-stalled", "held",
+	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
+	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
+	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
+	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted", "waiting-for-slot",
+}
+
+// validNoticeKind says whether kind is a notice an architect is told. `worker-stalled` is what
+// the daemon's stall backstop did to a worker whose agent stopped stepping, with the task it
+// was serving still owed (internal/daemon's backstopStalledTurns), which is a fact of that
+// worker's issue and so the issue's architect's to read, as `worker-died` is. What it did is
+// usually the turn ended and the session brought back; where the wake pacing parked the
+// relaunch, it is the task taken back with that launch queued and the stalled process still
+// running until the launch's turn, which the notice names. The notice says what became of that
+// stalled process as well, where the end let it go: that it was stopped, or that the runtime
+// did not confirm the stop and it may be running still (internal/daemon's stallBackstopEnds,
+// stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
-	switch kind {
-	case "phase-finished", "worker-died", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(validNoticeKinds, kind)
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an

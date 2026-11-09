@@ -45,6 +45,7 @@ import {
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
   type ItemBlocks,
+  inboxThreadRow,
   type Message,
   MessageDeliveryEventPayloadSchema,
   type MessageDeliveryMode,
@@ -162,6 +163,7 @@ test("models Agent activity and open-ask aggregates", () => {
     open_asks: 2,
     roles: ["planner"],
     session_id: "planner-session",
+    state: "live",
     title: "Planner",
   } satisfies Agent;
 
@@ -185,6 +187,8 @@ test("carries a session's whole tmux place", () => {
     open_asks: 0,
     roles: ["planner"],
     session_id: "planner-session",
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title: "Planner",
     tmux_place: {
       socket: "/tmp/tmux-1000/default",
@@ -438,14 +442,16 @@ test("models answer changes, ask answer history, and the answers page", () => {
   const ask = {
     id: "ask-1",
     issue_key: "CORE-1",
-    author: { kind: "session", id: "session-1" },
-    kind: "question",
+    artifact_id: null,
+    block_id: null,
+    author: { kind: "session", id: "session-1" } as const,
+    kind: "question" as const,
     question: "Ship it?",
     options: [{ label: "Ship" }, { label: "Hold" }],
     multiple: false,
-    urgency: "med",
+    urgency: "med" as const,
     anchor: null,
-    state: "answered",
+    state: "answered" as const,
     answer,
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
@@ -621,7 +627,7 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
     payload: read,
   } satisfies DispatchEvent;
 
-  const agent = page.rows[3];
+  const agent = page.rows[3] === undefined ? undefined : inboxThreadRow(page.rows[3]);
   expect([
     page.rows.map((row) => `${row.kind}:${row.reply.kind}`),
     page.rows.map((row) => row.unread_count),
@@ -728,26 +734,31 @@ test("models full orphaned anchor refresh events without a notification", () => 
     quote: "Removed text",
     version: 3,
   };
-  const ask: Ask = {
+  const ask = {
     anchor,
+    artifact_id: null,
+    block_id: null,
     anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     answer: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     created_at: "2026-09-18T00:00:00Z",
     edited_at: null,
     id: "ask-1",
     issue_key: "CORE-1",
-    kind: "question",
+    kind: "question" as const,
     multiple: false,
     opened_event_id: 7,
     options: [{ label: "Review the revised plan" }],
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
-    state: "open",
-    urgency: "med",
-  };
-  const comment: Comment = {
+    state: "open" as const,
+    urgency: "med" as const,
+  } satisfies Ask;
+  const comment = {
     anchor,
-    author: { id: "session-1", kind: "session" },
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
+    author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
     deliveries: [],
@@ -762,7 +773,7 @@ test("models full orphaned anchor refresh events without a notification", () => 
     suggestion: { accepted: null, replace_with: "Replacement" },
     ask_id: null,
     turn: null,
-  };
+  } satisfies Comment;
   const events: DispatchEvent[] = [
     {
       actor,
@@ -807,6 +818,7 @@ test("accepts an artifact-owned ask edit event", () => {
       id: "ask-1",
       issue_key: null,
       artifact_id: "a4cf7999-cab2-4326-939d-cb1e76733cc3",
+      block_id: null,
       author: { kind: "session", id: "session-1" },
       kind: "question",
       question: "The document is ready for readers. How should we publish it?",
@@ -922,9 +934,12 @@ test("models anchors pinned to a block while preserving mark selectors", () => {
 });
 
 test("models comment thread lifecycle events and author edits", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     author: actor,
     body: "Edited discussion",
     created_at: "2026-09-10T00:00:00Z",
@@ -940,7 +955,7 @@ test("models comment thread lifecycle events and author edits", () => {
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
   const input: EditCommentInput = { body: "Edited discussion" };
   const reopened: DispatchEvent = {
     actor,
@@ -1021,9 +1036,12 @@ test("models comment mention inputs and hydrated delivery records", () => {
 });
 
 test("keeps the comment id, author, and message id when parsing event payloads", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     author: actor,
     body: "Please update this.",
     created_at: "2026-09-10T00:00:00Z",
@@ -1039,7 +1057,7 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
 
   expect(CommentEventPayloadSchema.parse({ ...comment, artifact_name: "spec.md" })).toMatchObject({
     id: "comment-1",
@@ -1090,7 +1108,7 @@ test("parses a message reply's in_reply_to, reply_body preview, and thread targe
 });
 
 test("a reply names the block it answers, and an event recorded before reads no block", () => {
-  const actor: Actor = { id: "bob", kind: "user" };
+  const actor = { id: "bob", kind: "user" } as const satisfies Actor;
   const commentInput: CreateCommentInput = {
     body: "On the second paragraph.",
     reply_to: "comment-1",
@@ -1135,6 +1153,7 @@ test("a reply names the block it answers, and an event recorded before reads no 
     text: "Two.",
   };
   const reply: Message = {
+    broadcast_id: null,
     author: actor,
     body: "On two.",
     created_at: "2026-09-10T00:00:01Z",
@@ -1147,6 +1166,8 @@ test("a reply names the block it answers, and an event recorded before reads no 
   };
   const comment: Comment = {
     anchor: null,
+    answers: null,
+    artifact_id: null,
     ask_id: null,
     author: actor,
     body: "On the second paragraph.",
@@ -1284,17 +1305,19 @@ test("models per-block anchor reference counts", () => {
 });
 
 test("keeps document read tokens optional for older Dispatch servers", () => {
-  const block: ArtifactBlock = {
+  // The route table states `token` on both reads, so the contract's own shapes always carry one;
+  // an older Dispatch answers without it, which is that answer minus the field.
+  const block: Omit<ArtifactBlock, "token"> = {
     from: 0,
     id: "legacy-block",
     references: { asks: 0, comments: 0 },
     to: 6,
     type: "paragraph",
   };
-  const text: ArtifactText = { markdown: "legacy", version: null };
+  const text: Omit<ArtifactText, "token"> = { markdown: "legacy", version: null };
 
-  expect(block.token).toBeUndefined();
-  expect(text.token).toBeUndefined();
+  expect("token" in block).toBe(false);
+  expect("token" in text).toBe(false);
 });
 
 test("models a comment's and a direct message's blocks", () => {
@@ -1305,6 +1328,12 @@ test("models a comment's and a direct message's blocks", () => {
       id: comment,
       issue_key: "CORE-1",
       ref: `dispatch://CORE-1/comment/${comment}`,
+      made_by: [{ kind: "user", id: "alice" }],
+      made_at: "2026-10-28T00:00:00Z",
+      changed_by: [{ kind: "user", id: "alice" }],
+      changed_at: "2026-10-28T00:00:00Z",
+      parent: { kind: "issue", id: "CORE-1", ref: "dispatch://CORE-1" },
+      parent_version: null,
     },
     revision: 2,
     indexed: true,
@@ -1318,21 +1347,34 @@ test("models a comment's and a direct message's blocks", () => {
         to: "Alpha 😀.".length,
         changed_revision: 1,
         changed_at: "2026-10-28T00:00:00Z",
+        embedding: "embedded",
       },
     ],
   };
   // A direct message has no address and no revision; neither has any of its blocks.
   const directBlocks: ItemBlocks = {
-    item: { kind: "message", id: "33333333-3333-4333-8333-333333333333" },
+    item: {
+      kind: "message",
+      id: "33333333-3333-4333-8333-333333333333",
+      made_by: [{ kind: "user", id: "alice" }],
+      made_at: "2026-10-28T00:00:00Z",
+      changed_by: [{ kind: "user", id: "alice" }],
+      changed_at: "2026-10-28T00:00:00Z",
+      // A direct message belongs to no issue, so its node has no parent.
+      parent: null,
+      parent_version: null,
+    },
     indexed: true,
-    blocks: [{ id: "b1", type: "paragraph", text: "Where?", from: 0, to: 6 }],
+    blocks: [
+      { id: "b1", type: "paragraph", text: "Where?", from: 0, to: 6, embedding: "embedded" },
+    ],
   };
   // An item owed an index lists no block.
   const owed: ItemBlocks = { ...commentBlocks, indexed: false, blocks: [] };
 
-  expect(commentBlocks.blocks[0]?.to).toBe(9);
+  expect(commentBlocks.blocks?.[0]?.to).toBe(9);
   expect(directBlocks.revision).toBeUndefined();
-  expect(directBlocks.blocks[0]?.ref).toBeUndefined();
+  expect(directBlocks.blocks?.[0]?.ref).toBeUndefined();
   expect(owed.blocks).toEqual([]);
 });
 

@@ -143,7 +143,18 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, newCommentRead(comment, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// editCommentInput is the body of PATCH /api/v1/comments/{id}.
+//
+// blocks and base_revision are the ids the dashboard editor carried through the edit: each
+// block's id and where its span starts in body, in UTF-16 code units, against the comment's
+// revision the editor read them at (refs.IndexItem). Without them the ids follow the text.
+type editCommentInput struct {
+	Body         string               `json:"body" required:"true"`
+	BaseRevision *int                 `json:"base_revision"`
+	Blocks       []itemblocks.Carried `json:"blocks"`
 }
 
 func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
@@ -151,14 +162,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// blocks and base_revision are the ids the dashboard editor carried through the edit: each
-	// block's id and where its span starts in body, in UTF-16 code units, against the comment's
-	// revision the editor read them at (refs.IndexItem). Without them the ids follow the text.
-	var input struct {
-		Body         string               `json:"body"`
-		BaseRevision *int                 `json:"base_revision"`
-		Blocks       []itemblocks.Carried `json:"blocks"`
-	}
+	var input editCommentInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -273,13 +277,11 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), event)
 	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
-	WriteJSON(w, http.StatusOK, newCommentRead(comment, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
 func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action string) {
-	var input struct {
-		Actor *model.Actor `json:"actor"`
-	}
+	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
@@ -489,7 +491,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		// change after this write's version was rendered and before it reached the room, which is
 		// past undoing (LEGION-269). The accept stands and says so.
 		lost, known := ledger.LostOps(comment.Anchor.ArtifactID)
-		accepted := acceptedComment{commentRead: newCommentRead(comment, wantsDisplayTrees(r))}
+		accepted := acceptedComment{shapedComment: newShapedComment(comment, wantsDisplayTrees(r))}
 		if known {
 			gone := len(lost) > 0
 			accepted.Lost = &gone
@@ -497,7 +499,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		WriteJSON(w, http.StatusOK, accepted)
 		return
 	}
-	WriteJSON(w, http.StatusOK, newCommentRead(comment, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
 // acceptedComment is the accept route's response: the comment, plus whether the live document
@@ -505,6 +507,6 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 // publish failed and the room is reloading, or the room holds a tree too deep to read - which is
 // not the same statement as false, exactly as an edit's lost_ops distinguishes them.
 type acceptedComment struct {
-	commentRead
+	shapedComment
 	Lost *bool `json:"lost"`
 }

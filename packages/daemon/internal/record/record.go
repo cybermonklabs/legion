@@ -218,7 +218,34 @@ type Awaiting struct {
 	AnsweredAt     *time.Time
 	AnsweredBy     Answer
 	AnsweredDetail string
-	Since          EventMark
+	// SlotNoticeAt is when the daemon wrote this wait's architect the waiting-for-slot notice
+	// (workflow.WaitingForSlotNoticeKind), and nil until it did: an admission pass writes it for
+	// an answered wait whose root needs a slot the cap has none of, so that architect is told
+	// once that its root waits and that the daemon starts it again by itself. It records that the
+	// notice was written, never that an architect read it.
+	//
+	// The mark belongs to this wait and goes where the wait goes. The stored shape clears it
+	// for a write that leaves it unchanged while leaving the row in anything but an answered
+	// wait (the trigger issues_carried_slot_notice_cleared, migration 20261108055000), whichever
+	// release makes that write, and the shape check refuses a mark stated anew outside an
+	// answered wait. Nothing in Go clears it on its own.
+	//
+	// Nine places outside the tests write Issue.Awaiting. admit.tellWaitingForSlot writes this
+	// field itself, beside the answer, in the transaction that enqueues the notice.
+	// workflow.enterAwaiting builds a fresh Awaiting for each new wait, which is why a new wait
+	// of a root told before carries no mark of the old one. admit.promoteHolds's resume,
+	// admit.readmit, workflow.beginLinger and workflow.leaveUnderOperator clear the wait whole,
+	// so the mark goes with the struct. The last three write through the wait the record already
+	// holds and keep every field they do not name: workflow.answerWait, which is safe because
+	// each of its callers reaches it for an unanswered wait alone, and workflow.itemLeft and
+	// workflow.leaveGateOff, which rewrite the wait's subject in place and are safe for the same
+	// reason — itemLeft returns at once when root.Awaiting.AnsweredAt != nil, and
+	// leaveGateOff's caller answerOpenGates skips an answered wait before it reaches
+	// leaveGateOff. A change to any of those guards changes this invariant, and would carry one
+	// wait's mark into the next wait, whose architect would then never be told. The stored shape
+	// holds the same rule (issues_awaiting_shape): the mark stands only beside an answer.
+	SlotNoticeAt *time.Time
+	Since        EventMark
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
@@ -385,7 +412,19 @@ type PhaseRow struct {
 	// --version <n>`, as its task's Handoff line says. Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	Rounds         int
+	// Rounds is how many times the issue moved back to an earlier phase while this role held it,
+	// counted on the implementer's row alone (workflow's recordRound): a reviewer's request for
+	// changes, a tester's fail, a worker's backward move, and the move the daemon makes on its own
+	// for a red CI verdict or a head that conflicts with its base. Every backward move raises it,
+	// because a completion's key is built from it (api/handoff.go) and two passes through a phase
+	// must not collide.
+	Rounds int
+	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
+	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
+	// implementer answers with a forward merge, which no reviewer asked for. review_round_cap
+	// compares Rounds - ConflictRounds with the cap, so such a round costs the issue nothing,
+	// whichever fact made the move (workflow's recordRound).
+	ConflictRounds int
 	Verdict        string
 	// Summary is what the role reported with its completion. The merger's is its READY packet,
 	// which the daemon posts when the issue reaches awaiting_merge.
@@ -567,6 +606,21 @@ type PullRequest struct {
 	// yet, either), MergeabilityMergeable once GitHub can merge the head automatically, and
 	// MergeabilityConflicting once it cannot. "" means the read has never run.
 	Mergeability Mergeability
+	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
+	// whichever read made that judgement: the two-minute required-checks pass reading GitHub's
+	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
+	// for the head unmergeable on the base branch's own tip (workflow's mergeQueueConflict). A read
+	// that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's answer
+	// for a head sitting in the merge queue, neither writes nor clears it. "" means no head is held
+	// conflicting.
+	//
+	// A backward move made while it is non-empty and equal to HeadSHA is a conflict round, which
+	// review_round_cap does not count (PhaseRow.ConflictRounds): the implementer answers such a
+	// round with a forward merge, which moves HeadSHA and so ends the exemption with no write of
+	// its own. Mergeability beside it cannot carry the fact, because every pass rewrites it from
+	// GitHub's answer and that answer is UNKNOWN while the head is queued, so a move two minutes
+	// after the judgement would read as no conflict.
+	ConflictingHead string
 	// MergeSHA is the merge commit GitHub reported for the pull request, which the production
 	// check's agent looks for in production: empty until the merge, and for a pull request merged
 	// before the column existed. Nothing fills it later — no compare is left to — so the check's

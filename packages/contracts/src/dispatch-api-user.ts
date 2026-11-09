@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { DispatchScope } from "./dispatch-api-core";
+import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
 
 /**
  * The signed-in viewer: who Dispatch resolves a request to, and the per-viewer state the
@@ -23,15 +23,6 @@ export interface AuthenticatedUser {
   readonly event_head: string;
 }
 
-/** One row of GET /api/v1/users: a person who has signed in, `login` being their lowercase email. */
-export interface DispatchUser {
-  readonly login: string;
-}
-
-export interface ListUsersResponse {
-  readonly users: DispatchUser[];
-}
-
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
  *  and that service token's subject, null unless one authenticated the request. `session` is the
@@ -45,16 +36,7 @@ export interface ListUsersResponse {
  *  `[]` for the shared token and a verified service token, which act as nobody. The kind stays
  *  `agent` for a personal token holding `person`, because the kind names the credential and not
  *  the act; the person it acts for is `owner`. */
-export type WhoamiResponse =
-  | { readonly kind: "user"; readonly login: string; readonly scopes: DispatchScope[] }
-  | {
-      readonly kind: "agent";
-      readonly owner: string | null;
-      readonly service: string | null;
-      readonly session?: string | null;
-      readonly project?: string | null;
-      readonly scopes: DispatchScope[];
-    };
+export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z
   .strictObject({
@@ -64,35 +46,6 @@ export const UserIssueStateSchema = z
     seq: z.number().int(),
   })
   .readonly();
-
-export type UserIssueState = z.output<typeof UserIssueStateSchema>;
-
-export type UserState = Record<string, UserIssueState>;
-
-/** One viewer's state for one agent's conversation. Exchanges whose newest message is at or
- * before `cleared_before` (RFC3339, the viewer's Clear) are hidden for that viewer only;
- * `read_through` is how far the viewer has read; `unread_replies` counts the session's replies
- * to messages this viewer sent that are newer than both and not read by id (`read_replies`). */
-export interface UserAgentState {
-  readonly cleared_before?: string;
-  readonly read_through?: string;
-  /** Absent from an API older than the count, which a rollback can leave a live tab talking to,
-   *  so every reader treats it as none rather than rendering NaN. */
-  readonly unread_replies?: number;
-}
-
-/** `PUT /api/v1/me/agents/{session_id}/state`: a Clear, a read mark, replies read by id, or any
- * of them together. `read_through` only moves forward and covers every reply up to it;
- * `read_replies` names the session's own messages and covers those alone, for a view that shows
- * only some of a session's replies. The response is the session's whole `UserAgentState`. */
-export interface UserAgentStateInput {
-  readonly cleared_before?: string;
-  readonly read_through?: string;
-  readonly read_replies?: readonly string[];
-}
-
-/** `GET /api/v1/me/agents/state`: keyed by session ID. */
-export type UserAgentStates = Record<string, UserAgentState>;
 
 export const UserStateUpdatedEventPayloadSchema = z
   .strictObject({

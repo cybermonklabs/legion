@@ -85,14 +85,15 @@ export async function resolveArtifact(
     };
   }
   const issue = await client.getIssue(owner.issue);
+  const issueArtifacts = issue.artifacts ?? [];
   let artifact: Artifact | undefined;
   if (artifactReference === undefined || artifactReference === "spec") {
-    artifact = issue.artifacts.find(
+    artifact = issueArtifacts.find(
       (candidate) => candidate.primary || candidate.id === issue.primary_artifact_id
     );
   } else {
     artifact = artifactByReference(
-      issue.artifacts,
+      issueArtifacts,
       artifactReference,
       { kind: "issue", issue: issue.key },
       canonical
@@ -100,7 +101,7 @@ export async function resolveArtifact(
   }
   if (!artifact) {
     throw new DocumentNotFoundError(
-      documentReferenceProblem(artifactReference ?? "spec", issue.artifacts, {
+      documentReferenceProblem(artifactReference ?? "spec", issueArtifacts, {
         kind: "issue",
         issue: issue.key,
       })

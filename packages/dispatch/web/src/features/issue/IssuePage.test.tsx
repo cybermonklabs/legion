@@ -9,6 +9,7 @@ import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "rea
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -36,7 +37,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
 
-const issue: IssueDetails = {
+const issue = {
   route_status: null,
   route_holder: null,
   route_status_reason: null,
@@ -53,6 +54,8 @@ const issue: IssueDetails = {
       kind: "doc",
       name: "spec.md",
       primary: true,
+      ref_key: "CORE-1/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -73,6 +76,8 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
   project: "CORE",
   referenced_by_count: 0,
@@ -84,7 +89,10 @@ const issue: IssueDetails = {
   rank: "U",
   title: "Review the spec",
   updated_at: "2026-09-09T00:00:00Z",
-};
+  verification_artifact_id: "",
+  // `satisfies`, not an annotation: the tests below read `issue.artifacts[0]` and spread the
+  // list, which the route table's `Artifact[] | null` would not let them.
+} satisfies IssueDetails;
 
 const itemComment = {
   // Anchored: the landing has to wait on the issue to learn which document the anchor names,
@@ -135,6 +143,7 @@ function listedAgent(sessionId: string, title: string): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    state: "live",
     title,
   };
 }
@@ -142,7 +151,9 @@ function listedAgent(sessionId: string, title: string): Agent {
 const openIssueAsk: Ask = {
   anchor: null,
   answer: null,
+  artifact_id: null,
   author: { id: "session-1", kind: "session" },
+  block_id: null,
   created_at: "2026-09-10T00:00:00Z",
   edited_at: null,
   id: "ask-open",
@@ -248,12 +259,15 @@ function answerIssuePageReads(): void {
     http.get("/api/v1/references", ({ request }) =>
       Response.json({
         edges: [],
-        node: { id: new URL(request.url).searchParams.get("to") ?? "", kind: "artifact" },
+        node: graphNode({
+          id: new URL(request.url).searchParams.get("to") ?? "",
+          kind: "artifact",
+        }),
       } satisfies GraphReferences)
     ),
     http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
     http.get("/api/v1/artifacts/:id/text", () =>
-      Response.json({ markdown: "", version: null } satisfies ArtifactText)
+      Response.json({ markdown: "", token: "sha256:empty", version: null } satisfies ArtifactText)
     ),
     http.get("/api/v1/artifacts/:id/versions/:version", ({ params }) =>
       Response.json({
@@ -266,7 +280,7 @@ function answerIssuePageReads(): void {
       } satisfies ArtifactVersionText)
     ),
     // The document the page re-reads is the one the stubbed issue carries.
-    artifactRecordHandler((id) => stubbedIssue.artifacts.find((each) => each.id === id)),
+    artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
     ...decisionsAndReadMarkHandlers()
   );
 }
@@ -354,6 +368,7 @@ test("IssuePage shows a session creator's live title and personal-token owner", 
         open_asks: 0,
         roles: [],
         session_id: "creator-session",
+        state: "live",
         title: "chief of staff",
       },
     ]
@@ -1096,6 +1111,7 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
   const restore = stubIssuePage(issue, [
     {
       ...openIssueAsk,
+      last_reply: null,
       priority: issue.priority,
       snoozed_until: null,
       thread: {
@@ -1294,6 +1310,8 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
         kind: "doc",
         name: "spec.md",
         primary: true,
+        ref_key: "CORE-2/spec",
+        session_id: null,
         slug: "spec",
         versions: [],
       },
@@ -1530,6 +1548,8 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
     kind: "image" as const,
     name: "diagram.png",
     primary: false,
+    ref_key: "CORE-1/diagram-png",
+    session_id: null,
     slug: "diagram-png",
     versions: [
       {
@@ -1548,7 +1568,7 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
   } finally {
@@ -1568,6 +1588,8 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
     kind: "image" as const,
     name: "diagram.png",
     primary: false,
+    ref_key: "CORE-1/diagram-png",
+    session_id: null,
     slug: "diagram-png",
     versions: [
       {
@@ -1615,6 +1637,8 @@ test("IssuePage opens a non-spec document at its version route", async () => {
     kind: "doc" as const,
     name: "design.md",
     primary: false,
+    ref_key: "CORE-1/design",
+    session_id: null,
     slug: "design",
     versions: [
       {
@@ -1641,7 +1665,7 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
     await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
@@ -1668,6 +1692,8 @@ test("IssuePage shows an unavailable image version instead of the latest image",
     kind: "image" as const,
     name: "diagram.png",
     primary: false,
+    ref_key: "CORE-1/diagram-png",
+    session_id: null,
     slug: "diagram-png",
     versions: [
       {
@@ -1686,7 +1712,7 @@ test("IssuePage shows an unavailable image version instead of the latest image",
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png?v=999");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
     expect(screen.queryByRole("img", { name: "diagram.png version 1" })).not.toBeInTheDocument();
   } finally {
@@ -1718,7 +1744,7 @@ test("IssuePage hides the Artifacts panel after switching to Spec", async () => 
   const view = renderIssuePage("/issues/CORE-1/artifacts");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (1)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 1", selected: true });
     await user.click(screen.getByRole("tab", { name: "Spec" }));
     await screen.findByRole("tab", { name: "Spec", selected: true });
     const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
@@ -1829,7 +1855,7 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
     expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
     expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
 
-    for (const tab of ["Conversation", "Children", "Artifacts (1)", "Activity"] as const) {
+    for (const tab of ["Conversation", "Children", "Artifacts 1", "Activity"] as const) {
       await user.click(screen.getByRole("tab", { name: tab }));
       await screen.findByRole("tab", { name: tab, selected: true });
       expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
@@ -1939,7 +1965,7 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
 test("IssuePage hides whose turn when the server sent open asks without waiting_on", async () => {
   const restore = stubIssuePage({
     ...issue,
-    open_asks: [{ ...openIssueAsk, waiting_on: undefined }],
+    open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: undefined }],
   });
   const view = renderIssuePage("/issues/CORE-1");
 
@@ -1997,6 +2023,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
     gated_steps: ["decisions", "criteria", "spec"],
+    open_asks: 0,
     key: "CORE",
     name: "Core",
   };
@@ -2046,6 +2073,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
     gated_steps: ["decisions", "criteria"],
+    open_asks: 0,
     key: "CORE",
     name: "Core",
   };
@@ -2384,7 +2412,11 @@ test("IssuePage resolves an address that writes an id short and replaces it with
   const restore = stubIssuePage(issue);
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: WHOLE_ID, kind: "comment", ref: `dispatch://CORE-1/comment/${WHOLE_ID}` },
+    node: graphNode({
+      id: WHOLE_ID,
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+    }),
   });
   const getComment = spyOn(api, "getComment").mockResolvedValue({
     comment: shortIdComment,

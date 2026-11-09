@@ -129,19 +129,22 @@ func (s *server) createAsk(w http.ResponseWriter, r *http.Request) {
 	s.createAskFor(w, r, issueOwner(r.PathValue("key")))
 }
 
+// createAskInput is the body of POST /api/v1/issues/{key}/asks and POST /api/v1/artifacts/{id}/asks.
+type createAskInput struct {
+	Question string             `json:"question" required:"true"`
+	Kind     string             `json:"kind"`
+	Options  []model.AskOption  `json:"options"`
+	Multiple *bool              `json:"multiple"`
+	Urgency  string             `json:"urgency"`
+	Anchor   *model.AnchorInput `json:"anchor"`
+	Actor    *model.Actor       `json:"actor"`
+}
+
 func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owner) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Question string             `json:"question"`
-		Kind     string             `json:"kind"`
-		Options  []model.AskOption  `json:"options"`
-		Multiple *bool              `json:"multiple"`
-		Urgency  string             `json:"urgency"`
-		Anchor   *model.AnchorInput `json:"anchor"`
-		Actor    *model.Actor       `json:"actor"`
-	}
+	var input createAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -317,20 +320,23 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		source.artifactID = *owner.ArtifactID
 	}
 	suggestions := s.relatedCheck(r.Context(), relatedInput{text: ask.Question, title: ask.Question, source: source, record: true})
-	WriteJSON(w, http.StatusCreated, withSuggestions(newAskRead(ask, wantsDisplayTrees(r)), advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+}
+
+// editAskInput is the body of PATCH /api/v1/asks/{id}.
+type editAskInput struct {
+	Question *string            `json:"question"`
+	Options  *[]model.AskOption `json:"options"`
+	Multiple *bool              `json:"multiple"`
+	Urgency  *string            `json:"urgency"`
+	Actor    *model.Actor       `json:"actor"`
 }
 
 func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Question *string            `json:"question"`
-		Options  *[]model.AskOption `json:"options"`
-		Multiple *bool              `json:"multiple"`
-		Urgency  *string            `json:"urgency"`
-		Actor    *model.Actor       `json:"actor"`
-	}
+	var input editAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -560,7 +566,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// previous wording, which no other write would ever store.
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
-	WriteJSON(w, http.StatusOK, newAskRead(ask, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the
@@ -727,7 +733,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 // thread and, when the caller asked for it, the thread a card renders. Embedding model.Ask keeps
 // every field a reader already has exactly where it was, so the row stays a superset of the ask.
 type issueAskRow struct {
-	askRead
+	shapedAsk
 	LastReply *model.AskLastReply `json:"last_reply"`
 	Thread    *askThread          `json:"thread,omitempty"`
 }
@@ -763,8 +769,8 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("key"))
 	rows := make([]issueAskRow, len(asks))
 	for index := range asks {
-		rows[index].askRead.Ask = asks[index]
-		rows[index].askRead.shape(reader)
+		rows[index].shapedAsk.Ask = asks[index]
+		rows[index].shapedAsk.shape(reader)
 		if reply, ok := lastReplies[asks[index].ID]; ok {
 			rows[index].LastReply = &reply
 		}
@@ -831,6 +837,13 @@ func parseAskListThread(r *http.Request) (bool, error) {
 	return true, nil
 }
 
+// askRead is the body GET /api/v1/asks/{id} answers: the single-ask read is a thread with the
+// ask beside it.
+type askRead struct {
+	Ask shapedAsk `json:"ask"`
+	askThread
+}
+
 func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
 		return
@@ -883,11 +896,8 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	// The ask, its replies, the wordings it went through and every answer it was given are one
 	// read of the table: the whole page the dashboard draws from this route in one query.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), ask.ID)
-	read := struct {
-		Ask askRead `json:"ask"`
-		askThread
-	}{askThread: askThread{
-		Replies:   commentReads(replies, reader),
+	read := askRead{askThread: askThread{
+		Replies:   shapedComments(replies, reader),
 		Edits:     askEditReads(edits, reader),
 		Answers:   askAnswerReads(answers, reader),
 		Followers: followers,

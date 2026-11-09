@@ -4,7 +4,7 @@ import type {
   SessionAnswersResponse,
   WhoamiResponse,
 } from "@legion/contracts";
-import { serviceSubjectLabel } from "@legion/contracts";
+import { inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
@@ -34,7 +34,7 @@ export async function answersCommand(context: SessionContext): Promise<DispatchT
     throw error;
   }
   return {
-    text: renderSessionAnswersList(response.items, { now: Date.now() }),
+    text: renderSessionAnswersList(response.items ?? [], { now: Date.now() }),
     details: { session: sessionId, since: response.since, total: response.total },
   };
 }
@@ -148,7 +148,8 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  */
 function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
   if (inboxSnoozed(row, now)) return "later";
-  return row.waiting_on;
+  const waiting = row.waiting_on;
+  return waiting === "agent" || waiting === "human" ? waiting : undefined;
 }
 
 /** Where an inbox row's ask lives: the issue key or the document slug its line is named by, and
@@ -179,8 +180,9 @@ function inboxAskLine(row: InboxRow): string {
  *  one on a project document, and the session's name for an Agent row, which sits on neither.
  *  A Reply row with no owner at all is named by its thread id, the one name every row carries. */
 function inboxThreadLabel(row: MyReplyRow): string {
-  if (row.kind === "agent") return row.session.name;
-  return row.issue?.key ?? row.document?.slug ?? row.thread_id;
+  const thread = inboxThreadRow(row);
+  if (thread.kind === "agent") return thread.session.name;
+  return thread.issue?.key ?? thread.document?.slug ?? thread.thread_id;
 }
 
 /** How long ago the newest reply in a thread was written, in one short field: the largest whole
@@ -216,7 +218,7 @@ function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
   return [
     `- ${request.kind}`,
-    request.identifiers.join(", "),
+    (request.identifiers ?? []).join(", "),
     request.requested_at,
     ...(session === null
       ? []

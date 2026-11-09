@@ -1,7 +1,7 @@
 import type {
   Agent,
   ClaimHolderLiveness,
-  Event,
+  DispatchEvent,
   Issue,
   IssueClaim,
   IssueComponents,
@@ -9,10 +9,9 @@ import type {
   IssueDetails,
   IssueProgress,
   IssueReferences,
-  IssueRouteReach,
   IssueRouteStatus,
 } from "@legion/contracts";
-import { actorLabel, claimHolds, claimTakeableAt } from "@legion/contracts";
+import { actorLabel, claimHolds, claimTakeableAt, ISSUE_ROUTE_STATUSES } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
@@ -21,17 +20,20 @@ import { approvalLine, documentListLines } from "./document-targets";
 
 /** The Components line of an issue read: the effective set with where it came from. */
 function componentsLine(components: IssueComponents): string {
+  const ids = components.ids ?? [];
+  const unknown = components.unknown ?? [];
   const inherited =
     components.inherited_from === null ? "" : ` (inherited from ${components.inherited_from})`;
-  const retired =
-    components.unknown.length === 0 ? "" : ` (retired: ${components.unknown.join(", ")})`;
+  const retired = unknown.length === 0 ? "" : ` (retired: ${unknown.join(", ")})`;
   switch (components.mode) {
     case "explicit":
-      return `Components: ${components.ids.length === 0 ? "none live" : components.ids.join(", ")}${inherited}${retired}`;
+      return `Components: ${ids.length === 0 ? "none live" : ids.join(", ")}${inherited}${retired}`;
     case "none":
       return `Components: none — ${components.reason ?? ""}${inherited}`;
     case "inherit":
       return "Components: unassigned";
+    default:
+      return `Components: ${components.mode}${inherited}${retired}`;
   }
 }
 
@@ -163,7 +165,14 @@ export function holdsSession(claim: IssueClaim | null | undefined): boolean {
   return claim?.actor.kind === "session";
 }
 
-export type RoutedIssue = Pick<Issue, "route"> & Partial<IssueRouteReach>;
+export type RoutedIssue = Pick<Issue, "route"> &
+  Partial<Pick<IssueDetails, "route_status" | "route_holder" | "route_status_reason">>;
+
+/** Whether a `route_status` the server sent is one the words below judge. The wire type is an
+ *  open string, so a status a newer Dispatch adds reads as the route alone. */
+function isRouteStatus(value: string): value is IssueRouteStatus {
+  return ISSUE_ROUTE_STATUSES.some((status) => status === value);
+}
 
 /** Whether the route is a role a live session holds, which the live registry names. */
 export function routeHeldBySession(issue: RoutedIssue): boolean {
@@ -201,7 +210,8 @@ export function routeText(issue: RoutedIssue, titles?: ReadonlyMap<string, strin
         ? " (the Envoy listener's agent list is refilling, so whether it reaches anyone is unknown; try again in a moment)"
         : " (the Envoy listener did not answer, so whether it reaches anyone is unknown)",
   };
-  return issue.route + (issue.route_status == null ? "" : reach[issue.route_status]);
+  const status = issue.route_status;
+  return issue.route + (status != null && isRouteStatus(status) ? reach[status] : "");
 }
 
 /**
@@ -250,14 +260,17 @@ export function repositoryFieldsWarnings(issue: {
 }
 export function issueSummary(
   issue: IssueDetails,
-  events: readonly Event[],
+  events: readonly DispatchEvent[],
   references: IssueReferences | string,
   graph: readonly string[],
   linkBase: string,
   coverage: IssueCoverage | string,
   agents?: LiveAgents
 ): string {
-  const asks = issue.open_asks;
+  const asks = issue.open_asks ?? [];
+  const labels = issue.labels ?? [];
+  const links = issue.external_links ?? [];
+  const members = typeof references === "string" ? [] : (references.members ?? []);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
   const specApproval = spec === undefined ? undefined : approvalLine(spec);
   if (issue.priority === undefined) throw new Error("Dispatch issue is missing priority");
@@ -277,7 +290,7 @@ export function issueSummary(
     `Assignee: ${issue.assignee ?? "unassigned"}`,
     `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,
     ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
-    `Labels: ${issue.labels.length === 0 ? "none" : issue.labels.join(", ")}`,
+    `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
     componentsLine(issue.components),
     `Route: ${routeText(issue, agents?.titles)}`,
     repositoryLine(issue),
@@ -290,16 +303,14 @@ export function issueSummary(
     // read the server could not answer says so rather than reading as a spec with no gaps.
     ...(typeof coverage === "string"
       ? [`Coverage: ${coverage}`]
-      : coverage.gaps.map((gap) => `Coverage: ${gap}`)),
+      : (coverage.gaps ?? []).map((gap) => `Coverage: ${gap}`)),
     // The links a person or an agent put on the issue — the pull request that delivers it among
     // them — which the issue page renders with their state; the reference graph below carries
     // only links between Dispatch nodes.
     "External links:",
-    ...(issue.external_links.length === 0
+    ...(links.length === 0
       ? ["- none"]
-      : issue.external_links.map(
-          (link) => `- ${link.url}${link.kind === undefined ? "" : ` (${link.kind})`}`
-        )),
+      : links.map((link) => `- ${link.url}${link.kind === undefined ? "" : ` (${link.kind})`}`)),
     // Every document, picture and file the issue holds, oldest first, which a document
     // reference's not-found hint points to once the issue holds more than the hint lists.
     "Documents:",
@@ -309,9 +320,9 @@ export function issueSummary(
     "References:",
     ...(typeof references === "string"
       ? [`- ${references}`]
-      : references.members.length === 0
+      : members.length === 0
         ? ["- none"]
-        : references.members.map(
+        : members.map(
             ({ artifact, depth, via }) =>
               `- ${artifact.project}/${artifact.slug} · depth ${depth} via ${via.kind} ${via.id}`
           )),
@@ -323,7 +334,8 @@ export function issueSummary(
     ...graph,
   ].join("\n");
 }
-export function logSummary(issue: IssueDetails, events: readonly Event[]): string {
+
+export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]): string {
   return [
     `Key: ${issue.key}`,
     "Events:",
@@ -332,7 +344,7 @@ export function logSummary(issue: IssueDetails, events: readonly Event[]): strin
 }
 
 /** The head of the text an event carries, so a log reads without opening each item. */
-function eventHead(event: Event): string | undefined {
+function eventHead(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "ask.opened":
     case "ask.anchor_refreshed":
@@ -384,7 +396,7 @@ function eventHead(event: Event): string | undefined {
 
 /** The `dispatch://` reference of the message, comment or ask an issue event carries, so a log
  *  line names what `dispatch read --ref` reads and a spec links: the log shows no other id. */
-function eventRef(event: Event): string | undefined {
+function eventRef(event: DispatchEvent): string | undefined {
   const payload: unknown = event.payload;
   const id =
     typeof payload === "object" && payload !== null && "id" in payload ? payload.id : undefined;
@@ -404,12 +416,12 @@ function eventRef(event: Event): string | undefined {
  *  and the filer is that title (`Legion implementer · INFRA-1160` counts as `Legion
  *  implementer`): a session id names one process, so without the title the count is one row per
  *  session (`skill://legion-controller/references/weekly-audit.md`). */
-function eventActorText(actor: Event["actor"]): string {
+function eventActorText(actor: DispatchEvent["actor"]): string {
   const title = actor.kind === "session" ? actor.origin?.session_title : undefined;
   return title === undefined || title === "" ? actorText(actor) : `${actorText(actor)} (${title})`;
 }
 
-function eventLine(event: Event): string {
+function eventLine(event: DispatchEvent): string {
   const head = eventHead(event);
   const ref = eventRef(event);
   return `- #${event.seq} ${event.type}${ref === undefined ? "" : ` ${ref}`} · ${eventActorText(event.actor)} · ${event.created_at}${head === undefined || head === "" ? "" : ` · ${head}`}`;
@@ -419,8 +431,8 @@ export function childrenSummary(issue: IssueDetails): string {
   return [
     `Key: ${issue.key}`,
     "Children:",
-    ...(issue.children.length === 0
+    ...((issue.children ?? []).length === 0
       ? ["- none"]
-      : issue.children.map((child) => `- ${child.key}: ${child.title} (${child.status})`)),
+      : (issue.children ?? []).map((child) => `- ${child.key}: ${child.title} (${child.status})`)),
   ].join("\n");
 }

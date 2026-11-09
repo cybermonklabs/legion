@@ -11,6 +11,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
 import type { GraphReferencesWithTrees, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
@@ -295,6 +296,7 @@ function blockRead(
   return {
     edges: [],
     node: {
+      ...graphNodeFields(),
       block_id: "b2",
       id: "CORE-1/spec#b2",
       kind: "block",

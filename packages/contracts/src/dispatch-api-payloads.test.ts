@@ -94,15 +94,26 @@ const CONSTANT_LIST_TYPES = [
 /**
  * How many types of the contract are `z.output` of a schema: the payloads above and every shape
  * they are built from, down to the actor. Stated so a type written by hand beside a schema that
- * already describes it is a failure rather than a slow return to two spellings of one shape.
+ * already describes it is a failure rather than a slow return to two spellings of one shape. The
+ * number is this low because a row the route table holds is named by the generated module and no
+ * longer by a type here: what a schema still yields is what only the bus carries.
  */
-const SCHEMA_DERIVATIONS = 86;
+const SCHEMA_DERIVATIONS = 46;
+
+/** The payloads whose shape the Go route table holds, so the generated module is their one
+ *  definition and the split declares none of them: a `project.*` event carries the project row a
+ *  project read answers with. A schema of their own here would be the second spelling this test
+ *  exists to refuse. */
+const TABLE_PAYLOAD_TYPES = ["Project"];
 
 /** Every module of the split, as one text with its whitespace collapsed, so a declaration Biome
  *  wrapped over several lines reads as the one line it is. */
 const MODULES = readdirSync(SOURCE).filter(
   (entry) =>
-    entry.startsWith("dispatch-api") && entry.endsWith(".ts") && !entry.endsWith(".test.ts")
+    entry.startsWith("dispatch-api") &&
+    entry.endsWith(".ts") &&
+    !entry.endsWith(".test.ts") &&
+    !entry.endsWith(".generated.ts")
 );
 
 const collapsed = (entry: string): string =>
@@ -111,7 +122,7 @@ const collapsed = (entry: string): string =>
 const SOURCES = MODULES.map(collapsed).join("\n");
 
 const UNION_OPENS = "export type DispatchEvent =";
-const UNION_CLOSES = "export type Event = DispatchEvent;";
+const UNION_CLOSES = 'export type EventType = DispatchEvent["type"];';
 
 /** The `DispatchEvent` union itself, so the payload set below is read from the members rather
  *  than from anything that merely mentions a payload. */
@@ -162,6 +173,18 @@ describe("every event payload is z.output of its own schema", () => {
       const declarations = SOURCES.match(
         new RegExp(String.raw`export (?:type|interface) ${name}\b`, "g")
       );
+      if (TABLE_PAYLOAD_TYPES.includes(name)) {
+        expect(declarations, `${name} is the route table's, declared nowhere here`).toBe(null);
+        expect(
+          collapsed("dispatch-api-events.ts"),
+          `${name} is imported from the generated module`
+        ).toMatch(
+          new RegExp(
+            String.raw`import type \{[^}]*\b${name}\b[^}]*\} from "\./dispatch-api\.generated";`
+          )
+        );
+        return;
+      }
       expect(declarations, `${name} is declared once`).toHaveLength(1);
       const derivation = String.raw`export type ${name} = z\.output< ?typeof (Written)?${name}Schema ?>;`;
       const derived = SOURCES.match(new RegExp(derivation));

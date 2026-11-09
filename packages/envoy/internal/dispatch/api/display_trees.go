@@ -145,9 +145,11 @@ type askEditRead struct {
 	Previous askEditPreviousRead `json:"previous"`
 }
 
-// askRead is an ask as the dashboard reads it: the ask, with the trees of its question, of each
-// option, of its answer's text and of its resolution's reason.
-type askRead struct {
+// shapedAsk is an ask as the dashboard reads it: the ask, with the trees of its question, of
+// each option, of its answer's text and of its resolution's reason. It is not called askRead,
+// which is main's own name for the body GET /api/v1/asks/{id} answers (asks.go), exactly as
+// shapedMessage is not called messageRead.
+type shapedAsk struct {
 	model.Ask
 	QuestionTree json.RawMessage          `json:"question_tree,omitempty"`
 	Options      []askOptionRead          `json:"options"`
@@ -160,7 +162,7 @@ type askRead struct {
 // read, the event path and the background fill of the trees all make, and treeField says where
 // each of them lands here: a text the walk gains that this shape has no field for is registered
 // nowhere, which is what the agreement test refuses (ask_texts_test.go).
-func (a *askRead) shape(reader *displayTreeReader) {
+func (a *shapedAsk) shape(reader *displayTreeReader) {
 	a.Options = askOptionReads(a.Ask.Options)
 	a.Answer = askAnswerWithTree(a.Ask.Answer)
 	a.Resolution = nil
@@ -172,7 +174,7 @@ func (a *askRead) shape(reader *displayTreeReader) {
 
 // treeField is the field of this read that carries the tree of text, and nil for a text this
 // read shows nowhere.
-func (a *askRead) treeField(text texttrees.AskText) *json.RawMessage {
+func (a *shapedAsk) treeField(text texttrees.AskText) *json.RawMessage {
 	switch text.Field {
 	case texttrees.AskQuestionText:
 		return &a.QuestionTree
@@ -240,21 +242,21 @@ func askOptionReads(options []model.AskOption) []askOptionRead {
 	return reads
 }
 
-// newAskRead is one ask shaped for a response of its own: a write's answer, which reads its
-// texts where they stand (shapeBuilt). A read of several asks shapes them through askReads, over
-// the request's own reader.
-func newAskRead(ask model.Ask, trees bool) askRead {
-	read := askRead{Ask: ask}
+// newShapedAsk is one ask shaped for a response of its own: a write's answer, which reads its
+// texts where they stand (shapeBuilt). A read of several asks shapes them through shapedAsks,
+// over the request's own reader.
+func newShapedAsk(ask model.Ask, trees bool) shapedAsk {
+	read := shapedAsk{Ask: ask}
 	shapeBuilt(trees, read.shape)
 	return read
 }
 
-// askReads is a list of asks shaped for the dashboard, an absent list staying absent.
-func askReads(asks []model.Ask, reader *displayTreeReader) []askRead {
+// shapedAsks is a list of asks shaped for the dashboard, an absent list staying absent.
+func shapedAsks(asks []model.Ask, reader *displayTreeReader) []shapedAsk {
 	if asks == nil {
 		return nil
 	}
-	reads := make([]askRead, len(asks))
+	reads := make([]shapedAsk, len(asks))
 	for index := range asks {
 		reads[index].Ask = asks[index]
 		reads[index].shape(reader)
@@ -318,9 +320,10 @@ func newReplyBlockRead(block *model.ReplyBlock, reader *displayTreeReader) *repl
 	return read
 }
 
-// commentRead is a comment as the dashboard reads it: the comment, the tree of its body, and the
-// block it answers carrying the tree of that block's excerpt.
-type commentRead struct {
+// shapedComment is a comment as the dashboard reads it: the comment, the tree of its body, and
+// the block it answers carrying the tree of that block's excerpt. It is named as shapedMessage
+// is, and for the same reason: commentRead is the body GET /api/v1/comments/{id} answers.
+type shapedComment struct {
 	model.Comment
 	BodyTree   json.RawMessage `json:"body_tree,omitempty"`
 	ReplyBlock *replyBlockRead `json:"reply_block"`
@@ -328,25 +331,25 @@ type commentRead struct {
 
 // shape rebuilds the shadowing fields from the comment and registers its texts with the
 // request's reader.
-func (c *commentRead) shape(reader *displayTreeReader) {
+func (c *shapedComment) shape(reader *displayTreeReader) {
 	c.ReplyBlock = newReplyBlockRead(c.Comment.ReplyBlock, reader)
 	reader.text(&c.BodyTree, c.Comment.Body)
 }
 
-// newCommentRead is one comment shaped for a response of its own, its texts read where they
+// newShapedComment is one comment shaped for a response of its own, its texts read where they
 // stand (shapeBuilt).
-func newCommentRead(comment model.Comment, trees bool) commentRead {
-	read := commentRead{Comment: comment}
+func newShapedComment(comment model.Comment, trees bool) shapedComment {
+	read := shapedComment{Comment: comment}
 	shapeBuilt(trees, read.shape)
 	return read
 }
 
-// commentReads is a list of comments shaped for the dashboard, an absent list staying absent.
-func commentReads(comments []model.Comment, reader *displayTreeReader) []commentRead {
+// shapedComments is a list of comments shaped for the dashboard, an absent list staying absent.
+func shapedComments(comments []model.Comment, reader *displayTreeReader) []shapedComment {
 	if comments == nil {
 		return nil
 	}
-	reads := make([]commentRead, len(comments))
+	reads := make([]shapedComment, len(comments))
 	for index := range comments {
 		reads[index].Comment = comments[index]
 		reads[index].shape(reader)
@@ -512,7 +515,7 @@ type architectureTreeRead struct {
 // newAskAnswerWithTree is an answer a read gives with the tree of its text, nil where nobody
 // answered. A search hit's ask and a person's answer history both read one. An ask read shapes
 // its own answer through askAnswerWithTree instead and registers that text with the rest of the
-// ask's (askRead.shape), so the one walk names every text of an ask exactly once.
+// ask's (shapedAsk.shape), so the one walk names every text of an ask exactly once.
 func newAskAnswerWithTree(answer *model.AskAnswer, reader *displayTreeReader) *model.AskAnswerWithTree {
 	read := askAnswerWithTree(answer)
 	if read != nil {

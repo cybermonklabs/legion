@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ReplyBlock, ReplyBlockRead } from "./dispatch-api.generated";
 import type { DisplayTree } from "./dispatch-api-core";
 
 /**
@@ -111,13 +112,9 @@ export const replyBlockFields = {
  *  whether its item's current revision no longer holds it. */
 export const WrittenReplyBlockSchema = z.strictObject(replyBlockFields).readonly();
 
-export type ReplyBlock = z.output<typeof WrittenReplyBlockSchema>;
-
 /** The block a reply answers, as the web app reads it: with the display tree of the excerpt it
  *  stored. */
-export type ReplyBlockWithTrees = ReplyBlock & {
-  readonly text_tree?: DisplayTree;
-};
+export type ReplyBlockWithTrees = ReplyBlockRead;
 
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).
  *  An event recorded before the field, or by a Dispatch older than it, carries none. A bus frame

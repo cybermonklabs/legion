@@ -1,15 +1,12 @@
 import { z } from "zod";
-import {
-  type Actor,
-  ActorSchema,
-  type DisplayTree,
-  type ExternalLink,
-  ExternalLinkSchema,
-} from "./dispatch-api-core";
-import type { Artifact } from "./dispatch-api-documents";
+import type {
+  ArchitectureTree,
+  ArchitectureTreeComponent,
+  IssueCollaboratorPerson,
+} from "./dispatch-api.generated";
+import { ActorSchema, type DisplayTree, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
-import type { LegionRole } from "./legion-roles";
 
 /**
  * The issue: the row, what resolves on each read of it, and the payloads of every `issue.*` and
@@ -46,20 +43,6 @@ export const IssueComponentsSchema = z
   })
   .readonly();
 
-export type IssueComponents = z.output<typeof IssueComponentsSchema>;
-
-/**
- * The `components` field of an issue write. `inherit` deletes the issue's own attachment
- * (back to its ancestors'); `explicit` replaces it with `ids`, bare component ids of the
- * issue's project that are not external; `none` records `reason` the issue is not
- * architectural.
- */
-export interface IssueComponentsInput {
-  readonly mode: IssueComponentsMode;
-  readonly ids?: string[];
-  readonly reason?: string;
-}
-
 /**
  * The session (or human) working an issue: who claimed it and when. At most one claim exists
  * at a time, and it is not the issue's `route` (where messages go) or its `assignee` (the
@@ -73,8 +56,6 @@ export const IssueClaimSchema = z
     at: z.string(),
   })
   .readonly();
-
-export type IssueClaim = z.output<typeof IssueClaimSchema>;
 
 /**
  * How long an issue claim is held for a holder the Envoy registry calls `unresponsive`: a
@@ -124,31 +105,6 @@ export interface IssueClaimLiveness {
   readonly takeable_at: string | null;
 }
 
-/** Done of total: the task items of a spec, or the direct children of an issue; `done` ≤ `total`. */
-export interface ProgressCount {
-  readonly done: number;
-  readonly total: number;
-}
-
-/**
- * An issue's progress, counted as GitHub counts an issue's. `tasks` is the task-list items
- * (`- [ ]` / `- [x]`, nested lists and callouts included) of the issue's primary document as its
- * latest version renders, stored on the issue whenever a version of that document is written and
- * `null` when it holds none. It is also `null` for a spec the server has not counted yet, which
- * the reconciliation the server runs at start and every five minutes closes, so an uncounted
- * window lasts at most that long after a deploy. Counts follow the document's versions: a browser
- * edit shows once it settles, within seconds. `children` is the issue's direct children, every
- * status (icebox included), `done` being those whose status is `done`, computed from the
- * children's statuses on each read and `null` when it has none; it is a count, where
- * `IssueDetails.children` beside it on the same object is the list of child issues. It is on
- * every issue of the read, the list and the pinned list, never on an event payload. The check-in
- * collector reads `tasks` and `children` here, so the shape is a contract.
- */
-export interface IssueProgress {
-  readonly tasks: ProgressCount | null;
-  readonly children: ProgressCount | null;
-}
-
 export const issueFields = {
   key: z.string(),
   project: z.string(),
@@ -191,8 +147,6 @@ export const issueFields = {
 
 export const IssueSchema = z.strictObject(issueFields).readonly();
 
-export type Issue = z.output<typeof IssueSchema>;
-
 /**
  * Whether an issue's route reaches a running session right now: `live` when a live session
  * holds the role or the routed session is live, `no_holder` when nobody live holds the role (it
@@ -222,302 +176,17 @@ export interface IssueRouteReach {
   readonly route_status_reason: IssueRouteStatusReason | null;
 }
 
-/**
- * What both claim routes answer: the issue, flat, with whether the Legion daemon owns its
- * status. `legion_managed_status` is true when the issue carries the `legion` label in any case,
- * or sits under an issue that does; on such an issue only the Legion daemon writes the status,
- * and a status anyone else sets is undone. It is resolved on read from the issue's labels and
- * its parents', stored nowhere, and never on an event payload, which is why it is not a field of
- * `Issue`.
- */
-export interface ClaimedIssue extends Issue {
-  /**
-   * Absent when the server did not answer it: a Dispatch older than the field, or a label walk
-   * that failed (the claim still stands). A client reads an absent field as not Legion-managed,
-   * which is what every client said before the field existed.
-   */
-  readonly legion_managed_status?: boolean;
-}
-
-export interface IssueSummary
-  extends Pick<
-      Issue,
-      | "key"
-      | "title"
-      | "status"
-      | "priority"
-      | "rank"
-      | "parent"
-      | "blocked_by"
-      | "assignee"
-      | "claim"
-      | "components"
-      | "route"
-      | "repo"
-      | "resolved_repo"
-      | "updated_at"
-      | "last_seq"
-      | "primary_artifact_id"
-    >,
-    IssueRouteReach {
-  readonly labels?: string[];
-  readonly open_asks: number;
-  readonly progress: IssueProgress;
-}
-
-/**
- * `GET /api/v1/issues?limit=&offset=`: one page of the filtered listing in its order, with `total`,
- * how many issues the filters matched, and the `limit` and `offset` that chose the page. Without
- * either parameter the route answers the plain `IssueSummary[]`.
- */
-export interface IssueSummaryPage {
-  readonly issues: IssueSummary[];
-  readonly total: number;
-  readonly limit: number;
-  readonly offset: number;
-}
-
-/** What each requirement of an issue's spec lacks, from `GET /api/v1/issues/{key}/coverage`. A
- *  requirement is a `requirement` block of the spec; it has a check when a `check` block of any
- *  document of that issue or of any descendant issue, at any status, names it in `serves`, and a
- *  plan task when a `plan_task` block of that set does. Nothing is ever refused for a gap. */
-export interface IssueCoverage {
-  readonly issue: string;
-  /** The issue's spec document, `""` for an issue that has none. */
-  readonly spec_artifact_id: string;
-  /** Whether the issue has a plan document. Before it has one, a requirement with no plan task
-   *  is no gap. */
-  readonly has_plan: boolean;
-  readonly requirements: readonly RequirementCoverage[];
-  /** One line per gap, `<block id> has no check` and `<block id> has no plan task`, or the
-   *  single line `the spec marks no requirements` for a spec that marks none. */
-  readonly gaps: readonly string[];
-}
-
-/** One `requirement` block of an issue's spec and what serves it. */
-export interface RequirementCoverage {
-  readonly block_id: string;
-  /** The block's reference, `dispatch://<KEY>/spec#b-<id>`. */
-  readonly ref: string;
-  /** The requirement's words, with every link and `dispatch://` reference dropped. */
-  readonly text: string;
-  readonly checks: number;
-  readonly plan_tasks: number;
-  /** This requirement's own gap lines, the ones `IssueCoverage.gaps` carries for it, so a
-   *  reader draws them beside the requirement without parsing the sentence back. */
-  readonly gaps: readonly string[];
-}
-
 /** Whether a recorded result still speaks for the work as it stands: `current` at the commit the
  *  work stands at and the words the result proved, `older` at an earlier commit or against words
  *  that have changed since, and `unknown` when the check's issue resolves to no repository or
  *  Dispatch's GitHub App cannot read it. */
 export type CheckResultCurrency = "current" | "older" | "unknown";
 
-/** One result recorded against a `check` block of an issue's Verification document.
- *  `issue_key` is the issue it was recorded on, which may be a descendant of `check_issue_key`,
- *  the issue whose Verification document holds the check. `check_version` and `check_sha256` are
- *  the block's version and digest when the result was recorded, so a reworded check makes its
- *  earlier results older. `currency` is computed when the results are read and is absent from
- *  the record's own answer. */
-export interface CheckResult {
-  readonly id: string;
-  readonly issue_key: string;
-  readonly check_issue_key: string;
-  readonly check_artifact_id: string;
-  readonly check_block_id: string;
-  readonly check_version: number;
-  readonly check_sha256: string;
-  readonly role: string;
-  readonly surface: string;
-  readonly run: string;
-  readonly observed: string;
-  readonly commit_sha: string;
-  readonly negative_control: string;
-  readonly failed: number;
-  readonly skipped: number;
-  readonly excluded: number;
-  readonly verdict: "pass" | "fail";
-  readonly screenshots: readonly string[];
-  readonly session: string;
-  readonly actor: Actor;
-  readonly created_at: string;
-  readonly event_seq?: number;
-  readonly currency?: CheckResultCurrency;
-}
-
 /** When a check runs: before the merge, after it, or against the default branch. The closed
  *  enum `pmdoc/schema/blocks.json` declares under the `when` attribute's `choices`. */
 export const CheckWhenSchema = z.enum(["before_merge", "after_merge", "default_branch"]);
 
 export type CheckWhen = z.output<typeof CheckWhenSchema>;
-
-/** One `check` block of a Verification document with every result recorded against it, newest
- *  first: `created_at` descending — the time the recording transaction began — with `id`
- *  descending breaking a tie. Two results recorded in transactions that overlapped can come
- *  back in either order. */
-export interface CheckBlock {
-  readonly block_id: string;
-  readonly ref: string;
-  readonly issue_key: string;
-  readonly artifact_id: string;
-  readonly text: string;
-  readonly when: CheckWhen;
-  readonly surface: string;
-  readonly run: string;
-  readonly negative_control: string;
-  readonly version: number;
-  readonly sha256: string;
-  readonly results: readonly CheckResult[];
-}
-
-/** `GET /api/v1/issues/{key}/results`: the issue's Verification document and its checks in
- *  document order, each check's results newest first, by `created_at` descending — the time the
- *  recording transaction began — with `id` descending breaking a tie; a client that reads one
- *  result per check reads `results[0]`, which is what `dispatch results` prints. Two results
- *  recorded in transactions that overlapped can come back in either order. An issue with no
- *  Verification document answers no checks. */
-export interface IssueCheckResults {
-  readonly issue: string;
-  /** The issue's Verification document, `""` for an issue that has none. */
-  readonly verification_artifact_id: string;
-  readonly checks: readonly CheckBlock[];
-}
-
-/** `POST /api/v1/issues/{key}/results`: the stored result and the pull-request body line it
- *  implies, which Dispatch writes so every writer writes one grammar and which carries no link
- *  to Dispatch. */
-export interface CheckResultRecorded {
-  readonly result: CheckResult;
-  readonly line: string;
-}
-
-/** What `POST /api/v1/issues/{key}/results` takes. Absent counts are 0; a `pass` counting any of
- *  them is refused `400 RESULT_CONTRADICTS`. `commit` is 40 lowercase hex; one the repository of
- *  the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and
- *  that `owner/repo`, while a repository Dispatch cannot read stores the result as before. */
-export interface RecordCheckResultInput {
-  readonly actor?: Actor;
-  readonly check: string;
-  readonly role: string;
-  readonly verdict: "pass" | "fail";
-  readonly commit: string;
-  readonly surface?: string;
-  readonly run?: string;
-  readonly observed?: string;
-  readonly negative_control?: string;
-  readonly failed?: number;
-  readonly skipped?: number;
-  readonly excluded?: number;
-  readonly screenshots?: readonly string[];
-}
-
-/**
- * One artifact of an `IssueReferenceSummary`: what a reference to an issue's document shows.
- * `latest_version` is its greatest version number, null only for an artifact with no version,
- * which no committed write leaves. `primary` marks the issue's spec, the document a reference to
- * a block of the spec (`dispatch://<issue>/spec#b-…`) names.
- */
-export interface IssueReferenceSummaryDocument {
-  readonly id: string;
-  readonly slug: string;
-  readonly name: string;
-  readonly kind: Artifact["kind"];
-  readonly latest_version: number | null;
-  readonly primary: boolean;
-}
-
-/**
- * `GET /api/v1/issues/{key}/summary`: what a reference to an issue shows, read without the full
- * issue (`IssueDetails`). `documents` is every artifact of the issue, in the order the full read
- * lists its `artifacts`, so an issue reference and its documents' references share one read.
- * 404 `NOT_FOUND` for no such issue.
- */
-export interface IssueReferenceSummary {
-  readonly key: string;
-  readonly project: string;
-  readonly title: string;
-  readonly status: string;
-  readonly documents: IssueReferenceSummaryDocument[];
-}
-
-/**
- * `GET /api/v1/projects/{key}/artifacts/{slug}/summary`: what a reference to a project document
- * shows, read without its versions. The slug or unambiguous filename resolves as the project
- * document read resolves it (404 `ARTIFACT_NOT_FOUND`, 400 `ARTIFACT_REFERENCE_AMBIGUOUS`).
- */
-export interface DocumentReferenceSummary extends Omit<IssueReferenceSummaryDocument, "primary"> {
-  readonly project: string;
-}
-
-export interface IssueChild {
-  readonly key: string;
-  readonly title: string;
-  readonly status: string;
-  /** Issues in the child's subtree (itself included, every status) with status `done`. */
-  readonly subtree_done: number;
-  /** Issues in the child's subtree, the child itself included. */
-  readonly subtree_total: number;
-  /** The newest `updated_at` anywhere in the child's subtree (RFC3339). */
-  readonly active_at: string;
-  readonly external_links: ExternalLink[];
-}
-
-/**
- * GET /api/v1/projects/{key}/architecture: the project's component model, every source's
- * components together, with the work attached to it. Counting rule: a component counts every
- * distinct issue whose effective set names it or any component it contains (transitively over
- * `parent`), parents and icebox included, each once; `own_*` keeps only the issues naming this
- * component itself. History is not served.
- */
-export interface ArchitectureTree {
-  /** Each source's sync bookkeeping, in the order the project added its sources. */
-  readonly sources: ArchitectureTreeSource[];
-  readonly totals: ArchitectureTreeTotals;
-  readonly components: ArchitectureTreeComponent[];
-  /** Issues no ancestor chain attached. */
-  readonly unassigned: ArchitectureTreeIssueRef[];
-  /** Issues resolving to a `none` row, their own or an ancestor's. */
-  readonly not_architectural: ArchitectureTreeNone[];
-  /** Issues whose effective set names components a re-import retired. */
-  readonly retired_links: ArchitectureTreeRetired[];
-}
-
-export interface ArchitectureTreeSource {
-  readonly repo: string;
-  readonly branch: string;
-  readonly last_commit: string | null;
-  readonly last_sync_at: string | null;
-  readonly last_error: string | null;
-}
-
-export interface ArchitectureTreeTotals {
-  /** Every filed issue in the project, icebox and closed included. */
-  readonly issues_done: number;
-  readonly issues_total: number;
-  readonly unassigned: number;
-  readonly not_architectural: number;
-  /** Non-external components whose `total` is 0. */
-  readonly components_without_work: number;
-  readonly retired_links: number;
-}
-
-export interface ArchitectureTreeComponent {
-  readonly id: string;
-  /** The repository of the source whose files define this component. */
-  readonly source: string;
-  readonly title: string;
-  readonly parent: string | null;
-  readonly depends_on: string[];
-  readonly paths: string[];
-  readonly external: boolean;
-  readonly prose: string;
-  readonly done: number;
-  readonly total: number;
-  readonly own_done: number;
-  readonly own_total: number;
-  readonly issues: ArchitectureTreeIssue[];
-}
 
 /** One component as the web app reads it, with the tree of the prose its source's files declare
  *  it with. The component itself is the shared row of the model, and gains no field; a tree
@@ -529,97 +198,17 @@ export type ArchitectureTreeComponentWithTrees = ArchitectureTreeComponent & {
 /** The project's component model as the web app reads it: the tree, with every component
  *  carrying that tree. The side lists name issues and carry no prose. */
 export type ArchitectureTreeWithTrees = Omit<ArchitectureTree, "components"> & {
-  readonly components: ArchitectureTreeComponentWithTrees[];
+  readonly components: ArchitectureTreeComponentWithTrees[] | null;
 };
 
 /** How an issue counts for a component; the strongest wins when several apply. */
 export type ArchitectureTreeAttachment = "direct" | "inherited" | "contained";
 
-export interface ArchitectureTreeIssue {
-  readonly key: string;
-  readonly title: string;
-  readonly status: string;
-  readonly priority: IssuePriority | null;
-  readonly parent: string | null;
-  readonly external_links: ExternalLink[];
-  readonly updated_at: string;
-  readonly attached: ArchitectureTreeAttachment;
-  /** For `contained`: the descendant component the issue's set names. */
-  readonly via?: string;
-}
-
-export interface ArchitectureTreeIssueRef {
-  readonly key: string;
-  readonly title: string;
-  readonly status: string;
-}
-
-export interface ArchitectureTreeNone extends ArchitectureTreeIssueRef {
-  readonly reason: string;
-  readonly inherited_from: string | null;
-}
-
-export interface ArchitectureTreeRetired extends ArchitectureTreeIssueRef {
-  readonly ids: string[];
-}
-
-/** One way a collaborator worked an issue, in the order `reasons` lists them. */
-export type CollaboratorReason = "assignee" | "claimed" | "posted" | "answered";
-
-/**
- * A person on `GET /api/v1/issues/{key}/collaborators`, one per lowercase login. `last_at` is the
- * newest event that made them a collaborator; null for an assignee who did nothing else on it.
- */
-export interface IssueCollaboratorPerson {
-  readonly kind: "user";
-  readonly login: string;
-  readonly reasons: readonly CollaboratorReason[];
-  readonly last_at: string | null;
-}
-
-/**
- * The Legion agent registry's entry for a collaborator session. `replaced_by`/`replaced_at` name
- * the next session of the same role token and its start; null for the role's newest session.
- */
-export interface IssueCollaboratorLegion {
-  readonly role: LegionRole;
-  readonly role_token: string;
-  readonly started_at: string;
-  readonly replaced_by: string | null;
-  readonly replaced_at: string | null;
-}
-
-/**
- * An agent session on `GET /api/v1/issues/{key}/collaborators`, one per session id. It carries no
- * running state: a reader takes that from the live agents registry. `title` is the registry
- * entry's title, else the title on the session's newest event, null when that event carries none;
- * `reasons` is empty and `last_at` null for a registry entry with no event on the issue; `legion`
- * is null for a session the registry does not record for the issue, or when it did not answer.
- */
-export interface IssueCollaboratorAgent {
-  readonly kind: "session";
-  readonly session_id: string;
-  readonly title: string | null;
-  readonly reasons: readonly CollaboratorReason[];
-  readonly last_at: string | null;
-  readonly legion: IssueCollaboratorLegion | null;
-}
-
-/**
- * `GET /api/v1/issues/{key}/collaborators`: everyone who worked an issue, running or not. `people`
- * are the assignee and everyone who claimed it, posted on it or its documents, or answered one of
- * its asks, newest first; `agents` are those writers that are sessions (the Legion daemon's own
- * `legion-daemon:<PROJECT>` writer left out) merged with the listener's Legion agent registry
- * entries for the issue, the registry's first in its order (by role in workflow order, then
- * newest first), then the rest newest first. `legion_registry` is `"unavailable"` when the
- * listener did not answer; `agents` then holds only the sessions the issue's events name.
- */
-export interface IssueCollaborators {
-  readonly issue_key: string;
-  readonly people: readonly IssueCollaboratorPerson[];
-  readonly agents: readonly IssueCollaboratorAgent[];
-  readonly legion_registry: "ok" | "unavailable";
-}
+/** One way a collaborator worked an issue, in the order `reasons` lists them. The reason set is
+ *  the handler's own (`issue_collaborators.go`'s `collaboratorReasons`), so the document carries
+ *  it as a closed union on each `reasons` array rather than as a schema of its own; this
+ *  projects one element of that array, which is the name a consumer imports. */
+export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>[number];
 
 /** What an `issue.created`, `issue.updated` or `issue.closed` write changed, read in its own
  *  transaction. Each field is absent from every other `issue.*` type and from an event written

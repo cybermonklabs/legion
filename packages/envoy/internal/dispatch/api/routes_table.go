@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -470,25 +472,31 @@ var routeScopes = map[string]routeScopeSet{
 	"DELETE /api/v1/me/agent-tokens/{id}":             {model.ScopePerson, model.ScopeApprove},
 }
 
-// scopedRoutesNotMounted names every route routeScopes gives scopes that the table does not
-// hold. A scope named on no row is a scope nothing enforces, which is what register refuses to
-// mount, as it refuses a write class it cannot decide (undecidableWrites). The walk is over the
-// table with its test hooks in, since a hook's row is a row of the table wherever a deployment
-// leaves it out, and its scope says what it needs when the deployment serves it.
-func scopedRoutesNotMounted() []string {
+// routesNotMounted names every route of names that is no row of the table, sorted. The walk is
+// over the table with its test hooks in, since a hook's row is a row of the table wherever a
+// deployment leaves it out.
+func routesNotMounted(names iter.Seq[string]) []string {
 	table := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	mounted := make(map[string]bool, len(table))
 	for _, route := range table {
 		mounted[route.Method+" "+route.Pattern] = true
 	}
 	var unmounted []string
-	for name := range routeScopes {
+	for name := range names {
 		if !mounted[name] {
 			unmounted = append(unmounted, name)
 		}
 	}
 	sort.Strings(unmounted)
 	return unmounted
+}
+
+// scopedRoutesNotMounted names every route routeScopes gives scopes that the table does not
+// hold. A scope named on no row is a scope nothing enforces, which is what register refuses to
+// mount, as it refuses a write class it cannot decide (undecidableWrites). Its scope says what
+// a row needs when the deployment serves it, test hooks included.
+func scopedRoutesNotMounted() []string {
+	return routesNotMounted(maps.Keys(routeScopes))
 }
 
 // routeRow is a row as the table writes it: the five columns every route has, written as a
@@ -506,7 +514,8 @@ type routeRow struct {
 // GET /api/v1 lists it, so the two can never disagree about what the server serves. Every
 // mutating row carries a Scope, and a GET row carries none (project_scope.go); OAuthScopes is
 // empty on every row any authenticated caller may reach; the row's own five columns are read
-// through it by promotion.
+// through it by promotion. What the route takes and answers is routeShapes', which only the
+// OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
@@ -591,7 +600,7 @@ func (s *server) routes() []apiRoute {
 		{http.MethodDelete, "/api/v1/issues/{key}/subscribers/{session_id}", authAny, "Unsubscribe a session from an issue.", s.unsubscribeIssueSession},
 		{http.MethodGet, "/api/v1/issues/{key}/artifacts", authAny, "List an issue's documents and files.", s.listArtifacts},
 		{http.MethodPost, "/api/v1/issues/{key}/artifacts", authAny, fmt.Sprintf("Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over %d bytes; an upload under an existing artifact's name is never refused for its length.", maxNewArtifactKeyBytes), s.uploadArtifact},
-		{http.MethodGet, "/api/v1/issues/{key}/results", authAny, "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first; two results recorded in transactions that overlapped can come back in either order. Each result carries currency: current (its commit is the head of an open pull request attributed to the check's issue or the final head of a merged one, or, for an after_merge or default_branch check, a commit on the default branch of that issue's repository, and the check's words have not changed since), older, or unknown (the check's issue resolves to no repository, or Dispatch's GitHub App cannot read it). An issue with no Verification document answers no checks.", s.listCheckResults},
+		{http.MethodGet, "/api/v1/issues/{key}/results", authAny, "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first; two results recorded in transactions that overlapped can come back in either order. Each result carries currency: current (its commit is the head of an open pull request attributed to the check's issue or the final head of a merged one, or, for an after_merge check, a commit on the branch that issue's pull request merged into - the base branch of the newest merged pull request attributed to it - or on the repository's default branch, which answers alone where Dispatch holds no merge of that issue, or, for a default_branch check, a commit on the repository's default branch, whatever branch the pull request merged into, and the check's words have not changed since), older, or unknown (the check's issue resolves to no repository, Dispatch's GitHub App cannot read it, or a read of a branch failed and no branch carried the commit; a read GitHub refused on an after_merge check's base branch is the one exception - a 403 or 404, which a branch it no longer holds answers with - and says the commit is not on that branch, leaving the default branch to decide). An issue with no Verification document answers no checks.", s.listCheckResults},
 		{http.MethodPost, "/api/v1/issues/{key}/results", authAny, "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.", s.recordCheckResult},
 		{http.MethodGet, "/api/v1/issues/{key}/coverage", authAny, "What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector.", s.getIssueCoverage},
 		{http.MethodPost, "/api/v1/issues/{key}/messages", authAny, "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block.", s.createMessage},
@@ -754,9 +763,16 @@ func routeIndexEntries(routes []apiRoute) []routeIndexEntry {
 	return entries
 }
 
-// routeIndexBody is the body GET /api/v1 answers.
-func routeIndexBody(entries []routeIndexEntry) map[string]any {
-	return map[string]any{"routes": entries, "docs": routeIndexDocs}
+// routeIndex is the body GET /api/v1 answers.
+type routeIndex struct {
+	Docs   string            `json:"docs"`
+	Routes []routeIndexEntry `json:"routes"`
+}
+
+// routeIndexBody wraps the rendered rows in that body, which is the one place the agent-facing
+// guide is named on an answer.
+func routeIndexBody(entries []routeIndexEntry) routeIndex {
+	return routeIndex{Docs: routeIndexDocs, Routes: entries}
 }
 
 func (s *server) getRouteIndex(w http.ResponseWriter, _ *http.Request) {

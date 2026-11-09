@@ -100,8 +100,12 @@ func (target artifactTarget) refPrefix() string {
 }
 
 type jsonArtifactUpload struct {
-	Name    string          `json:"name"`
-	Content *string         `json:"content"`
+	Name string `json:"name" required:"true"`
+	// Content is required of a JSON upload, which is always a markdown document: a body with
+	// no content, or whose content is blank, is refused (400 ARTIFACT_INPUT, uploadArtifactFor).
+	// A multipart upload sends its bytes as the `file` part instead and carries no content at
+	// all, which is a body of its own (openAPIMultipartSchema).
+	Content *string         `json:"content" required:"true"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
 	Actor   *model.Actor    `json:"actor"`
@@ -172,6 +176,13 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		}
 		s.writeHandlerError(w, refusal)
 	}
+}
+
+// artifactUploadResponse is the body POST /api/v1/issues/{key}/artifacts,
+// POST /api/v1/projects/{key}/artifacts and POST /api/v1/agents/{session_id}/artifacts answer.
+type artifactUploadResponse struct {
+	Artifact model.Artifact `json:"artifact"`
+	Version  model.Version  `json:"version"`
 }
 
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
@@ -701,7 +712,7 @@ func (s *server) storeArtifact(
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
 	}
-	responsePayload := map[string]any{"artifact": artifact, "version": version}
+	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
 	if target.IssueKey != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
 	} else if blocks != nil || superseded != nil {
@@ -732,6 +743,18 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
+// artifactText is the body GET /api/v1/artifacts/{id}/text,
+// GET /api/v1/issues/{key}/artifacts/{slug}/text and
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer.
+type artifactText struct {
+	Markdown string `json:"markdown"`
+	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	MarkdownTree json.RawMessage `json:"markdown_tree,omitempty"`
+	Token        string          `json:"token"`
+	Version      *int            `json:"version"`
+}
+
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -759,7 +782,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer := map[string]any{"markdown": markdown, "version": version, "token": token}
+	answer := artifactText{Markdown: markdown, Token: token, Version: version}
 	// The tree is built only for a caller that asked for one: the command line and the agent
 	// clients read this route for its markdown, and a tree they discard would cost them the
 	// read and evict from the cache what a browser is reading.
@@ -769,12 +792,8 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// this process has not served since it started copies those bytes.
 	if wantsDisplayTrees(r) {
 		reader := s.readDisplayTrees(r.Context(), true, artifact.ID)
-		var tree json.RawMessage
-		reader.text(&tree, markdown)
+		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
-		if tree != nil {
-			answer["markdown_tree"] = tree
-		}
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
@@ -886,6 +905,16 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 	return references, nil
 }
 
+// artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
+// answers, on all three artifact patterns.
+type artifactVersionText struct {
+	Markdown string `json:"markdown"`
+	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	MarkdownTree json.RawMessage `json:"markdown_tree,omitempty"`
+	model.Version
+}
+
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -920,11 +949,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		// more often than it is written, which is what makes the first read's store worth its
 		// one statement.
 		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
-		answer := struct {
-			Markdown     string          `json:"markdown"`
-			MarkdownTree json.RawMessage `json:"markdown_tree,omitempty"`
-			model.Version
-		}{Markdown: markdown, Version: version}
+		answer := artifactVersionText{Markdown: markdown, Version: version}
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
@@ -976,14 +1001,18 @@ func (s *server) commitArtifactVersionEvent(
 	return event, nil
 }
 
+// createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
+// project artifact patterns.
+type createVersionInput struct {
+	Summary string       `json:"summary" required:"true"`
+	Actor   *model.Actor `json:"actor"`
+}
+
 func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Summary string       `json:"summary"`
-		Actor   *model.Actor `json:"actor"`
-	}
+	var input createVersionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1047,16 +1076,36 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, version)
 }
 
+// editArtifactInput is the body of POST /api/v1/artifacts/{id}/edits and its issue and project
+// artifact patterns.
+type editArtifactInput struct {
+	Ops          []model.EditOp          `json:"ops"`
+	Summary      string                  `json:"summary"`
+	Precondition *model.EditPrecondition `json:"precondition"`
+	Actor        *model.Actor            `json:"actor"`
+}
+
+// editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
+// artifact patterns answer.
+type editArtifactResponse struct {
+	Applied int  `json:"applied"`
+	Changed bool `json:"changed"`
+	// LostOps are which operations the live document did not hold once this write reached it: a
+	// concurrent change that landed after the version was rendered and before the publish is
+	// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
+	// check reached no verdict - the publish failed and the room is reloading, or the room
+	// holds a tree too deep to read - which is not the same statement as the empty list.
+	LostOps      []int          `json:"lost_ops"`
+	Token        string         `json:"token"`
+	UnchangedOps []int          `json:"unchanged_ops"`
+	Version      *model.Version `json:"version"`
+}
+
 func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Ops          []model.EditOp          `json:"ops"`
-		Summary      string                  `json:"summary"`
-		Precondition *model.EditPrecondition `json:"precondition"`
-		Actor        *model.Actor            `json:"actor"`
-	}
+	var input editArtifactInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1178,18 +1227,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if unchanged == nil {
 		unchanged = []int{}
 	}
-	responsePayload := map[string]any{
-		"applied":       edit.Applied,
-		"version":       version,
-		"changed":       edit.Changed,
-		"unchanged_ops": unchanged,
-		// Which operations the live document did not hold once this write reached it: a
-		// concurrent change that landed after the version was rendered and before the publish is
-		// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
-		// check reached no verdict - the publish failed and the room is reloading, or the room
-		// holds a tree too deep to read - which is not the same statement as the empty list.
-		"lost_ops": lostOps(ledger, artifact.ID),
-		"token":    edit.Token,
+	responsePayload := editArtifactResponse{
+		Applied:      edit.Applied,
+		Changed:      edit.Changed,
+		LostOps:      lostOps(ledger, artifact.ID),
+		Token:        edit.Token,
+		UnchangedOps: unchanged,
+		Version:      version,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // upgradePath is the path these rows upgrade at: the stand-in service answers an upgrade
@@ -593,17 +594,14 @@ func (c *heldConn) waitReturned(t *testing.T, read int) {
 
 // copySink stands for the service at the far end of a join: it holds every byte the copy from
 // the command carried to it, and signals each write, so a row waits for a frame to arrive
-// rather than sleeping for the time one takes.
+// rather than sleeping for the time one takes. The bytes it holds are logtest.Buffer's.
 type copySink struct {
-	mu      sync.Mutex
-	carried []byte
-	writes  chan struct{}
+	logtest.Buffer
+	writes chan struct{}
 }
 
 func (s *copySink) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	s.carried = append(s.carried, p...)
-	s.mu.Unlock()
+	n, err := s.Buffer.Write(p)
 	// A signal nobody is waiting for is dropped, since the waiter below reads what the
 	// service holds before it waits at all: a drop happens only while signals are already
 	// queued, and each of those wakes that read again.
@@ -611,15 +609,13 @@ func (s *copySink) Write(p []byte) (int, error) {
 	case s.writes <- struct{}{}:
 	default:
 	}
-	return len(p), nil
+	return n, err
 }
 
 // read is every byte the service has been carried so far, which a row reads while the copy to
 // it is still running.
 func (s *copySink) read() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return string(s.carried)
+	return s.String()
 }
 
 // waitFor waits until the service holds want, woken by the copy's own writes.

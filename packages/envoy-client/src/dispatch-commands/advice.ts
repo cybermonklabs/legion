@@ -1,4 +1,4 @@
-import type { WriteAdvice } from "@legion/contracts";
+import type { DocumentWriteAdvice, WriteAdvice } from "@legion/contracts";
 import { messageFor } from "../errors";
 
 const triageAdviceShown = new Set<string>();
@@ -15,7 +15,7 @@ export function adviceMemory(): Set<string> {
 export function renderAdvice(
   tool: string,
   key: string,
-  advice: WriteAdvice | undefined,
+  advice: WriteAdvice | DocumentWriteAdvice | undefined,
   opts: {
     isAskReply?: boolean;
     isPrimarySpec?: boolean;
@@ -25,9 +25,14 @@ export function renderAdvice(
 ): string[] {
   if (advice === undefined) return [];
 
-  const hasIssueAdvice = advice.issue_status !== undefined;
-  const openAsks = advice.your_open_asks;
-  const writesSinceHuman = advice.session_writes_since_human;
+  // A project document stands under no issue, so its write's advice carries the document half
+  // alone (DocumentWriteAdvice): no status, no writes-since-human count and no open-ask list.
+  // Every line below that reports the issue reads them through `issueAdvice`, which is that
+  // half only when the server sent it.
+  const issueAdvice: WriteAdvice | undefined = "issue_status" in advice ? advice : undefined;
+  const hasIssueAdvice = issueAdvice !== undefined;
+  const openAsks = issueAdvice?.your_open_asks ?? undefined;
+  const writesSinceHuman = issueAdvice?.session_writes_since_human;
   const lines: string[] = [];
   const unparsed = advice.unparsed_openers;
   if (
@@ -35,7 +40,7 @@ export function renderAdvice(
     unparsed.count > 0 &&
     (tool === "dispatch_issue" || tool === "dispatch_artifact")
   ) {
-    const quoted = unparsed.examples.map((example) => JSON.stringify(example)).join(", ");
+    const quoted = (unparsed.examples ?? []).map((example) => JSON.stringify(example)).join(", ");
     const subject =
       unparsed.count === 1
         ? "1 typed-block opening in this document is text, not a block"
@@ -59,8 +64,8 @@ export function renderAdvice(
   // asks it to do the one thing the daemon undoes. The memo is marked inside the block, so a key
   // whose line was never printed can still be told later if it leaves Legion's hands.
   if (
-    advice.issue_status === "triage" &&
-    advice.legion_managed_status !== true &&
+    issueAdvice?.issue_status === "triage" &&
+    issueAdvice.legion_managed_status !== true &&
     tool !== "dispatch_issue" &&
     !(tool === "dispatch_issue_update" && opts.setsStatus === true) &&
     !triageAdviceShown.has(key)

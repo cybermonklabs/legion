@@ -1,13 +1,6 @@
 import { z } from "zod";
-import type { BlockAttributeKind } from "./block-schema.generated";
-import {
-  type Actor,
-  ActorSchema,
-  type BlockEmbedding,
-  type DisplayTree,
-  type DocEditOp,
-  InboundWriterSchema,
-} from "./dispatch-api-core";
+import type { ArtifactApprovalRead, ArtifactRead } from "./dispatch-api.generated";
+import { ActorSchema, type DisplayTree, InboundWriterSchema } from "./dispatch-api-core";
 import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields } from "./dispatch-api-refs";
 
@@ -33,10 +26,6 @@ export const versionFields = {
 };
 
 export const VersionSchema = z.strictObject(versionFields).readonly();
-
-export type Version = z.output<typeof VersionSchema>;
-
-export type ArtifactReviewState = "approved" | "changes_requested";
 
 /** The part an issue's document plays beside its spec: `verification` for the document created
  *  as `verification.md`, `plan` for the one created as `plan.md`, `decisions` for the one
@@ -66,37 +55,6 @@ export const AskApprovalDocumentSchema = z
     requested_version: z.number().int(),
   })
   .readonly();
-
-export type AskApprovalDocument = z.output<typeof AskApprovalDocumentSchema>;
-
-/** One human review of a document, pinned to the version it was given on. A review is given one
- *  of three ways: by answering an approval request (`ask_id` names the request), from the
- *  document header (`ask_id` null unless a request was open, which the header answers), or
- *  carried by Dispatch to a later version. A carry follows a human's answer to a decision block,
- *  when that answer is the whole change since the version he approved (`reason`: `Carried forward
- *  from the approval of version <N>: the answer to a decision block was the whole change since
- *  it.`), or a version whose text is byte for byte that of the version the document's newest
- *  review approved and whose every decision block is as its stored row has it (nobody decided one
- *  since), such as an accidental edit undone (`reason`: `Carried forward from the
- *  approval of version <N>: this version's text is that version's, unchanged.`). A carried review
- *  is `approved` in the approver's name, and its `ask_id` is null unless a request was open at the
- *  carry, which it answers `Approve` in his name. */
-export interface ArtifactReview {
-  readonly id: string;
-  readonly artifact_id: string;
-  readonly version: number;
-  readonly state: ArtifactReviewState;
-  readonly actor: Actor;
-  readonly reason: string | null;
-  /** The display tree of `reason`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly reason_tree?: DisplayTree;
-  readonly ask_id: string | null;
-  /** Who gave the review; absent from a Dispatch older than review kinds. */
-  readonly kind?: ArtifactReviewKind;
-  readonly created_at: string;
-  readonly content_sha256: string | null;
-  readonly content_sha256_source: "insert" | "backfill" | null;
-}
 
 /** The document's approval as of its latest version: `draft` has never been reviewed or
  *  requested; `awaiting` has an open approval ask; `approved` is approved at the latest version;
@@ -138,15 +96,11 @@ export const ArtifactApprovalSchema = z
   })
   .readonly();
 
-export type ArtifactApproval = z.output<typeof ArtifactApprovalSchema>;
-
 /** A document's approval as the web app reads it, with the tree of the reason its latest review
  *  gave. The approval itself is part of the artifact a message-bus payload carries
  *  (`WrittenArtifactCreatedEventPayloadSchema`) and gains no field; a tree rides on this reading
  *  of it, which every route that answers the dashboard serves. */
-export type ArtifactApprovalWithTrees = ArtifactApproval & {
-  readonly reason_tree?: DisplayTree;
-};
+export type ArtifactApprovalWithTrees = ArtifactApprovalRead;
 
 export const artifactFields = {
   id: z.string(),
@@ -155,8 +109,10 @@ export const artifactFields = {
   project: z.string(),
   /** The Envoy session whose conversation on the Agents page owns the artifact (a picture a person
    *  or the agent sent there), with `issue_key` null and `project` empty; null for an issue's or a
-   *  project's artifact. Absent from a Dispatch older than conversation-owned artifacts. */
-  session_id: z.string().nullable().optional(),
+   *  project's artifact. The route table states the key on every artifact it answers, so the
+   *  payload states it too: a reader tells "no session" from "an older Dispatch" by the value,
+   *  never by the key's absence. */
+  session_id: z.string().nullable(),
   /** `<issue key or project key>/<slug>`, or `agent/<session id>/<slug>` for a conversation's. */
   ref_key: z.string().optional(),
   slug: z.string(),
@@ -178,123 +134,10 @@ export const artifactFields = {
 
 export const ArtifactSchema = z.strictObject(artifactFields).readonly();
 
-export type Artifact = z.output<typeof ArtifactSchema>;
-
 /** A document as the web app reads it: the artifact, its approval carrying the tree of that
  *  approval's reason. The tree is absent unless the request sent `Dispatch-Trees: 1`, so this
  *  reading is an `Artifact` wherever one is wanted. */
-export type ArtifactWithTrees = Omit<Artifact, "approval"> & {
-  readonly approval?: ArtifactApprovalWithTrees;
-};
-
-export interface ArtifactBlock {
-  readonly id: string;
-  readonly type: string;
-  readonly from: number;
-  readonly to: number;
-  /** Opaque SHA-256 token for this block's full Proof state, including inline marks, when served by a precondition-aware Dispatch server. */
-  readonly token?: string;
-  readonly references: {
-    readonly comments: number;
-    readonly asks: number;
-  };
-  /** A typed block's attributes in the order its type declares them, which is the order its
-   *  opening line writes them, each value unescaped and unquoted; absent on a block of no
-   *  declared type, on a typed block that carries none, and on every block from a Dispatch
-   *  server older than the listing. */
-  readonly attributes?: readonly BlockAttributeValue[];
-  /** A table block's rows and cells; absent on every other block, and on a table from a Dispatch
-   *  server older than the listing. */
-  readonly table?: BlockTable;
-  /** Where meaning search stands on the block (`BlockEmbedding`). Absent from a Dispatch older
-   *  than block windows. */
-  readonly embedding?: BlockEmbedding;
-}
-
-/** One attribute a typed block carries: the name its type declares it under, the value the
- *  block holds, and the kind the block schema declares that attribute (`BlockAttributeSchema`).
- *  A reader follows a `block[]` attribute's value as the block references it holds and reads
- *  every other kind as text, rather than taking a value for a pointer because it reads like
- *  one: a `check`'s `run` may quote a `dispatch://` URL. Absent from a Dispatch server older
- *  than the kinds, whose attributes say nothing about what they hold. */
-export interface BlockAttributeValue {
-  readonly name: string;
-  readonly value: string;
-  readonly kind?: BlockAttributeKind;
-}
-
-/** A table block's rows in child order, the header row first, each row and cell placed as
- *  `GET /api/v1/artifacts/{id}/blocks/{block_id}` places it, from the same live tree. */
-export interface BlockTable {
-  readonly rows: readonly BlockTableRow[];
-}
-
-/** One row of a table: its block id ("" for a row the live document has not stamped yet), its
- *  index among the table's rows (0 is the header row, the index `delete_row` takes) and its cells
- *  in child order. */
-export interface BlockTableRow {
-  readonly id: string;
-  readonly index: number;
-  readonly cells: readonly BlockTableCell[];
-}
-
-/** One cell of a table row: its block id ("" for a cell the live document has not stamped yet),
- *  its row index, its column (its index in its row, the index `delete_column` takes, so a cell
- *  spanning columns counts once), the opening words of the header cell drawn above it ("" where
- *  none is) and its own opening words. */
-export interface BlockTableCell {
-  readonly id: string;
-  readonly row: number;
-  readonly column: number;
-  readonly header: string;
-  readonly text: string;
-}
-
-/** An opaque SHA-256 token for one stable block's full Proof state, including inline marks. */
-export interface EditBlockPrecondition {
-  readonly id: string;
-  readonly token: string;
-}
-
-/** Select either an exact live document or the identified blocks an edit depends on. */
-export type EditPrecondition =
-  | { readonly document: string; readonly blocks?: never }
-  | { readonly document?: never; readonly blocks: readonly EditBlockPrecondition[] };
-
-export interface EditPreconditionMismatch {
-  readonly scope: "document" | "block";
-  readonly block_id?: string;
-  readonly expected: string;
-  /** Null when the expected block no longer exists. */
-  readonly current: string | null;
-}
-
-export interface EditPreconditionCurrent {
-  readonly document: string;
-  readonly blocks: readonly EditBlockPrecondition[];
-}
-
-export interface EditOp {
-  readonly op: DocEditOp;
-  readonly find?: string;
-  readonly with?: string;
-  readonly occurrence?: number;
-  readonly markdown?: string;
-  readonly after?: string;
-  readonly before?: string;
-  readonly block?: string;
-  readonly index?: number;
-  readonly type?: string;
-  readonly attributes?: Readonly<Record<string, unknown>>;
-}
-
-// DocumentRead is GET and PUT /api/v1/me/documents/{id}/read: one person's last read version of a
-// document, `version` and `read_at` null when they have read none.
-export interface DocumentRead {
-  readonly artifact_id: string;
-  readonly version: number | null;
-  readonly read_at: string | null;
-}
+export type ArtifactWithTrees = ArtifactRead;
 
 export const WrittenArtifactCreatedEventPayloadSchema = z
   .strictObject({ artifact: ArtifactSchema, ...referenceChangesFields })

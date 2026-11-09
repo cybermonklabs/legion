@@ -42,11 +42,13 @@ import { notSubscribed } from "./results";
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
   switch (input.mode) {
     case "explicit":
-      return `components -> explicit [${after.ids.join(", ")}]`;
+      return `components -> explicit [${(after.ids ?? []).join(", ")}]`;
     case "none":
       return `components -> none (${after.reason ?? input.reason ?? ""})`;
     case "inherit":
       return "components -> inherit";
+    default:
+      return `components -> ${input.mode}`;
   }
 }
 
@@ -68,7 +70,7 @@ async function architectureGuidance(
   project: string,
   components: IssueComponents
 ): Promise<string | undefined> {
-  if (components.mode === "none" || components.ids.length > 0) return undefined;
+  if (components.mode === "none" || (components.ids ?? []).length > 0) return undefined;
 
   try {
     if ((await client.listArchitectureSources(project)).length === 0) return undefined;
@@ -282,14 +284,15 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   // An explicit empty list (only `--clear-external-links` sends one) is a genuine clear: it
   // replaces the set with nothing rather than merging in zero new links, which would just
   // re-send the issue's current links unchanged.
-  const linked = before.external_links.map((link) => link.url);
+  const existingLinks = before.external_links ?? [];
+  const linked = existingLinks.map((link) => link.url);
   const newLinks = requestedLinks?.filter((url) => !linked.includes(url)) ?? [];
   const sentLinks =
     requestedLinks === undefined
       ? undefined
       : requestedLinks.length === 0
         ? []
-        : [...before.external_links, ...newLinks.map((url) => ({ url }))];
+        : [...existingLinks, ...newLinks.map((url) => ({ url }))];
   // A rank with neither neighbour is not a no-op: the server ranks the issue last in its
   // project. So an ordinary update sends no rank key at all.
   const rank =
@@ -342,7 +345,8 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     throw withAccount(error, landed);
   }
   refuseUnsavedRepository("updated", after, repo);
-  const linkCount = `(${after.external_links.length} ${after.external_links.length === 1 ? "link" : "links"})`;
+  const links = after.external_links ?? [];
+  const linkCount = `(${links.length} ${links.length === 1 ? "link" : "links"})`;
   const changes = [
     ...(closingNote === undefined
       ? []
@@ -351,7 +355,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     ...(title === undefined ? [] : [`title "${after.title}"`]),
     ...(labels === undefined
       ? []
-      : [after.labels.length === 0 ? "labels cleared" : `labels ${after.labels.join(", ")}`]),
+      : [
+          (after.labels ?? []).length === 0
+            ? "labels cleared"
+            : `labels ${(after.labels ?? []).join(", ")}`,
+        ]),
     ...(priority === undefined
       ? []
       : [after.priority === null ? "priority cleared" : `priority -> P${after.priority}`]),
@@ -381,9 +389,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     ...(blockedBy === undefined
       ? []
       : [
-          after.blocked_by.length === 0
+          (after.blocked_by ?? []).length === 0
             ? "blocked_by cleared"
-            : `blocked by ${after.blocked_by.join(", ")}`,
+            : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
         ]),
     ...(components === undefined ? [] : [componentsChange(components, after.components)]),
     ...(repo === undefined
@@ -405,7 +413,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     details: {
       issue: after.key,
       status: after.status,
-      external_links: after.external_links.map((link) => link.url),
+      external_links: (after.external_links ?? []).map((link) => link.url),
       ...(closingNote === undefined ? {} : { message: closingNote.id }),
       ...(after.advice === undefined ? {} : { advice: after.advice }),
     },
@@ -539,7 +547,7 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
           offset: optionalNumber(args, "offset") ?? 0,
         });
   const { total, limit, offset } = page;
-  const rows = page.issues.map((row) => ({
+  const rows = (page.issues ?? []).map((row) => ({
     key: row.key,
     title: row.title,
     status: row.status,
@@ -602,12 +610,13 @@ function formatCheckResults(results: IssueCheckResults): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }
-  if (results.checks.length === 0) {
+  const checks = results.checks ?? [];
+  if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const lines = results.checks.map((check) => {
+  const lines = checks.map((check) => {
     const head = `- ${check.block_id} (${check.when}): `;
-    const latest = check.results[0];
+    const latest = (check.results ?? [])[0];
     if (latest === undefined) {
       return `${head}no result yet. ${check.text}`;
     }
@@ -660,6 +669,6 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const results = await client.issueResults(issue);
   return {
     text: formatCheckResults(results),
-    details: { issue, checks: results.checks.length },
+    details: { issue, checks: (results.checks ?? []).length },
   };
 }
