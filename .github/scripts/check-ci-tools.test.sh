@@ -39,30 +39,47 @@ MISE=1b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f607182
 JJ=2c3d4e5f607182932c3d4e5f607182932c3d4e5f607182932c3d4e5f60718293
 BUN=3d4e5f60718293a43d4e5f60718293a43d4e5f60718293a43d4e5f60718293a4
 SOLO=5f60718293a4b5c65f60718293a4b5c65f60718293a4b5c65f60718293a4b5c6
+UV=4e5f60718293a4b54e5f60718293a4b54e5f60718293a4b54e5f60718293a4b5
+UV_ARCHIVE=60718293a4b5c6d760718293a4b5c6d760718293a4b5c6d760718293a4b5c6d7
+PLUGIN=718293a4b5c6d7e8718293a4b5c6d7e8718293a4b5c6d7e8718293a4b5c6d7e8
 REGISTRY=ghcr.io/example/fixture/ci
 TOOL_URL=https://github.com/example/tool/releases/download/v1.0.0/tool_1.0.0_linux_amd64.tar.gz
 MISE_URL=https://github.com/example/mise/releases/download/v7.7.7/mise-v7.7.7-linux-x64.tar.gz
 JJ_URL=https://github.com/example/jj/releases/download/v5.5.5/jj-v5.5.5-x86_64.tar.gz
 BUN_URL=https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-9.9.9.tgz
 SOLO_URL=https://github.com/example/solo/releases/download/v2.2.2/solo-2.2.2.tar.gz
+UV_URL=https://github.com/example/uv/releases/download/6.6.6/uv-x86_64-unknown-linux-gnu.tar.gz
+UV_WHEEL=https://files.pythonhosted.org/packages/py3/u/uv/uv-6.6.6-py3-none-any.whl
+PLUGIN_URL=https://github.com/example/pulumi-docker/releases/download/v4.4.4/pulumi-resource-docker-v4.4.4-linux-amd64.tar.gz
+PLUGIN_VENDOR=https://get.pulumi.com/releases/plugins/pulumi-resource-docker-v4.4.4-linux-amd64.tar.gz
 
-# pins <root> [bun version] [mise version] [mise sha256] [jj tool]: the two files rule 2 holds
-# the rows to. Each value defaults to the one the green rows agree with, so the fixture names
-# none of them and a red case names only the values up to the one it changes.
+# pins <root> [bun version] [mise version] [mise sha256] [jj tool] [uv version] [uv sha256]
+# [docker plugin version]: the three files rule 2 holds the rows to. Each value defaults to the
+# one the green rows agree with, so the fixture names none of them and a red case names only
+# the values up to the one it changes.
 pins() {
   local root=$1 bun=${2:-9.9.9} mise_version=${3:-v7.7.7} mise_sha256=${4:-$MISE} \
-    jj_tool=${5:-github:example/jj@5.5.5}
+    jj_tool=${5:-github:example/jj@5.5.5} uv_version=${6:-6.6.6} uv_sha256=${7:-$UV_ARCHIVE} \
+    docker_plugin=${8:-4.4.4}
   printf '%s\n' "$bun" > "$root/.bun-version"
   cat > "$root/packages/daemon/docker/worker.Dockerfile" <<DOCKERFILE
 # syntax=docker/dockerfile:1
 ARG MISE_VERSION=$mise_version
 ARG MISE_SHA256=$mise_sha256
 ARG JJ_TOOL=$jj_tool
+ARG UV_VERSION=$uv_version
+ARG UV_SHA256=$uv_sha256
 FROM scratch
 DOCKERFILE
+  cat > "$root/packages/envoy/infra/internal/pulumitest/pulumitest.go" <<GO
+package pulumitest
+
+// DockerPluginVersion is the plugin version the live programs pin.
+const DockerPluginVersion = "$docker_plugin"
+GO
 }
 
-# fixture <name>: a green tree — four rows, one of each shape the manifest holds, the pins they
+# fixture <name>: a green tree — six rows, one of each shape the manifest holds, the pins they
 # agree with, and a workflow and an action that fetch a tool through the helper and name no URL
 # of their own. Echoes the fixture root. Each case names its own tree: two cases sharing a name
 # would share a tree, so a repeated name is refused here rather than surfacing as the `ln -s`
@@ -74,7 +91,7 @@ fixture() {
     return 1
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/actions/install-tool" \
-    "$root/packages/daemon/docker"
+    "$root/packages/daemon/docker" "$root/packages/envoy/infra/internal/pulumitest"
   ln -s "$check_script" "$root/.github/scripts/check-ci-tools.sh"
   # The gate reads this repository's own name out of what repo-paths.sh answers, and stops with
   # no verdict at all when it cannot run it, so the fixture holds the real script beside the
@@ -90,7 +107,11 @@ tools:
     version: 1.0.0
     digest: $TOOL
     digest_of: the release tarball, whole
+    primary_source: github-release
     primary: $TOOL_URL
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: $TOOL_URL
@@ -100,7 +121,11 @@ tools:
     version: 7.7.7
     digest: $MISE
     digest_of: the release tarball, whole
+    primary_source: github-release
     primary: $MISE_URL
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: $MISE_URL
@@ -110,7 +135,11 @@ tools:
     version: 5.5.5
     digest: $JJ
     digest_of: the binary inside the release tarball
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: $JJ_URL
@@ -120,11 +149,43 @@ tools:
     version: 9.9.9
     digest: $BUN
     digest_of: the installed bun binary
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-x64"
     npm_member: package/bin/bun
+
+  - name: uv
+    version: 6.6.6
+    digest: $UV
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: $UV_URL
+    primary_digest: $UV_ARCHIVE
+    primary_digest_of: the release tarball, whole
+    primary_member: uv-x86_64-unknown-linux-gnu/uv
+    second_source: pypi
+    max_time: 60
+    second_url: $UV_WHEEL
+    second_member: uv-6.6.6.data/scripts/uv
+
+  - name: pulumi-docker
+    version: 4.4.4
+    digest: $PLUGIN
+    digest_of: the release tarball, whole
+    primary_source: github-release
+    primary: $PLUGIN_URL
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: pulumi-releases
+    max_time: 60
+    second_url: $PLUGIN_VENDOR
+    second_member: ""
 YAML
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
 name: CI
@@ -163,7 +224,7 @@ root=$(fixture green)
 run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 check "counts the rows, counts the entries, and says each row agrees with its pin" \
-  "$(contains "$out" '^.github/ci-tools.yaml holds 4 row(s), each agreeing with the pin that installs it, and 0 no_second_source entries;')"
+  "$(contains "$out" '^.github/ci-tools.yaml holds 6 row(s), each agreeing with the pin that installs it, and 0 no_second_source entries;')"
 check "and sweeps .github for a short reference" \
   "$(contains "$out" 'none names a tool blob by a registry reference$')"
 
@@ -174,7 +235,11 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
   - name: partial
     version: 1.0.0
     digest: $TOOL
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-x64"
@@ -183,7 +248,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the row and the field it carries no value for" \
-  "$(contains "$out" 'the partial row carries no digest_of, and a npm row carries name, version, digest, digest_of, primary, second_source, max_time, npm_package, npm_member')"
+  "$(contains "$out" 'the partial row carries no digest_of, and a npm row carries name, version, digest, digest_of, primary_source, primary, primary_digest, primary_digest_of, primary_member, second_source, max_time, npm_package, npm_member')"
 check "and counts the problem" "$(contains "$out" '^::error::1 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
 
 echo "case: rule 1 — a digest that is not 64 lower-case hex"
@@ -194,7 +259,11 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     version: 1.0.0
     digest: sha256:${TOOL^^}
     digest_of: the release tarball, whole
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-x64"
@@ -214,7 +283,11 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     version: 2.0.0
     digest: $BUN
     digest_of: the release tarball, whole
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-x64"
@@ -233,14 +306,18 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     version: 1.0.0
     digest: $BUN
     digest_of: the release tarball, whole
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: s3
     max_time: 60
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-check "names the row and the two sources the helper serves" \
-  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves ghcr-mirror and npm")"
+check "names the row and the five words the helper serves" \
+  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves github-release, ghcr-mirror, npm, pypi and pulumi-releases.")"
 
 echo "case: rule 1 — a primary that does not hold the row's version"
 root=$(fixture shape-primary-version)
@@ -250,7 +327,11 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     version: 4.4.4
     digest: $BUN
     digest_of: the release tarball, whole
+    primary_source: github-release
     primary: https://github.com/example/tool/releases/download/v4.4.3/adrift-4.4.3.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/example/tool/releases/download/v4.4.4/adrift-4.4.4.tar.gz
@@ -271,7 +352,11 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     version: 9.9.8
     digest: $BUN
     digest_of: the installed bun binary
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-aarch64"
@@ -309,6 +394,197 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
   "$(contains "$out" "the jj row's version is 5.5.5 and packages/daemon/docker/worker.Dockerfile pins ARG JJ_TOOL=github:example/jj@6.6.6, whose version is 6.6.6")"
+
+echo "case: rule 2 — the uv row and ARG UV_VERSION disagree"
+# The uv row answers to the same file the mise row does, and for the same reason: the image's
+# own toolchain stage builds uv from that ARG, so a row at another version installs one uv and
+# the image builds another.
+root=$(fixture pin-uv-version)
+pins "$root" 9.9.9 v7.7.7 "$MISE" github:example/jj@5.5.5 8.8.8
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both values and both files" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the uv row's version is 6.6.6 and packages/daemon/docker/worker.Dockerfile pins ARG UV_VERSION=8.8.8.")"
+check "and says which of the two to move" \
+  "$(contains "$out" 'move this row to the ARG.s version, or the ARG to the row.s.')"
+
+echo "case: rule 2 — the uv row's primary_digest and ARG UV_SHA256 disagree"
+# The row's own `digest` is of the binary inside the tarball, so the literal that answers to
+# the ARG is `primary_digest`: both are the digest of the archive that release serves.
+root=$(fixture pin-uv-digest)
+pins "$root" 9.9.9 v7.7.7 "$MISE" github:example/jj@5.5.5 6.6.6 "$BUN"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both digests and both files" \
+  "$(contains "$out" "the uv row's primary_digest is $UV_ARCHIVE and packages/daemon/docker/worker.Dockerfile pins ARG UV_SHA256=$BUN")"
+check "and says one admits what the other refuses" \
+  "$(contains "$out" 'one of the two admits bytes the other refuses')"
+
+echo "case: rule 2 — the pulumi-docker row and const DockerPluginVersion disagree"
+# The live programs pin the plugin in a Go constant, and the row that fetches it carries what
+# that constant holds.
+root=$(fixture pin-docker-plugin)
+pins "$root" 9.9.9 v7.7.7 "$MISE" github:example/jj@5.5.5 6.6.6 "$UV_ARCHIVE" 5.5.5
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both values and both files" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the pulumi-docker row's version is 4.4.4 and packages/envoy/infra/internal/pulumitest/pulumitest.go pins const DockerPluginVersion = \"5.5.5\".")"
+check "and says which of the two to move" \
+  "$(contains "$out" "move this row to the constant's version, or the constant to the row's.")"
+
+echo "case: rule 1 — a second_url that does not hold its row's version"
+# The rule that holds a URL to the row's version reads every URL the row writes, so a second
+# source at another version is refused where a primary at another version is.
+root=$(fixture shape-second-url-version)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: adrift-second
+    version: 4.4.4
+    digest: $BUN
+    digest_of: the release tarball, whole
+    primary_source: pulumi-releases
+    primary: https://get.pulumi.com/releases/sdk/adrift-v4.4.4.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: github-release
+    max_time: 60
+    second_url: https://github.com/example/adrift/releases/download/v4.4.3/adrift-4.4.3.tar.gz
+    second_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the URL and the version it does not hold" \
+  "$(contains "$out" "the adrift-second row's second_url is https://github.com/example/adrift/releases/download/v4.4.3/adrift-4.4.3.tar.gz and this row's version is 4.4.4, which that URL does not hold")"
+check "and says what such a row does" \
+  "$(contains "$out" 'installs one version and pins another')"
+
+echo "case: rule 1 — a primary_member with no primary_digest"
+# The member is taken out of an archive nothing held to anything, so the row's own digest
+# answers for the member and no literal answers for what it came out of.
+root=$(fixture shape-member-without-digest)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: unheld
+    version: 1.0.0
+    digest: $BUN
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: https://github.com/example/unheld/releases/download/v1.0.0/unheld-1.0.0.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: unheld-1.0.0/unheld
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/unheld/releases/download/v1.0.0/unheld-1.0.0.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the member and the field the row does not carry" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the unheld row takes unheld-1.0.0/unheld out of the primary's archive and carries no primary_digest, so nothing holds the archive that member came out of.")"
+
+echo "case: rule 1 — a primary_digest with no primary_digest_of"
+# A digest that does not say what it is of is how an archive comes to be checked against a
+# binary and called equal, so the prose is part of the pin and not a comment.
+root=$(fixture shape-digest-without-of)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: unsaid
+    version: 1.0.0
+    digest: $BUN
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: https://github.com/example/unsaid/releases/download/v1.0.0/unsaid-1.0.0.tar.gz
+    primary_digest: $TOOL
+    primary_digest_of: ""
+    primary_member: unsaid-1.0.0/unsaid
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/unsaid/releases/download/v1.0.0/unsaid-1.0.0.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row and says what the missing prose is for" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the unsaid row carries a primary_digest and no primary_digest_of, so nothing says which bytes that digest is of. A digest that does not say what it is of is how an archive comes to be checked against a binary and called equal.$")"
+
+echo "case: rule 1 — a primary_digest that is not 64 lower-case hex"
+root=$(fixture shape-primary-digest)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: shouty-primary
+    version: 1.0.0
+    digest: $BUN
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: https://github.com/example/shouty/releases/download/v1.0.0/shouty-1.0.0.tar.gz
+    primary_digest: sha256:${TOOL^^}
+    primary_digest_of: the release tarball, whole
+    primary_member: shouty-1.0.0/shouty
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/shouty/releases/download/v1.0.0/shouty-1.0.0.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row and what a digest is" \
+  "$(contains "$out" "the shouty-primary row's primary_digest is sha256:${TOOL^^}, which is not 64 lower-case hex characters")"
+check "and says to write it bare, as the row's digest is written" \
+  "$(contains "$out" 'Write it bare, with no sha256: prefix, as this row.s digest is written')"
+
+echo "case: rule 1 — a primary_source of ghcr-mirror"
+# A copy this repository fills is no origin of the bytes, so that word is written on the second
+# side alone, and the refusal names the side it was found on, as the helper's does.
+root=$(fixture shape-primary-source-copy)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: copied
+    version: 1.0.0
+    digest: $BUN
+    digest_of: the release tarball, whole
+    primary_source: ghcr-mirror
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/copied/releases/download/v1.0.0/copied-1.0.0.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row and the three words a primary is written in" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the copied row's primary_source is ghcr-mirror, and .github/scripts/ci-tools.sh reads github-release, pypi and pulumi-releases as a primary.")"
+check "and says why those two words are second sources" \
+  "$(contains "$out" 'are no origin of the bytes, so ghcr-mirror and npm are written on the second side alone.')"
+
+echo "case: rule 1 — a primary_source no source of the helper reads"
+# The same sentence answers a word this repository has never heard of: one list of words, read
+# for the side it was written on.
+root=$(fixture shape-primary-source-unknown)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: elsewhere-primary
+    version: 1.0.0
+    digest: $BUN
+    digest_of: the release tarball, whole
+    primary_source: s3
+    primary: https://github.com/example/elsewhere/releases/download/v1.0.0/elsewhere-1.0.0.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/elsewhere/releases/download/v1.0.0/elsewhere-1.0.0.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row, the word and the side it was written on" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the elsewhere-primary row's primary_source is s3, and .github/scripts/ci-tools.sh reads github-release, pypi and pulumi-releases as a primary.")"
 
 echo "case: rule 3 — an action that fetches a covered release asset no row names"
 root=$(fixture reach-unnamed-asset)
@@ -772,6 +1048,59 @@ SCRIPT
 run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 
+echo "case: rule 3 — a get.pulumi.com fetch under .github/actions that no row names"
+# The host is in the set because the pulumi-docker row's second source is written there, and
+# the class this half closes is the one the Pulumi CLI went through: a vendor host no rule
+# could see, fetched with one source and no row. The row's own address in the same file is
+# read and admitted, so the refusal is of the other line alone.
+root=$(fixture reach-download-host)
+cat > "$root/.github/actions/install-tool/action.yml" <<YAML
+name: Install tool
+description: Fetches the plugin from the row's address, and a CLI from an address no row names.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        curl -fsSL -O $PLUGIN_VENDOR
+        curl -fsSL -O https://get.pulumi.com/releases/sdk/pulumi-v9.9.9-linux-x64.tar.gz
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the line and the host" \
+  "$(contains "$out" "^.github/actions/install-tool/action.yml:9: this file fetches a download from get.pulumi.com at https://get.pulumi.com/releases/sdk/pulumi-v9.9.9-linux-x64.tar.gz, and no row of .github/ci-tools.yaml names that URL.")"
+check "names the row whose address put that host in the set" \
+  "$(contains "$out" "That host is named by the pulumi-docker row's second_url, and a tool CI installs from a service a row names is fetched at the row.s own address, so a fetch nothing names has no second source.")"
+check "and sends the reader to the row or to a new one" \
+  "$(contains "$out" 'Read the address from the row with .github/scripts/ci-tools.sh, or add a row naming this address and its second source.$')"
+check "and refuses that one alone, so the row's own address passes" \
+  "$(contains "$out" '^::error::1 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
+
+echo "case: rule 3 — the two edges of the download-host half"
+# What this half does not reach, said as a case: a vendor address in a script under
+# .github/scripts/ is outside the reach it claims, and a host no row names is no download host
+# at all, however much it looks like one. Both pass, and the day either changes this case is
+# what turns red.
+root=$(fixture reach-download-host-edges)
+cat > "$root/.github/scripts/stage-plugin.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+# The vendor address written outside the two directories this half reads. Nothing here fetches
+# it in a job: this is the documentation of where those bytes live.
+vendor=https://get.pulumi.com/releases/sdk/pulumi-v9.9.9-linux-x64.tar.gz
+SCRIPT
+cat > "$root/.github/workflows/other-host.yaml" <<'YAML'
+name: Other host
+on: [push]
+jobs:
+  other:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O https://downloads.example.com/releases/sdk/thing-1.0.0.tar.gz
+YAML
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: a no_second_source entry allows the one URL it names"
 # Both halves in one tree, so the entry is shown to be what allows the URL: the workflow alone is
 # refused, and the same workflow passes once the entry names its address.
@@ -1138,7 +1467,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the line the earlier entry is on" \
-  "$(contains "$out" '^.github/ci-tools.yaml:50: this URL is also declined by the no_second_source entry on line 45, and two entries for one URL carry two reasons a reader must choose between. Keep one.$')"
+  "$(contains "$out" '^.github/ci-tools.yaml:94: this URL is also declined by the no_second_source entry on line 89, and two entries for one URL carry two reasons a reader must choose between. Keep one.$')"
 
 echo "case: rule 4 — a short reference to a tool blob"
 root=$(fixture short-reference)
@@ -1192,8 +1521,20 @@ check "names the file neither rule read" \
   "$(contains "$out" '; 1 file(s) under .github are not valid UTF-8, so neither rule read them: .github/actions/install-tool/binary.dat$')"
 
 echo "case: this repository's own tree"
+# The one case that reads the tree this gate runs over in CI, and it is RED today by exactly
+# two problems and no other. The elan, uv, pulumi-docker and pulumi-cli rows landed with this
+# change and the three no_second_source entries that allowed their installs went with them, so
+# the two call sites that still build a release-asset address of their own — the uv action and
+# the plugin step of .github/workflows/ci.yaml — are refused as built addresses until they
+# read their row with the helper, which is the change that follows this one. The day both
+# move, this case turns red and its assertions become a green tree's again.
 run_gate "$repository"
-check "exits 0" "$(is "$status" 0)"
-check "names the manifest and its rows" "$(contains "$out" '^.github/ci-tools.yaml holds [0-9]* row(s)')"
+check "fails" "$(is "$status" 1)"
+check "names the uv action's built address" \
+  "$(contains "$out" "^.github/actions/install-uv/action.yml:[0-9]*: this file builds the address of a release asset of astral-sh/uv ")"
+check "names the plugin step's built address" \
+  "$(contains "$out" "^.github/workflows/ci.yaml:[0-9]*: this file builds the address of a release asset of pulumi/pulumi-docker ")"
+check "and counts those two alone" \
+  "$(contains "$out" '^::error::2 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
 
 summary "check-ci-tools.sh"
