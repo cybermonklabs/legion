@@ -2644,16 +2644,14 @@ jobs:
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The three copies of the shipped texts waiting_line_texts_test.go:320 holds to
+              # The three copies of the shipped texts waiting_line_texts_test.go:352 holds to
               # the texts themselves, each committed beside the package whose own check reads
               # it. They are .txt files, which the module's `**/*.go` above does not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
               - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts those copies are held to, and the ban over them, every one
-              # read by waiting_line_texts_test.go:330. skills/legion-architect's SKILL.md,
-              # design-gate.md and wake-routing.md are below already, for the wake check, which
-              # is what reads them now.
+              # read by waiting_line_texts_test.go:362.
               - 'AGENTS.md'
               - 'docs/site/src/content/docs/legion/concepts.md'
               - 'docs/site/src/content/docs/legion/running-legion.md'

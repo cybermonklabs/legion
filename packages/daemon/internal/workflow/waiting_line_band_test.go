@@ -134,11 +134,10 @@ func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
 }
 
 // The copy of the shipped texts outside packages/daemon, committed beside this package, and the
-// two form words its format knows.
+// one form word its format knows.
 const (
 	waitingLineWordsExtract = "waiting_line_words_extract.txt"
 	collapsedForm           = "collapsed"
-	rawForm                 = "raw"
 )
 
 // bandQuotation is one quotation of that copy: the path it was taken from and its body, the
@@ -149,7 +148,11 @@ type bandQuotation struct{ path, body string }
 // waitingLineBandQuotations reads that copy. A line `# <path> collapsed` opens a quotation and
 // every line under it, to the next such line, is that quotation's own bytes; the lines above the
 // first are the file's header, and a `# ` line inside a quotation that opens nothing is the
-// quoted text's own, since a collapsed body may itself begin with a hash.
+// quoted text's own, since a collapsed body may itself begin with a hash. A quotation is the
+// file's prose on one line because the fragment this loop looks for is wrapped across a line
+// break in every one of these texts, so it is a substring of that one-line form and of no raw
+// text; a marker in any other form is one no reader of this copy knows, and
+// internal/textcheck's TestEveryWaitingLineWordsExtractSectionIsCollapsed is what refuses it.
 func waitingLineBandQuotations(t *testing.T) []bandQuotation {
 	t.Helper()
 	text, err := os.ReadFile(waitingLineWordsExtract)
@@ -158,19 +161,10 @@ func waitingLineBandQuotations(t *testing.T) []bandQuotation {
 	}
 	var quoted []bandQuotation
 	at := -1
-	for i, line := range strings.Split(string(text), "\n") {
+	for _, line := range strings.Split(string(text), "\n") {
 		marker, hashed := strings.CutPrefix(line, "# ")
 		parts := strings.Fields(marker)
-		if hashed && len(parts) == 2 && (parts[1] == collapsedForm || parts[1] == rawForm) {
-			// A raw quotation is refused rather than read: the fragment this loop looks for is
-			// wrapped across a line break in every one of these texts, so it is a substring of
-			// the file's one-line form and of no raw text, and a section in that form would hold
-			// this check to words nobody can find.
-			if parts[1] != collapsedForm {
-				t.Fatalf("%s:%d: %s is quoted as `%s`: a quotation here is the file's prose on one "+
-					"line, the form this check reads a wrapped fragment in", waitingLineWordsExtract,
-					i+1, parts[0], parts[1])
-			}
+		if hashed && len(parts) == 2 && parts[1] == collapsedForm {
 			quoted = append(quoted, bandQuotation{path: parts[0]})
 			at = len(quoted) - 1
 			continue

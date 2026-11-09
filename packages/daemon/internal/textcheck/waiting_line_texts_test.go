@@ -65,6 +65,11 @@ const (
 	// the copy to it too, so the rename fails there while the quotations here stay the texts'
 	// own words.
 	waitingLineBand = "among the issues whose work came back, oldest first"
+	// The one form word a section marker of the workflow package's copy carries, and the only
+	// one either reader of that copy knows: a body in that form is the quoted file's prose on
+	// one line. TestEveryWaitingLineWordsExtractSectionIsCollapsed below is what holds the copy
+	// to it.
+	collapsedForm = "collapsed"
 )
 
 // The seven shipped texts outside packages/daemon that internal/api's contract test used to read
@@ -215,10 +220,37 @@ func waitingLineWordsSections(t *testing.T) []quotedText {
 // quotation of one can be in.
 func wordsSectionPath(marker string) (string, bool) {
 	parts := strings.Fields(marker)
-	if len(parts) != 2 || parts[1] != "collapsed" {
+	if len(parts) != 2 || parts[1] != collapsedForm {
 		return "", false
 	}
 	return parts[0], true
+}
+
+// Every section marker of the workflow package's copy is in the one form both of its readers
+// know. internal/workflow's parse of that copy and this file's each open a section on a
+// `# <path> collapsed` line and on nothing else, so a marker written in any other form is a
+// section to neither: both fold it into the quotation above, and that quotation then stands for
+// words its file never carried, reported against the wrong file. This rule refuses it where it
+// is written, naming the line.
+//
+// It is keyed on the band list's own paths, and so stays narrow: a quoted body line that happens
+// to open with a hash and two words is not a marker to either reader, and is one this test
+// passes over unless the first of those words is a file the band list names.
+func TestEveryWaitingLineWordsExtractSectionIsCollapsed(t *testing.T) {
+	for i, line := range strings.Split(readExtract(t, waitingLineWordsExtract), "\n") {
+		marker, hashed := strings.CutPrefix(line, "# ")
+		parts := strings.Fields(marker)
+		if !hashed || len(parts) != 2 || parts[1] == collapsedForm ||
+			!slices.Contains(waitingLineBandTexts, parts[0]) {
+			continue
+		}
+		t.Errorf("%s:%d quotes %s as `%s`: `%s` is the only form either reader of this copy knows "+
+			"- internal/workflow's TestTheShippedWordsNameTheWaitingLineBand and this file's "+
+			"TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay - and a line in any other form "+
+			"opens no section for them, so its body joins the quotation above and that quotation "+
+			"is then reported against a file it never came from",
+			waitingLineWordsExtract, i+1, parts[0], parts[1], collapsedForm)
+	}
 }
 
 // The guide still prints the `legion state` sample cmd/legion's awaitingSummary is held to. That

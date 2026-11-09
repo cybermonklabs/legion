@@ -1,9 +1,11 @@
 # Every passage outside packages/daemon that names the contract the waiting line's place arrived
 # in, copied here verbatim. One section is one window of one file: the 220 bytes on either side
 # of a `contract <N>` or a bare `below <N>` that stands beside `waitingLine` and names neither
-# the retired stranded state nor the stranded report, which is the rule
-# packages/daemon/internal/api's TestTheShippedTextsNameTheWaitingLinesOwnContract reads a text
-# by. The bytes are the file's own, so that scan finds in a section what it found in the file.
+# of the two other contract states, which is the rule packages/daemon/internal/api's
+# TestTheShippedTextsNameTheWaitingLinesOwnContract reads a text by - and this header carries
+# neither of those two words itself, on purpose, so that no section can be skipped by the words
+# of its own header. The bytes are the file's own, so that scan finds in a section what it found
+# in the file.
 #
 # The check is in two halves, because a test that reads a shipped text puts that text in its
 # job's filter - a declared read applies to every compiled source file of a run - and an edit of

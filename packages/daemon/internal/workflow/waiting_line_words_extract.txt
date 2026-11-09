@@ -21,9 +21,12 @@
 # put on one line the way the product test reads a wrapped fragment (every line's leading
 # whitespace and one `//`, `*` or `#` marker dropped, the words joined by single spaces). It is
 # the only form a quotation here can be in, since the words of a sentence wrapped across a line
-# break are a substring of no raw text, and it is the form the fragment answers for. A file may
-# open more than one section: AGENTS.md states the placement twice, a paragraph apart, and each
-# quotation stands on its own in the file it came from.
+# break are a substring of no raw text, and it is the form the fragment answers for. Both
+# readers of this copy open a section on that word and on no other, and
+# packages/daemon/internal/textcheck's TestEveryWaitingLineWordsExtractSectionIsCollapsed is
+# what refuses a marker written in any other form. A file may open more than one section:
+# AGENTS.md states the placement twice, a paragraph apart, and each quotation stands on its own
+# in the file it came from.
 
 # AGENTS.md collapsed
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue
