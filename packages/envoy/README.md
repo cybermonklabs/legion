@@ -123,3 +123,4 @@ package's fragment files (`.changes/unreleased/`) are rendered into that GitHub 
 `CHANGELOG.md` is the history before that and stops where the fragments begin.
 
 <!-- INFRA-1413 selection probe, never merged. -->
+<!-- selection probe -->
