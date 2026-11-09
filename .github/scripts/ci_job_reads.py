@@ -336,13 +336,17 @@ RULES = {
     f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:24 (runtime.Caller + ../../../..)")),
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:880 ../../docker/gh")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:993")),
+    # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
+    # internal/supervise declares, which it reads by parsing that package's own sources.
+    f"{DAEMON}/internal/api/reachstates_test.go": reads(
+        (f"{DAEMON}/internal/supervise/*", "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each file of it")),
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:88,107 sources it in bash")),
     f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:27")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
     f"{DAEMON}/internal/claim/claim_test.go": reads((f"{FIX}/project-tokens.json", "internal/claim/claim_test.go:196")),
-    f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:140 (runtime.Caller :145)")),
+    f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:119,128 (fixtureDirectory :143, runtime.Caller :148)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:179 (config.ControllerConfigExample)")),
     f"{DAEMON}/internal/config/kubernetes_test.go": reads(("deploy/kubernetes/operator-route/pod.yml", "internal/config/kubernetes_test.go:1322")),
     # This row and two of the envoy rows below it - internal/dispatch/outbox/
@@ -359,6 +363,20 @@ RULES = {
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:315")),
     f"{DAEMON}/internal/daemon/check_settlement_test.go": reads((f"{FIX}/checks-settlement/*", "internal/daemon/check_settlement_test.go:56")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1120")),
+    # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
+    # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
+    # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
+    # of ci.yaml applies this row today - the daemon's e2e tag is vetted (ci-job-typecheck.yaml's
+    # `go vet -tags e2e ./...`) and never tested, and a vet run compiles a test file without
+    # applying its rules - so it is what a `go test -tags e2e ./internal/daemon/` reads the day a
+    # job runs one.
+    f"{DAEMON}/internal/daemon/live_agent_proof_test.go": [
+        legion_build("internal/daemon/live_agent_proof_test.go:278-281 buildProofLegion runs go build ./cmd/legion in packages/daemon"),
+        Read("scripts/e2e/lib/pack-plugin.sh", "internal/daemon/live_agent_proof_test.go:300 runs it in bash, once per plugin"),
+        *[Read(g, "internal/daemon/live_agent_proof_test.go:300 packs packages/pi-envoy and packages/pi-legion through "
+                  "scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack")
+          for g in PACK_READS],
+    ],
     f"{DAEMON}/internal/daemon/nats_permissions_test.go": reads(
         (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:76"),
         (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:77")),
@@ -494,7 +512,7 @@ RULES = {
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
     f"{ENVOY}/internal/dispatch/api/live_events_test.go": reads(
-        (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:845")),
+        (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:879")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
          "internal/dispatch/api/openapi_test.go:189-190 (the path built runtime-relative ../../../../.., then "

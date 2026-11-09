@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
+	"github.com/sjawhar/envoy/internal/broker/machine"
 )
 
 type routeAuth int
@@ -30,9 +31,12 @@ type caller struct {
 	// authenticated the request: its name, which a handler that acts logs, and the powers that
 	// name carries, which authenticate checks against the route's before the handler runs.
 	account Account
-	// service is the service BROKER_SERVICE_LOGINS says the ServiceAccount token that
-	// authenticated the request logs in as, which a serviceAuth handler logs when it acts.
-	service string
+	// service is the login the ServiceAccount token that authenticated the request made,
+	// machine.Service.VerifyServiceToken's own answer: the service that account logs in as,
+	// the account whose token it presented, and the pod that token was bound to, empty for one
+	// bound to none. serviceAuth hands the whole of it to the handler and says why all three
+	// travel together.
+	service machine.ServiceAccount
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
@@ -193,15 +197,19 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // serviceAuth is a route for a service calling the broker with its own Kubernetes ServiceAccount
 // token, the account BROKER_SERVICE_LOGINS lets log in as that service — a deployment's Legion
 // daemon, which registers the pods it starts. The token is verified and mapped to its service by
-// the check a token login makes (machine.Service.VerifyServiceToken). The handler is given the
-// service's name.
+// the check a token login makes (machine.Service.VerifyServiceToken). The handler is given that
+// check's own answer, one machine.ServiceAccount: the service the caller logs in as, the
+// account whose token it presented, and the pod that token was bound to. The account and the
+// pod come with it because BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a
+// service: every pod of such an account logs that service in, so a caller here may be the very
+// pod a request names, and the account and the pod uid are what tell the two apart.
 //
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
 // lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so these routes
 // need no new setting and no new account.
-func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)
 	}}

@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,46 +17,178 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 )
 
-// deleteRecorder is the listener's session route: it keeps what the clean stop asked of it and
-// answers as the real route does. answer, when a test gives it one, is the body the route writes
-// for a request that named a condition; with none it answers 200 with no body, as the route
-// answers a request that names no condition at all.
-type deleteRecorder struct {
-	method, path, query, bearer string
-	answer                      string
-	requests                    int
-	arrived                     chan struct{}
+// storedRegistration is what the fake listener's registry holds for the session under test: the
+// client process whose registration it is — empty for an entry a client predating that field
+// wrote — and the moment that process last wrote it, which the listener stamps on its own clock
+// at every write. absent is a registry that holds no record of the session at all.
+type storedRegistration struct {
+	absent           bool
+	clientInstanceID string
+	lastSeen         time.Time
 }
 
-func (d *deleteRecorder) server(t *testing.T) *httptest.Server {
+// askedRoute is what one of the listener's routes was asked: the method, path, query and bearer
+// of the last request to reach it, and how many reached it at all, so a test can show that one
+// stop is one request and that nothing is sent twice.
+type askedRoute struct {
+	method, path, query, bearer string
+	requests                    int
+}
+
+// listenerRecorder is the pair of routes one clean stop uses — the registry read it makes first
+// (GET /v1/registry/<session_id>) and the session delete it then sends (DELETE
+// /v1/sessions/<session_id>) — keeping what each was asked and answering as the real listener
+// does. held is the registration both routes work on, and relaunched, when a test sets it,
+// replaces it the moment the read has been answered: a claim relaunching under the same session
+// id while the stop is in flight. The delete is judged as deleteSessionHandler judges it
+// (packages/envoy/cmd/listener/api.go), under both conditions at the moment it lands, and
+// entryRemoved says whether the registration went. readStatus is a registry route that refuses
+// the read instead of answering it, and hangRead one that never answers at all until the
+// request's own context ends.
+type listenerRecorder struct {
+	held         storedRegistration
+	relaunched   *storedRegistration
+	readStatus   int
+	hangRead     bool
+	read, delete askedRoute
+	entryRemoved bool
+	// arrived is closed when the first request of a stop reaches the listener, and settled once
+	// a delete has been answered: a stop runs on a goroutine, so a test waits on these rather
+	// than on the call it made.
+	arrived, settled chan struct{}
+}
+
+func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.method, d.path, d.query, d.bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
-		d.requests++
-		if d.arrived != nil {
-			close(d.arrived)
+		asked := &l.read
+		if r.Method == http.MethodDelete {
+			asked = &l.delete
 		}
-		if d.answer == "" {
-			w.WriteHeader(http.StatusOK)
+		asked.method, asked.path, asked.query, asked.bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		asked.requests++
+		if l.arrived != nil && l.read.requests+l.delete.requests == 1 {
+			close(l.arrived)
+		}
+		if r.Method != http.MethodDelete {
+			l.answerRead(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(d.answer))
+		l.answerDelete(w, r)
+		if l.settled != nil {
+			close(l.settled)
+		}
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+// answerRead is the registry route: it answers the held registration, 404 for a registry that
+// holds none, and leaves out client_instance_id for an entry that names no process, as the real
+// route's registration view does (sessionRegistration, packages/envoy/cmd/listener/api.go). A
+// relaunch the test staged takes the entry's place once this answer is written, so the delete
+// that follows meets what the relaunch wrote and not what the read reported.
+func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
+	if l.hangRead {
+		<-r.Context().Done()
+		return
+	}
+	if l.readStatus != 0 {
+		w.WriteHeader(l.readStatus)
+		_, _ = io.WriteString(w, `{"error":"the session registry did not answer"}`)
+		return
+	}
+	defer func() {
+		if l.relaunched != nil {
+			l.held = *l.relaunched
+		}
+	}()
+	session := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
+	if l.held.absent {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, `{"error":"no live session %s"}`, session)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if l.held.clientInstanceID == "" {
+		_, _ = fmt.Fprintf(w, `{"session_id":%q,"last_seen":%d}`, session, l.held.lastSeen.UnixMilli())
+		return
+	}
+	_, _ = fmt.Fprintf(w, `{"session_id":%q,"client_instance_id":%q,"last_seen":%d}`,
+		session, l.held.clientInstanceID, l.held.lastSeen.UnixMilli())
+}
+
+// answerDelete judges the delete as the listener does: an id naming a client instance other than
+// the stored one keeps the registration, so does a registration written after the moment the
+// delete belongs to, and otherwise the entry goes. Both answers are 200, since the caller has
+// nothing to retry either way.
+func (l *listenerRecorder) answerDelete(w http.ResponseWriter, r *http.Request) {
+	conditions, _ := url.ParseQuery(r.URL.RawQuery)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if named := conditions.Get("client_instance_id"); named != "" && l.held.clientInstanceID != "" && named != l.held.clientInstanceID {
+		_, _ = io.WriteString(w, `{"deleted":false,"reason":"the registration belongs to another client instance"}`)
+		return
+	}
+	millis, _ := strconv.ParseInt(conditions.Get("if_not_registered_after"), 10, 64)
+	if millis > 0 && l.held.lastSeen.UnixMilli() > millis {
+		_, _ = io.WriteString(w, `{"deleted":false,"reason":"the registration was written after the moment the delete belongs to"}`)
+		return
+	}
+	l.entryRemoved = true
+	_, _ = io.WriteString(w, `{"deleted":true}`)
+}
+
+// deleteConditions is what the stop's delete named, read out of the query the fake recorded, so
+// a test here asserts the conditions the delete holds under and leaves the query's own spelling
+// — the parameter order and the escaping — to the one package that writes it
+// (packages/daemon/internal/notify's session_test.go).
+func (l *listenerRecorder) deleteConditions(t *testing.T) url.Values {
+	t.Helper()
+	conditions, err := url.ParseQuery(l.delete.query)
+	if err != nil {
+		t.Fatalf("parse the delete's query %q: %v", l.delete.query, err)
+	}
+	return conditions
 }
 
 func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, nil))
 }
 
-// The stop is one DELETE of the dead session's key, with the listener's bearer, and it names the
-// moment the probe judged the process gone: the listener deletes the registration only while
-// nothing has been written under that session id since.
-func TestTheCleanStopDeletesTheRegistrationUnderTheMomentItsProbeJudged(t *testing.T) {
-	listener := &deleteRecorder{}
+// The registration of the process the probe judged gone is the one the stop must remove, and the
+// listener stamps that registration's last write with its own clock: a dead pane's last
+// heartbeat lands moments before the probe says the process is gone. Here it lands 500 ms
+// before, and the stop deletes it. A stop that dated its moment before the probe's by any
+// margin wider than that gap would read this heartbeat as a registration written since and
+// leave it standing, which is the whole of the defect (dispatch://INFRA-2064).
+func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *testing.T) {
+	listener := &listenerRecorder{
+		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-500 * time.Millisecond)},
+		settled: make(chan struct{}),
+	}
+	server := listener.server(t)
+	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+
+	stop("ses_dead")
+
+	select {
+	case <-listener.settled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clean stop never reached the listener's session route")
+	}
+	if !listener.entryRemoved {
+		t.Fatalf("the listener kept the registration asked for with %q, want the dead process's last heartbeat deleted rather than taken for a successor's",
+			listener.delete.query)
+	}
+}
+
+// The stop is one DELETE of the dead session's key, with the listener's bearer, and it names both
+// of its conditions: the client instance the registry answered for that session, and the moment
+// the probe judged the process gone. One read, one delete, and nothing sent twice.
+func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) {
+	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
@@ -61,32 +196,48 @@ func TestTheCleanStopDeletesTheRegistrationUnderTheMomentItsProbeJudged(t *testi
 
 	stop.send(context.Background(), "ses_dead", goneAt)
 
-	if listener.method != http.MethodDelete || listener.path != "/v1/sessions/ses_dead" || listener.bearer != "Bearer envoy-token" {
-		t.Fatalf("the listener was asked %s %s with %q, want one DELETE of the session's key with the bearer",
-			listener.method, listener.path, listener.bearer)
+	if listener.read.method != http.MethodGet || listener.read.path != "/v1/registry/ses_dead" || listener.read.requests != 1 {
+		t.Fatalf("the registry was asked %s %s %d times, want one read of the dead session's entry",
+			listener.read.method, listener.read.path, listener.read.requests)
 	}
-	if want := fmt.Sprintf("if_not_registered_after=%d", goneAt.UnixMilli()); listener.query != want {
-		t.Fatalf("the listener was asked %q, want the stop's own moment %q", listener.query, want)
+	if listener.delete.method != http.MethodDelete || listener.delete.path != "/v1/sessions/ses_dead" ||
+		listener.delete.bearer != "Bearer envoy-token" || listener.delete.requests != 1 {
+		t.Fatalf("the listener was asked %s %s with %q %d times, want one DELETE of the session's key with the bearer",
+			listener.delete.method, listener.delete.path, listener.delete.bearer, listener.delete.requests)
+	}
+	conditions := listener.deleteConditions(t)
+	if got := conditions.Get("client_instance_id"); got != "inst_dead" {
+		t.Fatalf("the delete named client instance %q, want the one the registry answered, inst_dead", got)
+	}
+	if got := conditions.Get("if_not_registered_after"); got != strconv.FormatInt(goneAt.UnixMilli(), 10) {
+		t.Fatalf("the delete named the moment %q, want the probe's own, %d", got, goneAt.UnixMilli())
 	}
 	if !strings.Contains(logged.String(), "the Envoy session of a role whose process is gone was stopped") {
 		t.Fatalf("logged %q, want the stop reported done", logged.String())
 	}
 }
 
-// The race the condition exists for, as the daemon sees it: the claim relaunched under the same
-// session id and the new process registered before the stop was judged, so the listener kept that
-// registration. The stop is still sent — only the listener can tell what is stored when it lands
-// — and what it reports is that the live registration stayed, not that the session was stopped.
-func TestTheCleanStopReportsARegistrationTheListenerKept(t *testing.T) {
-	listener := &deleteRecorder{answer: `{"deleted":false,"reason":"the registration was written after the moment the delete belongs to"}`}
+// The race the instance id is read for: the claim relaunched under the same session id and the
+// new process registered between the read and the delete, so the delete named the dead process
+// and the listener kept the live registration it found instead. The stop is still sent — only
+// the listener can tell what is stored when it lands — and what it reports is that the
+// registration stayed, with the listener's own reason, not that the session was stopped.
+func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing.T) {
+	listener := &listenerRecorder{
+		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		relaunched: &storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now()},
+	}
 	server := listener.server(t)
 	var logged bytes.Buffer
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 
 	stop.send(context.Background(), "ses_relaunched", time.Now())
 
-	if listener.requests != 1 {
-		t.Fatalf("the listener was asked %d times, want the one stop, judged there", listener.requests)
+	if listener.entryRemoved {
+		t.Fatal("the relaunch's registration was deleted by a stop that belonged to the process it replaced")
+	}
+	if listener.delete.requests != 1 {
+		t.Fatalf("the listener was asked %d deletes, want the one stop, judged there", listener.delete.requests)
 	}
 	if !strings.Contains(logged.String(), "the Envoy listener kept the registration of a dead role's session") {
 		t.Fatalf("logged %q, want the kept registration reported", logged.String())
@@ -96,29 +247,136 @@ func TestTheCleanStopReportsARegistrationTheListenerKept(t *testing.T) {
 	}
 }
 
-// A listener of an earlier release judges no condition and answers 200 with no body at all: it
-// deleted the registration, and the stop says so.
-func TestTheCleanStopReadsABodilessAnswerAsTheRegistrationDeleted(t *testing.T) {
-	listener := &deleteRecorder{}
+// The listener keeps a registration for three separate reasons — another client instance owns
+// it, it was written after the moment, or the delete lost its compare-and-swap — and only the
+// listener knows which. So the daemon says that the registration was kept and hands on the
+// listener's own words for why, in the reason field, rather than asserting one of the three.
+// Here it is kept because the entry belongs to another client instance.
+func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
+	listener := &listenerRecorder{
+		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		relaunched: &storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now().Add(-time.Second)},
+	}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 
-	stop.send(context.Background(), "ses_older_listener", time.Now())
+	stop.send(context.Background(), "ses_relaunched", time.Now())
 
+	if !strings.Contains(logged.String(), "the registration belongs to another client instance") {
+		t.Fatalf("logged %q, want the listener's own reason for keeping the registration", logged.String())
+	}
+	if !strings.Contains(logged.String(), "the Envoy listener kept the registration of a dead role's session") {
+		t.Fatalf("logged %q, want the kept registration reported as kept", logged.String())
+	}
+}
+
+// A registration that names no client process — one a client predating that field wrote — leaves
+// the moment the probe judged to decide the delete on its own, and the stop names no instance at
+// all rather than naming an empty one: the listener compares no instance for an empty value as
+// for an absent one (session.InstanceMatches), so the query states only the condition the stop
+// really holds.
+func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *testing.T) {
+	listener := &listenerRecorder{held: storedRegistration{lastSeen: time.Now().Add(-time.Second)}}
+	server := listener.server(t)
+	var logged bytes.Buffer
+	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	goneAt := time.Now()
+
+	stop.send(context.Background(), "ses_old_client", goneAt)
+
+	conditions := listener.deleteConditions(t)
+	if _, named := conditions["client_instance_id"]; named {
+		t.Fatalf("the delete named client instance %q, want no instance parameter at all for an entry that carries none",
+			conditions.Get("client_instance_id"))
+	}
+	if got := conditions.Get("if_not_registered_after"); got != strconv.FormatInt(goneAt.UnixMilli(), 10) {
+		t.Fatalf("the delete named the moment %q, want the probe's own, %d", got, goneAt.UnixMilli())
+	}
+	if !listener.entryRemoved {
+		t.Fatal("the registration of a process that named no instance was kept, want it deleted on the moment alone")
+	}
 	if !strings.Contains(logged.String(), "the Envoy session of a role whose process is gone was stopped") {
 		t.Fatalf("logged %q, want the stop reported done", logged.String())
 	}
 }
 
-// The machine calls the stop inside its own decision, under its lock, so what cleanSessionStop
-// returns reads the moment there — where no lock is waited on — and leaves the delete to a
-// goroutine.
-func TestTheCleanStopRunsOffTheMachinesDecision(t *testing.T) {
-	arrived := make(chan struct{})
-	listener := &deleteRecorder{arrived: arrived}
+// A registry that holds no record of the session has already reached what the stop asked for, so
+// no delete is sent at all: there is nothing to name and nothing to remove.
+func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *testing.T) {
+	listener := &listenerRecorder{held: storedRegistration{absent: true}}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", bufferedLogger(&bytes.Buffer{}))
+	var logged bytes.Buffer
+	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+
+	stop.send(context.Background(), "ses_already_gone", time.Now())
+
+	if listener.delete.requests != 0 {
+		t.Fatalf("the listener was asked %d deletes, want none for a session it holds no registration of", listener.delete.requests)
+	}
+	if !strings.Contains(logged.String(), "the Envoy listener answered no registration of a dead role's session, so none was stopped") {
+		t.Fatalf("logged %q, want the absent registration reported", logged.String())
+	}
+}
+
+// A read the listener refuses leaves unknown whether the entry names a client process, so a
+// delete sent then would rest on the moment alone for an entry that may name one (sessionStop.send
+// says why that is not sent). So nothing is deleted and nothing is tried again, and the
+// registration lapses at the gone horizon, which is the wait the session already had.
+func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
+	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
+	server := listener.server(t)
+	var logged bytes.Buffer
+	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+
+	stop.send(context.Background(), "ses_dead", time.Now())
+
+	if listener.read.requests != 1 || listener.delete.requests != 0 {
+		t.Fatalf("the listener was asked %d reads and %d deletes, want the one read and no delete at all",
+			listener.read.requests, listener.delete.requests)
+	}
+	if !strings.Contains(logged.String(), "the Envoy listener did not answer what a dead role's session registration is") {
+		t.Fatalf("logged %q, want the unanswered read reported", logged.String())
+	}
+}
+
+// A listener that never answers does not leave the stop in flight for as long as it likes: the
+// work is bounded, by cleanSessionStopBudget and by supervision's own end, and the stop that is
+// abandoned there sends no delete either.
+func TestCleanSessionStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
+	arrived := make(chan struct{})
+	listener := &listenerRecorder{hangRead: true, arrived: arrived}
+	server := listener.server(t)
+	supervising, endSupervision := context.WithCancel(context.Background())
+	defer endSupervision()
+	go func() {
+		<-arrived
+		endSupervision()
+	}()
+	var logged bytes.Buffer
+	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged)}
+
+	stop.send(supervising, "ses_hung", time.Now())
+
+	if listener.delete.requests != 0 {
+		t.Fatalf("the listener was asked %d deletes, want none from a stop whose read never answered", listener.delete.requests)
+	}
+	if !strings.Contains(logged.String(), "the Envoy listener did not answer what a dead role's session registration is") {
+		t.Fatalf("logged %q, want the abandoned stop reported", logged.String())
+	}
+}
+
+// The machine calls the stop inside its own decision, under its lock, so what cleanSessionStop
+// returns reads the moment there — where no lock is waited on — and leaves the read and the
+// delete to a goroutine.
+func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
+	arrived := make(chan struct{})
+	listener := &listenerRecorder{
+		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		arrived: arrived,
+	}
+	server := listener.server(t)
+	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -138,76 +396,9 @@ func TestTheCleanStopRunsOffTheMachinesDecision(t *testing.T) {
 	}
 }
 
-// The daemon's clock and the listener's are not one, and the stop is dated so that the skew
-// between them can only refuse a delete, never make one. The moment the stop carries is read on
-// this daemon's clock and compared with an UpdatedAt the registering process stamped on its own,
-// so a daemon running ahead would otherwise call the relaunch's registration older than the stop
-// and delete it — the very loss the condition exists to stop. So the stop is dated
-// cleanSessionStopSkewAllowance before the moment it was asked at, and no further: a stop dated
-// before the relaunch's own backoff and boot could begin refusing deletes that are owed.
-//
-// Before the allowance the stop carried time.Now() itself, and the first check below failed with
-// a gap of about zero.
-func TestCleanSessionStopDatesItselfBeforeTheMomentItWasAskedAt(t *testing.T) {
-	arrived := make(chan struct{})
-	listener := &deleteRecorder{arrived: arrived}
-	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", bufferedLogger(&bytes.Buffer{}))
-
-	// The moment is read inside the call, so it lies between these two, less the allowance.
-	before := time.Now()
-	stop("ses_skewed")
-	after := time.Now()
-	select {
-	case <-arrived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the clean stop never reached the listener")
-	}
-
-	var millis int64
-	if _, err := fmt.Sscanf(listener.query, "if_not_registered_after=%d", &millis); err != nil {
-		t.Fatalf("the listener was asked %q, want a stop naming the moment it belongs to: %v", listener.query, err)
-	}
-	carried := time.UnixMilli(millis)
-	if behind := after.Sub(carried); behind < cleanSessionStopSkewAllowance {
-		t.Fatalf("the stop was dated %s before it was asked for, want at least the %s allowance: a daemon clock that far ahead of the listener's would delete the relaunch's registration",
-			behind, cleanSessionStopSkewAllowance)
-	}
-	if behind := before.Sub(carried); behind > launchBackoffFirst {
-		t.Fatalf("the stop was dated %s before it was asked for, past the %s a relaunch's own backoff takes: stops that are owed would start being refused",
-			behind, launchBackoffFirst)
-	}
-}
-
-// A listener that never answers does not leave the stop in flight for as long as it likes: the
-// request is bounded, by cleanSessionStopBudget and by supervision's own end, and what it then
-// costs the session is only the wait it already had, so it is reported as the refusal it is.
-func TestTheCleanStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
-	arrived := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		close(arrived)
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-	supervising, endSupervision := context.WithCancel(context.Background())
-	defer endSupervision()
-	go func() {
-		<-arrived
-		endSupervision()
-	}()
-	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged)}
-
-	stop.send(supervising, "ses_hung", time.Now())
-
-	if !strings.Contains(logged.String(), "the Envoy listener did not take the clean stop") {
-		t.Fatalf("logged %q, want the abandoned stop reported", logged.String())
-	}
-}
-
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
-func TestNoCleanStopWithoutAListener(t *testing.T) {
+func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
 	if stop := cleanSessionStop(context.Background(), "", "", quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}

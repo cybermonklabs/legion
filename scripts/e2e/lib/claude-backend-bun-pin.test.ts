@@ -162,6 +162,14 @@ test.skipIf(skip)(
         TMPDIR: scratch,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
+        // The review App's key command, which prerequisites requires and has no default for
+        // (lib/github-apps.sh), and which this run does run, on the driver: write_github_apps
+        // --key-dir resolves the key into the run's own file before the pin check
+        // (claude-backend-tmux.sh, "After write_github_apps"), so a run that set no command, or
+        // one that printed nothing, would be refused there and never reach the pin this row is
+        // about. `printf` is the shell's own builtin, so the command answers under the stand-in
+        // PATH this run is given, and the first FAIL line below is still the pin's.
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: "printf 'a stand-in review App key'",
       },
       stdout: "pipe",
       stderr: "pipe",

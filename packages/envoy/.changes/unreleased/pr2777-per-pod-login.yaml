@@ -23,9 +23,10 @@ body: |-
   predates that release carries no pod on its row, so its next login claims that row for the
   pod it proves, by its subject and the key the login signed with, and keeps its credential: a
   daemon running across the upgrade renews on the row it already holds rather than being
-  refused its own key. A pod that enrolled itself gets nothing from this: the service such an
-  account logs in as binds no pod account, so no session pod can end another's. Every other
-  caller stays `403 NOT_ENROLLING_CREDENTIAL`.
+  refused its own key. A pod that enrolled itself gets nothing from this: an enrollment of a pod
+  that runs as the login's own account ends under the credential that made it and only while
+  that credential is the one its own pod holds, on either schema, so no session pod can end
+  another's. Every other caller stays `403 NOT_ENROLLING_CREDENTIAL`.
 
   The broker reads which of the two schemas it is on at every token login, so either generation
   is right on either schema and no roll has to be ordered around it.
