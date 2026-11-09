@@ -446,7 +446,7 @@ one, which the nightly's re-record job uses so that it can see a committed recor
 writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
 the stubbed layer alone" to its workers; set by hand it waives every harness refusal and the
 preflight for the whole run, real-stack projects included.
-The suite has thirteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
 three the `-alone` projects below take and the stubbed layer's own
 (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
 run). `iphone`

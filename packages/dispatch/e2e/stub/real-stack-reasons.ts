@@ -154,7 +154,7 @@ export const realStackReasons: Record<string, string> = {
     "the edit lands and is re-read; each draws the diagram inside the live document editor",
   "message-agent.e2e.ts": "mention targets posted and their delivery failures",
   "nav.e2e.ts":
-    "the sidebar row is read in the desktop and the phone configuration at once, and a stubbed row runs in exactly one",
+    "the sidebar's badges are counts the server computes over the issues and asks the row seeds, and the row asserts the exact set of requests the page makes of that server",
   "nested-directive.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",

@@ -21,11 +21,25 @@
  *  it names. The stubbed layer replays a recording against a build this checkout made, so
  *  running it against a deployed server would prove something about neither: the config leaves
  *  the stub projects out of such a run and declares no server for it.
+ *
+ *  A fourth question has the same answer as the second and is asked of this module too, so that
+ *  it cannot drift from it: **are the stub projects declared at all?** The config leaves them
+ *  out of a deployed run and out of two-process mode, and declaring a project with no server,
+ *  or starting a server for a project that is not declared, is the pair of faults one answer
+ *  prevents.
  */
+import { projectsOnCommandLine } from "../configurations";
 
 /** Set to `1` by `bun run e2e:stub:record`: the rows run against the real harness and write
  *  what they fetched. Unset, which is every other run, they replay. */
 export const stubRecordVariable = "DISPATCH_E2E_STUB_RECORD";
+
+/** Whether this run records. The fixture (`e2e/stub/stub-test.ts`) asks it of a worker's own
+ *  environment and the config asks it of the command line's, and both read it here, so the
+ *  fixture and the config can never answer it differently. */
+export function stubRecording(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env[stubRecordVariable] ?? "") === "1";
+}
 
 /** Carries the stub-only decision to the workers. Every worker re-imports the config, and a
  *  worker's own argv is Playwright's (`.../workerMain.js`) rather than the command line, so a
@@ -40,6 +54,8 @@ export const stubOnlyVariable = "DISPATCH_E2E_STUB_ONLY";
 export interface StubSelection {
   /** The rows meet the real harness and write what they fetched. */
   readonly recording: boolean;
+  /** The config declares the stub projects for this run at all. */
+  readonly declared: boolean;
   /** The run holds at least one stubbed row, so it is given the static file server. */
   readonly holdsStubRow: boolean;
   /** The run is the stubbed layer alone, so it is exempt from the harness refusals and the
@@ -47,24 +63,16 @@ export interface StubSelection {
   readonly onlyStub: boolean;
 }
 
-/** The projects `--project` names on `argv`, in either spelling Playwright takes, read before a
- *  `--` separator. An empty list is a run that names none, which is every project of its mode. */
-export function projectsOnCommandLine(argv: readonly string[]): string[] {
-  const separator = argv.indexOf("--");
-  const scanned = separator === -1 ? argv : argv.slice(0, separator);
-  const named: string[] = [];
-  for (const [index, argument] of scanned.entries()) {
-    if (argument === "--project") named.push(scanned[index + 1] ?? "");
-    else if (argument.startsWith("--project=")) named.push(argument.slice("--project=".length));
-  }
-  return named;
-}
-
-/** Reads the three questions above once, and writes `stubOnlyVariable` where the answer to the
+/** Reads the four questions above once, and writes `stubOnlyVariable` where the answer to the
  *  third is yes, so every worker of the run reads the same answer.
  *
  *  `projects` is the names of the stubbed layer's projects, and `processes` the run's Dispatch
- *  server count: two-process mode runs its own project list, which holds no stub project. */
+ *  server count: two-process mode runs its own project list, which holds no stub project.
+ *
+ *  A `--project` value this cannot resolve - a `*` pattern, which Playwright expands against
+ *  the config's own projects - is read as possibly naming any project: such a run may hold a
+ *  stubbed row, so it gets the server, and it may hold a real-stack row, so it keeps every
+ *  refusal and the preflight. */
 export function stubSelection(options: {
   argv: readonly string[];
   env: NodeJS.ProcessEnv;
@@ -72,18 +80,24 @@ export function stubSelection(options: {
   projects: readonly string[];
 }): StubSelection {
   const { argv, env, processes, projects } = options;
-  const recording = (env[stubRecordVariable] ?? "") === "1";
+  const recording = stubRecording(env);
   const deployed = (env.PLAYWRIGHT_BASE_URL ?? "") !== "";
   const named = projectsOnCommandLine(argv);
-  const reachable = processes === 1 && !deployed;
+  const stubbed = projects.map((project) => project.toLowerCase());
+  const unresolved = named.filter((project) => project.includes("*"));
+  const declared = processes === 1 && !deployed;
   const holdsStubRow =
-    reachable && (named.length === 0 || named.some((project) => projects.includes(project)));
+    declared &&
+    (named.length === 0 ||
+      unresolved.length > 0 ||
+      named.some((project) => stubbed.includes(project)));
   const onlyStub =
     env[stubOnlyVariable] === "1" ||
-    (reachable &&
+    (declared &&
       !recording &&
       named.length > 0 &&
-      named.every((project) => projects.includes(project)));
+      unresolved.length === 0 &&
+      named.every((project) => stubbed.includes(project)));
   if (onlyStub) env[stubOnlyVariable] = "1";
-  return { holdsStubRow, onlyStub, recording };
+  return { declared, holdsStubRow, onlyStub, recording };
 }

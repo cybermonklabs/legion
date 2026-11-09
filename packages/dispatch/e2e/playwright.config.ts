@@ -141,7 +141,6 @@ const stub = stubSelection({
   processes: harnessProcessCount,
   projects: stubProjectNames,
 });
-const stubOnly = stub.onlyStub;
 
 // One worker per lane, and the lanes are e2e/run.ts's: a worker resolves its own harness from
 // `TEST_PARALLEL_INDEX` (e2e/harness-ports.ts), so a run with more workers than lanes would put
@@ -153,7 +152,7 @@ const asked = workersOnCommandLine(process.argv);
 // run of the stubbed layer alone reaches no server of it and meets none of them, and every
 // other run meets all four. Each keeps its own sentence, so a person who forgets the harness
 // still gets the line that fixes it.
-if (!stubOnly) {
+if (!stub.onlyStub) {
   if (!listing && unset.length > 0) {
     throw new Error(
       `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
@@ -679,7 +678,9 @@ export default defineConfig({
   // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not
   // both read it or do not accept each other's cookies (e2e/preflight.ts). A run of the `stub`
   // project alone reaches no such server, so it has no global setup at all.
-  globalSetup: stubOnly ? undefined : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  globalSetup: stub.onlyStub
+    ? undefined
+    : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
   // The one server this config starts, and it serves files: the built SPA, for the stubbed
   // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
   // it before Playwright.
@@ -711,7 +712,9 @@ export default defineConfig({
   // A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) gets no stub project at
   // all: the stubbed layer replays a recording against a build this checkout made, so against
   // a deployed server it would prove nothing about either, and `e2e:deployed` names no project
-  // and builds no `web/dist` to serve.
+  // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
+  // above is built on the same one, so a server can never start for a project this list leaves
+  // out, nor a project be declared with no server to answer it.
   projects:
     harnessProcessCount === 2
       ? multiprocessProjects
@@ -719,6 +722,6 @@ export default defineConfig({
           ...parallelProjects,
           ...aloneProjects,
           ...visualProjects,
-          ...(process.env.PLAYWRIGHT_BASE_URL ? [] : stubProjects),
+          ...(stub.declared ? stubProjects : []),
         ],
 });

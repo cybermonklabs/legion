@@ -147,8 +147,8 @@ jobs:
           DISPATCH_E2E_STUB_RECORD=1 bun e2e/run.ts -- bunx playwright test \
             --config e2e/playwright.config.ts --project=stub --project=stub-phone
         working-directory: packages/dispatch
-      # Uploaded whether or not it matches, so whoever reads a red run applies the new set with
-      # one copy rather than standing a harness up themselves.
+      # Uploaded whether or not it matches, so whoever reads a red run applies the new set by
+      # replacing the committed directory with it rather than standing a harness up themselves.
       - name: Upload the re-recorded set
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -156,6 +156,11 @@ jobs:
           name: dispatch-browser-recordings-${{ github.run_attempt }}
           path: ${{ runner.temp }}/fresh
           if-no-files-found: error
+      # Run even where the step above failed, which is the usual way drift arrives: a route
+      # that answers 404 where its recording holds 200 fails the row that reads it, so the
+      # recording run is red, and without this the job would name the failed row and never the
+      # route. `!cancelled()` and not `always()`, so a cancelled run stops here.
       - name: Fail where a route no longer answers as its recording holds
+        if: ${{ !cancelled() }}
         run: bun e2e/tools/compare-recordings.ts "$RUNNER_TEMP/fresh"
         working-directory: packages/dispatch

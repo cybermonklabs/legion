@@ -1,10 +1,12 @@
 /** The budget the pull-request lane is held to, read from the config the lane runs.
  *
  *  `.github/workflows/dispatch-browser.yaml`'s shard job runs the pull-request lane as
- *  `--project=chromium --project=iphone --project=stub --project=stub-phone --grep=@pr`, and the
- *  full lane as every project with no grep. This lists the config exactly that way and holds the
- *  lane to two numbers, so a row added without a thought about which lane answers it fails here
- *  rather than on the day the lane is ten minutes slower than it was.
+ *  `--project=chromium --project=iphone --project=stub --project=stub-phone` with
+ *  `--grep=(^|\s)@pr(\s|$)`, and the full lane as every project with no grep. This lists the
+ *  config exactly that way - the grep is `tagged("pr")`'s own source, so the two readings of
+ *  the lane cannot select different rows - and holds the lane to two numbers, so a row added
+ *  without a thought about which lane answers it fails here rather than on the day the lane is
+ *  ten minutes slower than it was.
  *
  *  Why 330 and not the 350 dispatch://INFRA-1407's R1 names: dispatch://INFRA-1410 and
  *  dispatch://INFRA-1511 land after this head and will each want rows on this lane, and the
@@ -36,7 +38,7 @@ const lane = retained(
   listing("e2e/playwright.config.ts", {}, [
     ...pullRequestLaneProjects.flatMap((project) => ["--project", project]),
     "--grep",
-    "@pr",
+    tagged("pr").source,
   ])
 );
 const everything = retained(listing("e2e/playwright.config.ts", {}));

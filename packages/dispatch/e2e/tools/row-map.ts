@@ -26,16 +26,22 @@
  *  page computed, and a reviewer reads that short list rather than hundreds of lines of prose.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listing } from "../__tests__/playwright-listing";
 import { rowsOfListing, stubProjectNames } from "../configurations";
 import { realStackReasons } from "../stub/real-stack-reasons";
-import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
+import {
+  committedRecordings,
+  recordingFamily,
+  recordingFor,
+  recordingsUnder,
+} from "../stub/recordings";
 
 // A listing names a file relative to the config's own directory, which is `e2e/`.
 const suiteDirectory = fileURLToPath(new URL("..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
-const recordings = recordingsDirectory();
+const recordings = committedRecordings;
 
 /** The first paragraph of a stub spec file's header comment, which says why its rows may be
  *  stubbed. A file with no header comment fails the generation: the reason is the whole point. */
@@ -71,16 +77,43 @@ const rows = rowsOfListing(await listing("e2e/playwright.config.ts", {}));
 const moved = rows.filter((row) => stubProjectNames.includes(row.project));
 const real = rows.filter((row) => !stubProjectNames.includes(row.project));
 
-// One entry per moved row, not one per project it runs in: a row runs in `stub` or in
-// `stub-phone`, never both, so the two are already disjoint.
-const movedLines = moved
-  .map((row) => [
-    `\`e2e/${row.file}\``,
-    row.title,
-    "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts",
-    stubReason(row.file),
-  ])
-  .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+// One entry per moved row and not one per project it runs in: `stub` runs every stubbed row
+// and `stub-phone` runs the `@phone` ones again at a phone's width, so each of those rows is
+// listed twice by the listing and once here. What the map says of a row - the file it lives
+// in, that it kept every assertion, and why a recording can answer it - is true of the row
+// rather than of the viewport it ran at.
+const movedLines = [
+  ...new Map(
+    moved.map((row) => [
+      `${row.file}\u0000${row.title}`,
+      [
+        `\`e2e/${row.file}\``,
+        row.title,
+        "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts",
+        stubReason(row.file),
+      ],
+    ])
+  ).values(),
+].sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+
+// Every committed recording belongs to a row the listing still names. Nothing else checks
+// this: record mode writes the path of the row it is running and deletes nothing, so a row
+// that is renamed, removed, or newly skipped leaves its `.har` and `.scene.json` behind, the
+// contract test goes on reading them because they are still valid bodies, and the pull request
+// merges green. The first nightly on `main` then re-records, finds a committed file no row
+// wrote, and fails - with the full lane in that same run red beside it. This is the one-way
+// half of that comparison, and it needs no harness: the listing names the rows, and
+// `recordingFor` is the same rule the fixture writes by.
+const owned = new Set(moved.map((row) => recordingFor(row, ".har")));
+const unowned = recordingsUnder(recordings).filter((path) => !owned.has(path));
+if (unowned.length > 0) {
+  throw new Error(
+    "These committed recordings belong to no row the listing names, so the next re-record run " +
+      "would report each of them as written by no row any more. Delete each, with the " +
+      "`.scene.json` beside it, or restore the row that wrote it:" +
+      `\n  ${unowned.join("\n  ")}`
+  );
+}
 
 // One entry per real-stack file, which is the granularity the reasons are written at, with the
 // rows it still holds. A file the listing names and the reasons do not is a gap, not a blank.
@@ -163,12 +196,11 @@ if (process.argv.includes("--search")) {
   // the list and a reviewer reads it; that is the division k2 asks for.
   const literal = /(?:toHaveText|toContainText|getByText|toHaveValue)\(\s*"([^"]{4,})"/g;
   const files = [...new Set(moved.map((row) => row.file))].sort();
-  const root = recordings.replace(/\/$/, "");
-  const committed = recordingsUnder(root);
+  const committed = recordingsUnder(recordings);
   if (committed.length === 0) {
     throw new Error(
-      `There are no recordings under ${root}, so this search would read nothing and report ` +
-        "nothing. Record them with `bun run e2e:stub:record` in packages/dispatch."
+      `There are no recordings under ${recordings}, so this search would read nothing and ` +
+        "report nothing. Record them with `bun run e2e:stub:record` in packages/dispatch."
     );
   }
   console.error(
@@ -178,12 +210,11 @@ if (process.argv.includes("--search")) {
   for (const file of files) {
     const source = readFileSync(`${suiteDirectory}${file}`, "utf8");
     const family = file.replace(/\.stub\.e2e\.ts$/, "");
-    // A recording's path is `<project>/<family>/<row>.har`, and a row that runs in both stubbed
-    // projects has one under each, so a family's recordings are every path whose second
-    // segment is its own.
+    // A row that runs in both stubbed projects has a recording under each, so a family's
+    // recordings are every committed path the layout reads that family out of.
     const recorded = new Map<string, string>();
-    for (const name of committed.filter((path) => path.split("/")[1] === family)) {
-      recorded.set(name, readFileSync(`${root}/${name}`, "utf8"));
+    for (const name of committed.filter((path) => recordingFamily(path) === family)) {
+      recorded.set(name, readFileSync(join(recordings, name), "utf8"));
     }
     const hits = new Set<string>();
     for (const match of source.matchAll(literal)) {

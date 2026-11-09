@@ -18,6 +18,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020";
 
@@ -41,7 +42,7 @@ const document = JSON.parse(readFileSync(documentPath, "utf8")) as OpenApiDocume
 const recordings = recordingsDirectory();
 
 /** Every committed recording, by its path relative to that directory. */
-const files = recordingsUnder(recordings.replace(/\/$/, ""));
+const files = recordingsUnder(recordings);
 
 /** The document's routes with their segments, split once. `routeOf` runs for every entry of
  *  every recording - thousands over a hundred and fifty routes - and splitting the table inside
@@ -95,12 +96,11 @@ describe("every committed recording answers what the generated contract declares
   });
 
   for (const file of files) {
-    const name = file;
-    test(name, () => {
-      const har = JSON.parse(readFileSync(`${recordings}${file}`, "utf8")) as Har;
+    test(file, () => {
+      const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
       for (const entry of har.log.entries) {
         const url = new URL(entry.request.url);
-        const where = `${entry.request.method} ${url.pathname} in ${name}`;
+        const where = `${entry.request.method} ${url.pathname} in ${file}`;
         expect(url.origin, `${where}: a committed recording names the placeholder origin`).toBe(
           recordedOrigin
         );

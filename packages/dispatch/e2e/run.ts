@@ -37,6 +37,7 @@ import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 
+import { projectsOnCommandLine } from "./configurations";
 import {
   laneCountVariable,
   laneVariable,
@@ -148,18 +149,6 @@ function runsPlaywrightTests(argv: readonly string[]): boolean {
   const runner = argv.findIndex((word) => /(^|\/)playwright(\.js)?$/.test(word));
   if (runner === -1 || argv[runner + 1] !== "test") return false;
   return !argv.slice(runner + 2).includes("--list");
-}
-
-/** The projects `--project` names on the command line, in either spelling Playwright takes. */
-function projectsOnCommandLine(argv: readonly string[]): readonly string[] {
-  const projects: string[] = [];
-  for (const [index, word] of argv.entries()) {
-    if (word === "--project") {
-      const named = argv[index + 1];
-      if (named !== undefined) projects.push(named);
-    } else if (word.startsWith("--project=")) projects.push(word.slice("--project=".length));
-  }
-  return projects;
 }
 
 /** The engines the projects this run would run launch: two-process mode has the one Chromium

@@ -6,9 +6,9 @@
  *  (e2e/stub/live-frames.ts), and there is no Go server, no Postgres, no fake listener, no
  *  sign-in and no database reset in the run at all.
  *
- *  A file that holds such rows is named `*.stub.e2e.ts`, which is the `stub` project's
- *  `testMatch` and every other project's `testIgnore` (e2e/playwright.config.ts). It declares its
- *  own `test` with `stubbed(seed)`:
+ *  A file that holds such rows is named `*.stub.e2e.ts`, which is the `testMatch` of both
+ *  stubbed projects - `stub` and `stub-phone` - and every other project's `testIgnore`
+ *  (e2e/playwright.config.ts). It declares its own `test` with `stubbed(seed)`:
  *
  *      const test = stubbed(async () => {
  *        await createProject({ key: "CORE", name: "Core" });
@@ -43,7 +43,7 @@ import { test as base, type Page } from "@playwright/test";
 import { answerTo, type LiveClientFrame } from "./live-frames";
 import { type Har, normalise, retargeted, written } from "./recording";
 import { recordingPath } from "./recordings";
-import { stubRecordVariable } from "./selection";
+import { stubRecording } from "./selection";
 
 /** Everything a recording answers and nothing else. The document and its assets are the static
  *  server's, so that a pull request's own front-end change is the one under test. */
@@ -98,7 +98,7 @@ async function answerTheLiveSocket(page: Page): Promise<void> {
 export function stubbed<Scene>(seed: () => Promise<Scene>) {
   return base.extend<{ scene: Scene }>({
     scene: async ({ page, context, baseURL }, use, test) => {
-      if ((process.env[stubRecordVariable] ?? "") !== "1") {
+      if (!stubRecording()) {
         const har = recordingPath(test, ".har");
         if (!existsSync(har)) {
           // Not a refusal here, because a fixture is set up before the body runs and a row

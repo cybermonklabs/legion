@@ -16,32 +16,68 @@ import type { TestInfo } from "@playwright/test";
  *  unset, which is every other run, the directory is the committed one. */
 export const recordingsDirectoryVariable = "DISPATCH_E2E_STUB_RECORDINGS";
 
-/** The directory one run reads its recordings from or writes them to, with a trailing slash. */
+/** The committed set, which is this checkout's own `e2e/__recordings__`, with no trailing
+ *  slash. A tool that compares the directory it was given with the one the tree holds names
+ *  this rather than calling `recordingsDirectory` with an empty environment, which reads as a
+ *  trick until a reader finds out why the argument is there. */
+export const committedRecordings = fileURLToPath(new URL("../__recordings__", import.meta.url));
+
+/** The directory one run reads its recordings from or writes them to, with no trailing slash:
+ *  every caller joins a path onto it, and a slash each of them then strips again is a layout
+ *  decided in four places. */
 export function recordingsDirectory(env: NodeJS.ProcessEnv = process.env): string {
   const named = (env[recordingsDirectoryVariable] ?? "").trim();
-  if (named !== "") return named.endsWith("/") ? named : `${named}/`;
-  return fileURLToPath(new URL("../__recordings__/", import.meta.url));
+  return named === "" ? committedRecordings : named.replace(/\/+$/, "");
 }
 
-/** Where one row's recording and scene live: a directory named for the project, then one named
- *  for the spec file, then a file named for the row. The row's name is its `describe` titles
- *  and its own, which is what Playwright reports and what the row map reads, so two rows of one
- *  file never collide.
+/** A row's file name, from its `describe` titles and its own: lower case, every run of other
+ *  characters a single hyphen, cut to 120. The listing's own title separator collapses to that
+ *  one hyphen too, so a row read from `playwright test --list` and the same row running under
+ *  the fixture name one file. */
+export function recordingName(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 120);
+}
+
+/** Where one row's recording and scene live, relative to a set's root: a directory named for
+ *  the project, then one named for the spec file, then a file named for the row. Two rows of
+ *  one file never collide, because the name carries the `describe` titles above the row.
  *
  *  The project comes first because a row that runs in both stubbed projects - one whose claim
  *  holds at a desktop width and at a phone's - is two rows of one title, each asking the server
  *  from its own viewport. One file for both would be written twice in a recording run, by two
  *  workers at once, and replayed in whichever of the two shapes won. */
+export function recordingFor(
+  row: { project: string; file: string; title: string },
+  extension: string
+): string {
+  const family = row.file.replace(/\.stub\.e2e\.ts$/, "");
+  return join(row.project, family, `${recordingName(row.title)}${extension}`);
+}
+
+/** The absolute path of one running row's recording or scene, under the directory this run
+ *  reads and writes. */
 export function recordingPath(test: TestInfo, extension: string): string {
-  const spec = test.titlePath[0].replace(/\.stub\.e2e\.ts$/, "");
-  const row = test.titlePath
-    .slice(1)
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 120);
-  return join(recordingsDirectory(), test.project.name, spec, `${row}${extension}`);
+  return join(
+    recordingsDirectory(),
+    recordingFor(
+      {
+        file: test.titlePath[0],
+        project: test.project.name,
+        title: test.titlePath.slice(1).join(" "),
+      },
+      extension
+    )
+  );
+}
+
+/** The spec family a `<project>/<family>/<row>.har` belongs to, read by this module rather
+ *  than by a caller splitting the path on its own. */
+export function recordingFamily(path: string): string {
+  return path.split("/")[1] ?? "";
 }
 
 /** Every `<project>/<family>/<row>.har` under `root`, by its path relative to `root`, sorted.

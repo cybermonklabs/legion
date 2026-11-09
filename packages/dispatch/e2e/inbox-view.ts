@@ -22,6 +22,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
+import { openFilterFields } from "./inbox-filter";
 import { inboxList } from "./inbox-pane";
 import {
   agentRowId,
@@ -354,14 +355,6 @@ export async function bandHeadings(page: Page): Promise<string[]> {
   return inboxList(page)
     .locator("h2 button")
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
-}
-
-/** Opens the bar's Filter panel, which is shut until the reader presses **Filter**. */
-export async function openFilterFields(page: Page): Promise<Locator> {
-  const fields = page.locator("[data-inbox-filter-fields]");
-  if ((await fields.count()) === 0) await page.locator("[data-inbox-filter]").click();
-  await expect(fields).toHaveCount(1);
-  return fields;
 }
 
 /** Opens one field's popover and hands back its listbox, shutting whichever was open. */

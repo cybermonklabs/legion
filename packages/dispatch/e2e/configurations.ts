@@ -217,3 +217,37 @@ export const pullRequestLaneProjects: readonly string[] = [
 export function tagged(tag: string): RegExp {
   return new RegExp(`(^|\\s)@${tag}(\\s|$)`);
 }
+
+/** The projects `--project` names on `argv`, read as Playwright reads them, lower-cased.
+ *
+ *  Playwright's `--project <project-name...>` is variadic, so one flag takes every value up to
+ *  the next option: `--project stub chromium` names two. A reader that took one value per flag
+ *  would see `stub` alone there and answer that the run is the stubbed layer by itself, which
+ *  waives the harness refusals and the preflight for the `chromium` rows beside it. Playwright
+ *  matches a project name without regard to case, so the names come back lower-cased and a
+ *  caller compares them against its own lower-case list.
+ *
+ *  A value holding `*` is a pattern Playwright expands against the config's own projects, which
+ *  this cannot see, so it comes back as it was written and a caller reads it as "projects I
+ *  cannot name": the conservative answer in both directions is that such a run may hold any
+ *  project, so nothing is waived for it.
+ *
+ *  An empty list is a run that names no project, which is every project of its mode. Every
+ *  `--project` of the whole line is read, and a `--` ends one flag's values because it begins
+ *  with `-`: `e2e/run.ts` reads the Playwright argv it passes after its own `--`, and the
+ *  config reads a Playwright command line that has no `--` in it. */
+export function projectsOnCommandLine(argv: readonly string[]): string[] {
+  const named: string[] = [];
+  for (const [index, word] of argv.entries()) {
+    if (word.startsWith("--project=")) {
+      named.push(word.slice("--project=".length).toLowerCase());
+      continue;
+    }
+    if (word !== "--project") continue;
+    for (const value of argv.slice(index + 1)) {
+      if (value.startsWith("-")) break;
+      named.push(value.toLowerCase());
+    }
+  }
+  return named;
+}

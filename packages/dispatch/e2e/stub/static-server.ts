@@ -3,9 +3,9 @@
  *
  *  It serves `packages/dispatch/web/dist` - the build under test, freshly built by the command
  *  that runs the suite - the way the Go router serves it (`packages/envoy/internal/dispatch/
- *  routes/router.go`, `servePage`): a file that exists is answered verbatim with an `ETag` of its
- *  bytes, and every other path is answered with `index.html`, which is the SPA fallback every
- *  route of the dashboard relies on.
+ *  routes/router.go`, `servePage`): a file that exists is answered verbatim, and every other
+ *  path is answered with `index.html`, which is the SPA fallback every route of the dashboard
+ *  relies on. It sends no `ETag`, and the comment at the answer below says why.
  *
  *  Why a file server and not a recording of the document and its assets: `web/vite.config.ts`
  *  keeps the entry chunk's hash distinct for every build, so a recording that answered `/assets`
@@ -79,8 +79,12 @@ function takesTheDocument(path: string): boolean {
  *  `routeFromHAR` with `notFound: "abort"`, so a request its recording has none of is aborted
  *  in the browser and never reaches here - but a row whose fixture is not installed, or a
  *  request made before it is, would otherwise be given `index.html` with a 200 and parse an
- *  HTML document as JSON somewhere far from this cause. */
-const recordedRoutes = /^\/(api\/v1\/|auth\/)/;
+ *  HTML document as JSON somewhere far from this cause.
+ *
+ *  Every path under `/api` and `/auth` and the two bare names themselves, not `/api/v1` alone:
+ *  the SPA also asks `/api/github/rest/...` (`web/src/api/client.ts`), and a server that
+ *  answered one of those with the document would hide the same fault in a new place. */
+const recordedRoutes = /^\/(api|auth)(\/|$)/;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",

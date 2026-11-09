@@ -23,7 +23,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { type Har, statusDrift } from "../stub/recording";
-import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
+import { committedRecordings, recordingsUnder } from "../stub/recordings";
 
 const usage =
   "usage: bun e2e/tools/compare-recordings.ts <fresh>\n" +
@@ -57,7 +57,7 @@ function directoryIdentity(path: string): string {
 // fresh set is the caller's directory, and it must not be the same one: a recording compared
 // with itself can never differ, which is how the vanished-recording finding below went
 // unreachable until a review read it.
-const committedRoot = recordingsDirectory({}).replace(/\/$/, "");
+const committedRoot = committedRecordings;
 if (directoryIdentity(fresh) === directoryIdentity(committedRoot)) {
   console.error(
     `${fresh} is the committed set itself, so every comparison would be a recording against ` +
@@ -111,7 +111,10 @@ for (const name of uncommitted) {
   console.error(`  ${name}: the re-recording wrote this, and the tree holds no committed copy`);
 }
 console.error(
-  "\nThe re-recorded set is this run's `dispatch-browser-recordings` artifact: download it and " +
-    "copy it over packages/dispatch/e2e/__recordings__ to apply it, then read the diff."
+  "\nThe re-recorded set is this run's `dispatch-browser-recordings` artifact. Replace " +
+    "packages/dispatch/e2e/__recordings__ with it - delete the directory first and put the " +
+    "artifact in its place - and read the diff. A copy over the directory would leave behind " +
+    "every recording named above as written by no row any more, and the next run would report " +
+    "them again."
 );
 process.exit(1);

@@ -9,11 +9,13 @@
  *  it for that reason: the vanished-recording finding was unreachable while the two sides could
  *  be one directory.
  *
- *  The guard compares the caller's word with the absolute path of the committed set, so it
- *  holds for an absolute spelling and not for the relative one a person types from
- *  `packages/dispatch`, where every command of this package is written from. Measured at
- *  legion/INFRA-1407 8fe394e1: `bun e2e/tools/compare-recordings.ts e2e/__recordings__` printed
- *  "every one of the 132 committed recordings still answers as it holds" and exited 0.
+ *  The guard compares the resolved path of the caller's word with the resolved path of the
+ *  committed set, so it holds for every spelling that names that directory: the relative one a
+ *  person types from `packages/dispatch`, where every command of this package is written from,
+ *  a trailing slash, a `..`, a symlink, and the absolute path. Before that it compared the
+ *  caller's word with the absolute path alone, and at legion/INFRA-1407 8fe394e1
+ *  `bun e2e/tools/compare-recordings.ts e2e/__recordings__` printed "every one of the 132
+ *  committed recordings still answers as it holds" and exited 0.
  */
 
 import { expect, test } from "bun:test";
@@ -59,7 +61,8 @@ test(
 test(
   "the committed set named by its absolute path is refused",
   async () => {
-    // The spelling the guard already holds, so the rule above cannot be met by dropping it.
+    // The spelling the guard held before it resolved both paths, so the row above cannot be
+    // met by dropping it.
     const { code, output } = await comparing(committed);
     expect(code).toBe(2);
     expect(output).toContain("is the committed set itself");

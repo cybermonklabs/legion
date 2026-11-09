@@ -2563,12 +2563,15 @@ masking enough of that to be green would mask what the job exists to watch (`sta
 cannot: the generated contract holds client and server to one shape at compile time, the
 contract test holds every recorded body to that shape on each pull request, this holds the
 status of each route, and the rows that stayed on the real stack hold the server's behaviour.
-The job uploads the re-recorded set, so applying it is one copy, and it also finds a committed
-recording no row writes any more - which it could not while it re-recorded over the committed
-set.
+The job uploads the re-recorded set, and applying it is a replacement of
+`e2e/__recordings__` by that artifact rather than a copy over it: a copy would leave behind
+every recording the job named as written by no row any more.
+It finds those too - which it could not while it re-recorded over the committed
+set - and `bun e2e/tools/row-map.ts` refuses one on a pull request, before a nightly meets it.
 
 The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
-pull-request lane runs `--grep=@pr` over `chromium`, `iphone`, `stub` and `stub-phone`; the full
+pull-request lane runs `--grep=(^|\s)@pr(\s|$)` over `chromium`, `iphone`, `stub` and
+`stub-phone`, which is `tagged("pr")`'s own pattern, anchored so `@prototype` is not `@pr`; the full
 lane, which the merge queue and the nightly run, runs every project and no grep. So a tagged row
 answers a pull request and an untagged one gates `main` at the merge queue, and nothing is
 deleted either way. Every stubbed row carries the tag, which

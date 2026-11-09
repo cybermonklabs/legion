@@ -4,9 +4,11 @@
  *
  *  Every row reads only what the page draws over fixed answers, so each runs against a
  *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
- *  The phone row runs under `stub-phone`, which is the one project that takes the `@phone` tag
- *  here. The sidebar row of `nav.e2e.ts` stayed there: it is read in the desktop configuration
- *  as well as the phone's, and a stubbed row runs in one of the two.
+ *  The phone row runs under `stub-phone`, which emulates the phone; under `stub`, which runs
+ *  at a desktop width, its own `test.skip` takes it out. The sidebar row of `nav.e2e.ts`
+ *  stayed there: its badges are counts the server computes over the twenty issues and three
+ *  asks it seeds, and it asserts the exact set of requests the page makes of that server,
+ *  which a recording that answers only what it holds cannot be read for.
  */
 import { expect, type Page } from "@playwright/test";
 
