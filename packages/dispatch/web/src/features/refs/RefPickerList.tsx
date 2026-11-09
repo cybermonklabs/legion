@@ -7,6 +7,7 @@ import {
   surfaceMutedHoverBg,
   surfaceRecessedBg,
   textMutedOnSurface,
+  textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "./kind-icons";
@@ -20,10 +21,14 @@ import type { RefPicker } from "./useRefPicker";
  * field and the insertion; this owns nothing but the list.
  */
 export function RefPickerList({
+  id,
   label = "References",
   onTake,
   picker,
 }: {
+  /** What the box that opened it points `aria-controls` at, so the two are one widget to a
+   *  reader who cannot see them. */
+  id?: string;
   /** The list's accessible name, which a host with several fields makes its own. */
   label?: string;
   /** Applies the pick to the host's own draft: the picker decides what to write and where, and
@@ -62,14 +67,16 @@ export function RefPickerList({
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate font-medium ${textPrimaryOnSurface}`}>{one.label}</span>
         {one.detail === "" ? null : (
-          <TruncatedText className={`text-xs ${textMutedOnSurface}`} title={one.detail}>
+          // The stronger muted role, which clears AA over the sky fill a highlighted row wears
+          // as well as over the list's own surface.
+          <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
             {one.detail}
           </TruncatedText>
         )}
       </span>
       {one.parts === undefined ? null : (
         <button
-          className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${textMutedOnSurface}`}
+          className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${textOptionDescription}`}
           onClick={(event) => {
             event.stopPropagation();
             picker.openParts(one.id);
@@ -86,6 +93,7 @@ export function RefPickerList({
       aria-label={label}
       className={`max-h-52 overflow-y-auto rounded-lg border p-1 ${surfaceRecessedBg}`}
       data-testid="ref-picker"
+      id={id}
       role="listbox"
     >
       {picker.groups.map((group) => (

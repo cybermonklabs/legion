@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { type DispatchWritingBox, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -8,7 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { userOnFakeClock } from "../../__tests__/user";
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
@@ -20,7 +20,8 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
-import { MentionComposer, reconcileMentions } from "./MentionComposer";
+import { MentionComposer } from "./MentionComposer";
+import { reconcileMentions } from "./MentionField";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
@@ -87,6 +88,9 @@ const createdComment: Comment = {
 interface ComposerOptions {
   agents?: readonly Agent[];
   anchor?: { artifact: string; mark_id: string; quote: string };
+  /** Which box of the writing list this mount stands for; `boxFor` picks the one a host with
+   *  these props would be (`DISPATCH_WRITING_BOXES`). */
+  box?: DispatchWritingBox;
   closed?: boolean;
   edit?: { body: string; id: string };
   kind?: "ask" | "comment" | "suggestion";
@@ -96,6 +100,18 @@ interface ComposerOptions {
   onSent?: () => void;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
+}
+
+/** The box a host passing these props would be, in the order the composer reads its own write
+ *  in: an edit is a margin card's editor, a suggestion or an ask the margin's composer, a
+ *  message to one session an Agents row, and everything else the issue's Conversation. */
+function boxFor(props: ComposerOptions): DispatchWritingBox {
+  if (props.edit !== undefined) return "margin-comment-edit";
+  if (props.anchor !== undefined || props.onKindChange !== undefined || props.kind !== undefined) {
+    return "margin-composer";
+  }
+  if (props.owner?.kind === "session") return "agents-row-composer";
+  return "conversation-composer";
 }
 
 /** Renders the composer, and hands back `rerender` for a host that changes its props on the live
@@ -110,6 +126,7 @@ function renderComposer(options: ComposerOptions = {}) {
         <MentionComposer
           agents={props.agents}
           anchor={props.anchor}
+          box={props.box ?? boxFor(props)}
           closed={props.closed}
           edit={props.edit}
           kind={props.kind}
@@ -141,11 +158,13 @@ function holdControls(): HTMLFieldSetElement {
   return controls;
 }
 
-/** The picker reads the issue's collaborators when it opens, for the roles no live agent holds,
- *  and a read no handler answers fails its test. Every row that opens the picker is answered here
- *  with the empty collaborator list a page drew before those options existed; the rows that are
- *  about a stopped role answer it themselves with `collaboratorsAnswer`. */
+/** Every source the picker reads when a door opens over the composer, and a read no handler
+ *  answers fails its test: the issue's collaborators (its people and the roles nobody is
+ *  running), the project's components and the search behind the kinds that need a query. The
+ *  rows that are about a stopped role answer the collaborators themselves. */
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
+let architectureRead: Mock<typeof api.getArchitecture>;
+let searchRead: Mock<typeof api.search>;
 beforeEach(() => {
   collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [],
@@ -153,9 +172,27 @@ beforeEach(() => {
     legion_registry: "ok",
     people: [],
   });
+  architectureRead = spyOn(api, "getArchitecture").mockResolvedValue({
+    components: [],
+    not_architectural: [],
+    retired_links: [],
+    sources: [],
+    totals: {
+      components_without_work: 0,
+      issues_done: 0,
+      issues_total: 0,
+      not_architectural: 0,
+      retired_links: 0,
+      unassigned: 0,
+    },
+    unassigned: [],
+  });
+  searchRead = spyOn(api, "search").mockResolvedValue({ results: [], took_ms: 1 });
 });
 afterEach(() => {
   collaboratorsRead.mockRestore();
+  architectureRead.mockRestore();
+  searchRead.mockRestore();
 });
 
 test("a comment without a surviving mention preserves /btw and omits delivery", async () => {
@@ -179,18 +216,22 @@ test("a comment without a surviving mention preserves /btw and omits delivery", 
   }
 });
 
-test("a selected mention with /btw posts the canonical target and stripped body", async () => {
+// A mention reaches a draft from the channel it is written in (`seedMentions`) or from the
+// reply it answers: a pick in the reference picker writes the party's link and no record
+// (INFRA-1702 R3), so these rows seed what they deliver.
+test("a seeded mention with /btw posts the canonical target and stripped body", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [planner] });
+  const { view } = renderComposer({
+    agents: [planner],
+    seedMentions: [{ target: "session:A", title: "Planner" }],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btw @");
-    await screen.findByRole("listbox", { name: "Mention suggestions" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
+    field.focus();
+    field.setSelectionRange(0, 0);
+    await user.paste("/btw ");
     await waitFor(() => expect(field.value).toBe("/btw @Planner"));
     expect(screen.getByRole("list", { name: "Mention targets" })).toHaveTextContent("session:A");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -212,19 +253,17 @@ test("a selected mention with /btw posts the canonical target and stripped body"
   }
 });
 
-test("deleting a selected mention restores verbatim body and omits delivery", async () => {
+test("deleting a seeded mention restores verbatim body and omits delivery", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [planner] });
+  const { view } = renderComposer({
+    agents: [planner],
+    seedMentions: [{ target: "session:A", title: "Planner" }],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btw @");
-    await screen.findByRole("listbox", { name: "Mention suggestions" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
-    await waitFor(() => expect(field.value).toBe("/btw @Planner"));
+    await waitFor(() => expect(field.value).toBe("@Planner"));
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("/btw ");
@@ -242,15 +281,14 @@ test("deleting a selected mention restores verbatim body and omits delivery", as
 test("deleting an accepted duplicate mention never delivers the indistinguishable survivor", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [planner] });
+  const { view } = renderComposer({
+    agents: [planner],
+    seedMentions: [{ target: "session:A", title: "Planner" }],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btw @");
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
+    await waitFor(() => expect(field.value).toBe("@Planner"));
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("/btw @Planner @Planner");
@@ -271,15 +309,13 @@ test("deleting an accepted duplicate mention never delivers the indistinguishabl
 test("a session title cannot make its mention text impersonate a different session", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [{ ...planner, title: "session:Victim" }] });
+  const { view } = renderComposer({
+    agents: [{ ...planner, title: "session:Victim" }],
+    seedMentions: [{ target: "session:A", title: "session:Victim" }],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    await screen.findByRole("option", { name: "session:Victim" });
-    await user.click(screen.getByRole("option", { name: "session:Victim" }));
     await waitFor(() => expect(field.value).toBe("@session A"));
     expect(screen.getByRole("list", { name: "Mention targets" })).toHaveTextContent("session:A");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -318,6 +354,7 @@ test("reopening the same reply restores its canonical prefills after cancel", as
           Open reply
         </button>
         <MentionComposer
+          box="conversation-composer"
           onCancelReply={() => setReplyTo(null)}
           onClose={() => {}}
           onSent={() => {}}
@@ -612,23 +649,26 @@ test("a programmatic reference append reuses its current body as the next edit b
 test("a reference append retains every visible accepted mention through the next edit", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [planner, worker] });
+  const { view } = renderComposer({
+    agents: [planner, worker],
+    seedMentions: [
+      { target: "session:A", title: "Planner" },
+      { target: "session:B", title: "Worker" },
+    ],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btw @");
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
-    await waitFor(() => expect(field.value).toBe("/btw @Planner"));
-    await user.click(field);
-    await user.paste(" x @");
-    await screen.findByRole("option", { name: "Worker" });
-    await user.click(screen.getByRole("option", { name: "Worker" }));
+    await waitFor(() => expect(field.value).toBe("@Planner @Worker"));
+    field.focus();
+    field.setSelectionRange(0, 0);
+    await user.paste("/btw ");
+    await waitFor(() => expect(field.value).toBe("/btw @Planner @Worker"));
+    field.setSelectionRange("/btw @Planner".length, "/btw @Planner".length);
+    await user.paste(" x");
     await waitFor(() => expect(field.value).toBe("/btw @Planner x @Worker"));
     // An address written into the draft is an edit like any other.
-    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
     await user.paste(" dispatch://CORE-1");
     await waitFor(() => expect(field.value).toBe("/btw @Planner x @Worker dispatch://CORE-1"));
     // The ` x` goes, and both accepted mentions stay where the edit leaves them.
@@ -655,10 +695,11 @@ test("a reference append retains every visible accepted mention through the next
   }
 });
 
-test("opening autocomplete refetches live agents before selecting a canonical target", async () => {
+// The registry is read again the moment the picker opens, inside the shell poller's 15 s, so a
+// session started since the last poll is offered to the reader asking for it now.
+test("opening the picker refetches the live agents", async () => {
   const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner, worker]);
-  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -667,6 +708,7 @@ test("opening autocomplete refetches live agents before selecting a canonical ta
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={queryClient}>
         <MentionComposer
+          box="conversation-composer"
           onClose={() => {}}
           onSent={() => {}}
           owner={{ issueKey: "CORE-1", kind: "issue" }}
@@ -680,35 +722,15 @@ test("opening autocomplete refetches live agents before selecting a canonical ta
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("@");
-    await waitFor(() => expect(listAgents).toHaveBeenCalledTimes(1));
-    await screen.findByRole("option", { name: "Worker" });
-    await user.click(screen.getByRole("option", { name: "Worker" }));
-    act(() =>
-      queryClient.setQueryData(["agents"], [planner, { ...worker, title: "Renamed worker" }])
-    );
-    await user.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() =>
-      expect(createComment).toHaveBeenCalledWith(
-        "CORE-1",
-        {
-          body: "@Worker",
-          delivery: "steer",
-          mentions: [{ target: "session:B" }],
-        },
-        keyedAttempt
-      )
-    );
+    await screen.findByTestId("ref-picker");
+    await waitFor(() => expect(listAgents).toHaveBeenCalled());
   } finally {
     view.unmount();
     listAgents.mockRestore();
-    createComment.mockRestore();
   }
 });
 
 test("an accepted mention survives its target going offline before Send", async () => {
-  // Typing @ refetches the live agents (the test above). That refetch answers what the cache
-  // already holds, so Planner goes offline only when this test takes it out of the list.
   const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
@@ -720,9 +742,11 @@ test("an accepted mention survives its target going offline before Send", async 
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={queryClient}>
         <MentionComposer
+          box="conversation-composer"
           onClose={() => {}}
           onSent={() => {}}
           owner={{ issueKey: "CORE-1", kind: "issue" }}
+          seedMentions={[{ target: "session:A", title: "Planner" }]}
         />
       </QueryClientProvider>
     </MemoryRouter>
@@ -730,12 +754,7 @@ test("an accepted mention survives its target going offline before Send", async 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    await waitFor(() => expect(listAgents).toHaveBeenCalledTimes(1));
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
+    await waitFor(() => expect(field.value).toBe("@Planner"));
     act(() => queryClient.setQueryData(["agents"], []));
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() =>
@@ -753,99 +772,6 @@ test("an accepted mention survives its target going offline before Send", async 
     view.unmount();
     listAgents.mockRestore();
     createComment.mockRestore();
-  }
-});
-
-// A refilling agent list keeps the suggestions an earlier read gave and never says nobody
-// matches: it says the list is refilling instead.
-test("mention suggestions say the agent list is refilling instead of that no agent matches", async () => {
-  const user = userEvent.setup();
-  const listAgents = spyOn(api, "listAgents").mockRejectedValue(
-    new ApiError(503, { code: "ENVOY_REFILLING", error: "The agent list is refilling." })
-  );
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  queryClient.setQueryData(["agents"], [planner]);
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={queryClient}>
-        <MentionComposer
-          onClose={() => {}}
-          onSent={() => {}}
-          owner={{ issueKey: "CORE-1", kind: "issue" }}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    const suggestions = await screen.findByRole("listbox", { name: "Mention suggestions" });
-    expect((await within(suggestions).findByTestId("agent-list-refilling")).textContent).toBe(
-      AGENT_LIST_REFILLING
-    );
-    const kept = within(suggestions).getByRole("option", { name: "Planner" });
-    // The suggestion kept from the earlier read draws its agent's running state as unknown, never
-    // as not running, while the list it would be judged by is refilling.
-    expect(kept.querySelector('[data-agent-name="A"]')?.getAttribute("data-agent-state")).toBe(
-      "unknown"
-    );
-
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@nobody");
-    await waitFor(() => expect(within(suggestions).queryAllByRole("option")).toHaveLength(0));
-    expect(within(suggestions).getByTestId("agent-list-refilling")).toBeTruthy();
-    expect(within(suggestions).queryByText("No live agents match.")).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-    listAgents.mockRestore();
-  }
-});
-
-// INFRA-440 (exclusion E2). Each suggestion is one option inside a listbox, which may own only
-// options, so the agent in it is drawn by `AgentName` with its running state and no link: a
-// session option's name, and a role option's holder in its detail line.
-test("the mention picker draws each agent with its state and no link", async () => {
-  const user = userEvent.setup();
-  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={queryClient}>
-        <MentionComposer
-          onClose={() => {}}
-          onSent={() => {}}
-          owner={{ issueKey: "CORE-1", kind: "issue" }}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
-    const session = await within(listbox).findByRole("option", { name: "Planner" });
-    const role = within(listbox).getByRole("option", { name: "legion-planner" });
-    for (const option of [session, role]) {
-      const agent = option.querySelector('[data-agent-name="A"]');
-      expect(agent?.textContent).toBe("Planner");
-      await waitFor(() => expect(agent?.getAttribute("data-agent-state")).toBe("running"));
-    }
-    expect(role).toHaveTextContent("Planner · /workspaces/planner");
-    expect(listbox.querySelector("a")).toBeNull();
-  } finally {
-    view.unmount();
-    listAgents.mockRestore();
   }
 });
 
@@ -917,79 +843,39 @@ const storedNames: Pick<AgentText, "sessionText"> = {
   sessionText: (_sessionId, storedTitle) => storedTitle ?? "",
 };
 
-// The picker offers each of the issue's Legion roles no live agent holds, once, under "Not
-// running", drawn by its newest session and addressed to the role.
-test("the picker offers a stopped role once under Not running and sends it as a role mention", async () => {
+// An ask option's Enter adds the next option, and the picker's Enter takes the row under it:
+// the field's own listener is in front of the box's handler, so one key cannot do both.
+test("Enter in an ask option takes the picker's row, and adds an option once it is closed", async () => {
   const user = userEvent.setup();
-  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
-  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  // The live planner holds `legion-planner`, so only the reviewer role is not running.
-  const { view } = renderComposer({ agents: [planner] });
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner], kind: "ask" });
 
   try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
+    const label = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Option 1 label" });
+    await user.click(label);
     await user.paste("@");
-    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
-    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
-    expect(collaborators).toHaveBeenCalledWith("CORE-1");
-    const options = within(stopped).getAllByRole("option");
-    expect(options.map((option) => option.getAttribute("aria-label"))).toEqual([
-      "legion-p-core-1-reviewer",
-    ]);
-    expect(options[0]?.textContent).toContain("New reviewer · reviewer · not running");
-    expect(options[0]?.querySelector('[data-agent-name="new-reviewer"]')).not.toBeNull();
+    await screen.findByTestId("ref-picker");
+    await screen.findByText("Planner");
+    // The row Enter takes with no arrow pressed is the first the list drew, the live agent:
+    // this issue's collaborators name no person.
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(label.value).toBe("[Planner](dispatch://agent/A)"));
+    // The option row the picker's Enter did not add.
+    expect(screen.queryByRole("textbox", { name: "Option 2 label" })).toBeNull();
 
-    await user.click(within(stopped).getByRole("option", { name: "legion-p-core-1-reviewer" }));
-    await waitFor(() => expect(field.value).toBe("@legion-p-core-1-reviewer"));
-    await user.click(field);
-    await user.paste(" please look");
-    await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() =>
-      expect(createComment).toHaveBeenCalledWith(
-        "CORE-1",
-        {
-          body: "@legion-p-core-1-reviewer please look",
-          delivery: "steer",
-          mentions: [{ target: "role:legion-p-core-1-reviewer" }],
-        },
-        keyedAttempt
-      )
-    );
+    // With the list closed the same key is the box's own, as it always was.
+    await user.keyboard("{Enter}");
+    await screen.findByRole("textbox", { name: "Option 2 label" });
   } finally {
     view.unmount();
-    collaborators.mockRestore();
-    createComment.mockRestore();
-  }
-});
-
-// The case this feature exists for: every agent of the issue has stopped, so the picker holds the
-// "Not running" group alone. It must not say no agent matches underneath the list it is showing.
-test("a picker holding only stopped roles does not say no agent matches", async () => {
-  const user = userEvent.setup();
-  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
-  const { view } = renderComposer({ agents: [] });
-
-  try {
-    const field = screen.getByLabelText("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
-    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
-    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
-    expect(within(stopped).getAllByRole("option").length).toBeGreaterThan(0);
-    expect(screen.queryByText("No live agents match.")).toBeNull();
-  } finally {
-    view.unmount();
-    collaborators.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
 // The rule the "Not running" options follow: a role a live agent holds is the live options'
 // (never offered twice), and a role is offered once by its newest session whatever replaced it.
-// A live list whose state is unknown is the caller's case, which the picker test below proves.
+// A live list whose state is unknown offers no stopped role at all, which `useRefPicker` holds
+// to where it builds the picker's party rows.
 test("stopped role options leave out held roles and name each role once", () => {
   const reviewerOnly = stoppedRoleOptions([planner], collaboratorsAnswer.agents, storedNames);
   expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
@@ -1014,55 +900,23 @@ test("stopped role options leave out held roles and name each role once", () => 
   ).toEqual(["role:legion-planner"]);
 });
 
-// The composer reads the live list itself when its host supplies none: until that read lands, or
-// once it fails, the picker shows no "Not running" option beside the unknown live state.
-test("the picker adds no stopped option while the live agents list failed", async () => {
-  const user = userEvent.setup();
-  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
-  const listAgents = spyOn(api, "listAgents").mockRejectedValue(new Error("listener down"));
-  const { view } = renderComposer();
-
-  try {
-    const field = screen.getByLabelText("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
-    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
-    await waitFor(() => expect(listAgents).toHaveBeenCalled());
-    // Both reads have answered - the collaborators with a stopped reviewer, the live list with
-    // its failure - before the picker is read.
-    await act(async () => {
-      await collaborators.mock.results[0]?.value;
-      await Promise.allSettled(listAgents.mock.results.map((result) => result.value));
-    });
-    await screen.findByText("Could not load live agents — Envoy listener unreachable.");
-    expect(within(listbox).queryByRole("group", { name: "Not running" })).toBeNull();
-    expect(within(listbox).queryAllByRole("option")).toHaveLength(0);
-  } finally {
-    view.unmount();
-    collaborators.mockRestore();
-    listAgents.mockRestore();
-  }
-});
-
-test("two accepted mentions receive one comment-level delivery mode", async () => {
+test("two seeded mentions receive one comment-level delivery mode", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [planner] });
+  const { view } = renderComposer({
+    agents: [planner],
+    seedMentions: [
+      { target: "session:A", title: "Planner" },
+      { target: "role:legion-planner", title: "legion-planner" },
+    ],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/aside @");
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
-    await waitFor(() => expect(field.value).toBe("/aside @Planner"));
-    await user.click(field);
-    await user.paste(" @");
-    await screen.findByRole("option", { name: "legion-planner" });
-    await user.click(screen.getByRole("option", { name: "legion-planner" }));
+    await waitFor(() => expect(field.value).toBe("@Planner @legion-planner"));
+    field.focus();
+    field.setSelectionRange(0, 0);
+    await user.paste("/aside ");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
@@ -1085,15 +939,15 @@ test("two accepted mentions receive one comment-level delivery mode", async () =
 test("/btw in the body and /btwx stay ordinary text despite a mention", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const { view } = renderComposer({ agents: [planner] });
+  const seedMentions = [{ target: "session:A", title: "Planner" }];
+  const { view } = renderComposer({ agents: [planner], seedMentions });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("hello /btw @");
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    field.focus();
+    field.setSelectionRange(0, 0);
+    await user.paste("hello /btw ");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() =>
       expect(createComment).toHaveBeenLastCalledWith(
@@ -1108,13 +962,12 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
     );
     view.unmount();
 
-    const second = renderComposer({ agents: [planner] });
+    const second = renderComposer({ agents: [planner], seedMentions });
     const secondField = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(secondField);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("/btwx @");
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
+    await waitFor(() => expect(secondField.value).toBe("@Planner"));
+    secondField.focus();
+    secondField.setSelectionRange(0, 0);
+    await user.paste("/btwx ");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() =>
       expect(createComment).toHaveBeenLastCalledWith(
@@ -1623,22 +1476,17 @@ test("the Sending as Aside line leaves out a mentioned session that takes no mes
 });
 
 test("mentioning two targets that both lack the outbound mode names both in the warning", async () => {
-  const user = userEvent.setup();
-  const { view } = renderComposer({ agents: [planner, worker] });
+  const { view } = renderComposer({
+    agents: [planner, worker],
+    seedMentions: [
+      { target: "session:A", title: "Planner" },
+      { target: "session:B", title: "Worker" },
+    ],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("@");
-    await screen.findByRole("option", { name: "Planner" });
-    await user.click(screen.getByRole("option", { name: "Planner" }));
-    await waitFor(() => expect(field.value).toBe("@Planner"));
-    await user.click(field);
-    await user.paste(" x @");
-    await screen.findByRole("option", { name: "Worker" });
-    await user.click(screen.getByRole("option", { name: "Worker" }));
-    await waitFor(() => expect(field.value).toBe("@Planner x @Worker"));
+    await waitFor(() => expect(field.value).toBe("@Planner @Worker"));
     expect(screen.getByText(/Planner and Worker do not advertise Send/)).toBeTruthy();
   } finally {
     view.unmount();
@@ -1646,6 +1494,7 @@ test("mentioning two targets that both lack the outbound mode names both in the 
 });
 
 const plannerMention = { target: "session:A", title: "Planner" };
+const workerMention = { target: "session:B", title: "Worker" };
 const createdMessage: Message = {
   author: { id: "alice", kind: "user" },
   body: "sent",
@@ -1691,32 +1540,24 @@ test("a mount seeds the owner's mention and sends it", async () => {
   }
 });
 
-/** Types `@` at the end of the field and accepts `title` from the suggestions, as a reader does. */
-async function acceptMention(
-  user: UserEvent,
-  field: HTMLTextAreaElement,
-  title: string
-): Promise<void> {
-  await user.click(field);
-  await user.paste("@");
-  await screen.findByRole("listbox", { name: "Mention suggestions" });
-  await user.click(screen.getByRole("option", { name: title }));
-}
-
 // An Agents row changes the composer's owner and seed when the reader picks an issue, and the
 // live draft takes the new seed in place, by the rules a mount applies. The records these start
-// from are accepted in an issue comment that seeds nothing, since a direct message offers none.
+// from are the last channel's own seed, which is where a record comes from now that a pick in
+// the picker writes a link and none.
 test("a draft entering a channel that owes a mention is seeded in front of it, records and all", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
-  const { rerender, view } = renderComposer({ agents: [planner, worker] });
+  const { rerender, view } = renderComposer({
+    agents: [planner, worker],
+    seedMentions: [workerMention],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
+    await waitFor(() => expect(field.value).toBe("@Worker"));
+    field.focus();
+    field.setSelectionRange(0, 0);
     await user.paste("hello ");
-    await acceptMention(user, field, "Worker");
     await waitFor(() => expect(field.value).toBe("hello @Worker"));
     rerender({ agents: [planner, worker], seedMentions: [plannerMention] });
     await waitFor(() => expect(field.value).toBe("@Planner hello @Worker"));
@@ -1742,28 +1583,32 @@ test("a draft entering a channel that owes a mention is seeded in front of it, r
 test("a draft that already holds the channel's mention is not seeded twice, wherever it sits", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
-  const { rerender, view } = renderComposer({ agents: [planner, worker] });
+  const { rerender, view } = renderComposer({
+    agents: [planner, worker],
+    seedMentions: [plannerMention],
+  });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    field.focus();
+    field.setSelectionRange(0, 0);
     await user.paste("y");
-    await acceptMention(user, field, "Planner");
-    await waitFor(() => expect(field.value).toBe("y@Planner"));
-    await user.click(field);
+    field.setSelectionRange(field.value.length, field.value.length);
     await user.paste(" x");
-    rerender({ agents: [planner, worker], seedMentions: [plannerMention] });
     await waitFor(() => expect(field.value).toBe("y@Planner x"));
+    // The channel now owes the worker as well; the planner it already holds is left where it is.
+    rerender({ agents: [planner, worker], seedMentions: [plannerMention, workerMention] });
+    await waitFor(() => expect(field.value).toBe("@Worker y@Planner x"));
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "y@Planner x",
+          body: "@Worker y@Planner x",
           delivery: "steer",
-          mentions: [{ target: "session:A" }],
+          mentions: [{ target: "session:B" }, { target: "session:A" }],
         },
         keyedAttempt
       )
@@ -1774,7 +1619,7 @@ test("a draft that already holds the channel's mention is not seeded twice, wher
   }
 });
 
-test("a mention accepted after a reseed lands at its own offset", async () => {
+test("a mention seeded after a reseed lands at its own offset", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const direct = { kind: "session" as const, sessionId: "A" };
   const user = userEvent.setup();
@@ -1787,19 +1632,17 @@ test("a mention accepted after a reseed lands at its own offset", async () => {
     await user.paste("hello");
     rerender({ agents: [planner, worker], seedMentions: [plannerMention] });
     await waitFor(() => expect(field.value).toBe("@Planner hello"));
-    await user.click(field);
-    await user.paste(" ");
-    await acceptMention(user, field, "Worker");
-    await waitFor(() => expect(field.value).toBe("@Planner hello @Worker"));
+    rerender({ agents: [planner, worker], seedMentions: [plannerMention, workerMention] });
+    await waitFor(() => expect(field.value).toBe("@Worker @Planner hello"));
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner hello @Worker",
+          body: "@Worker @Planner hello",
           delivery: "steer",
-          mentions: [{ target: "session:A" }, { target: "session:B" }],
+          mentions: [{ target: "session:B" }, { target: "session:A" }],
         },
         keyedAttempt
       )
@@ -2026,9 +1869,9 @@ test("an Escape in Send's task cannot offer Discard", async () => {
   }
 });
 
-// The mention suggestions write into the draft too: a suggestion open when the message goes
-// would put a mention into a draft its refusal then replaces. Sending closes them.
-test("a send closes the mention suggestions open over its draft", async () => {
+// The picker writes into the draft too: a list open when the message goes would put a reference
+// into a draft its refusal then replaces. Sending closes it.
+test("a send closes the reference picker open over its draft", async () => {
   const refused = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
   const user = userEvent.setup();
@@ -2039,10 +1882,10 @@ test("a send closes the mention suggestions open over its draft", async () => {
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("hello @Pl");
-    await screen.findByRole("option", { name: "Planner" });
+    await screen.findByTestId("ref-picker");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(holdControls().disabled).toBe(true));
-    expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
 
     refused.reject(commentRefused);
     await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
@@ -2209,6 +2052,7 @@ test("a refusal belongs to the mark it answered: a newer anchor leaves it behind
         </button>
         <MentionComposer
           anchor={{ artifact: "artifact-1", mark_id: markId, quote: "brown" }}
+          box="margin-composer"
           onClose={() => {}}
           onKindChange={() => "Not this one."}
           onSent={() => {}}
@@ -2261,6 +2105,7 @@ function renderHostedComposer() {
       <QueryClientProvider client={queryClient}>
         <HostHolds />
         <MentionComposer
+          box="conversation-composer"
           mutationKey={hostKey}
           onClose={() => {}}
           onSent={() => {}}
@@ -2967,6 +2812,7 @@ function renderRemountedReply(user: UserEvent) {
         </button>
         {shown ? (
           <MentionComposer
+            box="inbox-thread-reply"
             inline
             mutationKey={threadReplyKey}
             onClose={() => {}}

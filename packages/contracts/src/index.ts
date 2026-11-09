@@ -9,6 +9,7 @@ export * from "./dispatch-snippet";
 export * from "./dispatch-text-references";
 export * from "./dispatch-text-rules";
 export * from "./dispatch-tools";
+export * from "./dispatch-writing-boxes";
 export * from "./envelope";
 export * from "./envoy-session";
 export * from "./going";

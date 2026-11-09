@@ -3,10 +3,13 @@ import type { AgentText } from "./AgentName";
 
 /**
  * The parties a box can address: the live sessions, the roles their holders carry, and the
- * issue's Legion roles nobody holds now. One list, read by the composer's `@` mentions
- * (`MentionComposer.tsx`) and by the reference picker's party rows (`useRefPicker.ts`), so a
- * session offered as a mention and the same session offered as a reference can never be two
- * different rules about who is running.
+ * issue's Legion roles nobody holds now. One list, read by the shared text field's delivery
+ * modes (`MentionComposer.tsx`) and by the reference picker's party rows (`useRefPicker.ts`),
+ * so a session offered as a mention and the same session offered as a reference can never be
+ * two different rules about who is running.
+ *
+ * A module of its own rather than part of the field: the field hosts the picker, so the picker
+ * cannot read these from the field without the two importing each other (`noImportCycles`).
  *
  * It costs no read of its own: the pair of sources is the shared registry query
  * (`agentsQuery`, which the shell polls) and the issue's collaborators, both already fetched.
@@ -119,10 +122,4 @@ export function stoppedRoleOptions(
       title: agent.legion.role_token,
     };
   });
-}
-
-/** The role token a `role:<token>` option names, or undefined for a `session:` one, whose own
- *  half of the pair is `sessionOfAddress` (`routes.ts`). */
-export function optionRole(option: MentionOption): string | undefined {
-  return option.target.startsWith("role:") ? option.target.slice("role:".length) : undefined;
 }

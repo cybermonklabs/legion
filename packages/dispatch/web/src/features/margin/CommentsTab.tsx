@@ -124,6 +124,7 @@ export function MarginComposerSlot({
         anchor={composer.anchor}
         anchorRefusal={anchorRefusal}
         autoFocus={onScreen}
+        box="margin-composer"
         closed={isClosed}
         frame="pt-3"
         kind={composer.kind}

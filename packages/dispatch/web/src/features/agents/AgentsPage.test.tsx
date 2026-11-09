@@ -192,6 +192,31 @@ function renderAgents({
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  // A box with no issue offers everyone who has signed in instead of an issue's people.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }]);
+  // The reference picker in each box reads the issue's collaborators and the project's
+  // components when a door opens, and a read no handler answers fails its test.
+  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue({
+    components: [],
+    not_architectural: [],
+    retired_links: [],
+    sources: [],
+    totals: {
+      components_without_work: 0,
+      issues_done: 0,
+      issues_total: 0,
+      not_architectural: 0,
+      retired_links: 0,
+      unassigned: 0,
+    },
+    unassigned: [],
+  });
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message(input.body)
   );
@@ -284,6 +309,9 @@ function renderAgents({
       createBroadcast.mockRestore();
       createMessageDelivery.mockRestore();
       listProjects.mockRestore();
+      getIssueCollaborators.mockRestore();
+      getArchitecture.mockRestore();
+      listUsers.mockRestore();
       listIssues.mockRestore();
       listAgentMessages.mockRestore();
       listAgents.mockRestore();

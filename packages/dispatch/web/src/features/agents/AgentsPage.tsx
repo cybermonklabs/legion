@@ -1,4 +1,4 @@
-import { DELIVERY_CAPABILITIES } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -52,6 +52,7 @@ import {
 } from "../../theme/classes";
 import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
+import { MentionField } from "../conversation/MentionField";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
 import { useAgents } from "../conversation/useAgents";
@@ -1118,13 +1119,18 @@ function BroadcastComposer({
           ))}
         </select>
       </div>
-      <textarea
-        aria-label="Broadcast message"
-        className={`mt-2 block w-full rounded-lg border px-3 py-2 text-sm narrow-or-short:order-1 narrow-or-short:col-span-full narrow-or-short:mt-0 narrow-or-short:max-h-32 short:col-span-2 narrow-or-short:min-h-16! narrow-or-short:field-sizing-content short:max-h-16 ${inputClasses(true)}`}
-        onChange={(event) => onBody(event.target.value)}
+      {/* The box is one grid cell of the short-screen layout, so the label the field wraps it
+          in carries that placement and the box itself only its own size. */}
+      <MentionField
+        body={body}
+        className="text-sm narrow-or-short:max-h-32 narrow-or-short:min-h-16! narrow-or-short:field-sizing-content short:max-h-16"
+        label="Broadcast message"
+        labelClassName="mt-2 block w-full narrow-or-short:order-1 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-2"
+        labelHidden
+        onChange={(change) => onBody(change.body)}
         placeholder="One message, sent to each selected agent"
         rows={3}
-        value={body}
+        writing={dispatchWritingBox("broadcast", "broadcast")}
       />
       {sendState.notice !== null ? (
         <p className={composerLine} id={noticeId}>

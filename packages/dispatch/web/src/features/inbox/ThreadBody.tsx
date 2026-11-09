@@ -320,6 +320,7 @@ function CommentThreadBody({
       composer={
         root === undefined ? null : (
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
@@ -401,6 +402,7 @@ function MessageThreadBody({
       composer={
         root === undefined ? null : (
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline

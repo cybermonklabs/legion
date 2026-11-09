@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -14,7 +15,6 @@ import {
   borderDefault,
   card,
   dangerText,
-  inputClasses,
   linkHoverText,
   linkText,
   secondaryButtonCompact,
@@ -22,6 +22,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { type IssueComponentsWrite, useIssueComponents } from "../issue/useIssueComponents";
 import { statusText } from "../project/board-model";
 import { referenceTriggerProps } from "../refs/RefPreview";
@@ -297,16 +298,20 @@ function UnassignedRow({
       </div>
       {reasonOpen && !write.pending ? (
         <form className="flex flex-wrap items-end gap-2" onSubmit={declareNone}>
-          <label className={`grid flex-1 gap-1 text-xs font-medium ${textSecondaryOnSurface}`}>
-            Why {issue.key} is not architectural
-            <textarea
-              className={`min-h-11 rounded-lg border px-2 py-1 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`}
-              onChange={(event) => setReason(event.target.value)}
-              required
-              rows={2}
-              value={reason}
-            />
-          </label>
+          {/* The form lays its boxes out in a row, so the label the field wraps the box in is
+              what flexes. An empty reason is refused by `declareNone` rather than by the
+              browser, the box being the shared field now. */}
+          <MentionField
+            body={reason}
+            className="min-h-11! text-sm"
+            issueKey={issue.key}
+            label={`Why ${issue.key} is not architectural`}
+            labelClassName={`grid flex-1 gap-1 text-xs font-medium ${textSecondaryOnSurface}`}
+            onChange={(change) => setReason(change.body)}
+            project={project}
+            rows={2}
+            writing={dispatchWritingBox("architecture-reason", "architecture-reason")}
+          />
           <button className={secondaryButton} type="submit">
             Save reason
           </button>

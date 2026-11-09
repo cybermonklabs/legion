@@ -1204,6 +1204,7 @@ export function ConversationTab({
           that sticks. */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
+          box="conversation-composer"
           closed={isClosed}
           docked
           mutationKey={sendKey}
@@ -1459,6 +1460,7 @@ export function ConversationTab({
           {phone.replyTo === null ? null : (
             <div hidden={!phoneReplyTargetsThread}>
               <MentionComposer
+                box="phone-thread-composer"
                 closed={isClosed}
                 frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
                 mutationKey={phone.composerKey}

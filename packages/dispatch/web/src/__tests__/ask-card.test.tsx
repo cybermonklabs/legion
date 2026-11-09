@@ -569,7 +569,9 @@ test("two AskCard instances for the same ask keep independently labeled answer f
     const fields = view.getAllByLabelText("Your answer");
     expect(fields).toHaveLength(2);
     expect(fields[0]).not.toBe(fields[1]);
-    expect(fields[0].id).not.toBe(fields[1].id);
+    // Each box is named by the label it sits inside (the shared text field's), so two cards on
+    // one page cannot share a name or a box, whatever ids the page holds.
+    expect(fields[0]?.closest("label")).not.toBe(fields[1]?.closest("label"));
   } finally {
     view.unmount();
   }

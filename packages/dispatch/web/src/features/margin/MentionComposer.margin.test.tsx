@@ -44,6 +44,7 @@ function Composer({
   return (
     <MentionComposer
       {...props}
+      box={props.edit === undefined ? "margin-composer" : "margin-comment-edit"}
       onSent={onSaved ?? (() => {})}
       owner={
         owner.kind === "issue"

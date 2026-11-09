@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
@@ -16,7 +17,6 @@ import {
   card,
   dangerText,
   decisionUnsureAccent,
-  inputClasses,
   linkHoverText,
   linkText,
   primaryButton,
@@ -25,6 +25,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
@@ -125,7 +126,6 @@ function ChangeComposer({
   quote: string;
 }): ReactNode {
   const [body, setBody] = useState("");
-  const fieldId = useId();
   const send = useKeyedWrite({
     inline: true,
     label: () => `Change to ${decision.heading}`,
@@ -160,15 +160,14 @@ function ChangeComposer({
       >
         {quote}
       </blockquote>
-      <label className={`block text-sm ${textPrimaryOnSurface}`} htmlFor={fieldId}>
-        Your change
-      </label>
-      <textarea
-        className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-        id={fieldId}
-        onChange={(event) => setBody(event.target.value)}
+      <MentionField
+        body={body}
+        issueKey={issueKey}
+        label="Your change"
+        labelClassName={`block text-sm ${textPrimaryOnSurface}`}
+        onChange={(change) => setBody(change.body)}
         rows={3}
-        value={body}
+        writing={dispatchWritingBox("decisions-change", "comment")}
       />
       {send.error === null ? null : (
         <p className={`text-sm ${dangerText}`} role="alert">

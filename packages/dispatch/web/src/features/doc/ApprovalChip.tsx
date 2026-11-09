@@ -1,5 +1,6 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -11,7 +12,6 @@ import {
   backdrop40,
   card,
   dangerText,
-  inputClasses,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -22,6 +22,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
@@ -132,18 +133,26 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  issueKey,
   onClose,
   onSubmit,
+  project,
   saving,
 }: {
   /** What the server answered the last request with, or null while none was refused. */
   error: Error | null;
+  /** The issue the document under review belongs to, where it has one: the picker offers that
+   *  issue's people and the Legion roles nobody is running. */
+  issueKey?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
+  /** The document's project, whose components the picker offers. */
+  project: string;
   saving: boolean;
 }): ReactNode {
   const [reason, setReason] = useState("");
-  const reasonId = useId();
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const trimmed = reason.trim();
@@ -160,29 +169,28 @@ function RequestChangesDialog({
           role="dialog"
         >
           <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Request changes</h2>
-          <label
-            className={`block text-sm font-medium ${textSecondaryOnSurface}`}
-            htmlFor={reasonId}
-          >
-            Reason
-            <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
-              id={reasonId}
-              onChange={(event) => setReason(event.target.value)}
-              onKeyDown={(event) =>
-                submitOnModifiedEnter(event, {
-                  onFormlessSubmit: () => {
-                    if (trimmed !== "" && !saving) {
-                      onSubmit(trimmed);
-                    }
-                  },
-                })
-              }
-              ref={textareaRef}
-              value={reason}
-            />
-          </label>
+          <MentionField
+            className="text-sm"
+            body={reason}
+            disabled={saving}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            issueKey={issueKey}
+            label="Reason"
+            onChange={(change) => setReason(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (trimmed !== "" && !saving) {
+                    onSubmit(trimmed);
+                  }
+                },
+              })
+            }
+            project={project}
+            writing={dispatchWritingBox("approval-reason", "approval-reason")}
+          />
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
@@ -326,6 +334,7 @@ export function ApprovalChip({
       {requestChangesOpen ? (
         <RequestChangesDialog
           error={review.isError ? review.error : null}
+          issueKey={artifact.issue_key ?? undefined}
           onClose={() => {
             review.reset();
             setRequestChangesOpen(false);
@@ -333,6 +342,7 @@ export function ApprovalChip({
           onSubmit={(reason) =>
             submitGuard.guard(() => review.mutate({ reason, state: "changes_requested" }))
           }
+          project={artifact.project}
           saving={review.isPending}
         />
       ) : null}

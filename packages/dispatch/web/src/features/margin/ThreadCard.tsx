@@ -291,6 +291,7 @@ export function ThreadCard({
     editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id);
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
+      box="margin-comment-edit"
       edit={{ body: comment.body, id: comment.id }}
       kind="comment"
       mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}
@@ -325,6 +326,7 @@ export function ThreadCard({
   const replyComposer = expanded ? (
     <div className="contents" hidden={hideReplyComposer}>
       <MentionComposer
+        box="margin-thread-reply"
         closed={isClosed}
         finishing={terminalSuggestion}
         frame={composerClassName}

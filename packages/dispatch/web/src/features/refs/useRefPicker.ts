@@ -9,12 +9,7 @@ import type { GraphReferences, SearchResult } from "../../api/types";
 import { useAgents } from "../conversation/useAgents";
 import { useAgentText } from "./AgentName";
 import { withBlock } from "./block-reference";
-import {
-  type MentionOption,
-  mentionOptions,
-  optionRole,
-  stoppedRoleOptions,
-} from "./party-options";
+import { type MentionOption, mentionOptions, stoppedRoleOptions } from "./party-options";
 import {
   groupRows,
   insertionFor,
@@ -130,11 +125,13 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
   });
 }
 
-/** A party's row: a session, or a role, by the one list the composer's mentions read
+/** A party's row: a session, or a role, by the one list the composer's delivery modes read
  *  (`party-options.ts`), so a party offered here and the same party offered as a mention cannot
  *  be two rules about who is running. */
 function partyRow(option: MentionOption): RefPickerRow {
-  const role = optionRole(option);
+  // A `role:<token>` option names a role; a `session:` one names a session, whose own half of
+  // the pair is `sessionOfAddress` (`routes.ts`).
+  const role = option.target.startsWith("role:") ? option.target.slice("role:".length) : undefined;
   return role === undefined
     ? {
         detail: option.detail,
