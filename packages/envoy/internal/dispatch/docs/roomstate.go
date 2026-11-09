@@ -34,16 +34,17 @@ type roomState struct {
 	connected map[uint64]model.Actor
 	// departedPeers is the browsers connected when ygo reported the room's last browser gone
 	// (settleLastPeer), each until its handler forgets it (removeConnection). ygo makes that report
-	// on the leaving browser's own socket (sjawhar/ygo v1.55.1-sami.1,
-	// provider/websocket/peer.go:715-721), before the handler that registered the browser returns
-	// and removes it from connected (ServeHTTP), and the settlement it owes runs there first, which
-	// takes seconds for a mebibyte; meanwhile connected still names browsers that have gone. The
-	// room budget's sweep counts a room whose connected browsers have all departed as one that will
-	// be closable (onlyDepartedLocked, sweepRooms), so an admission waits for it rather than being
-	// refused as though a browser held it. A browser authorized in the instant before the report
-	// and registered with ygo after it is counted departed too, so an admission can wait on its
-	// room until its deadline; the room is never closed for it, since connected still names it
-	// (unusedLocked). It is the browsers' own ygo ids; departed, below, is their users' logins.
+	// on the leaving browser's own socket (sjawhar/ygo v1.55.1-sami.8, handleDisconnect's
+	// OnLastPeer, provider/websocket/peer.go:709-715), before the handler that registered the
+	// browser returns and removes it from connected (ServeHTTP), and the settlement it owes runs
+	// there first, which takes seconds for a mebibyte; meanwhile connected still names browsers
+	// that have gone. The room budget's sweep counts a room whose connected browsers have all
+	// departed as one that will be closable (onlyDepartedLocked, sweepRooms), so an admission
+	// waits for it rather than being refused as though a browser held it. A browser authorized in
+	// the instant before the report and registered with ygo after it is counted departed too, so
+	// an admission can wait on its room until its deadline; the room is never closed for it,
+	// since connected still names it (unusedLocked). It is the browsers' own ygo ids; departed,
+	// below, is their users' logins.
 	departedPeers map[uint64]struct{}
 	// inflight is F (pending_authors.go): each browser edit's credit from the moment the room's
 	// update observer records it (creditContentChange) until the edit's append lands, keyed by its
@@ -340,11 +341,12 @@ func (s *Service) releaseIfUnusedLocked(room string, state *roomState) {
 // roomHoldsDocument reports whether ygo holds a room for the document: one it has loaded, or one
 // it is loading. A load in flight counts, and Rooms() is what reports it: the goroutine that owns
 // a load puts its placeholder under the room's name before it reads the store (sjawhar/ygo
-// v1.55.1-sami.1, provider/websocket/server.go:1744-1763), and GetDoc answers nothing for it
-// until the load's hook has returned. A caller that took such a room for no room at all - a
-// committed write's publish, which then applies its update nowhere (publishedWithoutARoom) -
-// would leave the room standing behind the update the store took while it loaded, and a room
-// behind the durable head is refused everything until it reloads (refuseRoomBehindHead).
+// v1.55.1-sami.8, createRoomPlaceholder, provider/websocket/server.go:1838-1850), and GetDoc
+// answers nothing for it until the load's hook has returned. A caller that took such a room for
+// no room at all - a committed write's publish, which then applies its update nowhere
+// (publishedWithoutARoom) - would leave the room standing behind the update the store took
+// while it loaded, and a room behind the durable head is refused everything until it reloads
+// (refuseRoomBehindHead).
 func (s *Service) roomHoldsDocument(room string) bool {
 	return s.srv.GetDoc(room) != nil || slices.Contains(s.srv.Rooms(), room)
 }

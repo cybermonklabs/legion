@@ -55,8 +55,8 @@ func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 // update its persistence has not appended. A room still loading is not closed either: its load
 // has not returned, and the opener waiting on it would find it gone. The close's unload returns
 // the room's charge (releaseUnloadedRoom), and ygo's CloseRoom fires that unload before it returns
-// wherever it is the one that removed the room (sjawhar/ygo v1.55.1-sami.1,
-// provider/websocket/inject.go:695-711), so the next look at the budget sees the charge gone. Each
+// wherever it is the one that removed the room (sjawhar/ygo v1.55.1-sami.8, closeRoom,
+// provider/websocket/inject.go:723-740), so the next look at the budget sees the charge gone. Each
 // close is logged with the budget's own figures before and after it, which is how an operator, or
 // a test of the real process, tells a room the budget closed from one that retired on its own.
 //

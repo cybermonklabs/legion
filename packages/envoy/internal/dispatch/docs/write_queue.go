@@ -30,13 +30,14 @@ const maxMessageBytes = 64 << 20
 // peerWriteQueueBytes is ygo's Server.PeerWriteQueueBytes: the bytes of frames queued for one
 // browser's socket and not yet taken off that queue by its writer. ygo refuses a frame to a socket
 // whose queued bytes already reach this and closes it, so the frame that crosses is queued and a
-// socket holds the budget and one frame at most (sjawhar/ygo v1.55.1-sami.1,
-// provider/websocket/write_budget.go:6-36). The three frames of a room's handshake are neither
-// refused nor charged, since a browser cannot ask for them again (writeHandshake, :48-58); the
-// writer credits a frame as it takes it off the queue, before it writes it (creditLocked, peer.go:973-977),
-// so a socket also holds the frame its writer is in the middle of; and the close makes the read
-// loop drop the input the peer had already sent (closeConn, peer.go:943-948, reearth/ygo#343), so
-// one socket is closed and logged once however many asks it had in flight.
+// socket holds the budget and one frame at most (sjawhar/ygo v1.55.1-sami.8,
+// provider/websocket/write_budget.go:6-12 and :46-48). The three frames of a room's handshake
+// are neither refused nor charged, since a browser cannot ask for them again (writeHandshake,
+// write_budget.go:60-70); the writer credits a frame as it takes it off the queue, before it
+// writes it (creditLocked, write_budget.go:52-58), so a socket also holds the frame its writer
+// is in the middle of; and the close makes the read loop drop the input the peer had already
+// sent (closeConn, peer.go:964-969, reearth/ygo#343), so one socket is closed and logged once
+// however many asks it had in flight.
 //
 // It is the bound on what one browser can make the server hold. ygo's other bound,
 // PeerWriteQueueSize, counts frames alone - 512 of them, whatever their size

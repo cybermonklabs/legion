@@ -57,12 +57,15 @@ import (
 // carries on without them, the backfill reports the document skipped, and each logs it once a room
 // rather than on every pass (errPastDecodeCap, logPastDecodeCap). Asking of the document as it
 // stands would not do: one at exactly the cap decodes, and each of the three would push it past.
-// The question is asked first of the clock sum, which costs no encode, and only where that cannot
-// clear the write is the document counted (leavesPastDecodeCap gives the steps). The sum clears
-// nothing past the cap, because it counts characters and the cap counts structs: ygo's state
-// vector is each client's last item's clock plus that item's length (StructStore.StateVector,
-// crdt/store.go:410-421 in sjawhar/ygo v1.55.1-sami.1), a string's length is its UTF-16 length
-// (crdt/content.go:113), and one struct holds a whole run of typing. Measured on 2026-10-25, the
+// The question is asked first of the document's own struct total, which costs neither an encode
+// nor a decode, and only where that cannot clear the write is the write made on a copy and
+// counted there (leavesPastDecodeCap gives the steps). The total is ygo's own count of the
+// structs its store holds with what the room has parked, not a count of characters
+// (structCeiling, crdt.Doc.StructCount): a string's length is its UTF-16 length
+// (sjawhar/ygo v1.55.1-sami.8, ContentString.Len, crdt/content.go:122), and one struct holds a
+// whole run of typing, so a sum of the state vector's clocks - each client's last item's clock
+// plus that item's length (StructStore.StateVector, crdt/store.go:440-449) - bounds the structs
+// from above and clears nothing past the cap. Measured on 2026-10-25, the
 // shape room_heap_test.go builds, typed over as benchmarkLiveDocument types, sums to 52,575 clocks
 // at 51 KiB, 538,306 at 524 KiB and 1,050,470 at a mebibyte, past the 1,048,576 cap, where it
 // holds 77,600 structs (BenchmarkDecodeCapConfirmation); a 256 KiB document after a mebibyte of
@@ -448,11 +451,12 @@ func (w *liveWrite) updatesAdd(fork *crdt.Doc) uint64 {
 // clockSum is the sum of doc's state vector, capped at the largest uint64 rather than wrapped
 // (plusCapped). It bounds the structs doc has integrated from above, since every one takes at
 // least one clock, and says nothing past that: a struct of typed text takes a clock for each
-// character (crdt/store.go:410-421, crdt/content.go:113 in sjawhar/ygo v1.55.1-sami.1).
+// character (crdt/store.go:440-449, ContentString.Len at crdt/content.go:122 in sjawhar/ygo
+// v1.55.1-sami.8).
 //
 // The cap is what keeps that bound a bound. A clock length in a V1 update is a varuint, so one
 // GC run of a client the room has never seen can claim every clock up to 2^53, the most ygo
-// takes (structEnd, crdt/update.go:1633-1638) and the most the walk takes from a browser
+// takes (structEnd, crdt/update.go:1731-1736) and the most a clock the editor writes reaches
 // (maxEditorClock), for about twelve bytes; 2,048 of them, a 34,819-byte frame of 2,048 client
 // groups that the hook admits, sum to exactly 2^64, and summed in a uint64 they wrapped to the
 // handful the room's own text holds: a ceiling of 45 over a room of 2,058 structs, its 10 and the
@@ -482,7 +486,7 @@ func plusCapped(a, b uint64) uint64 {
 // decode: the structs its store holds (crdt.Doc.StructCount, a walk of the handful of client
 // slices) and what it has parked. Each parked struct is counted twice over, since the encoded
 // state carries it with at most a skip over the gap it waits behind (withParked,
-// crdt/update.go:229-257 in sjawhar/ygo v1.55.1-sami.1), and each parked delete range once, for
+// crdt/update.go:268-296 in sjawhar/ygo v1.55.1-sami.8), and each parked delete range once, for
 // the struct its apply can leave split. A room may park up to maxUpdateItems structs
 // (Server.MaxPendingItems, which New sets), none of which the store holds yet. Every sum here
 // is capped rather than wrapped, for the reason clockSum gives.

@@ -437,8 +437,8 @@ func (a *roomApplies) backlogStalled(parked int) bool {
 
 // weighPeerUpdate is ygo's Server.OnPeerUpdate: the room hands it every update and whole-state
 // message a read-write browser sends, with the apply that would put it in the room, and a
-// read-only browser never reaches it (sjawhar/ygo v1.55.1-sami.1,
-// provider/websocket/peer_update.go:84-154, provider/websocket/peer.go:271-277).
+// read-only browser never reaches it (sjawhar/ygo v1.55.1-sami.8,
+// provider/websocket/peer_update.go:84-154, provider/websocket/peer.go:265-272).
 // An update it does not apply is neither stored nor relayed to the room's other browsers, and the
 // *websocket.PeerClose it refuses with closes that one browser with that code and reason.
 //
@@ -832,7 +832,7 @@ func documentUpdateRefused() *websocket.PeerClose {
 }
 
 // refusedWith is refusal, the close ygo answers the browser with - it reads it through errors.As
-// (sjawhar/ygo v1.55.1-sami.1, provider/websocket/peer_update.go:142-149) - with cause behind it,
+// (sjawhar/ygo v1.55.1-sami.8, provider/websocket/peer_update.go:142-149) - with cause behind it,
 // which no close frame carries: ygo's own refusal of the update, for this package's tests. ygo
 // logs that cause at Debug alone (provider/websocket/peer_update.go:142-143), which the pod's
 // level drops, so what an operator reads of a refusal is the hook's own line (logRefusal) and
@@ -842,7 +842,7 @@ func refusedWith(refusal *websocket.PeerClose, cause error) error {
 }
 
 // logRefusal is the one line a refusal of a browser's update leaves. ygo logs a refused peer
-// update at Debug alone (sjawhar/ygo v1.55.1-sami.1, provider/websocket/peer_update.go:142-143),
+// update at Debug alone (sjawhar/ygo v1.55.1-sami.8, provider/websocket/peer_update.go:142-143),
 // which the pod's level drops, so without this line an operator sees an editor's socket close and
 // nothing says why. message names the rule in plain words and figures are what refused it, beside
 // the room, the update's bytes and the close that browser is given. Neither the document's

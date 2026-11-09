@@ -8,7 +8,7 @@ import (
 )
 
 // Integrating an item scans the items between its left and right origins (Item.integrate,
-// sjawhar/ygo v1.55.1-sami.1, crdt/item.go:125-234). One the editor sends scans only what other
+// sjawhar/ygo v1.55.1-sami.8, crdt/item.go:185-250). One the editor sends scans only what other
 // people inserted concurrently at the same place, but an item naming a left origin early in a list
 // and no right origin scans to the list's end, so an update of n such items scans n times the list:
 // ygo's release notes record 2,000 of them against a list of 20,000 taking 20.8 s. Every room
@@ -35,8 +35,8 @@ import (
 const perFrameScanCeiling = 400_000
 
 // bytesOfAScanMark is the heap a remote apply's scans hold for each distinct item they pass: the
-// mark ygo keeps for it in one map for the whole transaction (Transaction.scanMarks, sjawhar/ygo
-// v1.55.1-sami.1, crdt/item.go:138-180), with the map's growth: 40 to 48 bytes measured on this
+// mark ygo keeps for it in one map for the whole apply (boundedApply.scanMarkMap, sjawhar/ygo
+// v1.55.1-sami.8, crdt/item.go:174-204), with the map's growth: 40 to 48 bytes measured on this
 // pod for a frame scanning 399,999 distinct items (BenchmarkAnApplyJustUnderTheScanCeiling,
 // 2026-10-28), and the ruling's 76, the most measured on the development machine, is kept as the
 // price.
@@ -79,8 +79,8 @@ const honestHandoffScans = 35_800
 // covers (loadSlots); and for any other what its marks can hold in what is left of
 // unslottedApplyBytes past the update's own bytes, (2 MiB - updateBytes) / 76: 27,594 for a
 // keystroke, so typing never waits on a slot for its scans either. It is at least 1, since an
-// allowance of 0 would leave the apply unbounded (applyScanLimit, sjawhar/ygo v1.55.1-sami.1,
-// crdt/doc.go:429-437).
+// allowance of 0 would leave the apply unbounded (applyScanLimit, sjawhar/ygo v1.55.1-sami.8,
+// crdt/doc.go:705-713).
 func scanCeiling(updateBytes int) int {
 	if updateBytes > unslottedApplyBytes {
 		return perFrameScanCeiling
@@ -95,9 +95,9 @@ func scanCeiling(updateBytes int) int {
 // refused, for what its scans passed before the refusal (settle). Each load re-measures it from
 // the stored state, so what a room starts at is what a decode of its own history costs, which is
 // the work the total is there to bound. That re-scan is not the sum of what the room's own
-// applies scanned, and under sjawhar/ygo v1.55.1-sami.1 it can be far below it: a decode
+// applies scanned, and under sjawhar/ygo v1.55.1-sami.8 it can be far below it: a decode
 // integrates the state's client groups by descending client, where inserts naming one anchor and
-// no right origin are symmetric and ygo breaks at the first of them (crdt/item.go:189-202), while
+// no right origin are symmetric and ygo breaks at the first of them (crdt/item.go:206-219), while
 // the room scanned each as it arrived - four frames of fifty such items scanned about 75,000
 // items live and 500 in the re-scan (TestTheRoomScanTotalIsReMeasuredByEachLoad). A tangle a load
 // does pay for is paid for again by every later load (tangledHistory's ladder,
@@ -143,7 +143,7 @@ type scanAllowance struct {
 
 // newRoomScans is the scan total of live, a room's document, with nothing used yet, set as live's
 // scan budget and observer: from here live applies every remote update whole or not at all, and
-// refuses one carrying a subdocument or a move (sjawhar/ygo v1.55.1-sami.1, crdt/doc.go:212-216),
+// refuses one carrying a subdocument or a move (sjawhar/ygo v1.55.1-sami.8, crdt/doc.go:213-215),
 // as every room the peer update hook guards does. The room's load records what the stored state's
 // re-scan came to (rescanned) before ygo hands the room to any peer. What decodes a document the
 // server already holds stays unbounded: a write's fork, the fold, growth's and a cold load's
@@ -180,8 +180,8 @@ func (r *roomScans) budget(origin any) int {
 // observed is the room's OnAfterTransaction observer: what a committed transaction's scans passed
 // is a browser's apply's, kept for its settle, or the server's, added to the total at once. The
 // format cleanup ygo commits after an apply into a text that carries formatting is a transaction
-// of its own, local and of no origin (sjawhar/ygo v1.55.1-sami.1,
-// crdt/ytext_format_cleanup.go:80-104, :142-149): it reaches here as the server's, scans nothing
+// of its own, local and of no origin (sjawhar/ygo v1.55.1-sami.8,
+// crdt/ytext_format_cleanup.go:80-113, :136-171): it reaches here as the server's, scans nothing
 // because it integrates nothing, and so leaves every figure as it was.
 func (r *roomScans) observed(txn *crdt.Transaction) {
 	scanned := txn.IntegrateScanned()
@@ -307,8 +307,8 @@ func decodeStoredCopy(update []byte, maxPending int) (decodedState, error) {
 // what the last of them scanned. An apply that changes a text whose type carries formatting
 // commits a second transaction after the remote one, ygo's format cleanup, which integrates
 // nothing and so scans nothing (Doc.afterRemoteObservers and Doc.formattingCleanupLocked,
-// sjawhar/ygo v1.55.1-sami.1, crdt/ytext_format_cleanup.go:80-104 and :136-168, run for a type a
-// ContentFormat item's integrate marked, crdt/item.go:379-383). Reading the last transaction's
+// sjawhar/ygo v1.55.1-sami.8, crdt/ytext_format_cleanup.go:80-113 and :136-171, run for a type a
+// ContentFormat item's integrate marked, crdt/item.go:396-404). Reading the last transaction's
 // count left the decode of a document whose text carries a mark at zero - the tangle the browser
 // row of packages/dispatch/e2e/document-refusals.e2e.ts builds re-scans 40,001 items and was read
 // as none - and with it the scan total a room's load starts from (roomScans.rescanned). An

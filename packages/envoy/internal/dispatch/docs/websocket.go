@@ -729,9 +729,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// The room takes peer updates only once this hook returns, and every one of them under the
 	// room's scan budget, which keepReplica sets below (newRoomScans): the state the load decoded
 	// is the server's own and went in unbounded. ygo set the room's pending cap, maxUpdateItems,
-	// before it ran this hook (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go:1897-1899),
-	// and this hook's own decode of the state ran under it (bootstrapLoadedState), as every peer's
-	// apply does (TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad).
+	// before it ran this hook (sjawhar/ygo v1.55.1-sami.8, loadRoom,
+	// provider/websocket/server.go:1921-1924), and this hook's own decode of the state ran under
+	// it (bootstrapLoadedState), as every peer's apply does
+	// (TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad).
 	//
 	// The room's scan total starts at what the decode of the state the load read scanned, and the
 	// room's replica is the copy that decode made: the decode the load made of its own

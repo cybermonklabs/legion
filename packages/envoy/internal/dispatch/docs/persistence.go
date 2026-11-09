@@ -896,8 +896,8 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // It is also the pending queue every decode of document bytes takes, whether the service builds
 // the decoder (newDocumentCopy, and newCappedDocumentCopy at the cap of the instance the decode
 // runs for) or ygo builds it for the service (Server.MaxPendingItems: the rooms, which ygo caps
-// before it runs their load hook, sjawhar/ygo v1.55.1-sami.1,
-// provider/websocket/server.go:1897-1899, and which that hook's own decode of the stored state
+// before it runs their load hook, sjawhar/ygo v1.55.1-sami.8, loadRoom,
+// provider/websocket/server.go:1921-1924, and which that hook's own decode of the stored state
 // takes, ygo being handed no bytes to decode with the queue lifted, bootstrapLoadedState; the
 // service decoded the same state under the same queue first, loadTree's or LoadDoc's
 // decodeStoredCopy, so a room starts within it). Two fields hold that per-instance cap -

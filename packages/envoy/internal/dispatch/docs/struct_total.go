@@ -38,7 +38,7 @@ func retiredClientsOf(doc *crdt.Doc) map[crdt.ClientID]uint64 {
 
 // retiredClock reads a retired client's clock as ygo decodes the int64 a rebuild wrote: lib0 Any
 // writes an integer within 32 bits as a varint, which decodes as an int64, and a larger one within
-// 2^53 as a float64 (sjawhar/ygo v1.55.1-sami.1, encoding/encoder.go:283-299,
+// 2^53 as a float64 (sjawhar/ygo v1.55.1-sami.8, encoding/encoder.go:283-301,
 // internal/anycodec/decoder.go:276-296). A clock of zero retires nothing.
 func retiredClock(value any) (uint64, bool) {
 	switch value := value.(type) {

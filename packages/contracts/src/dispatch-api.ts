@@ -4102,13 +4102,13 @@ export const DOCUMENT_SCHEMA_CLOSE_REASON = "DOC_SCHEMA";
  * The close code the document websocket (`/ws/doc/{room}`) refuses one browser's update with when
  * applying it would take the document past a bound of its own: the size bound every server write
  * obeys (`pmdoc.MaxDocumentBytes`, with a small allowance past it for the editor's own derived
- * writes and for typing), the structs ygo decodes in one update, the bytes it would hold that no
- * rendering shows, or the heaviest whole-state message a browser may hand back: the update is
- * neither stored nor relayed, and that one browser is closed with this code and
- * `DOCUMENT_TOO_LARGE_CLOSE_REASON`. It is in the 4400-4499 band collaborative servers publish as
- * permanent, so the dashboard acts on the close — it drops the refused edit and re-reads the
- * document — instead of reconnecting into the same refusal. Generated into Go as
- * `contracts.DocumentTooLargeCloseCode`.
+ * writes and for typing, and nothing at all once the document has crept past that allowance), or
+ * the values one apply may decode. The update is neither stored nor relayed, and that one browser
+ * is closed with this code and `DOCUMENT_TOO_LARGE_CLOSE_REASON`. It is in the 4400-4499 band
+ * collaborative servers publish as permanent, so the dashboard acts on the close — it drops the
+ * refused edit and re-reads the document — instead of reconnecting into the same refusal. The two
+ * bounds only a rebuild clears close with `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON` under this same
+ * code. Generated into Go as `contracts.DocumentTooLargeCloseCode`.
  */
 export const DOCUMENT_TOO_LARGE_CLOSE_CODE = 4413;
 
@@ -4126,8 +4126,11 @@ export const DOCUMENT_TOO_LARGE_CLOSE_REASON = "DOC_TOO_LARGE";
 export const DOCUMENT_TOO_TANGLED_CLOSE_REASON = "DOC_TOO_TANGLED";
 
 /** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the document
- *  must be rebuilt before it can take the update: its edit history has used up what the room lets
- *  its applies scan, so the update is refused whole, with nothing of it stored or relayed.
+ *  must be rebuilt before it can take the update: the update would carry the room's encoded state
+ *  past the most one room may hold, or carry the document past the structs ygo decodes in one
+ *  update (counting the items a delete inside a run splits as well as the items the update
+ *  carries), or its edit history has used up what the room lets its applies scan. The update is
+ *  refused whole, with nothing of it stored or relayed.
  *  Permanent like the size refusal: the dashboard drops the refused edit, re-reads the document
  *  and offers the rebuild. Generated into Go as `contracts.DocumentNeedsRebuildCloseReason`. */
 export const DOCUMENT_NEEDS_REBUILD_CLOSE_REASON = "DOC_NEEDS_REBUILD";

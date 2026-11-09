@@ -356,7 +356,9 @@ const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)
 // would grow a document past a bound of its own; with the same code, DocumentTooTangledCloseReason
 // closes the one whose update would scan more of the document than the room allows one apply to
 // scan, DocumentNeedsRebuildCloseReason the one whose update the document cannot take until it
-// is rebuilt - its history has used up what the room lets its applies scan, DocumentRebuiltCloseReason
+// is rebuilt - it would carry the room's encoded state past the most one room may hold, or the
+// document past the structs ygo decodes in one update, or its history has used up what the room
+// lets its applies scan - DocumentRebuiltCloseReason
 // the one that still holds a history a rebuild replaced, and DocumentUpdateRefusedCloseReason the
 // one whose update holds content the document does not take - bytes the decoder refuses, or
 // content the Proof editor never sends; DocumentBusyCloseCode and DocumentBusyCloseReason close a

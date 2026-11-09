@@ -87,9 +87,10 @@ func (s *Service) HoldNextAdmissionForTest(artifactID string, wait time.Duration
 }
 
 // RefuseNextPeerUpdateForTest arms the hook to refuse the next update a read-write browser sends
-// to artifactID's room as one whose walk it refuses, so a browser test can drive 4413
-// DOC_UPDATE_REFUSED from the editor itself, which never sends content the walk refuses
-// (weighPeerUpdate, update_walk.go). The update that meets it takes it: the browser's next frame,
+// to artifactID's room as one whose content the room will not take, so a browser test can drive
+// 4413 DOC_UPDATE_REFUSED from the editor itself, which never sends a root the apply may not name
+// or a kind of content it may not carry (weighPeerUpdate, refusedBeforeApply, peer_update.go).
+// The update that meets it takes it: the browser's next frame,
 // and its reconnect's whole-state message, are weighed as any other. Only one document is armed at
 // a time, and arming another forgets the first. It is mounted only through Dispatch's test-hook
 // route.
@@ -147,7 +148,7 @@ const (
 // last character of the document's last text, a chain of usedUpChain one-character items, each of
 // a client of its own so none merges with its neighbour, and then items of one client each naming
 // the chain's first as its left origin and no right origin, so each scans the chain to its end
-// (Item.integrate, sjawhar/ygo v1.55.1-sami.1, crdt/item.go:125-234). The room the next load
+// (Item.integrate, sjawhar/ygo v1.55.1-sami.8, crdt/item.go:185-250). The room the next load
 // makes counts its scan total from that re-scan (servicePersistenceAdapter.LoadDoc), so it is
 // used up: typing in place goes on within usedUpScanBudget, a larger apply is refused
 // DOC_NEEDS_REBUILD, and a rebuild takes the document (nearACap). A real document reaches that
@@ -206,7 +207,7 @@ func (s *Service) UseUpScanTotalForTest(ctx context.Context, artifactID string) 
 // client ID is a random 32-bit number, so these collide with one no more often than any two
 // browsers' do, and all but about one in 30,000 of them are past the chain's, which is what makes
 // a browser's insert scan the chain rather than stop at its first item (Item.integrate, case 1,
-// sjawhar/ygo v1.55.1-sami.1, crdt/item.go:189-202).
+// sjawhar/ygo v1.55.1-sami.8, crdt/item.go:206-219).
 const (
 	tangledChain       = 40_000
 	tangledChainClient = 100_000
@@ -219,7 +220,7 @@ const (
 // client of its own so none merges with its neighbour. An insert a browser made at that place
 // before the chain arrived - a paste at the end of that text, offline - names the same left origin
 // and no right origin, so its apply scans the chain to its end (Item.integrate, sjawhar/ygo
-// v1.55.1-sami.1, crdt/item.go:116-234): 40,000 items, past the 27,594 an update no rule weighs
+// v1.55.1-sami.8, crdt/item.go:185-250): 40,000 items, past the 27,594 an update no rule weighs
 // is allowed (scanCeiling(0)), so the room refuses it whole and the browser is closed 4413
 // DOC_TOO_TANGLED (documentTooTangled). Decoding the chain costs the room about one scan an item,
 // 40,001 of its 1,000,000-item scan total measured on this pod (the browser row of
@@ -286,8 +287,8 @@ func tangleProbe(origin crdt.ID) []byte {
 	return frame.Bytes()
 }
 
-// The bytes the hand-written frames below are built from (sjawhar/ygo v1.55.1-sami.1,
-// crdt/update.go:17-37): structStringRef is the content reference of a string item, and the two
+// The bytes the hand-written frames below are built from (sjawhar/ygo v1.55.1-sami.8,
+// crdt/update.go:18-38): structStringRef is the content reference of a string item, and the two
 // info bits say that the item names a left and a right origin on the wire.
 const (
 	structStringRef    byte = 4
@@ -297,7 +298,7 @@ const (
 
 // writeOriginString writes one string item of content naming origin as its left origin and no
 // right origin, so its parent is its origin's and the wire does not name it (sjawhar/ygo
-// v1.55.1-sami.1, crdt/update.go:1195-1215).
+// v1.55.1-sami.8, crdt/update.go:1369-1391).
 func writeOriginString(frame *encoding.Encoder, origin crdt.ID, content string) {
 	frame.WriteUint8(structStringRef | infoHasOrigin)
 	frame.WriteVarUint(uint64(origin.Client))

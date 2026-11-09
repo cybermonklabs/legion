@@ -2058,9 +2058,10 @@ func (s *server) holdArtifactAdmission(w http.ResponseWriter, r *http.Request) {
 }
 
 // refuseNextDocumentUpdate arms the document's room to refuse the next update a read-write
-// browser sends it as one whose walk it refuses (docs.Service.RefuseNextPeerUpdateForTest).
-// Test-only: mounted by routes() only when Deps.TestHooksEnabled is set, so a browser test can
-// drive 4413 DOC_UPDATE_REFUSED from the editor, which never sends content the walk refuses.
+// browser sends it as one holding content the document does not take
+// (docs.Service.RefuseNextPeerUpdateForTest). Test-only: mounted by routes() only when
+// Deps.TestHooksEnabled is set, so a browser test can drive 4413 DOC_UPDATE_REFUSED from the
+// editor, which never sends a root the apply may not name or a kind of content it may not carry.
 func (s *server) refuseNextDocumentUpdate(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

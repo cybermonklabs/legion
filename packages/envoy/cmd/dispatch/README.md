@@ -3689,9 +3689,9 @@ more than 65,536 elements, and a server write to such a document is refused `413
 as long as it would leave it heavier still, until someone shortens it, while a write that leaves it
 no heavier passes and a rebuild from its latest stored version restores it whatever it weighs. What
 a browser is refused instead is `4413 DOC_TOO_LARGE` at the byte bound (1 MiB, with 64 KiB of creep
-past it and 8 KiB of new content in one update at the bound), at the decode cap (1,048,576
-structs), at the 9.5 MiB a document may hold that no rendering shows, and at the heaviest
-whole-state message a browser may hand back (44,936,089 bytes); Document errors below has the rest.
+past it and 8 KiB of new content in one update at the bound) and at the 1,200,000 values one apply
+may decode, and `4413 DOC_NEEDS_REBUILD` at the decode cap (1,048,576 structs) and at the
+16,777,216 bytes of encoded state one room may hold; Document errors below has the rest.
 
 ## Input errors
 
@@ -3813,7 +3813,7 @@ Each item below names a status and code, then its meaning.
 
   The document websocket (`/ws/doc/{room}`) refuses one browser's update that would take the document past a bound of its own:
   it stores and relays nothing of the update and closes that one browser with code `4413` (`DOCUMENT_TOO_LARGE_CLOSE_CODE` and `DOCUMENT_TOO_LARGE_CLOSE_REASON` in `packages/contracts`, generated into Go), leaving every other browser of the room editing.
-  The bounds are the byte bound every server write obeys (1 MiB of rendering; past it an update may still carry 8 KiB of new content, for the editor's own derived writes and for typing, until the rendering has crept 64 KiB past the bound, after which only an update carrying nothing new at all is taken), the decode cap (1,048,576 structs, whatever the update inserts or deletes, since a room holding more could never be loaded again), the 9.5 MiB a document may hold that no rendering shows (margin records, element names and attributes, mark values), and the heaviest whole-state message a browser may hand back, 44,936,089 bytes, which only an update that inserts something is weighed against.
+  The bounds are the byte bound every server write obeys (1 MiB of rendering; past it an update may still carry 8 KiB of new content, for the editor's own derived writes and for typing, until the rendering has crept 64 KiB past the bound, after which only an update carrying nothing new at all is taken), and the 1,200,000 values one apply of a browser's update may decode (each struct, each lib0 Any value at any depth, each Any map entry and each JSON member), which is past the decode cap itself, so an honest whole-state handoff decodes within it.
   The 4400-4499 band is permanent, so the dashboard drops the refused edit, re-reads the document and says so in one sentence, rather than reconnecting into the same refusal.
 
 - `4413 DOC_TOO_TANGLED`
@@ -3825,7 +3825,7 @@ Each item below names a status and code, then its meaning.
 - `4413 DOC_NEEDS_REBUILD`
 
   The same close for an update the document cannot take until it is rebuilt:
-  the room's scan total is used up, where it still takes an update whose scans pass 64 items or fewer so that typing in place goes on.
+  its apply would carry the room's encoded state past the 16,777,216 bytes one room may hold, a quarter of the 64 MiB message floor so that four such handoffs fit the floor; or it would carry the document past the decode cap, the 1,048,576 structs ygo decodes in one update, counting both the structs the update carries and the items a delete inside a run splits, since a room holding more could never be loaded again; or the room's scan total is used up, where it still takes an update whose scans pass 64 items or fewer so that typing in place goes on.
   The dashboard drops the refused edit and offers the rebuild (`POST /api/v1/artifacts/{id}/rebuild`), as it does for `409 DOCUMENT_UNLOADABLE`.
 
 - `4413 DOC_REBUILT`
@@ -3836,14 +3836,14 @@ Each item below names a status and code, then its meaning.
 - `4413 DOC_UPDATE_REFUSED`
 
   The same close for an update holding content the document does not take:
-  bytes the server's own decoder refuses, or content the Proof editor never sends - a subdocument, a root outside the document's tree and its margin, or a write of the list of clients a rebuild retired - which the server reads from the update's own bytes, without decoding it, and refuses whole, storing and relaying nothing of it.
+  bytes the server's own decoder refuses, or content the Proof editor never sends - an embed, raw binary content, a subdocument, a root outside the document's tree and its margin, or a write of the list of clients a rebuild retired - which ygo refuses as it decodes the update, rolling the whole apply back, storing and relaying nothing of it.
   Permanent like `DOC_TOO_LARGE`: the client that sent it would send it again on every reconnect, so the dashboard drops the refused edit and re-reads the document.
 
 - `4503 DOC_BUSY`
 
   The memory budget over the documents this server holds open is full and no room can be closed:
-  a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update that inserts anything into a document already open is closed with it too, whatever it leaves the document's bytes at, since an insert of fewer bytes than it deletes can still add elements.
-  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 16 GiB on the production pod; the boot line `dispatch: the document service's memory bounds` names it), and an update that only deletes is admitted while the charges stay within the pressure reserve past that limit - a share of the same limit, 256 MiB of the calibration - so a full document can still be cut.
+  a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update into a document already open is closed with it too unless it integrates no struct, cuts no item the room holds and adds no byte of content, since an insert of fewer bytes than it deletes can still multiply what the room holds.
+  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 16 GiB on the production pod; the boot line `dispatch: the document service's memory bounds` names it), and the one update admitted while it is full is one that grows the room in no measure - a delete of whole items, or a frame of structs the room already holds - so a full document can still be cut.
   The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and lets the provider's own backoff retry.
 
 ## Comment errors

@@ -33,8 +33,10 @@ import (
 // that heavy is the hook's refusal of every apply that integrates anything while nothing can be
 // closed (roomBudget.full), not a cap on its charge.
 //
-// Nothing is reserved before a room loads. What keeps fifty admissions at once from each reading
-// the same headroom is the pod's load concurrency, one slot at the calibration
+// An admission reserves what its room will weigh before that room loads (roomReservation,
+// reserved), so a burst of them is weighed against each other's rooms as well as against the
+// rooms already open, and two admissions to the same document reserve its weight once. Beside
+// that stands the pod's load concurrency, one slot at the calibration
 // (MemoryBounds.LoadSlots): a socket's admission holds that whole slot while it reads and
 // decodes the state the room is about to load (socket_admission.go), so the budget sees each
 // room's charge before the next admission's load begins.
@@ -282,7 +284,8 @@ func (b *roomBudget) sweepForPressure() (used, limit int64) {
 // What the sweeps know of the browsers is the room states' (unusedLocked, onlyDepartedLocked),
 // and those lag the sockets by ygo's teardown: ygo takes a leaving peer out of its room, flushes
 // the room's pending updates to the store and only then reports the departure (sjawhar/ygo
-// v1.55.1-sami.1, provider/websocket/peer.go:574-720, OnLastPeer), which is what marks the room's
+// v1.55.1-sami.8, handleDisconnect, provider/websocket/peer.go:568-748, OnLastPeer at :709-715),
+// which is what marks the room's
 // browsers departed (settleLastPeer). An admission that weighs the budget inside that window
 // finds every charged room held by a browser, nothing pending, and is refused at once though the
 // room it needs is already on its way out; its retry, which the transient close asks the editor

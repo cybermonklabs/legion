@@ -41,15 +41,14 @@ type MemoryBounds struct {
 	// 13,475,459,890 above the two leaves 10,106,594,917 to the slots). The quarter left out is
 	// the collector's and the request path's.
 	//
-	// One slot at the calibration is not only a memory bound: it is what keeps A3's "the
-	// refusals begin within one room of the budget's own arithmetic" true now that an admission
-	// reserves nothing for the document it is about to load. A socket's admission takes a whole
-	// slot for its read, since it has not read the state it is about to decode and will not read
-	// the store twice to learn its size (socket_admission.go), so at the calibration one cold
-	// load runs at a time: the budget sees each room's weight before the next load begins, and
-	// fifty admissions at once serialise into one after another, each weighed against the rooms
-	// the ones before it left charged, rather than fifty of them reading the same headroom at
-	// the same moment.
+	// One slot at the calibration is not only a memory bound: it is the second half of what
+	// keeps A3's "the refusals begin within one room of the budget's own arithmetic" true. An
+	// admission reserves what its room will weigh before that room loads (roomBudget.refusal),
+	// so a burst is weighed against its own rooms as well as against the rooms already open; the
+	// slot it holds while it reads and decodes that state (socket_admission.go) is what makes
+	// the reservations land one after another, so at the calibration one cold load runs at a
+	// time and the budget sees each room's charge before the next load begins, rather than
+	// fifty admissions reading the same headroom at the same moment.
 	LoadSlots int
 	// PeerWriteQueue is ygo's Server.PeerWriteQueueBytes, the bytes of frames one browser's
 	// socket may hold queued (peerWriteQueueBytes). It does not scale: see that constant.

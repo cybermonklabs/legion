@@ -465,8 +465,8 @@ type Service struct {
 	// already stored are part of the history a later load decodes, and count there. ygo bounds
 	// the parked ones per room by Server.MaxPendingItems, which this service sets to
 	// maxUpdateItems (1<<20; New, below, and persistence.go), refusing an update that would park
-	// more items, or more delete ranges, than that (ygo v1.55.1-sami.1
-	// provider/websocket/server.go:1246-1248): a count, not bytes.
+	// more items, or more delete ranges, than that (ygo v1.55.1-sami.8,
+	// provider/websocket/server.go:1264-1266): a count, not bytes.
 	// Each load's bytes are counted against that load's token, and each unload of a name ends the
 	// name's oldest token, so a room that loaded again before an earlier room of the same name
 	// reported its unload keeps its own; two ended rooms that unload out of order each end the
@@ -905,16 +905,15 @@ func New(deps Deps) *Service {
 	// A room parks under the service's own cap (Service.maxPendingItems; see maxUpdateItems),
 	// which ygo reads as each room loads: about ten times ygo's default, and the cap on its
 	// parked delete ranges apart from its parked structs. ygo sets it before it runs
-	// OnLoadDocument and hands the room no state to decode itself (sjawhar/ygo v1.55.1-sami.1,
-	// provider/websocket/server.go:1897-1899), so that hook's own decode of the stored state and
-	// every peer's apply are capped (bootstrapLoadedState,
+	// OnLoadDocument and hands the room no state to decode itself (sjawhar/ygo v1.55.1-sami.8,
+	// loadRoom, provider/websocket/server.go:1921-1924), so that hook's own decode of the stored
+	// state and every peer's apply are capped (bootstrapLoadedState,
 	// TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad). The state it loads was decoded under
 	// this cap first (loadTree, or LoadDoc's decodeStoredCopy), so the room starts within it.
 	// Bounding what one peer's update can do to a room is LEGION-487. ygo's check of each update
 	// the service broadcasts (Server.BroadcastUpdate) takes no pending queue: the room has
 	// already applied the update (reearth/ygo#268, in the pinned fork).
 	srv.MaxPendingItems = service.maxPendingItems
-	srv.PeerWriteQueueBytes = peerWriteQueueBytes
 	// A room whose last peer leaves, or that only Server.Apply touches, stays resident until it has
 	// been idle for roomIdleTimeout: ygo stamps a room idle when its last peer leaves, and when an
 	// Apply on a room no peer is in returns (reearth/ygo#269). Idle eviction refuses a room any
@@ -1675,7 +1674,7 @@ func ArtifactVersionEventPayload(
 // rewriteLive's (Service.leavesPastDecodeCap). What the stamp adds is at most one struct for each
 // repair: pmdoc.Update writes a minted id as one attribute set (pmdoc's updateElement), a map
 // item whose origin is the attribute's last item, whole, so it splits nothing (crdt/yxml.go:
-// 504-519 in sjawhar/ygo v1.55.1-sami.1), and it writes nothing of the rest of the tree, which
+// 504-519 in sjawhar/ygo v1.55.1-sami.8), and it writes nothing of the rest of the tree, which
 // the stamp read in the same transaction and hands back as it was (pmdoc's updateChildren). A
 // browser's edit landing after the caller's read can leave more blocks to stamp than it counted;
 // the stamp then writes nothing, so it never adds more than it was answered on, and the next

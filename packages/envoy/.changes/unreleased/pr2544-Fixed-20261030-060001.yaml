@@ -1,26 +1,29 @@
 kind: Fixed
 body: |-
-    What one browser and a burst of open documents can cost a Dispatch server is now bounded, where a
-    browser's edits over the document websocket were applied before any check. Every read-write
-    browser's update is walked without being decoded before anything applies it, and one carrying bytes
-    ygo's own decoder would refuse, or content the Proof editor never sends - a subdocument, a move,
-    binary content, an embed, a root other than the document's fragment, its margin and the rebuilt
-    history's retired clients, or a write to that retired list - is never applied, and closes that one
-    browser `4413 DOC_UPDATE_REFUSED`, so the dashboard drops only the refused edit. An update the
-    walk takes is refused `4413 DOC_TOO_LARGE`, which closes that one browser and stores and relays
-    nothing of the update, when it would take the
-    document past the 1 MiB byte bound every server write obeys (past which it may still carry 8 KiB of
-    new content, for the editor's own derived writes and for typing, until the document has crept 64 KiB
-    over the bound, after which only an update carrying nothing new is taken), past the 1,048,576
-    structs ygo decodes in one update, whatever it inserts or deletes, past the 9.5 MiB it may hold that
-    no rendering shows, or past the heaviest whole-state frame a browser may hand back, 44,936,089
-    bytes. It is refused `4413 DOC_TOO_TANGLED` when its apply's conflict scans would pass what the room
-    allows that apply - 400,000 items, or what is left of the room's 1,000,000-item scan total - and
-    `4413 DOC_NEEDS_REBUILD` when that total is used up, where the room still takes an apply scanning 64
-    items or fewer so that typing in place goes on, or when the browser still holds the edit history a
-    rebuild replaced, which applied would put the old document beside the rebuilt one. One frame a
-    browser sends may carry at most 54 MiB, a floor that clears every whole-state frame those bounds
-    allow.
+    What one browser and a burst of open documents can cost a Dispatch server is now bounded, where
+    a browser's edits over the document websocket were applied before any check. Every read-write
+    browser's update now applies under an allowance ygo counts the apply against as it decodes it,
+    under the roots that apply may name and the kinds of content it may not carry, and ygo rolls the
+    whole apply back where any of them is broken, so the room is left exactly as it was and only
+    that one browser is closed. An update holding bytes the decoder refuses, or content the Proof
+    editor never sends - an embed, raw binary content, a subdocument, a root other than the
+    document's own fragment and its margin, or a write of the list of clients a rebuild retired - is
+    closed `4413 DOC_UPDATE_REFUSED`, so the dashboard drops only the refused edit. Under the same
+    code an update is closed `4413 DOC_TOO_LARGE` when it would carry the document past the 1 MiB
+    byte bound every server write obeys (past which it may still carry 8 KiB of new content, for the
+    editor's own derived writes and for typing, until the document has crept 64 KiB over the bound,
+    after which only an update carrying nothing new is taken), or decode more than the 1,200,000
+    values one apply may decode; `4413 DOC_NEEDS_REBUILD` when it would carry the room's encoded
+    state past the 16,777,216 bytes one room may hold, or carry the document past the 1,048,576
+    structs ygo decodes in one update - counting the items a delete inside a run splits as well as
+    the structs the update carries, so a delete of one character can no longer leave a stored
+    document that will not load - or when the room's edit-scan total is used up, where the room
+    still takes an apply scanning 64 items or fewer so that typing in place goes on; `4413
+    DOC_TOO_TANGLED` when the apply's conflict scans would pass what the room allows that apply,
+    400,000 items or what is left of its 1,000,000-item scan total; and `4413 DOC_REBUILT` when the
+    browser still holds the edit history a rebuild replaced, which applied would put the old
+    document beside the rebuilt one. One frame a browser sends may carry at most 64 MiB, a floor the
+    room's state cap is a quarter of, so four whole-state handoffs of a room at that cap fit it.
 
     The open documents are charged a memory budget under the Go soft memory limit the server now
     sets at boot from its container's own, 90 per cent of it, so the collector works harder as the
@@ -29,29 +32,31 @@ body: |-
     it is, and `AUTOMEMLIMIT=off` turns it off. The budget and every heap bound below are derived at
     boot from the limit the runtime holds, as the same share of it they are of the 3.6 GiB limit of
     a 4 GiB pod (a 2 GiB budget there; 16 GiB under a 32Gi container), with the 256 MiB read cache
-    kept as it is, and a second boot line names each. Dispatch reads and sets no
-    `GOGC`, so the collector keeps the runtime's own ratio of garbage to live heap: with the budget
-    full the heap goal is that limit itself and the garbage waiting to be freed fills every byte the
-    limit leaves, which is what the limit bounds - the memory a pod's kernel charges, what the runtime
-    holds less what it has released. The heaviest work the server allows peaked at 3,669 MiB of the
-    pod's 4,096 measured that way; the 4,302 and 4,424 MiB once recorded for it were a gVisor
-    sandbox's VmRSS, which counts the pages the runtime had released. Each room is charged at both
-    the copies it holds from its load - the greater of its elements at 500 bytes each, its structs at
-    170 and its rendered bytes at 12, all measured on resident rooms - beside the part a count of the
-    rendering cannot see, which each browser's update and each of the server's own writes adds to. A
-    browser's socket is admitted against that budget before the document loads, with its stored
-    version's count reserved for it, and refused `4503 DOC_BUSY` only once the admission has waited for
-    the sweep it started to close the rooms nothing holds; a room the server itself opens over the
-    budget is closed once nothing holds it. While the budget is full and nothing can be closed, an
-    update that inserts anything is refused `4503` in every room, and one that only deletes is admitted
-    while the charges stay within a 256 MiB reserve past the limit, so a full document can still be cut.
-    Two more bounds hold what is transient: the estimated heap of the browsers' applies the hook weighs,
-    and the pod's full-state decodes, a third of what the memory limit leaves above the budget, its
-    read cache and that reserve each, with the last third left as slack. An apply or a decode heavier
-    than its bound waits for all of it and runs alone rather than being refused, so a stored document
-    always loads and no honest handoff is turned away.
+    kept as it is, and a second boot line names each. Dispatch reads and sets no `GOGC`, so the
+    collector keeps the runtime's own ratio of garbage to live heap: with the budget full the heap
+    goal is that limit itself and the garbage waiting to be freed fills every byte the limit leaves,
+    which is what the limit bounds - the memory a pod's kernel charges, what the runtime holds less
+    what it has released. The heaviest work the server allows peaked at 3,840 MiB of the pod's 4,096
+    measured that way; the 4,302 and 4,424 MiB once recorded for it were a gVisor sandbox's VmRSS,
+    which counts the pages the runtime had released. Each room is charged at both the copies it
+    holds, by the greater of two measured prices - its encoded state at 17 bytes a byte and the
+    structs it holds at 630 bytes each - so a room whose structs outrun its state, which one delete
+    of every other character of a long run makes, is charged for them. A browser's socket is
+    admitted against that budget before the document loads, reserving what its room will weigh until
+    the load charges it, and refused `4503 DOC_BUSY` only once the admission has waited for the
+    sweep it started to close the rooms nothing holds; a room the server itself opens over the
+    budget is closed once nothing holds it, and the server opens one such room at a time. While the
+    budget is full and nothing can be closed, the one update admitted in any room is one that
+    integrates no struct, cuts no item the room holds and adds no byte of content - a delete of
+    whole items, or a frame of structs the room already holds - so a full document can still be cut
+    and every other update is refused `4503`. What is transient rather than resident is held by one
+    pool of bytes, the pod's load concurrency: a whole-document decode, a live write's fork, one
+    apply of a browser's update over 2 MiB and the answer to one browser's first sync each take out
+    of it what their own copy costs, at the same two prices, and a taker heavier than the whole pool
+    waits for all of it and runs alone rather than being refused, so a stored document always loads
+    and no honest handoff is turned away.
 
-    What the server holds for one browser's socket is bounded as well, at 60 MiB of frames queued
+    What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone - 512 of them, whatever
     their size - so a socket that completed a room's handshake and then asked for the whole
     document over and over without ever reading an answer was sent a whole state for each ask and
@@ -64,6 +69,17 @@ body: |-
     of someone else's typing keeps its socket and ends with the whole document, and a socket the
     budget does close reconnects and syncs afresh, as it does after any abrupt close.
 
+    What a caller's write may spend is bounded too. A write waits at most 15 seconds at the pod's
+    memory bounds and runs at most 45 seconds in all before it is answered 503, each taken from when
+    its request arrived, so a write the pod has no room for is refused with three quarters and a
+    quarter of a `dispatch` call's minute left to retry with rather than left unanswered until its
+    caller gives up and sends it again. At most 48 of the shared pool's 64 connections carry the
+    API's open transactions at once, taken at a request's entry as soon as its caller resolves -
+    before the artifact read, the lock and the copy a write would otherwise pay for and then be
+    refused - while a request whose caller does not resolve takes nothing and a body that stops
+    arriving ends at a read deadline of its own, so stalled anonymous requests cannot hold the limit
+    against a signed-in person's write.
+
     A document no write can change is recovered by `POST /api/v1/artifacts/{id}/rebuild`, which now
     also accepts a history that loads but stands at or near the decode cap or the room's scan total,
     rebuilds it from its own text with the edits no version holds yet, closes this server's room for it
@@ -74,11 +90,13 @@ body: |-
     still decodes, and leave one they would carry past the cap as it was.
 
     The room's scan ceiling and scan total, in place of the fixed per-update bound the server had,
-    are built on the per-apply scan budget of the ygo fork Dispatch already pins,
-    `sjawhar/ygo v1.54.1-sami.3`: a document can ask its owner, under its lock and with the apply's
-    origin, how many items each remote apply's conflict scans may pass, the drain of the pending queue
-    drawing on the same allowance; a document with a budget applies every remote update whole or not
-    at all, and a failed apply reports what its scans passed.
+    and the per-apply allowance every bound above is counted against, are built on the ygo fork
+    Dispatch pins, `sjawhar/ygo v1.55.1-sami.8`: a document can ask its owner, under its lock and
+    with the apply's origin, what that apply may decode, integrate, cut and add and how many items
+    its conflict scans may pass, which roots it may name and which kinds of content it may not
+    carry; a document with those answers applies every remote update whole or not at all, and a
+    failed apply reports what each of its counters reached, so the refusal can name the rule that
+    refused it.
 time: 2026-10-30T06:00:01.000000000Z
 custom:
     Issue: pr2544
