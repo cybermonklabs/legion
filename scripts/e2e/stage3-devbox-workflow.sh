@@ -28,14 +28,23 @@
 # sjawhar-agent App), never a Legion App, so run the script from the operator's own Oh My Pi
 # session, not a Legion pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses
 # to start otherwise (require_proof_human, lib/workflow.sh).
-# Legion's two role Apps are this deployment's own by default, and four inputs for another
-# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id, and
-# LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_SECRET, the secrets broker github-app
-# secrets that release their installation tokens (lib/github-apps.sh). `prerequisites` proves each
-# App from its token before the run writes anything, whichever pair it took. The tokens are
-# released through each App's token_command to the daemon, and once to lib/app-logins.ts to prove
-# each App and read its bot login from GitHub (read_app_logins, lib/workflow.sh); they never enter
-# this shell, a pane, an argv, or this transcript.
+# Legion's two role Apps are this deployment's own by default, and three inputs name another
+# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id,
+# and LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that
+# releases the implement App's installation tokens (lib/github-apps.sh). Those three default. The
+# fourth, LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private
+# key on stdout, is no input for another deployment's Apps: every run needs it, this deployment's
+# own included, it has no default, and a run that sets none is refused.
+# `prerequisites` runs that command once, here on the driver, in the operator's own environment —
+# so it may read their HOME and their own gcloud or kubectl configuration — and writes what it
+# prints to $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which cleanup removes
+# on every exit. The daemon never runs it: the review App's private_key_command is a `cat` of that
+# file, and the daemon mints and renews that App's tokens from the key it reads there. The
+# implement App's tokens are released through its token_command, which runs agent-secrets.
+# `prerequisites` proves each App from its token before the run writes anything, whichever Apps it
+# took: either is proved once to lib/app-logins.ts, which reads its bot login from GitHub
+# (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an argv, or
+# this transcript.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -173,6 +182,10 @@ cleanup() {
   # resolved path, must never survive this script on any exit, so it is never conditioned on how
   # the rest of cleanup goes.
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key, which prerequisites resolved the operator's key command into for
+  # the daemon to read, goes with it and for the same reason: $work itself is kept when a run
+  # fails, and a private key must not be what it keeps.
+  rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
     printf 'production audit after failure:\n' >&2
     production_audit >&2 || audit_failed=1
@@ -220,6 +233,9 @@ cleanup() {
   [ -n "${ok:-}" ] || [ "$check" != smoke-main-clean ] || [ -n "$audit_failed" ] ||
     [ -s "$evidence/pane-endpoint-violation.txt" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the close it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 trap cleanup EXIT
@@ -503,11 +519,12 @@ rig_sessions_json() {
   jq -R -s -c 'split("\n") | map(fromjson? | select(.msg == "api: claim registered") | .session) | unique' \
     "$evidence/logs/daemon.log"
 }
-# production_audit replays production Dispatch events since the baseline and fails on any event a
-# rig session authored, any event naming this rig's project key, and any rig session on the
-# production Envoy listener. The baseline event itself is the positive control that the replay ran.
+# production_audit fails on any rig session on the production Envoy listener and, through
+# production_dispatch_audit, on any production Dispatch event a rig session authored or that names
+# the rig's project key, on a production project naming that key, or on an audit that cannot vouch
+# for production.
 production_audit() {
-  local sessions bearer events envoy found=0
+  local sessions envoy found=0
   audited=1
   sessions=$(rig_sessions_json)
   printf '%s\n' "$sessions" >"$evidence/rig-sessions.json"
@@ -525,32 +542,7 @@ production_audit() {
     printf 'no user-level Dispatch configuration exists, so no production Dispatch fallback was possible\n'
     return "$found"
   fi
-  bearer=$work/production-dispatch-bearer
-  (umask 077 && printf '%s\n' "$prod_token" >"$bearer")
-  # A refusal of the feed is printed on stderr; the replay's close, resubscribe and duplicate lines
-  # carry no event and are not counted, so an event a redial repeats counts once. The probe takes
-  # its cursor from Dispatch's own events_start, so a --since the server clamps to its head leaves
-  # the events after that head counted, not written off as duplicates.
-  bun "$root/scripts/e2e/lib/dispatch-live-events.ts" \
-    --url "$prod_dispatch_url" --bearer-file "$bearer" --since "$((prod_baseline - 1))" --timeout 25 \
-    >"$work/production-events.jsonl" || true
-  rm -f "$bearer"
-  events=$(jq -s -c --argjson ids "$sessions" --arg project "$project" --argjson baseline "$prod_baseline" '
-    [.[] | .event | select(. != null)] |
-    {control: any(.[]; .id == $baseline), count: length,
-     rig: [.[] | select((.actor.id as $a | $ids | index($a)) or (tostring | contains($project)))
-       | {id, issue_key, type, actor: .actor.id, created_at}]}' "$work/production-events.jsonl")
-  printf '%s\n' "$events" >"$evidence/production-dispatch-audit.json"
-  if ! jq -e '.control' >/dev/null <<<"$events"; then
-    printf 'production Dispatch replay did not return its baseline event %s\n' "$prod_baseline"
-    return 1
-  fi
-  if ! jq -e '.rig == []' >/dev/null <<<"$events"; then
-    printf 'production Dispatch has rig-authored events: %s\n' "$(jq -c .rig <<<"$events")"
-    found=1
-  fi
-  printf 'production audit: %s events replayed since %s, rig events %s, rig Envoy sessions %s\n' \
-    "$(jq -r .count <<<"$events")" "$prod_baseline" "$(jq -c .rig <<<"$events")" "$envoy"
+  production_dispatch_audit "$sessions" "$envoy" || found=1
   return "$found"
 }
 
@@ -657,11 +649,13 @@ bot_thread_open() {
 begin prerequisites
 refuse_leftovers legion-e2e3
 for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
-# github_apps is the block proved.
+# github_apps is the block proved. The key command runs once, here, in this shell's own
+# environment, into $work/app-key, which the daemon reads the key from and cleanup removes.
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 # STAGE3_FROM is a development aid for iterating on the later scenarios against a fresh rig; a run
 # with it set is never the proof and never prints PASS. `held` skips the first issue's workflow:

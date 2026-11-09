@@ -74,6 +74,237 @@ func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 	}
 }
 
+// A death the daemon's orphan sweep reports again, over the process a refused relaunch left the
+// claim standing on, is the one death read twice and is charged once (died). The refusal
+// kept that dead process and wrote nothing of the claim (relaunchRefused), and what brings such
+// a claim back is the next report of the same process: the runtimes stop watching a process once
+// they have reported it gone, so that report is the sweep's (the daemon's reconcileOrphans).
+//
+// The rows are the three the second charge decides. Over a claim's first death it only
+// miscounts; over the death its budget would run out on it costs the claim what
+// Claim.DeathCharged states. The negative control for those two is the charge made again: the
+// second row's claim then comes out failed, with its deaths at the limit, for one dead process.
+//
+// The third row is the death that had nothing to charge, which is as much a decision made as a
+// death charged (died): a claim working a turn of its own with no task owes none, so chargeDeath
+// counts nothing, and the task queued while that claim stands over its dead process arrived
+// after the process died. Charged at the next report of it, that death would be counted against
+// a task the process never had, and the claim would be one death nearer to failing for a crash
+// it never had under that task. The negative control is a record kept only where a death was
+// counted: the third row's claim then comes back from the sweep's second report carrying one.
+func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	for _, row := range []struct {
+		name string
+		// before is how many deaths the claim's task already carries when the one below is
+		// reported twice.
+		before int
+		// task is whether the claim holds the task its process dies in the turn of. A claim
+		// that holds none is charged nothing for that death, and the one it is given after the
+		// refusal is a task the dead process never had.
+		task bool
+	}{
+		{"the claim's first death", 0, true},
+		{"the death its budget would run out on", limit - 2, true},
+		{"a death with nothing to charge, and a task given after it", 0, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			deaths := row.before
+			if row.task {
+				deaths++
+			}
+			h := newHarness(t)
+			h.reach(StateReady)
+			if row.task {
+				h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			}
+			h.must(StreamTurnStart{Claim: testToken})
+			for range row.before {
+				h.observe(runtime.Gone)
+				h.relaunched()
+				h.must(StreamTurnStart{Claim: testToken})
+			}
+			dead := h.locator()
+			store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			h.m.deps.Store = store
+
+			// The first report charges the death and raises the relaunch, and the lifecycle
+			// recheck the store will not answer refuses it: the refusal goes back to the report
+			// that raised it and leaves the claim over its dead process.
+			gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+			if err := h.handle(gone); err == nil {
+				t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+			}
+
+			h.wantState(StateWorking)
+			h.wantBudgets(Budgets{Deaths: deaths})
+			if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+				t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+					got.Locator, got.ProcessGone, dead)
+			}
+			if !row.task {
+				h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			}
+
+			// The sweep reports that same process again, which raises the relaunch the refusal
+			// left owing. It is the one death the claim has already made its decision for.
+			store.failing = false
+			h.must(gone)
+
+			h.wantState(StateLaunching)
+			h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: deaths})
+			h.relaunched()
+		})
+	}
+}
+
+// A death charged before a daemon restart is charged no second time after it. The claim is the
+// one both recovery doors are read over: working in the store, standing over the process a
+// report found dead, with the relaunch that would replace it refused and nothing but the
+// daemon's own orphan sweep to bring it back (Claim.ProcessGone). A restart builds its machine
+// again from the store alone, so what that store holds of the death already charged is the
+// whole of what the sweep's first report after the restart reads (Claim.DeathCharged, died).
+//
+// The walk charges the claim's deaths up to one below the limit, so the row measures the end a
+// second charge brings rather than a count, and what that end costs is Claim.DeathCharged's.
+// The negative control is the record kept in memory alone: the claim then comes out of the
+// restart failed, with its deaths at the limit, for one dead process.
+//
+// The store is read where the charge is made, before the restart, so the same control reaches
+// the write itself: died writes the charge with the count it charged, before the relaunch it
+// raises, and no step of this window writes the claim after it — the refusal keeps the claim
+// exactly as it stands, and a parked relaunch writes nothing until its turn.
+func TestADeathChargedBeforeARestartIsNotChargedAgainAfterIt(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	for range limit - 2 {
+		h.observe(runtime.Gone)
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: testToken})
+	}
+
+	// The death below is the claim's last before the limit, and the lifecycle recheck the store
+	// will not answer refuses the relaunch it raises: the claim is left working over its dead
+	// process, which is where the restart finds it.
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.m.deps.Store = store
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.wantState(StateWorking)
+	h.wantBudgets(Budgets{Deaths: limit - 1})
+
+	// died wrote the charge with the count it charged, before the relaunch it raised.
+	stored := h.store.load(testToken)
+	if stored.Budgets.Deaths != limit-1 || !stored.DeathCharged {
+		t.Fatalf("the stored claim carries %d deaths with DeathCharged %v, want %d with the charge recorded: the restart reads this and nothing else",
+			stored.Budgets.Deaths, stored.DeathCharged, limit-1)
+	}
+
+	h.restart()
+	if restored := h.claim(); restored.State != StateWorking || restored.Locator == nil || *restored.Locator != dead {
+		t.Fatalf("the restored claim is %s recording %+v, want it working over the dead process %+v",
+			restored.State, restored.Locator, dead)
+	}
+
+	// The sweep's first report after the restart is the second report of that one death: it
+	// raises the relaunch the refusal left owing, and charges no death for it.
+	h.must(gone)
+
+	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: limit - 1})
+	h.wantState(StateLaunching)
+	h.relaunched()
+}
+
+// A report that finds the claim's process running clears the charge in the store, and that
+// write is the only thing that keeps the clear over a running process (judge, reportedProcess):
+// the window a refused relaunch leaves the claim in is written by no step of its own, so a
+// clear made in memory alone dies with the daemon that made it. The negative control is the
+// clear left unwritten: the restart after it reads a charge for a process that is running, and
+// the death that process dies next is read as a death already charged and charged nothing,
+// which is a crash loop the deaths limit no longer bounds (Claim.DeathCharged).
+func TestAReportThatFindsTheProcessRunningClearsTheStoredCharge(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+
+	// The claim both recovery doors read: standing over the process a report found dead, with
+	// that death's decision recorded and the relaunch it raised refused.
+	dead := h.locator()
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+
+	// A restart builds the claim from the store alone, so it is the stored charge that stands.
+	h.restart()
+	if restored := h.claim(); !restored.DeathCharged {
+		t.Fatalf("the restored claim carries DeathCharged %v, want the charge the store holds", restored.DeathCharged)
+	}
+
+	// The sweep's next pass finds that same process running after all.
+	h.observe(runtime.Alive)
+
+	if stored := h.store.load(testToken); stored.DeathCharged {
+		t.Fatal("the stored claim still carries the charge of a process that is running, want it cleared: the death that process dies next is a death of its own")
+	}
+}
+
+// A death whose take-back write the store refused is charged at the report that does take the
+// task back, and that report is the next one of the same dead process: the first report ends on
+// the write, before the charge, and leaves the claim over the process it still records (died,
+// interrupted). So the deaths limit still bounds a crash loop when every take-back write fails,
+// which is what this walks — the claim dies, is relaunched and dies again, each death reported
+// twice — and the claim comes out failed at the limit with its task kept.
+//
+// The negative control is the skip keyed on the report rather than on the charge: the second
+// report then reads the death as one already charged, every death costs a launch failure alone,
+// the deaths budget stays at zero, and the claim relaunches for ever.
+func TestADeathWhoseTakeBackWriteFailedIsChargedAtTheReportThatTakesItBack(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	limit := testLimits().LaunchFailures
+
+	for death := 1; death <= limit; death++ {
+		// The report that finds the process gone cannot write the take-back, so it charges
+		// nothing and leaves the claim working over that process.
+		h.store.fail("PutDelivery", errBoom)
+		gone := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}
+		if err := h.handle(gone); err == nil {
+			t.Fatalf("death %d reported success with the take-back write failing", death)
+		}
+		h.wantState(StateWorking)
+		h.wantBudgets(Budgets{Deaths: death - 1})
+
+		// The sweep reports the same process again, and that report takes the task back and
+		// charges the death.
+		h.store.fail("PutDelivery", nil)
+		h.must(gone)
+
+		if death == limit {
+			break
+		}
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: death})
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: testToken})
+	}
+
+	h.wantState(StateFailed)
+	h.wantBudgets(Budgets{Deaths: limit})
+	if stored := h.store.load(testToken); stored.State != StateFailed || stored.Pending == nil {
+		t.Fatalf("stored claim %s with pending %+v, want it failed at the deaths limit with its task kept",
+			stored.State, stored.Pending)
+	}
+}
+
 // The worker's own stall watch ends its process as the last step of its ladder, and only where
 // the turn it was stuck in is still running, so the claim still owes its task: the daemon reads
 // that exit as a death with work outstanding and charges it (chargeDeath, bounded by
@@ -598,7 +829,8 @@ func TestAMachineRefusesLimitsOrTimeoutsThatCannotWork(t *testing.T) {
 
 // A failed claim stays failed until someone decides otherwise: the architect's retry of a held
 // phase decides it for a worker, and the operator's retry for an architect, which nothing else
-// relaunches. Each relaunches the same session with fresh budgets.
+// relaunches, and for a phase worker whose own retries do not reach it. Each relaunches the same
+// session with fresh budgets.
 func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -607,6 +839,7 @@ func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	}{
 		{"the architect's retry of a worker", queuedClaim(), RequestRetry{Claim: testToken}},
 		{"the operator's retry of an architect", rootClaim(), RequestOperatorRetry{Claim: rootToken}},
+		{"the operator's retry of a phase worker", queuedClaim(), RequestOperatorRetry{Claim: testToken}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarnessOf(t, tc.claim)
@@ -631,15 +864,13 @@ func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	}
 }
 
-// The operator's retry is an architect's alone. A failed phase worker is its architect's to retry,
-// and the daemon's controller its keeper's, so the operator's retry of either is refused, naming
-// that retry, and changes nothing.
-func TestTheOperatorsRetryOfAFailedClaimThatIsNotAnArchitectsIsRefused(t *testing.T) {
+// The operator's retry is no route to the daemon's controller, which its keeper retries, so the
+// operator's retry of it is refused, naming that keeper, and changes nothing.
+func TestTheOperatorsRetryOfTheControllerIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name, names string
 		claim       Claim
 	}{
-		{"a phase worker", "its architect's retry_or_escalate while its issue is held, and by the next start of its role otherwise", queuedClaim()},
 		{"the controller", "the daemon's controller keeper retries the controller", controllerClaim()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -654,9 +885,9 @@ func TestTheOperatorsRetryOfAFailedClaimThatIsNotAnArchitectsIsRefused(t *testin
 			err := h.handle(RequestOperatorRetry{Claim: tc.claim.Token})
 
 			var refused *RefusedError
-			if !errors.As(err, &refused) || !errors.Is(err, ErrRetryArchitectOnly) || refused.State != StateFailed ||
+			if !errors.As(err, &refused) || !errors.Is(err, ErrRetryNotTheController) || refused.State != StateFailed ||
 				!strings.Contains(err.Error(), tc.names) {
-				t.Fatalf("the operator's retry of %s returned %v, want the architect-only refusal naming %q", tc.name, err, tc.names)
+				t.Fatalf("the operator's retry of %s returned %v, want the controller refusal naming %q", tc.name, err, tc.names)
 			}
 			if after := h.claim(); after.State != before.State || after.Budgets != before.Budgets || after.Generation != before.Generation {
 				t.Errorf("the refused retry moved the claim: %+v -> %+v", before, after)

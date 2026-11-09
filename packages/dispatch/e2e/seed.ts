@@ -38,6 +38,7 @@ const tables = [
   "refs",
   "messages",
   "broadcasts",
+  "comment_fallback_copies",
   "comments",
   "asks",
   "doc_checkpoints",
