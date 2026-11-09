@@ -159,3 +159,5 @@ fi
 # the file's order, "a, b and c".
 always_run_text=$(jq -r 'if length > 1 then (.[:-1] | join(", ")) + " and " + .[-1] else .[0] end' <<<"$ALWAYS_RUN")
 echo "$always_run_text succeeded, every job changes selected succeeded, and every other job succeeded or was skipped"
+
+# INFRA-1413 selection probe, never merged.
