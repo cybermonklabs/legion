@@ -3229,18 +3229,19 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Each go test call's -timeout must fire before the runner cancels the job, so a hung test
-    # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
-    # before it at their measured times plus its own limit, and this job now has one step that
-    # runs a test: about 1 minute of setup, then the unit step, whose six calls run at the same
-    # time, so its limit is the longest of them rather than their sum. That is the
-    # race-impossible call's 10 minutes, which `go test` gives each of the three test binaries
-    # it links rather than the call - 30, were they to run one after another - and not the
-    # package list's 20, natslive's default 10 and the bus matrix's 5 after it, the routes
-    # call's 10 or the integration call's 5. 31, then, is the bound, as it was when that call
-    # was a step before this one; what the five calls joining the unit step took off this job
-    # is its measured time, not the worst case a hung test can still reach.
-    timeout-minutes: 31
+    # Each go test call's -timeout is the smallest whole minute at which its slowest package, on
+    # the slower attempt of this change's measurement pair, takes at most half of it, so a hung
+    # test prints the dump that names it well before the runner cancels the job and a test that
+    # merely runs long does not (dispatch://INFRA-1075, check 6224bb0e). Measured on the slower
+    # attempt of run 42517304628 and on run 42532769012, whose shape this is: the package list's
+    # slowest package is pmdoc at 294 s, so 10 minutes; the race-impossible call's is the
+    # documents package at 95 s, so 4; routes 24 s, natslive's bus 8 s and integration 3 s each
+    # take 1 minute, the smallest whole minute there is.
+    #
+    # The job's own bound is its measured time on that slower attempt, 496 s, plus the largest of
+    # those limits, 10 minutes, plus 6, rounded up: 25. The six calls of the unit step run at the
+    # same time, so the step's own worst case is the longest of them rather than their sum.
+    timeout-minutes: 25
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -3526,14 +3527,14 @@ jobs:
           # API package's build, with nothing running beside it (run 42307926510,
           # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
           # so running them at the same time changes no number any of them asserts on.
-          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 4m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
           # here runs against 5432. The package measured 56 s with an instance to itself on a
           # loaded two-core pod, so 10 minutes is ample.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 10m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 1m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # internal/testnats runs its server in the test process, so the package list below
           # starts no container. The two-image matrix, which proves a rendered authorization on
@@ -3559,10 +3560,10 @@ jobs:
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           { go test -json -count=1 -tags natslive -run "$rig" ./internal/testnats/ &&
-            go test -json -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+            go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
-          go test -json -count=1 -timeout 300s ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
+          go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
           integration=$!
           # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
           # never runs it. Vetting it keeps it compiling as the package changes. It writes no
@@ -3577,7 +3578,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/broker"
           s=0
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 10m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
           p=0
           wait "$impossible" || p=$?
           r=0

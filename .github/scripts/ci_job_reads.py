@@ -804,7 +804,7 @@ def race_impossible_script(packages) -> str:
     if not packages:
         return ""
     names = sorted(set().union(*packages.values()))
-    return (f"go test -json -count=1 -timeout 10m -run '^({'|'.join(names)})$' "
+    return (f"go test -json -count=1 -timeout 4m -run '^({'|'.join(names)})$' "
             + " ".join(f"./{under}" for under in packages))
 
 
@@ -860,7 +860,7 @@ impossible=$!
 # its own tests'. It is on the call rather than on the step because every other call
 # here runs against 5432. The package measured 56 s with an instance to itself on a
 # loaded two-core pod, so 10 minutes is ample.
-DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 10m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 1m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
 # internal/testnats runs its server in the test process, so the package list below
 # starts no container. The two-image matrix, which proves a rendered authorization on
@@ -886,10 +886,10 @@ routes=$!
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 {{ go test -json -count=1 -tags natslive -run "$rig" ./internal/testnats/ &&
-  go test -json -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+  go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
 natslive=$!
 # The integration suite, which runs a real NATS server in the test process.
-go test -json -count=1 -timeout 300s ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
+go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
 integration=$!
 # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
 # never runs it. Vetting it keeps it compiling as the package changes. It writes no
@@ -899,7 +899,7 @@ vet=$!
 lead="{UNIT_TEST_LEAD_TEXT}"
 s=0
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 10m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
 p=0
 wait "$impossible" || p=$?
 r=0
