@@ -847,7 +847,7 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 // ProseMirror fills a node's content expression from its left (`paragraph+ bullet_list?`). A
 // block whose content is `block+` takes what it is given.
 func opensWithAParagraph(name string) bool {
-	typ, ok := schemaTypes[name]
+	typ, ok := installed.Load().types[name]
 	if !ok {
 		return false
 	}

@@ -42,6 +42,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -327,6 +329,17 @@ func main() {
 	}
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
+		os.Exit(1)
+	}
+
+	// A type is a node of the store, and the schema this process validates writes against and
+	// serves to an editor is built from those nodes (migration 20261109051232). The first
+	// install is here, beside the migration run: a process serving on a schema that is not the
+	// store's would hold documents to types the deployment has moved on from, so a failure
+	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
+	// own, started beside the other woken loops below.
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
 
@@ -685,11 +698,19 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
+	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
+	schemaWake := schemanodes.RegisterWake(listenerHub)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// The block schema the store holds, read again each time a supertag write announces itself.
+	// A read that fails leaves the installed schema in place and is made again; a store schema
+	// above this build's installs nothing and makes /healthz answer 503 with that version as
+	// its reason.
+	go (&schemanodes.Installer{Store: database.Pool, Wake: schemaWake}).Run(ctx)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
 	go documentService.RunSettlementResumption(ctx, leases)
@@ -1666,9 +1687,13 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	})
 }
 
-// healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
-// while Postgres answers on the health pool's own connection, and 503 while it does not; `ok` says
-// the same. Nothing here waits on the shared pool, and each probe bounds its own wait
+// healthzHandler answers the readiness probe: 200 while this process can serve requests, and 503
+// while it cannot; `ok` says the same. Two things decide it. Postgres answering on the health
+// pool's own connection is one. The other is the store's block schema being one this build can
+// address: a process that reads a schema version above the one it was built for installs nothing
+// and answers 503 with `not_ready` naming both versions, which is how the deployment learns to
+// replace it (pmdoc.NotReadyReason; the field is left out while the process is ready). Nothing
+// here waits on the shared pool, and each probe bounds its own wait
 // (store.healthProbeTimeout, files.healthTimeout), which records why a probe that answers late is
 // as bad as one that never answers. The database and file-store probes run side by side: each
 // takes up to two seconds, and one after the other they would take four, past the three-second
@@ -1767,7 +1792,16 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			serviceTokensOK = &discovered
 		}
 		<-filesProbed
-		ok := databaseOK
+		// The other reason this process cannot serve: the store's block schema is above the
+		// version this build was made for, so it can address neither the types a document
+		// holds nor the writes against them. It is reported as the reason, since a 503 with
+		// no reason leaves an operator to guess which of the two outages this is, and the
+		// deployment replaces this pod with one carrying the binary that handles the version.
+		var notReady *string
+		if reason := pmdoc.NotReadyReason(); reason != "" {
+			notReady = &reason
+		}
+		ok := databaseOK && notReady == nil
 		status := http.StatusOK
 		if !ok {
 			status = http.StatusServiceUnavailable
@@ -1786,10 +1820,11 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			SchemaVersion   *int    `json:"schema_version"`
 			OutboxPublisher bool    `json:"outbox_publisher"`
 			IdempotencyKeys bool    `json:"idempotency_keys"`
+			NotReady        *string `json:"not_ready,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, NotReady: notReady,
 		})
 	}
 }

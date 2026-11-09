@@ -223,27 +223,69 @@ func History(ctx context.Context, q Queryer, fromKind, fromID, kind string) ([]T
 
 // ReadNode answers one node row, the projection of its tuples, and whether the store holds it.
 func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, error) {
-	var node Node
-	var attributes, madeBy []byte
-	err := q.QueryRow(ctx, `
-		select kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event
+	node, err := scanNode(q.QueryRow(ctx, `
+		select `+nodeColumns+`
 		from graph_nodes
 		where kind = $1 and id = $2
-	`, kind, id).Scan(&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
-		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent)
+	`, kind, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, false, nil
 	}
 	if err != nil {
 		return Node{}, false, fmt.Errorf("read node %s/%s: %w", kind, id, err)
 	}
+	return node, true, nil
+}
+
+// nodeColumns is what every node read answers, in the order a node scan takes them.
+const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event`
+
+// NodesOfKind answers every node of one kind, in id order. It reads through the primary key
+// (kind, id), whose leading column it binds, so a kind the store holds few of costs that few
+// rows however many nodes the store holds. The block schema's supertag and attribute nodes are
+// read this way (pmdoc/schemanodes), which is why the read takes a kind and no node id: a kind
+// the build knows nothing of is a row this answers and the caller skips, never a read that has
+// to name every node in advance.
+func NodesOfKind(ctx context.Context, q Queryer, kind string) ([]Node, error) {
+	rows, err := q.Query(ctx, `
+		select `+nodeColumns+`
+		from graph_nodes
+		where kind = $1
+		order by id
+	`, kind)
+	if err != nil {
+		return nil, fmt.Errorf("read nodes of kind %s: %w", kind, err)
+	}
+	defer rows.Close()
+	var nodes []Node
+	for rows.Next() {
+		node, err := scanNode(rows)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read nodes of kind %s: %w", kind, err)
+	}
+	return nodes, nil
+}
+
+// scanNode reads one node row, as ReadNode and NodesOfKind both take it.
+func scanNode(row pgx.Row) (Node, error) {
+	var node Node
+	var attributes, madeBy []byte
+	if err := row.Scan(&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
+		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent); err != nil {
+		return Node{}, err
+	}
 	if err := json.Unmarshal(attributes, &node.Attributes); err != nil {
-		return Node{}, false, fmt.Errorf("decode attributes of node %s/%s: %w", kind, id, err)
+		return Node{}, fmt.Errorf("decode attributes of node %s/%s: %w", node.Kind, node.ID, err)
 	}
 	if err := json.Unmarshal(madeBy, &node.MadeBy); err != nil {
-		return Node{}, false, fmt.Errorf("decode writer of node %s/%s: %w", kind, id, err)
+		return Node{}, fmt.Errorf("decode writer of node %s/%s: %w", node.Kind, node.ID, err)
 	}
-	return node, true, nil
+	return node, nil
 }
 
 // kindList is the kinds parameter a read binds: the empty list is sent as null, which is how

@@ -23,7 +23,8 @@ func blockPointerTestSchema(attributes BlockAttributes) BlockSchema {
 	if attributes == nil {
 		attributes = oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Targets: []string{"requirement"}})
 	}
-	return BlockSchema{Version: schema.Version, Types: append(slices.Clone(schema.Types),
+	value := installed.Load().schema
+	return BlockSchema{Version: value.Version, Types: append(slices.Clone(value.Types),
 		BlockTypeSchema{Name: "claim", Content: BlockContentParagraphs, Render: "host", Attributes: attributes},
 	)}
 }
