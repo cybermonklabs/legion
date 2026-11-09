@@ -5,7 +5,7 @@ import { DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import { comment } from "proof-sdk-upstream/src/editor/plugins/marks";
 import * as Y from "yjs";
 import { blockIdOf } from "../src/editor/schema/block-ids";
-import { editorHighlightsPlugin } from "../src/editor-highlights";
+import { editorHighlightsPlugin, PULSE_DURATION_MS } from "../src/editor-highlights";
 import { markedText } from "./mark-text";
 import { withMarksEditor } from "./marks-editor";
 
@@ -40,12 +40,21 @@ function typeAsCollaborator(ydoc: Y.Doc, index: number, text: string): void {
   Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(collaborator, Y.encodeStateVector(ydoc)));
 }
 
-/** Runs `focus` with `window.setTimeout` held and returns the one timer it set, the pulse's end,
- *  unarmed, so the test decides when the pulse's duration has passed. */
+/** Runs `focus` with `window.setTimeout` held and returns the pulse's own end timer, unarmed, so
+ *  the test decides when the pulse's duration has passed.
+ *
+ *  A focus sets more than the pulse: `focusMark` lands the mark on the middle of the screen and
+ *  corrects that aim once when its own scroll has stopped, which arms a settle timer and a
+ *  deadline (`landOnMiddle` in `src/lib.ts`). Those are the page's, not the pulse's, so the pulse
+ *  is taken by its own duration and exactly one timer of that duration is still required - a
+ *  second one would be the pulse leaking, which is what this helper guards. */
 function heldPulseEnd(focus: () => void): () => void {
-  const timers: Array<() => void> = [];
-  const setTimeout = spyOn(window, "setTimeout").mockImplementation(((callback: () => void) => {
-    timers.push(callback);
+  const pulseEnds: Array<() => void> = [];
+  const setTimeout = spyOn(window, "setTimeout").mockImplementation(((
+    callback: () => void,
+    delay?: number
+  ) => {
+    if (delay === PULSE_DURATION_MS) pulseEnds.push(callback);
     return 0;
   }) as typeof window.setTimeout);
   try {
@@ -53,9 +62,9 @@ function heldPulseEnd(focus: () => void): () => void {
   } finally {
     setTimeout.mockRestore();
   }
-  const [pulseEnd, ...others] = timers;
+  const [pulseEnd, ...others] = pulseEnds;
   if (pulseEnd === undefined || others.length > 0)
-    throw new Error(`a focus set ${timers.length} timers, not one pulse end`);
+    throw new Error(`a focus set ${pulseEnds.length} pulse ends, not one`);
   return pulseEnd;
 }
 

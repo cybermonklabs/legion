@@ -12,7 +12,9 @@ const ACTIVE_CLASS: Readonly<Record<HighlightTarget, string>> = {
   block: "dispatch-block-active",
 };
 const PULSE_CLASS = "dispatch-mark-pulse";
-const PULSE_DURATION_MS = 1200;
+/** How long a pulse is drawn. Exported so a test takes the pulse's own timer apart from the
+ *  landing timers a focus also arms (`landOnMiddle` in `src/lib.ts`). */
+export const PULSE_DURATION_MS = 1200;
 
 /** One target's highlighted ids: the selected ones, and the pulsing ones by the token of the pulse
  *  that started each, so the timer of a pulse a later pulse of the same id replaced ends nothing. */
