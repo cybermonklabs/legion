@@ -136,13 +136,14 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the gated steps and the claim views' step record among the keys it is served
-// without, since such a pod is below treeContract, wakesWaitingContract, gatedStepsContract and
-// stallRecordContract too. A pod at this contract, and a caller in no pod — the operator's
-// `legion state`, whose open-rounds line reads both fields, whose queue line reads those wakes
-// and whose tool-call line reads the step records — are served everything. The claims are the
-// state snapshot's own, so there is no readable state whose caller's contract is unknown: a
-// snapshot without them is no state, and the route refuses it.
+// pacing holds, the gated steps, the claim views' step record and the places in the admission
+// line among the keys it is served without, since such a pod is below treeContract,
+// wakesWaitingContract, gatedStepsContract, stallRecordContract and waitingLineContract too. A
+// pod at this contract, and a caller in no pod — the operator's `legion state`, whose
+// open-rounds line reads both fields, whose queue line reads those wakes and whose tool-call
+// line reads the step records — are served everything. The claims are the state snapshot's own,
+// so there is no readable state whose caller's contract is unknown: a snapshot without them is
+// no state, and the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -159,9 +160,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added. That contract is this daemon's own since the bump the
-		// record forced landed, so a pod at it is served the record and a pod still running an
-		// older plugin is not.
+		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
+		// above is served the record and a pod still running an older plugin is not.
 		stall bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -202,8 +202,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// half), with `wakesWaiting` gone, the key a reader before contract 53 refuses
 			// empty as surely as filled (withoutWakesWaiting), with the gated steps gone, the
 			// field contract 55 added, with contract 56's retired entries under
-			// `strandedClaims` gone (strandedWithoutRetired below), and with each claim view's
-			// `step` gone, the record contract 57 added (withoutStallRecord).
+			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
+			// `step` gone, the record contract 57 added (withoutStallRecord), and with the
+			// places in the admission line gone, the field contract 58 added.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -242,6 +243,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "memoryDrawnAt")
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
+				delete(issue, "waitingLine")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
