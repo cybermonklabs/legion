@@ -17,13 +17,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020";
 
 import { recordedOrigin } from "../stub/origin";
 import type { Har } from "../stub/recording";
+import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
 
 interface OpenApiDocument {
   paths: Record<string, Record<string, OpenApiOperation | undefined> | undefined>;
@@ -38,30 +38,14 @@ const documentPath = fileURLToPath(
 );
 const document = JSON.parse(readFileSync(documentPath, "utf8")) as OpenApiDocument;
 
-const recordings = fileURLToPath(new URL("../__recordings__/", import.meta.url));
+const recordings = recordingsDirectory();
 
-/** Every `<family>/<row>.har` under `e2e/__recordings__/`. */
-function committedRecordings(): string[] {
-  let families: string[];
-  try {
-    families = readdirSync(recordings);
-  } catch {
-    return [];
-  }
-  const found: string[] = [];
-  for (const family of families) {
-    const directory = join(recordings, family);
-    if (!statSync(directory).isDirectory()) continue;
-    for (const file of readdirSync(directory)) {
-      if (file.endsWith(".har")) found.push(join(directory, file));
-    }
-  }
-  return found.sort();
-}
+/** Every committed recording, by its path relative to that directory. */
+const files = recordingsUnder(recordings.replace(/\/$/, ""));
 
 /** The document's routes with their segments, split once. `routeOf` runs for every entry of
- *  every recording - 2,675 entries over 154 routes today - and splitting the table inside it
- *  cost 424 ms of this test's run against 67 ms with the split hoisted. */
+ *  every recording - thousands over a hundred and fifty routes - and splitting the table inside
+ *  it cost 424 ms of this test's run against 67 ms with the split hoisted. */
 const routeTable = Object.keys(document.paths).map((route) => ({
   route,
   segments: route.split("/"),
@@ -103,8 +87,6 @@ function step(name: string): string {
 const ajv = new Ajv2020({ allErrors: false, strict: false, validateFormats: false });
 ajv.addSchema({ $id: "dispatch", ...document });
 
-const files = committedRecordings();
-
 describe("every committed recording answers what the generated contract declares", () => {
   // An empty recordings directory is the state of this tree before the first family moved, and a
   // suite that passed over it silently would also pass over a directory a rename emptied.
@@ -113,9 +95,9 @@ describe("every committed recording answers what the generated contract declares
   });
 
   for (const file of files) {
-    const name = file.slice(recordings.length);
+    const name = file;
     test(name, () => {
-      const har = JSON.parse(readFileSync(file, "utf8")) as Har;
+      const har = JSON.parse(readFileSync(`${recordings}${file}`, "utf8")) as Har;
       for (const entry of har.log.entries) {
         const url = new URL(entry.request.url);
         const where = `${entry.request.method} ${url.pathname} in ${name}`;

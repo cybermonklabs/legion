@@ -60,11 +60,16 @@ jobs:
       lane: full
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
-  # harness and fails when a recording no longer says what the server says. The contract test
-  # that runs on every pull request
-  # (packages/dispatch/e2e/__tests__/stub-recordings.test.ts) catches a shape that leaves the
-  # generated contract; this catches what a schema cannot see - a changed value, an order, a
-  # route a page stopped asking for.
+  # harness and fails when a route no longer answers as its recording holds.
+  #
+  # It compares the status of each route and nothing else - never a body's values and never its
+  # shape - which is the third of four guards, each watching what the others cannot: the
+  # generated contract holds client and server to one shape at compile time
+  # (dispatch://INFRA-1406), the contract test holds every committed recording's body to that
+  # shape on every pull request (packages/dispatch/e2e/__tests__/stub-recordings.test.ts), this
+  # watches the status of each route, and the rows that stayed on the real stack hold the
+  # server's behaviour. `statusDrift` in packages/dispatch/e2e/stub/recording.ts is the whole of
+  # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
   # and a `workflow_dispatch` from the default branch alone, so a workflow that exists only on a
@@ -128,15 +133,17 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
-      # The committed set, kept before the re-recording writes over it in place.
-      - name: Keep the committed recordings
-        run: cp -r e2e/__recordings__ "$RUNNER_TEMP/committed"
-        working-directory: packages/dispatch
       - name: Re-record every stubbed row against the real harness
         timeout-minutes: 18
+        # Into a directory of its own, never over the committed set: a recording compared with
+        # itself can never differ, so the committed recording that no row writes any more -
+        # a row deleted, or one that stopped reading what it read - would be found by nobody.
+        # DISPATCH_E2E_STUB_RECORDINGS is what moves it (packages/dispatch/e2e/stub/
+        # recordings.ts), and the comparison step below refuses the committed directory.
         run: |
           # The lane's Postgres, the copy in ghcr.io/cybermonklabs/legion/ci the shard job uses.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_STUB_RECORDINGS="$RUNNER_TEMP/fresh"
           DISPATCH_E2E_STUB_RECORD=1 bun e2e/run.ts -- bunx playwright test \
             --config e2e/playwright.config.ts --project=stub --project=stub-phone
         working-directory: packages/dispatch
@@ -147,8 +154,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dispatch-browser-recordings-${{ github.run_attempt }}
-          path: packages/dispatch/e2e/__recordings__
+          path: ${{ runner.temp }}/fresh
           if-no-files-found: error
-      - name: Fail where a recording no longer matches
-        run: bun e2e/tools/compare-recordings.ts "$RUNNER_TEMP/committed"
+      - name: Fail where a route no longer answers as its recording holds
+        run: bun e2e/tools/compare-recordings.ts "$RUNNER_TEMP/fresh"
         working-directory: packages/dispatch

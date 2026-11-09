@@ -36,42 +36,18 @@
  *  belong here, because the recording answers the refetch with the state recorded before the
  *  write and the row would pass while proving nothing.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { test as base, type Page, type TestInfo } from "@playwright/test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { test as base, type Page } from "@playwright/test";
 
 import { answerTo, type LiveClientFrame } from "./live-frames";
 import { type Har, normalise, retargeted, written } from "./recording";
-
-/** Set to `1` by `bun run e2e:stub:record`: the rows run against the real harness and write what
- *  they fetched. Unset, which is every other run, they replay. */
-export const stubRecordVariable = "DISPATCH_E2E_STUB_RECORD";
-
-export function stubRecording(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env[stubRecordVariable] ?? "") === "1";
-}
+import { recordingPath } from "./recordings";
+import { stubRecordVariable } from "./selection";
 
 /** Everything a recording answers and nothing else. The document and its assets are the static
  *  server's, so that a pull request's own front-end change is the one under test. */
 const replayedRoutes = /\/(api\/v1\/|auth\/whoami)/;
-
-export const recordingsDirectory = fileURLToPath(new URL("../__recordings__/", import.meta.url));
-
-/** Where one row's recording and scene live: a directory named for the spec file, a file named
- *  for the row. The row's name is its `describe` titles and its own, which is what Playwright
- *  reports and what the row map reads, so two rows of one file never collide. */
-export function recordingPath(test: TestInfo, extension: string): string {
-  const spec = test.titlePath[0].replace(/\.stub\.e2e\.ts$/, "");
-  const row = test.titlePath
-    .slice(1)
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 120);
-  return join(recordingsDirectory, spec, `${row}${extension}`);
-}
 
 /** Answers `GET /api/v1/dashboard/builds` from the build under test rather than from the
  *  recording.
@@ -122,14 +98,23 @@ async function answerTheLiveSocket(page: Page): Promise<void> {
 export function stubbed<Scene>(seed: () => Promise<Scene>) {
   return base.extend<{ scene: Scene }>({
     scene: async ({ page, context, baseURL }, use, test) => {
-      if (!stubRecording()) {
+      if ((process.env[stubRecordVariable] ?? "") !== "1") {
         const har = recordingPath(test, ".har");
         if (!existsSync(har)) {
-          throw new Error(
-            `This row has no recording at ${har}. Record it with \`bun run e2e:stub:record\` in ` +
-              "packages/dispatch, which runs the stub rows against the real harness and writes " +
-              "each row's recording and scene."
-          );
+          // Not a refusal here, because a fixture is set up before the body runs and a row
+          // whose own `test.skip` takes it out of this project - a phone row under `stub` -
+          // would be refused before it could skip, and would have to be given an empty
+          // recording to keep. So the row is let through with nothing routed, and a row that
+          // did run is refused at teardown below, where its status is known.
+          await use({} as Scene);
+          if (test.status !== "skipped") {
+            throw new Error(
+              `This row has no recording at ${har}. Record it with \`bun run e2e:stub:record\` ` +
+                "in packages/dispatch, which runs the stub rows against the real harness and " +
+                "writes each row's recording and scene."
+            );
+          }
+          return;
         }
         const retargetedHar = test.outputPath("recording.har");
         writeFileSync(
@@ -174,6 +159,13 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       // Playwright writes the HAR when the context closes, and a fixture's teardown runs before
       // the context it depends on is destroyed, so the close is made here rather than waited for.
       await context.close();
+      // A row this project's own `test.skip` took out wrote nothing worth keeping: its scene
+      // was seeded before the body ran, and its recording would hold the page's first requests
+      // or nothing at all. Both go, so the committed set is exactly the rows that run.
+      if (test.status === "skipped") {
+        rmSync(scene, { force: true });
+        return;
+      }
       const recorded = JSON.parse(readFileSync(fresh, "utf8")) as Har;
       writeFileSync(
         recordingPath(test, ".har"),

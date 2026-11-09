@@ -43,7 +43,8 @@ const longNameTest = stubbed(async () => {
 test("on a phone the ask card's asker still opens its copy handles, and the live link beside it opens the conversation @phone @pr", async ({
   page,
   scene,
-}) => {
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "stub-phone", "the kept action is checked at phone width");
   await page.goto("/");
   const card = page.getByTestId(`ask-${scene.runAsk}`);
   const asker = card.getByRole("button", { expanded: false, name: /Running agent \(current\)/ });
@@ -84,7 +85,11 @@ test("on a phone the ask card's asker still opens its copy handles, and the live
 test("a claimed issue's Conversation fits a phone screen with its agent turns @phone @pr", async ({
   page,
   scene,
-}) => {
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "stub-phone",
+    "a page fits a phone screen only at a phone width"
+  );
   await page.goto(`/issues/${scene.runIssue}/conversation`);
   await expect(agentIn(page.getByTestId("issue-claim"), runId)).toHaveAttribute(
     "data-agent-state",
@@ -144,7 +149,8 @@ test("a claimed List row and Board card open their issue by keyboard, and the cl
 test("a tap on a board card's agent link opens the agent rather than dragging the card @phone @pr", async ({
   page,
   scene,
-}) => {
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "stub-phone", "a tap is a phone gesture");
   await page.goto("/projects/AGT");
   await page.getByRole("button", { name: "Board" }).click();
   const card = page.locator(`[data-board-card="${scene.runIssue}"]`);

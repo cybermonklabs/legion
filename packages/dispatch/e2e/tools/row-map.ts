@@ -11,9 +11,10 @@
  *  Where each half comes from:
  *
  *  - **A row that moved** is a row of a `*.stub.e2e.ts` file. Its assertions are the ones it
- *    had: a move renames the file and lifts the shared seeding into the fixture, and changes no
- *    line of what the row asserts, which is what makes "before and after" a mechanical claim
- *    rather than a prose one. The reason it may be stubbed is its file's own header comment.
+ *    had: a move renames the file, lifts the shared seeding into the fixture and adds the lane
+ *    tag to the title, and changes no line of what the row asserts, which is what makes
+ *    "before and after" a mechanical claim rather than a prose one. The reason it may be
+ *    stubbed is its file's own header comment.
  *  - **A row that stayed** carries its file's reason from `e2e/stub/real-stack-reasons.ts`, and
  *    a file the listing names that has none there fails the generation.
  *  - **A row that left the pull-request lane** is a row with no `@pr` tag. It runs on the full
@@ -29,11 +30,12 @@ import { fileURLToPath } from "node:url";
 import { listing } from "../__tests__/playwright-listing";
 import { rowsOfListing, stubProjectNames } from "../configurations";
 import { realStackReasons } from "../stub/real-stack-reasons";
+import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
 
 // A listing names a file relative to the config's own directory, which is `e2e/`.
 const suiteDirectory = fileURLToPath(new URL("..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
-const recordings = fileURLToPath(new URL("../__recordings__/", import.meta.url));
+const recordings = recordingsDirectory();
 
 /** The first paragraph of a stub spec file's header comment, which says why its rows may be
  *  stubbed. A file with no header comment fails the generation: the reason is the whole point. */
@@ -75,7 +77,7 @@ const movedLines = moved
   .map((row) => [
     `\`e2e/${row.file}\``,
     row.title,
-    "unchanged - the row kept its title and every assertion it had",
+    "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts",
     stubReason(row.file),
   ])
   .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
@@ -88,6 +90,16 @@ if (missing.length > 0) {
   throw new Error(
     `These files hold real-stack rows and no reason in e2e/stub/real-stack-reasons.ts, so the ` +
       `map would not say why their rows did not move:\n  ${missing.join("\n  ")}`
+  );
+}
+// And the other direction, so the list cannot keep a reason for a file that is gone or whose
+// every row moved: such an entry reads as a file the suite still has and tells a reader
+// something that is no longer true.
+const unused = Object.keys(realStackReasons).filter((file) => !realFiles.includes(file));
+if (unused.length > 0) {
+  throw new Error(
+    `e2e/stub/real-stack-reasons.ts holds a reason for these files, and the listing names no ` +
+      `real-stack row in them: delete each entry.\n  ${unused.join("\n  ")}`
   );
 }
 const realLines = realFiles.map((file) => [`\`e2e/${file}\``, realStackReasons[file]]);
@@ -114,8 +126,10 @@ them, and the generation refuses to write a map without one.
 
 ## The rows that moved
 
-Each kept its title and every assertion it had; what changed is the file it lives in, the
-fixture it takes and the server behind it. The reason is its file's own header.
+Each kept every assertion it had. What changed is the file it lives in, the fixture it takes,
+the server behind it, and the \` @pr\` the title gained for the lane axis - a move touches no
+line of what a row asserts, which is what makes "before and after" a mechanical claim rather
+than a prose one. The reason a recording can answer it is its file's own header.
 
 ${table(["file", "row", "assertion before and after", "why a recording can answer it"], movedLines)}
 
@@ -157,12 +171,8 @@ if (process.argv.includes("--search")) {
     const source = readFileSync(`${suiteDirectory}${file}`, "utf8");
     const family = file.replace(/\.stub\.e2e\.ts$/, "");
     const recorded = new Map<string, string>();
-    try {
-      for (const name of new Bun.Glob("*.har").scanSync(`${recordings}${family}/`)) {
-        recorded.set(name, readFileSync(`${recordings}${family}/${name}`, "utf8"));
-      }
-    } catch {
-      // A family with no recording directory holds no row of this listing any more.
+    for (const name of recordingsUnder(`${recordings}${family}`)) {
+      recorded.set(name, readFileSync(`${recordings}${family}/${name}`, "utf8"));
     }
     const hits = new Set<string>();
     for (const match of source.matchAll(literal)) {

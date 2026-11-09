@@ -11,7 +11,10 @@
  *  `packages/dispatch/AGENTS.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
- *  A file whose every row moved is absent from this list and belongs in no part of it. */
+ *  A file whose every row moved is absent from this list, and so is a file no project of this
+ *  listing runs - the multiprocess specs among them, which the generation never names. It
+ *  refuses a file it lists that has no reason here, and a reason here for a file it does not
+ *  list, so this list is exactly the suite's real-stack files and nothing else. */
 export const realStackReasons: Record<string, string> = {
   "accessibility.e2e.ts":
     "three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives",
@@ -62,7 +65,6 @@ export const realStackReasons: Record<string, string> = {
     "close withdraws asks server-side, then reopen and version history are re-read",
   "closed-issue-posting.e2e.ts": "posts on a closed issue and asserts the server accepted them",
   "code-line-replace.e2e.ts": "typing in the live document editor",
-  "coedit.multiprocess.e2e.ts": "two processes sharing one `/ws/doc` room",
   "collab-cursor.e2e.ts": "collaborator cursors over `/ws/doc`",
   "collaborators.e2e.ts": "Legion's record of the issue and a role mention delivered",
   "compose-wait.e2e.ts": "anchors settled by the server, live document edits by a second writer",
@@ -181,7 +183,6 @@ export const realStackReasons: Record<string, string> = {
   "search.e2e.ts": "the server's search hits; the server's answer for the query",
   "settings.e2e.ts": "mappings, defaults and architecture sources saved, refused and re-read",
   "shell.e2e.ts": "the server must revoke the session",
-  "signin.multiprocess.e2e.ts": "a sign-in started on one server and completed on another",
   "signins.e2e.ts": "the broker's machine list and a Revoke decided there",
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
@@ -192,8 +193,6 @@ export const realStackReasons: Record<string, string> = {
     "two live documents, each with its own room; the margin sits on the live document",
   "threads.e2e.ts":
     "replies, resolve and reopen, edits, retractions and suggestion accepts, all server writes",
-  "two-builds.multiprocess.e2e.ts":
-    "two server builds, `sql` on the process registry and live document rooms",
   "typed-block-content-rule.e2e.ts": "pastes into the live document editor",
   "typed-blocks.e2e.ts": "asserts inside the live project-document editor",
   "verification.e2e.ts":

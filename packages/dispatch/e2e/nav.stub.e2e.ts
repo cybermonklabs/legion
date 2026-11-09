@@ -145,7 +145,11 @@ test("the rail's New issue button opens the create dialog, preselecting the page
 // in the drawer must recognise it in the top bar.
 badgeTest(
   "the Inbox count is the same badge in the phone top bar and the drawer @phone @pr",
-  async ({ page, scene }) => {
+  async ({ page, scene }, testInfo) => {
+    badgeTest.skip(
+      testInfo.project.name !== "stub-phone",
+      "the compact top bar exists below the xl rail"
+    );
     await page.goto("/");
     const fill = (locator: ReturnType<Page["getByText"]>) =>
       locator.evaluate((element) => getComputedStyle(element).backgroundColor);

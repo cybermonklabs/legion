@@ -62,6 +62,10 @@ test("on a phone the issue's open asks come up behind the review panel toggle @p
   page,
   scene,
 }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "stub-phone",
+    "the review panel toggle is the phone layout's; a desktop width draws the margin beside the document"
+  );
   await page.goto(`/issues/${scene.issue}`);
   const toggle = page.getByRole("button", { name: "Open review panel (2 open asks)" });
   await expect(toggle).toBeVisible();

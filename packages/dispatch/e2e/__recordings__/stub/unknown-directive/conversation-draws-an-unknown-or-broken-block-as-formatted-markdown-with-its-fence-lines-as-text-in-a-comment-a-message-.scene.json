@@ -1,0 +1,32 @@
+{
+  "broken": [
+    {
+      "lines": [
+        ":::ask{#a1}",
+        "A heading",
+        "Body text"
+      ],
+      "turn": "ask:03dcb006-bfde-452e-bc3f-892e47afee0b"
+    },
+    {
+      "lines": [
+        "::::ask",
+        "Which option?",
+        "first",
+        ":::note",
+        "A note line"
+      ],
+      "turn": "message:4f043576-9d3e-4437-bb36-a0b8541edd15"
+    }
+  ],
+  "container": {
+    "ask": "307477cb-ee04-4644-be19-86cd515761d6",
+    "comment": "f0a3712e-06a3-480b-9091-c20f18fd2e13",
+    "message": "29e39cd7-d386-4599-bd39-32039f56ce06"
+  },
+  "issue": "CORE-1",
+  "stored": [
+    "fc4a683d-ff96-4667-9304-2b81b9181459",
+    "43ce5eaa-96ac-4867-ae28-cd64110ef292"
+  ]
+}

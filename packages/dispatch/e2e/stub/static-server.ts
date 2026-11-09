@@ -15,8 +15,7 @@
  *
  *  It serves no API route at all: a stub row's API answers come from its recording, and a request
  *  the recording has none of is aborted by the fixture rather than answered here. */
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { basename, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,19 +75,26 @@ function takesTheDocument(path: string): boolean {
   return !basename(path).includes(".");
 }
 
-/** The `ETag` of each file by its path, size and modification time. A page load pulls about
- *  2 MB of document, chunks, stylesheet and fonts, and every row opens a fresh context with an
- *  empty cache, so hashing those bytes again for each of several hundred rows was 25 ms a row of
- *  pure repetition - on the one process all four lanes share, which serialises them. The key
- *  carries the stat, so a rebuilt `dist` is hashed again, which `reuseExistingServer: true`
- *  allows. */
-const etags = new Map<string, string>();
+/** The routes a recording answers, which this server must never answer. A stub row installs
+ *  `routeFromHAR` with `notFound: "abort"`, so a request its recording has none of is aborted
+ *  in the browser and never reaches here - but a row whose fixture is not installed, or a
+ *  request made before it is, would otherwise be given `index.html` with a 200 and parse an
+ *  HTML document as JSON somewhere far from this cause. */
+const recordedRoutes = /^\/(api\/v1\/|auth\/)/;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: stubPort(),
   fetch(request) {
     const path = new URL(request.url).pathname;
+    if (recordedRoutes.test(path)) {
+      return new Response(
+        `${path} is answered by a row's recording, not by this server. A request that reaches ` +
+          "here is one no `routeFromHAR` caught: the row's fixture was not installed, or it " +
+          "was installed after the request was made.\n",
+        { headers: { "content-type": "text/plain; charset=utf-8" }, status: 404 }
+      );
+    }
     const found = path === "/" ? join(dist, "index.html") : fileFor(path);
     if (found === undefined && !takesTheDocument(path)) {
       return new Response("not found\n", {
@@ -96,15 +102,12 @@ const server = Bun.serve({
         status: 404,
       });
     }
-    const file = found ?? join(dist, "index.html");
-    const seen = statSync(file);
-    const key = `${file} ${seen.mtimeMs} ${seen.size}`;
-    let etag = etags.get(key);
-    if (etag === undefined) {
-      etag = `"${createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 32)}"`;
-      etags.set(key, etag);
-    }
     // `Bun.file` hands the bytes to the kernel rather than copying them through this process.
+    // No `ETag`: nothing reads one here, because this server answers no conditional request and
+    // every row opens a context with an empty cache, and hashing two megabytes of document and
+    // chunks for each of several hundred rows cost 25 ms a row on the one process all four
+    // lanes share.
+    const file = found ?? join(dist, "index.html");
     return new Response(Bun.file(file), {
       headers: {
         // The Go router's two: a page is revalidated before it runs, since it names the hashed
@@ -112,7 +115,6 @@ const server = Bun.serve({
         "cache-control":
           extname(file) === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
         "content-type": contentTypes[extname(file)] ?? "application/octet-stream",
-        etag,
       },
     });
   },

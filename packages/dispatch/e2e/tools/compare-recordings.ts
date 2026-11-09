@@ -1,72 +1,67 @@
-/** `bun e2e/tools/compare-recordings.ts <committed copy> [fresh]`: whether a fresh recording of
- *  every stubbed row still says what the committed one says.
+/** `bun e2e/tools/compare-recordings.ts <fresh>`: whether a fresh recording of every stubbed
+ *  row still says what the committed one says.
  *
- *  The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs it: it copies
- *  `e2e/__recordings__` aside, re-records every stub row against the real harness, which writes
- *  over that directory, and then calls this with the copy. A recording is never byte-identical
- *  twice, so what is compared is the comparison form of each
- *  (`canonical` in e2e/stub/recording.ts): the volatile transport erased as it is written, and
- *  the ids the server mints and the times it stamps masked here.
+ *  The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs it. That job
+ *  points the record mode at an empty directory of its own
+ *  (`DISPATCH_E2E_STUB_RECORDINGS`, `e2e/stub/recordings.ts`) rather than letting it write over
+ *  the committed set, so this can see a recording the tree holds that no row writes any more -
+ *  which it could not when the fresh set was the committed set.
  *
- *  It prints one line per recording that moved, and the first few lines of the difference, and
- *  exits 1. A recording the fresh run no longer wrote at all, and one it wrote that the tree
- *  does not hold, are both named: the first is a row that no longer runs, the second a row whose
- *  recording was never committed.
+ *  What it compares is the status of each route, and only that: `statusDrift`
+ *  (`e2e/stub/recording.ts`) is the whole of the judgement and its header says why, and
+ *  `e2e/__tests__/stub-recording.test.ts` is where that judgement is read.
+ *
+ *  Three findings, and each exits 1:
+ *
+ *  - a route whose status changed, named with both answers;
+ *  - a recording the tree holds that the fresh run wrote nothing for, which is a row that no
+ *    longer runs or no longer reads what it read;
+ *  - a recording the fresh run wrote that the tree does not hold, which is a row whose
+ *    recording was never committed.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { type Har, shapes } from "../stub/recording";
+import { type Har, statusDrift } from "../stub/recording";
+import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
 
 const usage =
-  "usage: bun e2e/tools/compare-recordings.ts <committed copy> [fresh]\n" +
-  "  <committed copy>  a copy of e2e/__recordings__ taken before the re-recording\n" +
-  "  [fresh]           the re-recorded set; e2e/__recordings__ by default";
+  "usage: bun e2e/tools/compare-recordings.ts <fresh>\n" +
+  "  <fresh>  the directory the re-recording wrote, which must not be the committed set";
 
-const [committedRoot, freshRoot] = process.argv.slice(2);
-if (committedRoot === undefined) {
+const fresh = process.argv[2];
+if (fresh === undefined) {
   console.error(usage);
   process.exit(2);
 }
-const fresh = freshRoot ?? fileURLToPath(new URL("../__recordings__", import.meta.url));
 
-/** Every `.har` under `root`, by its path relative to `root`. */
-function recordings(root: string): string[] {
-  const found: string[] = [];
-  const walk = (directory: string): void => {
-    for (const name of readdirSync(directory)) {
-      const path = join(directory, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (name.endsWith(".har")) found.push(relative(root, path));
-    }
-  };
-  try {
-    walk(root);
-  } catch {
-    return [];
-  }
-  return found.sort();
+// The committed set is this checkout's, read through the one definition of that layout. The
+// fresh set is the caller's directory, and it must not be the same one: a recording compared
+// with itself can never differ, which is how the vanished-recording finding below went
+// unreachable until a review read it.
+const committedRoot = recordingsDirectory({}).replace(/\/$/, "");
+if (join(fresh) === committedRoot) {
+  console.error(
+    `${fresh} is the committed set itself, so every comparison would be a recording against ` +
+      "itself. Point the re-recording at a directory of its own with " +
+      "DISPATCH_E2E_STUB_RECORDINGS and pass that directory here."
+  );
+  process.exit(2);
 }
 
-/** The first lines on which two comparison forms part, which is what names the drift. */
-function firstDifference(before: string, after: string): string {
-  const left = before.split("\n");
-  const right = after.split("\n");
-  for (let line = 0; line < Math.max(left.length, right.length); line += 1) {
-    if (left[line] !== right[line]) {
-      return `    line ${line + 1}\n      committed: ${left[line] ?? "<end of file>"}\n      recorded:  ${right[line] ?? "<end of file>"}`;
-    }
-  }
-  return "    the two differ in length alone";
-}
-
-const committedFiles = recordings(committedRoot);
-const freshFiles = recordings(fresh);
+const committedFiles = recordingsUnder(committedRoot);
+const freshFiles = recordingsUnder(fresh);
 if (committedFiles.length === 0) {
   console.error(`${committedRoot} holds no recording, so there is nothing to compare`);
   process.exit(2);
 }
+if (freshFiles.length === 0) {
+  console.error(`${fresh} holds no recording, so the re-recording wrote nothing`);
+  process.exit(2);
+}
+
+const read = (root: string, name: string): Har =>
+  JSON.parse(readFileSync(join(root, name), "utf8")) as Har;
 
 const moved: string[] = [];
 const gone: string[] = [];
@@ -75,28 +70,20 @@ for (const name of committedFiles) {
     gone.push(name);
     continue;
   }
-  const before = shapes(JSON.parse(readFileSync(join(committedRoot, name), "utf8")) as Har);
-  const after = shapes(JSON.parse(readFileSync(join(fresh, name), "utf8")) as Har);
-  // The routes both recordings hold, and nothing else. A route only one of them holds is the
-  // page's own racing reads - a poll that fired once more, a prefetch that won - and reporting
-  // it would make this job red every night on nothing. A route that really goes away goes away
-  // from the row too, and the row then fails its own replay against the committed recording,
-  // which is louder than a line here.
-  for (const [asked, answered] of before) {
-    const now = after.get(asked);
-    if (now !== undefined && now !== answered) {
-      moved.push(`  ${name}\n    ${asked}\n${firstDifference(answered, now)}`);
-    }
+  for (const line of statusDrift(read(committedRoot, name), read(fresh, name))) {
+    moved.push(`  ${name}\n    ${line}`);
   }
 }
 const uncommitted = freshFiles.filter((name) => !committedFiles.includes(name));
 
 if (moved.length === 0 && gone.length === 0 && uncommitted.length === 0) {
-  console.log(`every one of the ${committedFiles.length} committed recordings still matches`);
+  console.log(
+    `every one of the ${committedFiles.length} committed recordings still answers as it holds`
+  );
   process.exit(0);
 }
 if (moved.length > 0) {
-  console.error(`${moved.length} recording(s) no longer match the server:`);
+  console.error(`${moved.length} route(s) no longer answer as their recording holds:`);
   for (const line of moved) console.error(line);
 }
 for (const name of gone) {

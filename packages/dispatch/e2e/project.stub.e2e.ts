@@ -89,7 +89,11 @@ const longTitleTest = stubbed(async () => {
 // controls a finger presses are touch-sized.
 phoneTest(
   "the project page fits a phone screen with touch-sized tabs, filters and document controls @phone @pr",
-  async ({ page, scene }) => {
+  async ({ page, scene }, testInfo) => {
+    phoneTest.skip(
+      testInfo.project.name !== "stub-phone",
+      "the 44 px touch rule and the fit are the phone layout's"
+    );
     await page.goto(`/projects/${scene.project}/documents`);
     // The page draws a loading skeleton first, and one of its placeholder rows is 472 px wide,
     // which zooms a 390 px screen out to 473. The claim is about the page, so wait for the
@@ -116,7 +120,12 @@ phoneTest(
 // on one line makes the page 7,535 px wide at 1280, and a phone zooms out until it is 1,560 px.
 filterTest(
   "a 1,000-character search filter's chip ends in an ellipsis inside its row @phone @pr",
-  async ({ page, scene }) => {
+  async ({ page, scene }, testInfo) => {
+    // The desktop case this row ran in `chromium` on the real stack, at the width that makes
+    // the claim: that text on one line makes the page 7,535 px wide at 1280.
+    if (testInfo.project.name === "stub") {
+      await page.setViewportSize({ height: 800, width: 1280 });
+    }
     const label = `Search: ${scene.query}`;
     await page.goto(`/projects/${scene.project}/issues?q=${scene.query}`);
     const chip = page.getByRole("button", { name: `Remove ${label} filter` });
@@ -254,7 +263,12 @@ bandsTest(
 // phone.
 longTitleTest(
   "a list row keeps its key whole and gives the title the row's width @phone @pr",
-  async ({ page, scene }) => {
+  async ({ page, scene }, testInfo) => {
+    // The desktop case this row ran in `chromium` on the real stack: below 1280 px every link
+    // is an inline-flex box, so the claim needs both widths.
+    if (testInfo.project.name === "stub") {
+      await page.setViewportSize({ height: 900, width: 1280 });
+    }
     await page.goto(`/projects/${scene.project}/issues`);
     const row = page.getByRole("listitem", { name: new RegExp(`^${scene.issue} `) });
     await expect(row).toBeVisible();

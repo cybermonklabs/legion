@@ -10,7 +10,7 @@
  *  Everything here is made up: this repository is public, so nothing names a real person, host or
  *  project.
  */
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject } from "./api";
@@ -27,6 +27,7 @@ import {
   seedTwelve,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { openField } from "./inbox-view";
 import { stubbed } from "./stub/stub-test";
 
 // ---------------------------------------------------------------------------
@@ -113,28 +114,6 @@ repliesList(
 
 const test = stubbed(seedTwelve);
 
-/** Opens the bar's Filter panel, which is shut until the reader presses **Filter**. */
-async function openFilterFields(page: Page): Promise<Locator> {
-  const fields = page.locator("[data-inbox-filter-fields]");
-  if ((await fields.count()) === 0) {
-    await page.locator("[data-inbox-filter]").click();
-  }
-  await expect(fields).toHaveCount(1);
-  return fields;
-}
-
-/** Opens one field's popover and hands back its listbox. */
-async function openField(page: Page, field: string, label: string): Promise<Locator> {
-  const fields = await openFilterFields(page);
-  const trigger = fields.getByRole("button", { name: `Filter by ${field}` });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") {
-    await trigger.click();
-  }
-  const options = page.getByRole("listbox", { name: `${label} options` });
-  await expect(options).toHaveCount(1);
-  return options;
-}
-
 test("the Type filter counts and narrows the one list of asks, approvals, replies and agent messages @pr", async ({
   page,
   scene,
@@ -156,7 +135,7 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
 
   // The Type field counts every kind under the other four filters: the two question shapes
   // add to the three asks, and the threads are counted as what they are.
-  const options = await openField(page, "type", "Type");
+  const options = await openField(page, "type");
   const counted = async (name: string): Promise<number> => {
     const label = await options
       .getByRole("option", { name: new RegExp(`^${name}, `) })

@@ -16,7 +16,7 @@ import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
-import { stubRecording } from "./stub/stub-test";
+import { stubSelection } from "./stub/selection";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -100,52 +100,6 @@ function isListMode(argv: readonly string[]): boolean {
   return scanned.includes("--list");
 }
 
-// The projects `--project` names on this command line, in either spelling Playwright takes,
-// read from argv before a `--` separator as the list mode above is. An empty list is a run
-// that names none, which is every project of the mode.
-function projectsOnCommandLine(argv: readonly string[]): string[] {
-  const separator = argv.indexOf("--");
-  const scanned = separator === -1 ? argv : argv.slice(0, separator);
-  const named: string[] = [];
-  for (const [index, argument] of scanned.entries()) {
-    if (argument === "--project") named.push(scanned[index + 1] ?? "");
-    else if (argument.startsWith("--project=")) named.push(argument.slice("--project=".length));
-  }
-  return named;
-}
-
-// Whether this command line selects the `stub` project and nothing else. Such a run needs no
-// harness at all - no Go server, no Postgres, no fakes - so it is exempt from the three
-// refusals below and from the global setup, which probes every lane's server. Every refusal
-// keeps its sentence for every other run, so a person who forgets the harness still gets the
-// line that fixes it. The reading lives here rather than in e2e/run.ts because a stub-only run
-// never goes through that wrapper, and because dispatch://INFRA-1410 deletes it.
-function onlyStubProject(argv: readonly string[]): boolean {
-  const named = projectsOnCommandLine(argv);
-  return named.length > 0 && named.every((project) => stubProjectNames.includes(project));
-}
-
-// Whether this run holds a stubbed row at all, which is what decides whether it is given the
-// static file server below. A run that names no project runs every project of its mode, the
-// stub ones among them; a run that names some holds a stubbed row only if it named one.
-//
-// It matters because Playwright starts a `webServer` for every run of a config but a listing,
-// whatever projects the run selects, and two jobs of
-// `.github/workflows/dispatch-browser.yaml` run this config with no stubbed row in sight. One
-// of them cannot start that command at all: `visual` runs Playwright inside the pinned
-// container through `e2e/visual-run.sh`, and that image carries the three browser engines and
-// node, not bun, so a server declared there kills the job before its first row with
-// `[WebServer] /bin/sh: 1: bun: not found` and `Exit code: 127`. That is the full lane, which
-// the merge queue runs, and the pull-request lane skips `visual`, so no run on a pull request
-// says a word about it (dispatch://INFRA-1407's test round found it on the full lane).
-// `e2e/__tests__/stub-web-server.test.ts` holds the config to both directions of this.
-function runsAStubProject(argv: readonly string[]): boolean {
-  // Two-process mode runs `multiprocessProjects` and nothing else, which holds no stub project.
-  if (harnessProcessCount === 2) return false;
-  const named = projectsOnCommandLine(argv);
-  return named.length === 0 || named.some((project) => stubProjectNames.includes(project));
-}
-
 // How many workers the command line asks for, if it does: `--workers <n>`, `--workers=<n>`,
 // `-j <n>` or `-j<n>`, read before a `--` separator as the list mode above is. A worker is a
 // lane, and e2e/run.ts started one harness per lane before Playwright, so a command line that
@@ -176,71 +130,73 @@ const ports = harnessPorts();
 const reuseServers = resolveReuseServers();
 const unset = targeted.filter((listener) => ports[listener.key].port === 0);
 const listing = isListMode(process.argv);
-// A run of the `stub` project alone, not recording: it reaches no server of the harness, so
-// every refusal below is about a harness it does not want. Recording is the exception - those
-// rows run against the real harness and must meet all of them.
-//
-// Every worker re-imports this config, and a worker's own argv is Playwright's
-// (`.../workerMain.js`), not the command line, so the reading above answers `false` there and
-// the worker would meet a refusal the run was exempt from. The decision therefore travels in the
-// environment, which Playwright gives each worker: the first process to read it writes it, and
-// a person may set it themselves to run this config against no harness at all.
-const stubOnlyVariable = "DISPATCH_E2E_STUB_ONLY";
-function runsStubAlone(): boolean {
-  if (process.env[stubOnlyVariable] === "1") return true;
-  if (!onlyStubProject(process.argv) || stubRecording()) return false;
-  process.env[stubOnlyVariable] = "1";
-  return true;
-}
-const stubOnly = runsStubAlone();
-if (!listing && !stubOnly && unset.length > 0) {
-  throw new Error(
-    `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
-      `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
-      `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
-      `${runThroughWrapper}. To run against servers you started yourself, set ` +
-      `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
-      "DISPATCH_E2E_REUSE_SERVERS=1."
-  );
-}
-if (!stubOnly && !reuseServers && (!listing || unset.length < targeted.length)) {
-  const targets = targeted
-    .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
-    .join(", ");
-  throw new Error(
-    `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
-      `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
-      "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose database " +
-      "this run truncates."
-  );
-}
+// What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
+// recording, whether it holds a stubbed row at all - which is what decides the static file
+// server below - and whether it is the stubbed layer alone, which is what exempts it from the
+// four refusals here and from the global setup. That module says why each question is asked and
+// why the third travels to the workers in an environment variable.
+const stub = stubSelection({
+  argv: process.argv,
+  env: process.env,
+  processes: harnessProcessCount,
+  projects: stubProjectNames,
+});
+const stubOnly = stub.onlyStub;
 
 // One worker per lane, and the lanes are e2e/run.ts's: a worker resolves its own harness from
 // `TEST_PARALLEL_INDEX` (e2e/harness-ports.ts), so a run with more workers than lanes would put
 // two workers on one lane's servers and database, which e2e/seed.ts truncates per row.
 const lanes = laneCount();
 const asked = workersOnCommandLine(process.argv);
-if (!stubOnly && asked !== undefined && asked !== String(lanes)) {
-  throw new Error(
-    `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
-      `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
-      `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that many ` +
-      "workers."
-  );
-}
 
-// `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run against
-// servers a person started reads its own. That fallback is right for one worker and wrong for
-// more: nothing exported a lane, so every worker would resolve lane 0 and share one harness's
-// servers and database, which e2e/seed.ts truncates per row - rows would delete each other's
-// fixtures and fail in ways that read as product faults. Only e2e/run.ts exports that variable.
-if (!stubOnly && process.env[laneCountVariable] === undefined && workerCount() > 1) {
-  throw new Error(
-    `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing exported ` +
-      `${laneCountVariable}, so there is one harness and every worker would share it. Run this ` +
-      `config through e2e/run.ts, which starts a lane per worker and exports that count: ` +
-      `${runThroughWrapper}.`
-  );
+// Every refusal of this config is about the harness, so they stand together under one guard: a
+// run of the stubbed layer alone reaches no server of it and meets none of them, and every
+// other run meets all four. Each keeps its own sentence, so a person who forgets the harness
+// still gets the line that fixes it.
+if (!stubOnly) {
+  if (!listing && unset.length > 0) {
+    throw new Error(
+      `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
+        `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
+        `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
+        `${runThroughWrapper}. To run against servers you started yourself, set ` +
+        `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
+        "DISPATCH_E2E_REUSE_SERVERS=1."
+    );
+  }
+  if (!reuseServers && (!listing || unset.length < targeted.length)) {
+    const targets = targeted
+      .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
+      .join(", ");
+    throw new Error(
+      `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
+        `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
+        "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose " +
+        "database this run truncates."
+    );
+  }
+  if (asked !== undefined && asked !== String(lanes)) {
+    throw new Error(
+      `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
+        `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
+        `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that ` +
+        "many workers."
+    );
+  }
+  // `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run
+  // against servers a person started reads its own. That fallback is right for one worker and
+  // wrong for more: nothing exported a lane, so every worker would resolve lane 0 and share one
+  // harness's servers and database, which e2e/seed.ts truncates per row - rows would delete
+  // each other's fixtures and fail in ways that read as product faults. Only e2e/run.ts exports
+  // that variable.
+  if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
+    throw new Error(
+      `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing ` +
+        `exported ${laneCountVariable}, so there is one harness and every worker would share ` +
+        `it. Run this config through e2e/run.ts, which starts a lane per worker and exports ` +
+        `that count: ${runThroughWrapper}.`
+    );
+  }
 }
 
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
@@ -651,19 +607,19 @@ const stubProjects = [
     name: "stub",
     testMatch: stubSpecs,
     testIgnore: [],
-    grepInvert: phoneTagged,
     use: {
       ...devices["Desktop Chrome"],
-      baseURL: stubRecording() ? baseUrl : stubOrigin(),
+      baseURL: stub.recording ? baseUrl : stubOrigin(),
     },
   },
-  // The phone half, which `iphone` is to `chromium`: a `@phone` row asserts what the page draws
-  // at a phone's width, and that project ignores a stub spec, so without this one a row that
-  // moved here would lose its phone run altogether. The two split the stub specs by the tag -
-  // this one greps it and `stub` inverts it - so every stubbed row runs under exactly one of
-  // them and each configuration holds it once, which is what
-  // e2e/__tests__/row-configurations.test.ts reads. A row that must run at both widths is a row
-  // written twice, as it is in the real-stack projects.
+  // The phone half, which `iphone` is to `chromium`, and exactly that: `stub` runs every stub
+  // row as `chromium` runs every row of the suite, and this one greps the `@phone` tag as
+  // `iphone` does. `stub` does **not** invert the tag, which it did until a review read the
+  // three rows that cost: a `@phone` row that `chromium` ran at the desktop width lost that
+  // case in the move, and a moved row has to assert what it asserted before. A row that is a
+  // phone row alone says so itself, with the `test.skip` its author wrote against `iphone`,
+  // read here against this project's name - which is how those rows were skipped in `chromium`
+  // on the real stack too.
   {
     name: "stub-phone",
     testMatch: stubSpecs,
@@ -672,7 +628,7 @@ const stubProjects = [
     use: {
       ...devices["iPhone 13"],
       browserName: "chromium" as const,
-      baseURL: stubRecording() ? baseUrl : stubOrigin(),
+      baseURL: stub.recording ? baseUrl : stubOrigin(),
     },
   },
 ] satisfies Project[];
@@ -728,26 +684,41 @@ export default defineConfig({
   // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
   // it before Playwright.
   //
-  // It is declared for a run that holds a stubbed row and for no other, because Playwright
-  // starts a `webServer` for every run of a config but a listing, and the containerised
-  // `visual` job of the full lane runs this config where there is no bun to start it with
-  // (`runsAStubProject` above says the rest). A recording run reaches the real harness
-  // instead, so it starts none either.
+  // It is declared for a run that holds a stubbed row and for no other (e2e/stub/selection.ts
+  // says which runs those are and why the question has to be asked at all).
+  //
+  // `reuseExistingServer: false`, deliberately, and it is the one thing that makes the fixed
+  // port safe. The port has to be fixed because Playwright polls a URL before the command it
+  // starts exists; reusing whatever answers it would let a second checkout on one machine
+  // replay this one's rows against that one's `web/dist`, silently, since the probe only asks
+  // for a document every build serves. Refusing instead makes the collision a message:
+  // Playwright says the port is in use and names it, and `DISPATCH_E2E_STUB_PORT` moves this
+  // run off it.
   webServer:
-    !runsAStubProject(process.argv) || stubRecording()
+    !stub.holdsStubRow || stub.recording
       ? undefined
       : {
           command: "bun e2e/stub/static-server.ts",
-          // Playwright runs a `webServer` command in the config's own directory, and every command
-          // of this package is written from the package root, as `package.json`'s scripts are.
+          // Playwright runs a `webServer` command in the config's own directory, and every
+          // command of this package is written from the package root, as `package.json`'s
+          // scripts are.
           cwd: fileURLToPath(new URL("..", import.meta.url)),
-          reuseExistingServer: true,
+          reuseExistingServer: false,
           stdout: "pipe",
           timeout: 60_000,
           url: `${stubOrigin()}/index.html`,
         },
+  // A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) gets no stub project at
+  // all: the stubbed layer replays a recording against a build this checkout made, so against
+  // a deployed server it would prove nothing about either, and `e2e:deployed` names no project
+  // and builds no `web/dist` to serve.
   projects:
     harnessProcessCount === 2
       ? multiprocessProjects
-      : [...parallelProjects, ...aloneProjects, ...visualProjects, ...stubProjects],
+      : [
+          ...parallelProjects,
+          ...aloneProjects,
+          ...visualProjects,
+          ...(process.env.PLAYWRIGHT_BASE_URL ? [] : stubProjects),
+        ],
 });

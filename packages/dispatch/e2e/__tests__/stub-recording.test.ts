@@ -1,20 +1,24 @@
 /** What the normaliser must and must not hide (e2e/stub/recording.ts).
  *
- *  The normaliser exists so the re-record job is not red every night, and the risk it carries is
- *  the one every eraser carries: a field erased is a field whose drift nothing sees. These rows
- *  hold it to both halves - a changed value survives it, and the volatile transport does not -
- *  and to the refusal that keeps a credential out of a public repository.
+ *  Two things, which the job depends on in turn. The normaliser decides what a committed
+ *  recording holds, and the risk it carries is the one every eraser carries: a field erased is
+ *  a field whose drift nothing sees, and a credential left in is a credential published. And
+ *  `statusDrift` is the whole of what the nightly judges - the status of each route, never a
+ *  body's values and never its shape - so these rows hold it to both directions: a route that
+ *  answers differently is found, and two recordings that differ only in what a run decides are
+ *  not. `e2e/tools/compare-recordings.ts` calls that same function, so what is read here is
+ *  what the job runs.
  */
 import { describe, expect, test } from "bun:test";
 
 import { recordedOrigin } from "../stub/origin";
 import {
-  canonical,
   type Har,
   normalise,
   refuseACredential,
   retargeted,
-  shapes,
+  statusDrift,
+  statusesByRoute,
 } from "../stub/recording";
 
 const from = "http://127.0.0.1:51234";
@@ -137,57 +141,62 @@ describe("a committed recording", () => {
   });
 });
 
-describe("comparing two recordings of one row", () => {
-  test("two recordings that differ only in what a run decides compare equal", () => {
+describe("the drift the nightly judges", () => {
+  test("two recordings that differ only in what a run decides are not drift", () => {
     // Every one of these differs between two runs of one row against two databases the harness
-    // built minutes apart, and none of them is the server's shape changing.
-    const first = canonical(
-      normalise(
-        recorded({
-          at: "2026-11-09T00:00:00Z",
-          body: '{"as_of":"2026-11-09T00:51:05.7Z","id":"42017c43-4482-482a-8604-f183face92e3","rows":[],"total":0}',
-          cookie: "dsession=2.YWxpY2U.0.1",
-          frame: "frame@1",
-          time: 12.5,
-        }),
-        from
-      )
+    // built minutes apart, and none of them is the server answering differently.
+    const first = normalise(
+      recorded({
+        at: "2026-11-09T00:00:00Z",
+        body: '{"as_of":"2026-11-09T00:51:05.7Z","id":"42017c43-4482-482a-8604-f183face92e3","rows":[],"total":0}',
+        cookie: "dsession=2.YWxpY2U.0.1",
+        frame: "frame@1",
+        time: 12.5,
+      }),
+      from
     );
-    const second = canonical(
-      normalise(
-        recorded({
-          at: "2026-11-09T01:17:42Z",
-          body: '{"as_of":"2026-11-09T02:11:09.3Z","id":"343a818f-e378-4d4b-9dc6-83512adccc7a","rows":[{"anchor":null}],"total":1}',
-          cookie: "dsession=2.YWxpY2U.0.9",
-          frame: "frame@beef",
-          time: 44.25,
-        }),
-        from
-      )
+    const second = normalise(
+      recorded({
+        at: "2026-11-09T01:17:42Z",
+        body: '{"as_of":"2026-11-09T02:11:09.3Z","id":"343a818f-e378-4d4b-9dc6-83512adccc7a","rows":[{"anchor":null}],"total":1}',
+        cookie: "dsession=2.YWxpY2U.0.9",
+        frame: "frame@beef",
+        time: 44.25,
+      }),
+      from
     );
-    expect(second).toBe(first);
+    expect(statusDrift(first, second)).toEqual([]);
   });
 
-  test("a route that answers another status differs", () => {
-    // The drift this job exists to find: a row's recording holds a 200 and the server now
-    // answers 404, so the stubbed row keeps passing on an answer nobody serves any more.
-    const before = canonical(normalise(recorded({}), from));
-    const after = canonical(normalise(recorded({ status: 404 }), from));
-    expect(after).not.toBe(before);
+  test("a route that answers another status is drift, named with both answers", () => {
+    // What the job exists to find: a row's recording holds a 200 and the server now answers
+    // 404, so the stubbed row keeps passing on an answer nobody serves any more.
+    const drift = statusDrift(
+      normalise(recorded({}), from),
+      normalise(recorded({ status: 404 }), from)
+    );
+    expect(drift).toEqual([
+      "GET /api/v1/inbox: the recording holds 200, the server now answers 404",
+    ]);
   });
 
-  test("a route the page no longer asks for is not read as drift", () => {
-    // A page's reads race: one run makes a poll the next does not. The comparison is over the
-    // routes both recordings asked (e2e/tools/compare-recordings.ts), and this holds the
-    // comparison form to the shape that makes that intersection possible.
-    const one = shapes(normalise(recorded({}), from));
-    const two = shapes(normalise(recorded({ url: "/api/v1/inbox/threads" }), from));
-    expect([...one.keys()]).toEqual(["GET /api/v1/inbox"]);
-    expect([...two.keys()]).toEqual(["GET /api/v1/inbox/threads"]);
+  test("a route only one of the two asked is not drift", () => {
+    // A page's reads race: one run makes a poll the next does not. A recording the fresh run
+    // wrote nothing for at all is a different finding, and the tool reports that one.
+    const before = normalise(recorded({}), from);
+    const after = normalise(recorded({ url: "/api/v1/inbox/threads" }), from);
+    expect(statusDrift(before, after)).toEqual([]);
+    expect(statusDrift(after, before)).toEqual([]);
+  });
+
+  test("a request the page cancelled is no answer of the server's", () => {
+    // A HAR records a cancelled request with a status of -1, which varies with the run.
+    const cancelled = normalise(recorded({ status: -1 }), from);
+    expect([...statusesByRoute(cancelled).keys()]).toEqual([]);
   });
 
   test("the ids the server mints are masked out of a route", () => {
-    const one = shapes(
+    const one = statusesByRoute(
       normalise(recorded({ url: "/api/v1/artifacts/42017c43-4482-482a-8604-f183face92e3" }), from)
     );
     expect([...one.keys()]).toEqual(["GET /api/v1/artifacts/<uuid>"]);

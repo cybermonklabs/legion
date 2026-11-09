@@ -6,11 +6,12 @@ name: Dispatch browser suite
 # over four shard machines, the three `-alone` projects get a machine each, and one merge job
 # joins what they wrote into a single report and publishes the run's flake rate.
 #
-# Two lanes, one input. `pull-request` runs the two projects a pull request is held to, `chromium`
-# and `iphone`; `full` runs all eight parallel projects, the three `-alone` ones and the
-# two-process job. So an unlabelled pull request pays for the rows that answer it, and the merge
-# queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest, each
-# of which has the wall time for them.
+# Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
+# `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others; `full` runs
+# every parallel project, the three `-alone` ones and the two-process job, over every row. So an
+# unlabelled pull request pays for the rows that answer it, and the merge queue, a labelled pull
+# request, a workflow_dispatch and the nightly run pay for the rest, each of which has the wall
+# time for them.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -47,9 +48,9 @@ on:
     inputs:
       lane:
         description: >-
-          Which projects run: `pull-request` for `chromium` and `iphone`, the two a pull request
-          is held to, or `full` for every project, the `-alone` ones and the two-process job
-          among them. The shard job reads it for the projects it runs; no job reads it for a
+          Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
+          and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
+          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs; no job reads it for a
           browser to install any more, since the image the shard and alone jobs run in carries
           all three engines. Any other value fails the shard job's browser step by name, before
           it starts a row.
@@ -499,7 +500,11 @@ jobs:
           case "${{ inputs.lane }}" in
             pull-request)
               projects="--project=chromium --project=iphone --project=stub --project=stub-phone"
-              lane_grep="--grep=@pr"
+              # Anchored as `tagged("pr")` is (e2e/configurations.ts), which is what
+              # e2e/__tests__/pull-request-lane.test.ts lists this lane with: a bare `@pr`
+              # would also take a row titled `@prototype`, and the two readings of this lane
+              # must select the same rows or the budget test measures another lane.
+              lane_grep="--grep=(^|\\s)@pr(\\s|$)"
               ;;
             full)
               projects="--project=chromium --project=iphone --project=webkit --project=webkit-iphone

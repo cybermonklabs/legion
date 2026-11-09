@@ -13,15 +13,15 @@
  *    every credential, and it leaves every response body exactly as the server wrote it. A body
  *    with a token in place of its timestamps would make the page render an invalid date, so the
  *    committed body is never rewritten.
- *  - `canonical` is the comparison form, built from a normalised recording and never written
- *    anywhere. It masks the values a second recording of the same row cannot repeat - the ids the
- *    server mints and the times it stamps - inside bodies and URLs alike. It exists so the job
- *    fails on a changed **shape** and not on a changed id.
+ *  - `statusDrift` is what the nightly's re-record job judges, built from two normalised
+ *    recordings and written nowhere. It compares the **status of each route** and nothing
+ *    else: no body's values and no body's shape. Its own header says why, and names the four
+ *    guards that divide this work between them.
  *
  *  Every erasure is a field whose drift nothing will see, so the list is short and each entry
- *  carries its reason. `e2e/__tests__/stub-recording.test.ts` holds the two claims that keep it
- *  honest: a body whose value changed still differs after both passes, and a recording that
- *  differs only in what is erased does not.
+ *  carries its reason. `e2e/__tests__/stub-recording.test.ts` holds both to their claims: a
+ *  recording that differs only in what is erased is no drift, and a route that answers another
+ *  status is.
  */
 
 import { recordedOrigin } from "./origin";
@@ -67,14 +67,14 @@ export interface Har {
  *  `pageref`, `_frameref` - Playwright's own identifiers for the page and frame, minted per run.
  *  `serverIPAddress`, `_serverPort`, `_securityDetails`, `connection`, `cache` - the transport,
  *  which the replay never uses: `routeFromHAR` answers from the file.
- *  `headersSize`, `bodySize`, `_transferSize` - byte counts of a transport this file replaces;
- *  the body's own `content.size` is kept, since it is derived from the body and drifts with it. */
+ *  `headersSize`, `bodySize` - byte counts of a transport this file replaces. The response's
+ *  own `_transferSize` and `content.size` are kept: they are derived from the body, which is
+ *  committed verbatim, and the comparison reads neither. */
 const erasedEntryFields = [
   "_frameref",
   "_monotonicTime",
   "_securityDetails",
   "_serverPort",
-  "_transferSize",
   "cache",
   "connection",
   "pageref",
@@ -231,26 +231,8 @@ export function refuseACredential(har: Har): void {
 const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 /** What the dashboard asked of the server in one recording, and how the server answered: each
- *  route it asked, with the statuses that route answered with.
- *
- *  **It compares routes and statuses, never a body's values and never a body's shape, and that
- *  is the whole of the judgement in this file.** Two recordings of one row are made against two
- *  databases the harness built minutes apart, and the server answers each with ids it minted,
- *  counters it incremented, times it stamped, lists that are empty in one run and not the
- *  other, and nullable fields that are null in one and an object in the other. A comparison of
- *  values, or even of key paths, is red every night on all of that and tells a reader nothing;
- *  masking enough of it to be green would mask the very things the job exists to watch.
- *
- *  So the two guards divide the work. A body is held to its declared shape on **every pull
- *  request**, against the contract the Go route table generates
- *  (`e2e/__tests__/stub-recordings.test.ts`), which is where a renamed, removed or retyped
- *  field fails - on the commit that causes it. This job watches what a schema cannot see and
- *  what does not vary with the data: a route that answers another status than the recording
- *  holds. A recording whose row now gets a 404 or a 403 where it was given a 200 is stale, and
- *  a stubbed row would keep passing on the old answer until someone looked. A route one
- *  recording holds and the other does not is left alone, because a page's reads race: the
- *  comparison is over the routes both recordings asked (`e2e/tools/compare-recordings.ts`). */
-export function shapes(har: Har): Map<string, string> {
+ *  route it asked, with the statuses that route answered with, sorted. */
+export function statusesByRoute(har: Har): Map<string, string> {
   const statuses = new Map<string, Set<number>>();
   for (const entry of har.log.entries) {
     // A request the page cancelled, which a HAR records with a status of -1 or 0: the server
@@ -275,11 +257,43 @@ export function shapes(har: Har): Map<string, string> {
   return byRoute;
 }
 
-export function canonical(har: Har): string {
-  return `${[...shapes(har)]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([asked, answered]) => `${asked} ${answered}`)
-    .join("\n")}\n`;
+/** How one recording and a fresh recording of the same row differ, as the nightly's re-record
+ *  job judges it: one line per route whose status changed, and nothing where they agree.
+ *
+ *  **It compares the status of each route and nothing else - never a body's values and never a
+ *  body's shape - and that is the whole of the judgement in this file.** Two recordings of one
+ *  row are made against two databases the harness built minutes apart, and the server answers
+ *  each with ids it minted, counters it incremented, times it stamped, lists that are empty in
+ *  one run and not the other, and nullable fields that are null in one and an object in the
+ *  other. A comparison of values, or even of key paths, is red every night on all of that and
+ *  tells a reader nothing; masking enough of it to be green would mask the very things the job
+ *  exists to watch.
+ *
+ *  Four guards divide the work, and this is the third of them. The generated contract holds the
+ *  client and the server to one shape at compile time (dispatch://INFRA-1406). The contract
+ *  test holds every committed recording's **body** to that shape on every pull request
+ *  (`e2e/__tests__/stub-recordings.test.ts`), which is where a renamed, removed or retyped
+ *  field fails, on the commit that causes it. This watches the **status of each route**, which
+ *  no schema sees and which does not vary with the data: a row whose recording holds a 200
+ *  where the server now answers 404 or 403 is stale, and a stubbed row would keep passing on
+ *  the old answer until someone looked. And the rows that stayed on the real stack hold the
+ *  server's **behaviour**. The architect accepted that division on 2026-11-09T12:23:15Z, as a
+ *  departure from the plan's D11, which asked for a comparison of values.
+ *
+ *  A route one recording holds and the other does not is left alone, because a page's reads
+ *  race: one run makes a poll the next does not. A recording the fresh run wrote nothing for at
+ *  all is a different thing, and the caller reports it (`e2e/tools/compare-recordings.ts`). */
+export function statusDrift(committed: Har, fresh: Har): string[] {
+  const before = statusesByRoute(committed);
+  const after = statusesByRoute(fresh);
+  const moved: string[] = [];
+  for (const [asked, answered] of before) {
+    const now = after.get(asked);
+    if (now !== undefined && now !== answered) {
+      moved.push(`${asked}: the recording holds ${answered}, the server now answers ${now}`);
+    }
+  }
+  return moved.sort();
 }
 
 /** A committed recording's text with the placeholder origin replaced by `origin`, which is the

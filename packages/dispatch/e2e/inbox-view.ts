@@ -1,7 +1,8 @@
-/** The Inbox's one list as the **View** menu and the **Filter** bar describe it: the eleven
- *  rows the fields are read over, what each value is called, the order each field puts them in,
- *  and the controls a row opens. Shared by `inbox-view.e2e.ts` and the rows of that family
- *  which run against a recording (`inbox-view.stub.e2e.ts`).
+/** The Inbox's one list as the **View** menu and the **Filter** bar describe it (INFRA-450):
+ *  the eleven rows the fields are read over, what each value is called, the order each field
+ *  puts them in, how a band folds, how the reading pane is sized, and the controls a row opens.
+ *  Shared by `inbox-view.e2e.ts`, by the rows of that family which run against a recording
+ *  (`inbox-view.stub.e2e.ts`), and by `inbox-threads.stub.e2e.ts`, which reads the same bar.
  *
  *  Everything here is made up: this repository is public, so nothing names a real person, host
  *  or project.
@@ -31,15 +32,6 @@ import {
   seedMessageThread,
   THREAD_SESSION,
 } from "./inbox-threads";
-
-/**
- * The Inbox's **View** menu and its **Filter** bar over the one list (INFRA-450): what each of
- * the five fields filters, bands and orders by, how a band folds, how the reading pane is sized,
- * and that a list of a hundred and twenty threads is ordered and counted by the same rules.
- *
- * Everything here is made up: this repository is public, so nothing names a real person, host or
- * project.
- */
 
 /** The list this file reads: every row, whoever holds it, so the fields have something to say. */
 export const INBOX = "/?assignee=everyone";

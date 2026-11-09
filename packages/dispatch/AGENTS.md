@@ -2523,15 +2523,23 @@ is anything the server decides. Four shapes, and a row of any of them stays wher
 
 A row moves by moving its file, never by an annotation: 150 spec files reset the database in a
 `beforeEach` and most of them sign in and seed through the API, so a stubbed row left among them
-would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps its title
-and every assertion it had, and the file it left keeps its own rows and hooks. Such a file
+would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps every
+assertion it had and its title but for the ` @pr` the lane axis adds, and the file it left keeps
+its own rows and hooks. A row that the real-stack projects ran at two widths keeps both here
+too: `stub` runs every stubbed row as `chromium` runs every row of the suite, `stub-phone` greps
+the `@phone` tag as `iphone` does, and a row that is a phone row alone says so itself with the
+`test.skip` its author wrote, read against this project's name. Such a file
 declares its `test` with `stubbed(seed)` (`e2e/stub/stub-test.ts`): `seed` is the API seeding the
 rows need, which runs in record mode alone, and what it returns is written beside the recording
 as a scene file and handed back to each row as `scene`, so no row ever names an id the server
 minted. The fixture's `page` is already signed in, because the recording answers `/auth/whoami`.
 
 A recording is made with `bun run e2e:stub:record`, which runs the same rows against the real
-harness and writes each row's HAR and scene under `e2e/__recordings__/<family>/<row>.har`.
+harness and writes each row's HAR and scene under
+`e2e/__recordings__/<project>/<family>/<row>.har`. The project names the directory because a
+row whose claim holds at both widths runs in both stubbed projects, and one file for the two
+would be written twice by two workers at once and replayed in whichever shape won
+(`e2e/stub/recordings.ts`).
 It is normalised as it is written (`e2e/stub/recording.ts`): the volatile transport erased, the
 entries in an order two recordings agree on, every URL on a placeholder origin, and every
 credential gone — the `dsession` cookie among them, since these files are committed to a public
@@ -2546,9 +2554,18 @@ package and holds every committed recording to
 `packages/contracts/schemas/dispatch-openapi.json`: the route, the method, the status and the
 body against that status's schema, so a response shape that changes fails on the commit that
 changes it. The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs daily,
-re-records every stubbed row against the real harness and fails naming each recording that no
-longer matches, which catches what a schema cannot see: a changed value, an order, a route the
-page stopped asking for. It uploads the re-recorded set, so applying it is one copy.
+re-records every stubbed row against the real harness into a directory of its own and fails
+naming each route that no longer answers as its recording holds. It compares the **status of
+each route** and nothing else - no body's values and no body's shape - because two recordings
+of one row never agree on an id, a counter, a time, an empty list or a nullable field, and
+masking enough of that to be green would mask what the job exists to watch (`statusDrift`,
+`e2e/stub/recording.ts`). So four guards divide the work, each watching what the others
+cannot: the generated contract holds client and server to one shape at compile time, the
+contract test holds every recorded body to that shape on each pull request, this holds the
+status of each route, and the rows that stayed on the real stack hold the server's behaviour.
+The job uploads the re-recorded set, so applying it is one copy, and it also finds a committed
+recording no row writes any more - which it could not while it re-recorded over the committed
+set.
 
 The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
 pull-request lane runs `--grep=@pr` over `chromium`, `iphone`, `stub` and `stub-phone`; the full
@@ -2561,9 +2578,15 @@ pull request needs to see its failure first, with a `// @pr: ` line above it say
 row defaults to neither**: write it where its claim belongs, and tag it only if the lane has room
 and the pull request needs it.
 
-`e2e/row-map.md` holds what moved, what stayed and what left the pull-request lane, with the
-reason for each; `bun e2e/tools/row-map.ts --write` writes it and
-`e2e/__tests__/row-map.test.ts` fails when the committed file and a fresh generation differ.
+`e2e/row-map.md` holds the rows that moved, each with the reason a recording can answer it, and
+every file whose rows stayed, each with the server behaviour those rows depend on.
+`bun e2e/tools/row-map.ts --write` writes it and `e2e/__tests__/row-map.test.ts` fails when the
+committed file and a fresh generation differ. It carries no count and names no `@pr` row,
+deliberately: both are read from a listing of the whole suite, so a map that held them would be
+red on every pull request of every tree that adds or removes a row here. A **new spec file**
+still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the
+generation refuses to write a map without one - and refuses a reason there for a file the
+listing does not name.
 
 ## Accessibility and visual review
 
