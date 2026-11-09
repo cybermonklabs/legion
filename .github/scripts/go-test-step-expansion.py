@@ -4,10 +4,10 @@
 This is the tool check k1 of dispatch://INFRA-1408 asks for (its A1): it expands every `go test`
 step of `.github/workflows/ci.yaml`, and of every workflow a job of it calls, whose working
 directory is `packages/envoy` or `packages/envoy/infra` into the test functions the step really
-runs - through the step's own packages, `-tags`, `-race` and `-run`, with `go test -list` - and
-prints every (package, function) pair more than one step runs. It exits 1 on a pair no declared
-exception covers, and 0 when every such pair is declared with the requirement that makes it run
-twice (EXCEPTIONS below).
+runs - through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with
+`go test -list` - and prints every (package, function) pair more than one step runs. It exits 1
+on a pair no declared exception covers, and 0 when every such pair is declared with the
+requirement that makes it run twice (EXCEPTIONS below).
 
 No CI job runs it, and none should. It compiles every test binary of both modules, the `-race`
 ones included: minutes of compile on a warm module cache, and tens of minutes on a cold one, for
@@ -56,6 +56,8 @@ How it reads a step:
   * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
     in the step's own directory, and its output used; a step looping over packages
     (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
+  * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from its
+    listing; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
   * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
@@ -214,8 +216,16 @@ GO_WRAPPERS = (".github/scripts/race_memory.py",)
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
-VALUE_FLAGS = ("-run", "-tags", "-timeout", "-count", "-parallel", "-cpu", "-bench", "-o",
-               "-fuzz", "-fuzztime", "-shuffle", "-exec", "-coverprofile", "-covermode", "-p")
+VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cpu", "-bench",
+               "-o", "-fuzz", "-fuzztime", "-shuffle", "-exec", "-coverprofile", "-covermode",
+               "-p")
+# The one `-skip` shape this script reads: the anchored alternation of whole test names
+# ci_job_reads.py builds for both steps of this repository that carry one, `^(Name|Name|…)$`.
+# Its names are read off the pattern's own text, and every other pattern is refused by name,
+# because `go test` runs the real `-skip` through Go's regexp: a Python `re` matched against a
+# listing would be a second engine, and two engines that agree on every pattern anyone wrote
+# down disagree on the one nobody tried, leaving this script wrong about what a step runs.
+SKIP_ALTERNATION = re.compile(r"^\^\(([^()|]+(?:\|[^()|]+)*)\)\$$")
 
 
 class Refused(Exception):
@@ -256,6 +266,7 @@ class GoTest:
     tags: str = ""
     race: bool = False
     run: str = ""
+    skip: str = ""  # the pattern as the step writes it; skip_names reads the names out of it
     resolved: list[str] = field(default_factory=list)  # import paths
 
 
@@ -425,8 +436,18 @@ def loop_body(step: Step, lines: list[str], index: int) -> tuple[list[str], int]
     raise Refused(f"{step.label}: a `for` loop with no `done`")
 
 
+def skip_names(pattern: str) -> list[str] | None:
+    """The test names an anchored alternation leaves out, or None for a pattern of any other
+    shape, which the caller refuses by name rather than guessing at."""
+    match = SKIP_ALTERNATION.match(pattern)
+    if not match:
+        return None
+    names = match.group(1).split("|")
+    return names if all(NAME.match(name) for name in names) else None
+
+
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
-    """The packages, -tags, -race and -run of one `go test` command."""
+    """The packages, -tags, -race, -run and -skip of one `go test` command."""
     command = GoTest(step=step, text=text, packages=list(packages))
     words = shlex.split(text)
     position = words.index("test") + 1
@@ -442,6 +463,12 @@ def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
                 position += 1
             if flag == "-run":
                 command.run = value
+            elif flag == "-skip":
+                if skip_names(value) is None:
+                    raise Refused(f"{step.label}: `{text}` skips by `{value}`, and this script "
+                                  "reads only the anchored alternation of whole test names, "
+                                  "`^(Name|Name|…)$`, that ci_job_reads.py writes")
+                command.skip = value
             elif flag == "-tags":
                 command.tags = value
             elif flag == "-bench":
@@ -473,8 +500,11 @@ def resolve(command: GoTest) -> None:
 
 
 def list_tests(command: GoTest) -> dict[str, list[str]]:
-    """What each package of one command runs: `go test -list` under the command's own flags."""
+    """What each package of one command runs: `go test -list` under the command's own flags,
+    less the names its -skip leaves out. `-list` answers the -run pattern alone and prints the
+    names a -skip would keep from running, so they are subtracted here rather than there."""
     pattern = command.run or ".*"
+    skipped = set(skip_names(command.skip) or ())  # the parse refused every other shape
     out = go(["go", "test", "-count=1", "-list", pattern, *build_flags(command), *command.resolved],
              command.step.directory, f"{command.step.label}: go test -list of `{command.text}`")
     names: dict[str, list[str]] = {}
@@ -490,7 +520,7 @@ def list_tests(command: GoTest) -> dict[str, list[str]]:
         kind, package = status.group(1), status.group(2)
         if kind == "FAIL":
             raise Refused(f"{command.step.label}: `go test -list` failed on {package}\n{indent(out)}")
-        names[package] = pending
+        names[package] = [name for name in pending if name not in skipped]
         pending = []
     missing = [p for p in command.resolved if p not in names]
     if missing:
@@ -528,6 +558,7 @@ def expansion() -> tuple[list[Step], dict[tuple[str, str], list[Step]], list[str
                       f"{len(packages)} package(s), {functions} function(s)")
         for command in commands:
             report.append(f"      -run {command.run or '(none)'}"
+                          f"{' -skip ' + command.skip if command.skip else ''}"
                           f"{' -tags ' + command.tags if command.tags else ''}"
                           f"{' -race' if command.race else ''}"
                           f": {len(command.resolved)} package(s)")
@@ -562,7 +593,8 @@ def main() -> int:
 
     print(f"# go test step expansion of {WORKFLOW} and the workflows its jobs call, under {ROOT}")
     print("# Every test function each go test step of packages/envoy and packages/envoy/infra")
-    print("# runs, through go test -list over the step's own packages, -tags, -race and -run.")
+    print("# runs, through go test -list over the step's own packages, -tags, -race, -run")
+    print("# and -skip.")
     print("# Run it at two commits and compare the pair sets:")
     print("#   grep '^PAIR' head.txt > head.pairs; grep '^PAIR' base.txt > base.pairs")
     print("#   diff base.pairs head.pairs      (empty: the two commits run the same functions)")
