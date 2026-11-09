@@ -6036,9 +6036,8 @@ It also unsets `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before that call, s
 Exit 2 covers one fault of the host as well: [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses every DSN where the machine has no libpq, and this file answers that refusal as it answers the other two.
 The refusal line tells that case apart, and names libpq and the package to install.
 That guard reads the caller's DSN in the shell, and it reaches no further.
-The `driver` check then builds the test binary (`go test -c -tags e2e ./internal/daemon`), and that binary builds DSNs of its own from `LEGION_TEST_PG_DSN`: its `TestMain` makes the run's one database before any test starts, `internal/testpg` migrates a template and clones it, and the two proofs that take a database of their own make one inside the proof (`takeOwnDatabase`).
-Every one of those rewrites comes from one helper, `DatabaseURL` in `packages/daemon/internal/testpg/testdb/testdb.go`, which reads the DSN and the rewrite back with pgx — the parser the driver connects through — before anything connects or creates, and ends the run where the rewrite is not that DSN's host, port and user with the database it asked for.
-So two frames hold the run to the server its caller named: libpq in the shell, before anything starts, and pgx inside the binary.
+The `driver` check then builds the test binary (`go test -c -tags e2e ./internal/daemon`), and that binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx before anything connects or creates, which is the second of the two frames that hold the run to the server its caller named.
+`DatabaseURL` in `packages/daemon/internal/testpg/testdb/testdb.go` is where that frame is written, and the comment above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh) is where this one is.
 On any exit it stops the `nats-server`, removes the work directory and prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
 
 | argument | is |

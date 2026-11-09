@@ -59,30 +59,17 @@
 # and no CI job runs `go mod tidy`, `go mod verify` or any other check that reads which pgx
 # version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
-# scripts/e2e/README.md and packages/daemon/internal/daemon/own_database_dsn_test.go point here
+# scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
 # rather than write it again. Whoever raises pgx moves the safety of those three proofs, and of
-# the ninth call site's rewrite check below, and must drive this guard's own cases
-# (lib/loopback-dsn.test.ts) and that check's own cases (own_database_dsn_test.go) again.
+# the rewrite check the next paragraph names, and must drive this guard's own cases
+# (lib/loopback-dsn.test.ts) and that check's own cases
+# (packages/daemon/internal/testpg/testdb/testdb_test.go) again.
 #
 # The ninth call site's binary rewrites that DSN itself, and this guard reaches no further than
-# the shell. Each of the seven runs the binary `go test -c -tags e2e ./internal/daemon` builds,
-# and that binary builds DSNs of its own from LEGION_TEST_PG_DSN: TestMain makes the run's one
-# database before any test starts (packages/daemon/internal/daemon/main_test.go, through
-# testdb.RunDatabaseMain), internal/testpg migrates a template and clones it for the tests that
-# ask, and takeOwnDatabase (packages/daemon/internal/daemon/live_agent_proof_test.go) makes the
-# proof's own database. Every one of those rewrites comes from one helper, DatabaseURL in
-# packages/daemon/internal/testpg/testdb/testdb.go. It rewrites with Go's net/url and then reads
-# the DSN and the rewrite back with pgconn.ParseConfig, the parser the driver connects through,
-# before anything connects or creates. net/url ends the user name at the last `@` and starts the
-# query at the first `?`, so for some DSNs this guard takes it reads another host than libpq:
-# measured in a Legion worker pod with Go 1.27.3 and pgx v5.11.0, the DSN
-# postgres://evil.example?x=@localhost/db, whose host libpq reads as localhost and this guard
-# admits, rewrites to postgres://evil.example/postgres?x=@localhost/db, whose host pgx reads as
-# evil.example. DatabaseURL refuses that rewrite, naming what pgx read of both strings, and the
-# binary ends before its first connection with no database made anywhere.
-# own_database_dsn_test.go drives those cases. The two frames divide this way: this guard reads
-# the caller's DSN with libpq in the shell, before anything starts, and the binary reads every
-# DSN it builds from that one back with pgx inside itself.
+# the shell. That rewrite, and the check that keeps it on the host this guard read, are written
+# once, on DatabaseURL in packages/daemon/internal/testpg/testdb/testdb.go. The two frames divide
+# this way: this guard reads the caller's DSN with libpq in the shell, before anything starts,
+# and the binary reads every DSN it builds from that one back with pgx inside itself.
 #
 # The call runs after the caller's own tool check, because it is python3 that runs the guard.
 # The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection, in its
