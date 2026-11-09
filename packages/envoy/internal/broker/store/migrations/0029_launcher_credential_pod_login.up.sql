@@ -73,14 +73,18 @@
 --     and the test that uses it, enroll/pod_self_enroll_test.go's
 --     TestTheNextReleasesIndexDropWaitsForALoginInFlight: it runs `drop index` without
 --     `if exists`, so once the migration has dropped the index that statement errors. The test
---     puts that error back into its `dropped` channel and asserts nothing on it, so what it
---     prints is "the drop ran while the login was in flight; it must wait on the login's lock"
---     rather than anything about a missing index: read the error, not the message.
+--     does assert on that error, at its end, and never reaches it: the fatal on !waited fires
+--     first, so what it prints is "the drop ran while the login was in flight; it must wait on
+--     the login's lock". Relax that fatal and the assertion at the end reports the missing
+--     index instead. Read the error, not the message.
 --   - in enroll/pod_self_enroll_test.go,
 --     TestThePreviousBrokersTokenLoginStillRunsOnTheMigratedSchema,
---     which runs the previous broker's upsert against this migration's schema. Neither index
---     added here implies that statement's conflict target, so after the drop it is 42P10, which
---     is the whole point of the staging and of that test.
+--     which runs the previous broker's upsert against this migration's schema. That statement's
+--     conflict target implies neither index added here -- Postgres infers a partial index as
+--     the arbiter only where the target's predicate implies the index's, and `subject is not
+--     null and revoked_at is null` implies neither `pod_uid is null` nor `pod_uid is not null`
+--     -- so after the drop it is 42P10, which is the whole point of the staging and of that
+--     test.
 --   - store/storetest.PerPodLoginSchema, the rig that applies this drop by hand today, which
 --     the drop turns into a statement the migration already ran, and the tests that call it,
 --     which a grep for the symbol names.
