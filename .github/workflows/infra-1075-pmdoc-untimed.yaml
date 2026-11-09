@@ -82,14 +82,17 @@ jobs:
         id: profile
         working-directory: packages/envoy/internal/dispatch/pmdoc
         run: |
+          # bash's own `time`, not /usr/bin/time: the `time` package is not on every runner
+          # image, and the keyword reports the same three numbers (the run's wall, and the user
+          # and system CPU of it and its children) on the shell's stderr, which is this step's
+          # log. The binary's own output goes to a file, so the two do not mix.
+          TIMEFORMAT='the profiled run: real %3Rs user %3Us sys %3Ss'
           status=0
-          /usr/bin/time -v -o "$RUNNER_TEMP/profile.rusage" \
-            "$RUNNER_TEMP/pmdoc.test" -test.run "$MEASURED" -test.count=1 -test.v \
+          time "$RUNNER_TEMP/pmdoc.test" -test.run "$MEASURED" -test.count=1 -test.v \
             -test.timeout 20m -test.cpuprofile "$RUNNER_TEMP/cpu.out" \
             > "$RUNNER_TEMP/profile.log" 2>&1 || status=$?
           echo "the profiled run exited $status"
           grep -E '^(ok|FAIL|PASS|--- )' "$RUNNER_TEMP/profile.log" | tail -n 30
-          grep -E 'Elapsed|User time|System time|Maximum resident' "$RUNNER_TEMP/profile.rusage"
           ls -l "$RUNNER_TEMP/cpu.out"
       # Run 2: the same twelve with the collector's own trace. Every line names a collection's
       # CPU and the heap it marked, and a forced one - every runtime.GC() of timedWindow - says
@@ -103,14 +106,12 @@ jobs:
         env:
           GODEBUG: gctrace=1
         run: |
+          TIMEFORMAT='the gctrace run: real %3Rs user %3Us sys %3Ss'
           status=0
-          /usr/bin/time -v -o "$RUNNER_TEMP/gctrace.rusage" \
-            "$RUNNER_TEMP/pmdoc.test" -test.run "$MEASURED" -test.count=1 -test.v \
+          time "$RUNNER_TEMP/pmdoc.test" -test.run "$MEASURED" -test.count=1 -test.v \
             -test.timeout 20m > "$RUNNER_TEMP/gctrace.log" 2>&1 || status=$?
           echo "the gctrace run exited $status"
-          grep -c '^gc ' "$RUNNER_TEMP/gctrace.log" || true
-          grep -c 'forced' "$RUNNER_TEMP/gctrace.log" || true
-          grep -E 'Elapsed|User time|System time|Maximum resident' "$RUNNER_TEMP/gctrace.rusage"
+          echo "collections: $(grep -c '^gc ' "$RUNNER_TEMP/gctrace.log" || true), forced: $(grep -c 'forced' "$RUNNER_TEMP/gctrace.log" || true)"
       # The profile read on the runner, so the split is in this job's own log whatever happens to
       # the artifact. A Go runtime profile carries its own symbols, so no binary is needed here.
       - name: Read the profile
@@ -135,6 +136,4 @@ jobs:
             ${{ runner.temp }}/cpu.out
             ${{ runner.temp }}/profile.log
             ${{ runner.temp }}/gctrace.log
-            ${{ runner.temp }}/profile.rusage
-            ${{ runner.temp }}/gctrace.rusage
           if-no-files-found: error
