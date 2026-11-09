@@ -1,4 +1,4 @@
-package duty
+package duty_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -39,7 +40,7 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunLeased(ctx, leases, name, interval, TickAtStart, func(ctx context.Context) {
+		duty.RunLeased(ctx, leases, name, interval, duty.TickAtStart, func(ctx context.Context) {
 			var boundary time.Time
 			err := database.Pool.QueryRow(ctx, `select boundary from duty_passes where lease = $1`, name).Scan(&boundary)
 			if err == nil {

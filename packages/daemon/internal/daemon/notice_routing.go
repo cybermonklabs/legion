@@ -237,14 +237,6 @@ func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }
 
-// claimTookRole is whether a claim in state has an agent that took its Envoy role and said it can
-// be prompted: ready, working or idle. A registered claim has not yet: the daemon records the
-// registration before the agent's plugin claims the role, so a publish then still reaches the
-// session that held the role before.
-func claimTookRole(state supervise.ClaimState) bool {
-	return state == supervise.StateReady || state == supervise.StateWorking || state == supervise.StateIdle
-}
-
 // supervisedClaim is token's claim as this daemon supervises it, or the zero view, whose state is
 // "", when it does not supervise it. It is the machine's View, which never waits on a decision in
 // flight: the outbox runs one row at a time, and an architect's relaunch can hold its machine for

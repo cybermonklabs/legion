@@ -16,6 +16,14 @@ mkdir -p "$compose" "$backups" "$bin" "$tools"
 # appear in the deployer's output or in any process's arguments.
 password='s@cret-canary'
 url_without_password='postgres://dispatch@db.test:5432/dispatch?sslmode=require'
+# The schema read, as it reaches psql: the connection on the command line, and on standard input
+# a script that tries for the migration key and reads the versions only once the try was granted.
+# The fake psql below reads that script on standard input, refuses a run that sends none, and
+# records every statement it actually runs as a psql-sql line of the argv log, so the test counts
+# the reads apart from the runs.
+psql_run="^psql .*$url_without_password\$"
+schema_try='psql-sql select pg_try_advisory_lock(8150001)'
+schema_read='psql-sql select version from schema_migrations order by version'
 fresh_env() {
   cat >"$compose/.env" <<EOF
 ENVOY_IMAGE_TAG=old-image
@@ -26,7 +34,7 @@ EOF
   # level. A migration applied below the highest one changes the set and leaves max(version) where
   # it was.
   seq 1 112 >"$schema"
-  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held"
+  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key"
   touch "$schema.running"
   : >"$log"
   : >"$argv"
@@ -196,11 +204,103 @@ if [[ "${AUTODEPLOY_TEST_SCHEMA_UNREADABLE:-}" == 1 ||
   ("${AUTODEPLOY_TEST_SCHEMA_UNREADABLE_AFTER_UP:-}" == 1 && -e "$AUTODEPLOY_TEST_SCHEMA.up") ]]; then
   exit 2
 fi
-case "$*" in
-  *'pg_advisory_lock(8150001)'*'from schema_migrations'*) printf '\n' ;;
-esac
-# The versions as `order by version` returns them.
-sort -n "$AUTODEPLOY_TEST_SCHEMA"
+# The migration advisory key, as the server holds it. $schema.key, holding a number above zero,
+# stands for another session holding the key; every statement that reaches for it takes one off
+# that number, so the key comes free after that many tries. The word `always` stands for a holder
+# that never lets go of it inside the read's deadline, as a backend left building an index
+# concurrently by a killed pod does. A try (pg_try_advisory_lock) refused the key answers f, and
+# one that took it answers t. No fake can model the snapshot the read takes, so what this pins is
+# which statements run, in which order, in the one run.
+key_held() {
+  local remaining
+  [[ -s "$AUTODEPLOY_TEST_SCHEMA.key" ]] || return 1
+  remaining=$(<"$AUTODEPLOY_TEST_SCHEMA.key")
+  [[ "$remaining" == always ]] && return 0
+  ((remaining > 0)) || return 1
+  printf '%s\n' "$((remaining - 1))" >"$AUTODEPLOY_TEST_SCHEMA.key"
+}
+got=
+sql_out=
+# run_statement runs one statement of this session and leaves what it returns in sql_out, as psql
+# does under ON_ERROR_STOP=1: a statement that errors ends the run, whatever was to follow it.
+run_statement() {
+  local stmt="${1%;}"
+  stmt="${stmt% as got}"
+  sql_out=
+  printf 'psql-sql %s\n' "$stmt" >>"$AUTODEPLOY_TEST_ARGV"
+  case "$stmt" in
+    'set lock_timeout = 30000') ;;
+    'select pg_try_advisory_lock(8150001)')
+      if key_held; then got=f; else got=t; fi
+      sql_out="$got"
+      ;;
+    'select version from schema_migrations order by version')
+      if [[ -z "$got" ]]; then
+        printf 'psql: read of schema_migrations outside the session that tried for the key: %s\n' "$stmt" >&2
+        exit 3
+      fi
+      if [[ "$got" == f ]]; then
+        # The read the deployer must never reach. Behind a key another session holds, a read can
+        # fail: a first boot holds the key before schema_migrations is committed, and the
+        # runner's widening ALTER TABLE makes the read wait out its lock_timeout. Under
+        # ON_ERROR_STOP=1 that ends psql non-zero, and a deployer that ran the read whatever the
+        # try answered would take that for a failed read rather than try the key again.
+        printf 'psql: ERROR: canceling statement due to lock timeout\n' >&2
+        exit 1
+      fi
+      # The versions as `order by version` returns them.
+      sql_out=$(sort -n "$AUTODEPLOY_TEST_SCHEMA")
+      ;;
+    *)
+      printf 'psql: unexpected statement: %s\n' "$stmt" >&2
+      exit 3
+      ;;
+  esac
+}
+# The run's script: the deployer sends it on standard input with -f -, and a run without -f -
+# fails here rather than passing unnoticed.
+script=0
+args=("$@")
+i=0
+while ((i < ${#args[@]})); do
+  case "${args[i]}" in
+    -f)
+      [[ "${args[i + 1]}" == - ]] && script=1
+      i=$((i + 2))
+      ;;
+    -v) i=$((i + 2)) ;;
+    *) i=$((i + 1)) ;;
+  esac
+done
+if ((script == 0)); then
+  printf 'psql: this run sends no script on standard input (-f -): %s\n' "$*" >&2
+  exit 3
+fi
+# psql reading a script: \gset keeps a statement's one value in a variable instead of printing
+# it, \echo prints a variable, and what stands between \if and \endif runs only where the
+# variable is true.
+skip=0
+while IFS= read -r line; do
+  case "$line" in
+    '') ;;
+    '\echo :got') ((skip)) || printf '%s\n' "$got" ;;
+    '\if :got') [[ "$got" == t ]] || skip=1 ;;
+    '\endif') skip=0 ;;
+    *'\gset')
+      ((skip)) || run_statement "${line% \\gset}"
+      ;;
+    \\*)
+      printf 'psql: unexpected backslash command: %s\n' "$line" >&2
+      exit 3
+      ;;
+    *)
+      if ((skip)); then continue; fi
+      run_statement "$line"
+      [[ -z "$sql_out" ]] || printf '%s\n' "$sql_out"
+      ;;
+  esac
+done
+exit 0
 EOF
 cat >"$tools/pg_dump" <<'EOF'
 #!/usr/bin/env bash
@@ -262,8 +362,9 @@ if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]
   fail 'deployer did not record the set of migrations old-image runs against'
 fi
 if [[ $(grep -c "^pg_dump -Fc $url_without_password\$" "$argv") -ne 1 ]] ||
-  [[ $(grep -c "^psql .*pg_advisory_lock(8150001).*from schema_migrations.* $url_without_password\$" "$argv") -ne 2 ]]; then
-  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, the read after the runner lock'
+  [[ $(grep -c "$psql_run" "$argv") -ne 2 ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 2 ]] ||
+  [[ $(grep -cF "$schema_read" "$argv") -ne 2 ]]; then
+  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, each run the try for the runner key and then the read'
 fi
 # Each client container runs under an init that passes on a signal, so `timeout` ends it.
 if [[ $(grep -c '^docker run ' "$argv") -ne 3 || $(grep -c '^docker run --init ' "$argv") -ne 3 ]]; then
@@ -403,6 +504,69 @@ if [[ "$output" != *"could not read the schema version"*"not deploying new-image
   fail 'deployer did not stop before deploying when the schema version was unreadable'
 fi
 
+# A key another session holds does not make the read wait on it: a blocking wait deadlocks against
+# a migration runner building an index concurrently under that key, so the read tries the key,
+# reads nothing while it is held, and tries again. Here the key is held against the first two
+# tries; the third takes it, and the deploy runs as it does with a free key.
+fresh_env
+printf '2\n' >"$schema.key"
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment behind a held key'
+fi
+no_secret 'the held migration key'
+# While the key is held the read must not run at all, not merely be dropped from the answer: the
+# fake fails such a read, as the server can, and under ON_ERROR_STOP=1 psql's non-zero status
+# would end the deployer's read rather than its poll. So of the four runs only the two granted
+# the key read anything: the third try, which took it, and the one after the stop.
+if [[ $(grep -cF "$schema_read" "$argv") -ne 2 ]] || [[ "$output" == *"could not read the schema version"* ]]; then
+  fail 'deployer read the applied set while another session held the migration key, so a failing read ended its poll'
+fi
+if [[ $(<"$schema.key") -ne 0 ]]; then
+  fail 'deployer did not try the held migration key more than once'
+fi
+# Four psql runs, each trying the key: it refused the first two, the third took it and read the
+# set, and one more after the stop. An f answer taken for the applied set would record 0 versions
+# and refuse the rollback.
+if [[ $(grep -c "$psql_run" "$argv") -ne 4 ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 4 ]] ||
+  [[ "$output" != *"rolling back to old-image"* ]] ||
+  [[ "$output" == *"refusing to roll back"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
+  fail 'deployer did not poll the held migration key and deploy once it came free'
+fi
+# Nothing in the run waits on the key inside the database, in a statement run or in an argument.
+if grep -qF 'select pg_advisory_lock(' "$argv"; then
+  fail 'deployer waited on the migration key in a blocking statement, which deadlocks the migration runner'
+fi
+
+# A key no session ever lets go of, as a pod killed mid-CREATE INDEX CONCURRENTLY leaves behind:
+# the backend goes on building the index, and holds the key for minutes. The deployer tries the
+# key a second apart for its whole deadline, never reads behind it, and then refuses: a schema
+# version it cannot read is no ground to deploy on. (The deployer's waits are the fake sleep
+# above, which returns at once, so its 60 tries take no time here.)
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(deploy_once); then
+  fail 'deployer deployed without reading the schema version behind a key no session released'
+fi
+no_secret 'the migration key held past the deadline'
+# The whole poll, not a first try taken for an answer: 60 tries, one per psql run, and no read in
+# any of them. A deployer that gave up on the first refusal would try once.
+if [[ $(grep -cF "$schema_try" "$argv") -ne 60 ]] || [[ $(grep -c "$psql_run" "$argv") -ne 60 ]]; then
+  fail 'deployer did not poll the migration key through its deadline before giving up'
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]]; then
+  fail 'deployer did not report the unreadable schema version behind the held key and stop'
+fi
+# Nothing of the deploy ran: no pg_dump, which is how the pre-deploy backup is taken, and no
+# compose, so the previous image still serves. ($backups holds the dumps of the cases above, so
+# what this reads is the argument log of this run, which fresh_env emptied.)
+if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
+  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer deployed, or backed up for a deploy, behind a migration key it could not take'
+fi
+
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
 # [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
 # what it should refuse. The control needs that locale installed and widening the ranges.
@@ -502,4 +666,4 @@ fi
 if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer persisted the failed image tag after a pull failure'
 fi
-printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, credential and pull-retry cases: PASS'
+printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential and pull-retry cases: PASS'

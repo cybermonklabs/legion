@@ -94,7 +94,18 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 56's retired stranded state
+number is the one `DaemonAPIVersion` declares, last bumped by contract 58's waiting line
+(INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
+`waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
+an issue the list does not name, a slot holder among them, carries no such key, and a caller
+from a pod below 58 is served every issue without the field), after contract 57's claim step
+record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
+carries `step`, what the daemon last saw that claim's agent do — the turn it is in, the call it
+is in, and that call's argument length and fingerprint, never their text — and every pane and
+every pod's worker container is told `LEGION_STALL_CALL_BOUND_MS`, `LEGION_STALL_CALL_GRACE_MS`
+and `LEGION_STALL_STEP_MS` where the daemon's own environment holds them; a strict reader before
+57 refuses a state carrying `step`, so a caller from a pod below 57 is served the state without
+it), after contract 56's retired stranded state
 (a claim of `strandedClaims` on `GET /legion/v1/state` may be `retired`, an entry a caller from a
 pod below 56 is served without), after contract 55's design-gate steps
 (each root issue of `GET /legion/v1/state` carries `gatedSteps`, one entry for each step the
@@ -575,7 +586,10 @@ implementer resolves them with its own `gh`, as it does the threads it answers i
 phase needs goes in the handoff; a question for another live role goes to its role topic with
 `envoy_publish`.
 
-The extension registers no `tool_call` hook: it refuses no tool call and mints nothing for one.
+The extension's `tool_call` hook refuses no tool call and mints nothing for one: it records the
+call's arguments for the worker's watch on its own tool calls
+(`@legion/pi-shared/stall-watchdog`, INFRA-1274) and returns, blocking nothing and revising
+nothing.
 LEGION-630 removed the per-role tool refusals, and LEGION-631 the jj operation-log rule and the
 per-command grant mint, so the role prompts and skills alone say who runs what. No role is refused
 a tool.

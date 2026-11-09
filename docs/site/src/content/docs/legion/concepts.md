@@ -193,11 +193,17 @@ resolution, or reply that hands an open ask back to the agent; so does your appr
 request of the root's spec, and so does the spec's design gate standing open. The wait also ends
 when nothing is asked of you any more: Dispatch retracts the question because its decision block
 left the spec, a session closes it, or a session hands it back to the agent's turn. The answered
-root goes to the front of the waiting line, among the issues whose work came back and ahead of
-every issue whose first phase has yet to start, and its promotion there gives the same architect
+root goes into the waiting line's first part, among the issues whose work came back, oldest first,
+and so behind every issue of that part whose work came back before it, a root's own first phase
+included, and its promotion there gives the same architect
 session a task naming what answered it and what is still with you: at once, taking no slot, once
 the root's design gate has opened, and at the next free
-slot while its architect is still writing the first spec. An
+slot while its architect is still writing the first spec. While it waits for that slot,
+`waitingLine` on the issue gives its place in the line and the line's length, and its architect,
+while its session is live and holds its Envoy role, is sent one `waiting-for-slot` notice saying
+where the root stands and that the daemon starts the architect again by itself; neither is
+anything for you to act on, and a root whose architect the daemon released while it waited carries
+the place with no notice beside it. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the
 wait began is one the architect already read. Taking the label off, or a person or an outside session
 claiming the root on Dispatch, takes it out of the workflow instead: Legion never resumes work
@@ -503,3 +509,19 @@ its registration deadline, so the three tries of `launch_failure_limit`'s defaul
 seconds at least, never the moment one fault lasts. The wait logs `supervise: waiting before the
 next launch` with its length. The try it waits for is stored, with the charge, before the wait
 begins, so a daemon stop during it forgives nothing; the next boot launches the claim again.
+
+**What the daemon records of every worker.** Each agent's claim carries a step record: when the
+daemon last saw that agent step, when the turn that step belongs to began, and the tool call it is
+in — the tool, the call id the stream's start and end frames pair by, when the call started and,
+once it has, when it ended, with the arguments' length and a fingerprint of them, never their
+text, since a shell command routinely holds a credential. It is what says a worker mid-turn is
+still moving, and a call that carries a start and no end is the shape a turn that stopped moving
+leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
+turn (`worker_stall_backstop_hours` in
+[legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
+three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
+by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
+last column is that call for each claim, the project controller's — which is on no issue, and so
+on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
+`legion state --json` prints, under `issues.<KEY>.architect.step` and
+`issues.<KEY>.workers.<role>.claim.step`.

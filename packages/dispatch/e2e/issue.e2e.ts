@@ -447,7 +447,7 @@ test("editing the parent line moves the issue across Children tabs live", async 
     await moverPage.getByRole("button", { name: "Edit parent issue" }).click();
     await moverPage.getByLabel("Parent").fill("");
     await moverPage.getByRole("button", { name: "Save parent" }).click();
-    await expect(moverPage.getByRole("button", { name: "Set parent issue" })).toBeVisible();
+    await expect(moverPage.getByRole("button", { name: "None, set parent issue" })).toBeVisible();
     await expect
       .poll(() => getIssue(mover.key), { intervals: [50, 50, 100, 200, 500] })
       .toMatchObject({ parent: null });

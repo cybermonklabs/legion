@@ -224,8 +224,21 @@ If you are that child's architect:
 - It says `handed_over` alone (no gate to carry): your workers already run their phases, so
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
-  merger's READY waits for its approval. When that `design-approved` arrives, release and start
+  merger's READY waits for its approval.
+  That registration's approval request waits with the person like any other, but it returns no admission slot: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
+  The slot rule below is for a root of your own at `admitted`, not for this one.
+  When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
   `awaiting_merge` the READY is through, so register none; a red or conflicting head that returns
   the root to `implementing` makes its next READY read the gate again, so a later `ready-refused`
   is when you register.
+
+## Your slot while a person has your spec
+
+This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
+A registration that leaves the approval request with the person returns your root's admission slot, and what brings the root back is the answer, not the registration.
+What decides whether your resume waits for a slot is whether the gate has ever opened in this generation, never whether it stands open now: an approval opens your gate, and a root whose gate has ever opened needs no slot to resume, so it resumes however full the cap is.
+The first phase that resume starts takes a slot of its own: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval; it brings back no need for a slot to resume, and only a root whose gate has never opened has one: then, while every slot is taken, you get one `waiting-for-slot` notice, and your record carries `waitingLine`, your place in the line and its length.
+You get the notice only while this session holds its Envoy role: a session whose pod the daemon released while the root waited is told nothing, and its resume task says what answered the wait.
+Act on neither: the daemon starts you again at the next free slot.

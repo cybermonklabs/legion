@@ -1,4 +1,4 @@
-package duty
+package duty_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -65,7 +66,7 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 	due := beforeNextBoundary(t, period, early)
 	time.Sleep(time.Until(due))
 	slow.Store(true)
-	ran := Exclusive(ctx, leases, name, due, period, func(context.Context) {})
+	ran := duty.Exclusive(ctx, leases, name, due, period, func(context.Context) {})
 	slow.Store(false)
 	if !ran {
 		t.Fatal("the first tick did not run, so this row measures nothing")
@@ -73,7 +74,7 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 	next := due.Add(period)
 	time.Sleep(time.Until(next))
 	ran = false
-	if !Exclusive(ctx, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
 		t.Errorf("the tick due one period after a stalled one was refused (first due %v before a boundary, its writes stalled %v each); a lone loop lost that period",
 			early, delay)
 	}
