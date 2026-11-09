@@ -67,6 +67,10 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 				// open P0 issues afresh and recompute every view, which reads what the missed
 				// events changed (applyFeed).
 				open = false
+				// No event marks the phase-work set stale while no feed is open, so it is
+				// answered by a read of its own until the subscription that replaces this one
+				// has seeded and watched it (legion_phase_work.go).
+				h.server.legionPhaseWork.unwatch()
 				h.note(deliveryHubNote{what: "feed closed"})
 				h.seedEvents(g)
 				continue
@@ -93,7 +97,9 @@ type hubEventFeed struct {
 // event horizon. The open P0 issues and the issues that carry Legion phase work
 // (legion_phase_work.go) are read after the subscription stands, so they hold every event at or
 // below its head, none of which arrives on the feed; every event above it arrives there and is
-// read into both.
+// read into both. The phase-work set takes g's own done channel as its watcher with that read,
+// so a board read answers from the set while this generation reads the feed, and makes the read
+// itself once the generation has stopped.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
 // over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
@@ -111,7 +117,7 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 				}
 			}
 			if err == nil {
-				if err = h.server.legionPhaseWork.reseed(g.readContext(), h.server.deps.Store.Pool); err != nil {
+				if err = h.server.legionPhaseWork.reseed(g.readContext(), h.server.deps.Store.Pool, g.ctx.Done()); err != nil {
 					feed.cancel()
 				}
 			}

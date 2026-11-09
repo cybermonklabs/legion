@@ -892,6 +892,44 @@ func TestALegionTitleAndARenameMarkThePhaseWorkSetStale(t *testing.T) {
 	}
 }
 
+// TestAClosedPageLeavesNoPhaseWorkSetToAnswerFrom: the issues that carry Legion phase work are
+// kept by the live hub's event feed, and the hub reads that feed only while a page holds a
+// subscription — the last page to close stops the generation, and nothing marks the set stale
+// from then until the next one starts (deliveryHub.dropLocked). GET /api/v1/legion/board is
+// answered for any caller, page or no page, so a board read between pages must make the one
+// read itself; one that answers from the set the closed page left behind places an issue in the
+// tree it stood in when that page closed.
+func TestAClosedPageLeavesNoPhaseWorkSetToAnswerFrom(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	top, middle, bottom := seedPhaseWorkChain(t, rig, 900, now.Add(-time.Hour))
+
+	// One page opens, which starts the generation that seeds the set and reads the feed. Its
+	// view is a timeline, which reads no Legion board, so every board read here is the test's.
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("page", presetView(deliveryLiveTimeline, 7, "")))
+	rig.applyEvents(t, "the issues the test seeded")
+	if tree := legionCard(t, legionBoardOnTheHub(t, rig, "INFRA"), bottom).Tree; tree != bottom {
+		t.Fatalf("the board puts %s in tree %q while the page is open, want itself: the issue above it carries no phase work yet", bottom, tree)
+	}
+
+	// The page closes, which stops the generation: no feed is read from here on.
+	rig.hub.Close(conn)
+	if rig.hub.server.legionPhaseWork.isCurrent() {
+		t.Error("the phase-work set is current with no page open, so a board read answers from a set no event can mark stale")
+	}
+
+	// The event no feed carries now: a session's first event under a Legion role's title, on
+	// the very issue that title names, which gives the middle issue phase work.
+	seedLegionRoleEvent(t, rig.database, middle, "s-900", "implementer", middle, now.Add(-30*time.Minute))
+
+	if tree := legionCard(t, legionBoardOnTheHub(t, rig, "INFRA"), bottom).Tree; tree != top {
+		t.Errorf("with no page open the board puts %s in tree %q, want %s: the issue above it carries phase work now", bottom, tree, top)
+	}
+}
+
 // TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn: a card an issue would carry
 // is never lost to the widened walk, and the count of an unstarted child lands on a card someone
 // can read. The chain here hangs under an issue that carries only Legion phase work, so the walk

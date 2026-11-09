@@ -354,26 +354,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     ready: (page) => [page.getByTestId("delivery-chart").locator("canvas").first()],
   },
   {
-    kind: "reviewed",
-    layers: bothLayers,
+    kind: "excluded",
     name: "pipeline",
-    // `/pipeline` is a redirect since INFRA-1077 folded the Pipeline page into the Delivery
-    // page as its Pipeline section (`web/src/app.tsx`'s PipelineRedirect, to
-    // `/delivery<search>#pipeline`). The row keeps that router path, because the reader's own
-    // address is what this list covers, and waits on what the reader lands on: the Delivery
-    // page's own h1 and the section's heading.
-    //
-    // It opens it with the seed's window, which the redirect carries through, for the reason
-    // the delivery row above gives: the Timeline chart's y-axis is a time axis whose ends are
-    // the window the read resolved (`Timeline.tsx`'s `min`/`max`), so a preset window ends at
-    // the server's own clock and every dated tick lands a pixel further down in a later run.
-    // A window the seed pins holds the axis still, and holds it the same way for both rows.
-    path: (seed) => `/pipeline?${seed.deliveryQuery}`,
     pattern: "/pipeline",
-    ready: (page) => [
-      page.getByRole("heading", { level: 1, name: "Delivery timeline" }),
-      page.getByRole("heading", { level: 2, name: "Pipeline: CI and deploy" }),
-    ],
+    reason:
+      "INFRA-1077 folded the Pipeline page into the Delivery page as its Pipeline section, so " +
+      "/pipeline is a redirect (web/src/app.tsx's PipelineRedirect, to /delivery<search>" +
+      "#pipeline) and a row here would open the same page, with the same window, as the " +
+      "delivery entry above: the same two shots under another name. That the redirect carries " +
+      "both the hash and the reader's window is held by a unit test instead " +
+      "(web/src/app.test.tsx, '/pipeline lands the reader on the Pipeline section').",
   },
   {
     kind: "reviewed",

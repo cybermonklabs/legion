@@ -11,10 +11,16 @@
 // all the same. Only that one read can say which issues carry it.
 //
 // The board is recomputed on every event burst of every open page, so this keeps the read's
-// answer rather than making it again each time. It is filled by one read — at the live hub's
-// start, and at the first board read of a process whose hub never started — and the feed the
-// live hub already reacts to marks it stale, never edits it (delivery_live_hub_intake.go's
-// applyEventLocked). The next board read fills it again.
+// answer rather than making it again each time — but only while something reads the feed that
+// marks it stale, which is one run of the live hub (a generation) and nothing else. That
+// generation's intake marks the set stale from the feed, never edits it
+// (delivery_live_hub_intake.go's applyEventLocked), and the set holds the generation's own done
+// channel as its watcher, taken by the fill beside that feed's cursor (reseed, seedEvents). The
+// last page to close stops the generation at once (deliveryHub.dropLocked), which closes that
+// channel: with no feed read, no event can mark the set stale, so a set nothing watches is
+// current for nothing and every board read makes the one read again (ensure) until the next
+// generation seeds and watches it. Trusting what the last page left behind is how a board read
+// between pages placed an issue in the tree it stood in when that page closed.
 //
 // Only an event that can move what the read answers marks it stale, since the read is a scan of
 // every project's whole event log and sessions write events all the time: a recorded handoff,
@@ -57,6 +63,11 @@ type legionPhaseWork struct {
 	// issue (legion.PhaseWork.RoleSessions). A session it does not name had no such title then,
 	// so no issue holds phase work by it and none can lose any when it writes again (observe).
 	roleSessions map[string]string
+	// watching is the feed that marks the set stale: the done channel of the hub generation
+	// whose intake reads the event log, as reseed took it. nil is a process whose hub has run
+	// no generation, and a closed channel one whose generation has stopped; under either the
+	// set answers no board read (isCurrent), since nothing would mark it stale.
+	watching <-chan struct{}
 }
 
 // has is whether the issue carries Legion phase work. A nil set answers false: a population built
@@ -124,8 +135,10 @@ func (w *legionPhaseWork) observe(session, title, issue string) {
 	w.dirtied++
 }
 
-// ensure fills the set where no read has, or where an event has marked it stale since the last
-// one. A read that fails leaves it as it was, so the next board read reads again.
+// ensure fills the set where no read has, where an event has marked it stale since the last
+// one, and wherever no feed is watching it: between the live hub's generations nothing reads
+// the event log, so nothing can mark the set stale and a board read answers from a read of its
+// own. A read that fails leaves it as it was, so the next board read reads again.
 func (w *legionPhaseWork) ensure(ctx context.Context, pool *store.Pool) error {
 	if w.isCurrent() {
 		return nil
@@ -138,20 +151,66 @@ func (w *legionPhaseWork) ensure(ctx context.Context, pool *store.Pool) error {
 	return w.fill(ctx, pool)
 }
 
-// reseed fills the set again whatever it holds: the live hub's intake marks it stale from the
-// event log above the cursor it starts on, so the fill belongs beside that cursor (seedEvents),
-// at the hub's start and after a reset of the event log.
-func (w *legionPhaseWork) reseed(ctx context.Context, pool *store.Pool) error {
+// reseed fills the set again whatever it holds and makes feed its watcher from then on: the
+// intake of the generation feed belongs to marks the set stale from the event log above the
+// cursor it starts on, so the fill and the watch belong beside that cursor (seedEvents), at the
+// generation's start and after a feed closed. Nothing fills the set between generations: there
+// ensure's own read answers each board read.
+func (w *legionPhaseWork) reseed(ctx context.Context, pool *store.Pool, feed <-chan struct{}) error {
 	w.reading.Lock()
 	defer w.reading.Unlock()
-	return w.fill(ctx, pool)
+	if err := w.fill(ctx, pool); err != nil {
+		return err
+	}
+	w.watch(feed)
+	return nil
 }
 
-// isCurrent is whether a read has filled the set and nothing has marked it stale since.
+// watch makes feed the set's watcher, the feed whose events mark it stale. A feed already
+// closed watches nothing, so a generation that stopped while its reseed ran leaves the set
+// unwatched rather than watched by a feed nobody reads; and no live feed replaces another,
+// since a generation starts only once the one before it has stopped (deliveryHub.dropLocked,
+// startLocked), so a reseed of a stopped generation that lands after the next one's takes the
+// watch off neither.
+func (w *legionPhaseWork) watch(feed <-chan struct{}) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if feedOpen(feed) && !feedOpen(w.watching) {
+		w.watching = feed
+	}
+}
+
+// unwatch takes the watcher off, for a feed that closed under a generation still running: until
+// the subscription that replaces it has seeded and watched the set (seedEvents), no event
+// reaches it and each board read answers from a read of its own.
+func (w *legionPhaseWork) unwatch() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watching = nil
+}
+
+// feedOpen is whether feed still carries the events that mark the set stale: a watcher no
+// generation set (nil) and one whose generation has stopped (closed) carry none.
+func feedOpen(feed <-chan struct{}) bool {
+	if feed == nil {
+		return false
+	}
+	select {
+	case <-feed:
+		return false
+	default:
+		return true
+	}
+}
+
+// isCurrent is whether the set can answer a board read: a read has filled it, a feed is
+// watching it, and nothing has marked it stale since that read. A set nothing watches is
+// current for nothing however lately it was filled, since the events that would move it reach
+// no reader while no page is open.
 func (w *legionPhaseWork) isCurrent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.filled && w.read == w.dirtied
+	return w.filled && w.read == w.dirtied && feedOpen(w.watching)
 }
 
 // fill reads the whole set and takes it as it stands, the index of the sessions the read found

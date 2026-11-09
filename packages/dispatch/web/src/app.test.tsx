@@ -1082,9 +1082,17 @@ test("a live socket refused once the person is signed out takes the page to sign
   }
 });
 
-test("/pipeline lands the reader on the Delivery page's Pipeline section", async () => {
-  // React.lazy loads the page module on its first render; loading it first keeps its cold
-  // compile out of findBy's window, as the project-routes test above does.
+// `/pipeline` is the Delivery page's Pipeline section since INFRA-1077, and the address a reader
+// bookmarked redirects there with everything it carried: the hash, so the reader lands on the
+// section, and the search, so they keep the window they asked for. The old page read only `?at=`
+// (`PipelinePage.tsx` before this change), so no bookmark of it carries `from`/`to`; what this
+// holds is the redirect's own rule, which the visual review's pipeline row depends on, since the
+// window it opens is what pins the Timeline axis (`e2e/review-routes.ts`).
+test("/pipeline lands the reader on the Pipeline section, with the window the address names", async () => {
+  // Dynamic on purpose: React.lazy loads the page module on its first render, and loading it
+  // here keeps that cold compile out of findBy's window, as the project-routes test above does.
+  // A static import would load it at this file's own load and so prove nothing about the
+  // lazy boundary.
   await import("./features/delivery/DeliveryPage");
   const sockets = installFakeLiveSockets();
   // What the page brought into view: the hash's own section, which is how the reader lands on it.
@@ -1095,11 +1103,9 @@ test("/pipeline lands the reader on the Delivery page's Pipeline section", async
   };
   const teardown = await renderSignedIn(
     async () => ({ event_head: "0", kind: "user", login: "alice" }),
-    "/pipeline"
+    "/pipeline?from=2026-06-01&to=2026-06-08"
   );
   try {
-    // `/pipeline` is the Delivery page's Pipeline section since INFRA-1077, and the address a
-    // reader bookmarked redirects there, hash and all.
     expect(
       await screen.findByRole("heading", { level: 1, name: "Delivery timeline" })
     ).toBeDefined();
@@ -1107,30 +1113,6 @@ test("/pipeline lands the reader on the Delivery page's Pipeline section", async
       screen.getByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })
     ).toBeDefined();
     await waitFor(() => expect(scrolledTo).toEqual(["pipeline"]));
-  } finally {
-    teardown();
-    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
-    sockets.restore();
-  }
-});
-
-// The address a reader bookmarked carries their window, and the redirect that answers it keeps
-// that window: the old Pipeline page read `from`/`to` from its own URL, and the Delivery page
-// reads the same two (`features/delivery/lib/window.ts`'s readWindow), so a redirect that
-// dropped the search would answer an old link with the default 28 days and say nothing. The
-// window control shows which window the page settled on, which is what this reads.
-test("/pipeline keeps the window the reader's address names", async () => {
-  // Dynamic on purpose, as the row above it is: React.lazy loads this page's module on its
-  // first render, and loading it here keeps that cold compile out of findBy's window. A static
-  // import would load it at this file's own load and so prove nothing about the lazy boundary.
-  await import("./features/delivery/DeliveryPage");
-  const sockets = installFakeLiveSockets();
-  const teardown = await renderSignedIn(
-    async () => ({ event_head: "0", kind: "user", login: "alice" }),
-    "/pipeline?from=2026-06-01&to=2026-06-08"
-  );
-  try {
-    await screen.findByRole("heading", { level: 1, name: "Delivery timeline" });
     expect(screen.getByLabelText<HTMLSelectElement>("Window").value).toBe("custom");
     expect(screen.getByLabelText<HTMLInputElement>("From").value).toBe("2026-06-01");
     // The control names the last day the window includes, and a custom range ends at the
@@ -1138,6 +1120,7 @@ test("/pipeline keeps the window the reader's address names", async () => {
     expect(screen.getByLabelText<HTMLInputElement>("To").value).toBe("2026-06-07");
   } finally {
     teardown();
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     sockets.restore();
   }
 });
