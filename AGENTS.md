@@ -115,24 +115,35 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **jj (Jujutsu)** for version control, native **Dispatch** for issue tracking
 
-- **Container images** a CI job fetches are copies in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
-  Every workflow, Dockerfile and test names its copy by digest.
-  `.github/ci-images.yaml` holds one row per image (`upstream`, `tag`, `digest`), and `.github/scripts/mirror-ci-images.sh` copies the rows the package does not hold yet with `crane copy`, which keeps the digest.
-  That copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
-  For every `library/golang` row whose upstream names a tag, that script also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
+- **Container images** a CI job fetches all live in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
+  Every workflow, Dockerfile and test names the image it runs by digest.
+  `.github/ci-images.yaml` holds one row per image, each row carrying `tag` and `digest` beside exactly one of two keys that say where its bytes came from:
+  `upstream:` is a copy of a third-party image, which `.github/scripts/mirror-ci-images.sh` makes for the rows the package does not hold yet with `crane copy`, which keeps the digest;
+  `built:` is an image this repository builds itself, from the Dockerfile of this tree that key names, which `.github/workflows/browser-image.yaml` builds and pushes and no script copies.
+  A copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
+  For every `library/golang` row whose upstream names a tag, `mirror-ci-images.sh` also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
   No read of a floating upstream tag can do that work, because it cannot tell a row labelled wrongly now from one labelled rightly long ago.
   An `oven/bun` image declares its version nowhere, so the two builds that run those bytes refuse any Bun but the one `.bun-version` pins.
-  Each row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight characters.
   `ci.yaml`'s `ci-images` job runs that copy and then the package half of the gate, in that order, and it is the one copy path:
   it runs on every event `ci.yaml` runs on — a pull request, a merge group and a dispatch — and a failed copy is re-run with `gh run rerun` where the run is a pull request's, since every job of a re-run attempt of a merge-group run skips.
-  Adding an image is one edit of that file.
-  Moving one to a new version is two commits:
+  Adding a copy is one edit of that file.
+  Adding or changing an image this repository builds is two pushes instead:
+  the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
+  The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
+  Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
   `.github/scripts/check-ci-images.sh` is the gate, and it takes one mode:
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
+
+- **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
+  Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
+  on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
+  A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
 
 - **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
   `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own;
@@ -686,7 +697,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
-  The browser suite (`dispatch-browser`) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
+  The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its lanes run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
