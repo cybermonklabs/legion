@@ -1939,7 +1939,10 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// retro — so it holds its admission slot throughout and each start is delivered as
 			// soon as the drain reaches it.
 			holdSlot(t, pool, issue.Key)
-			const head = "16973163"
+			// The head is spelled as GitHub spells one, since a review the review App submits
+			// decides a round only when its Legion footer names the pull request's head
+			// (workflow's refusesRound).
+			const head = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				// The settlement is the head's own, which the approval reads nothing of; GitHub's
 				// merge state for it is clean, which an approval of it advances on.
@@ -1996,7 +1999,8 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			sup.deps.Conns.(*fake.Conns).Register(implementer, conn)
 
 			// The reviewer asks for round 2, and the implementer starts on its task.
-			apply("review:round-2", intake.PullRequestReview{Repo: "acme/widgets", Number: 118, State: "CHANGES_REQUESTED", CommitID: head, HeadSHA: head, Author: reviewApp, Body: "scripted changes requested, round 2"})
+			apply("review:round-2", intake.PullRequestReview{Repo: "acme/widgets", Number: 118, State: "CHANGES_REQUESTED", CommitID: head, HeadSHA: head, Author: reviewApp,
+				Body: "scripted changes requested, round 2" + legionFooter("ses-reviewer", head)})
 			// The review itself ended the round; the reviewer's completion follows it, recorded on
 			// the reviewer's own row with the issue already in implementing.
 			apply("handoff:reviewer:reviewing:1", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
@@ -2050,6 +2054,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			due("the move to reviewing")
 			review := tc.review
 			review.Repo, review.Number, review.CommitID, review.HeadSHA, review.Author = "acme/widgets", 118, head, head, reviewApp
+			review.Body += legionFooter("ses-reviewer", head)
 			apply("review:after-round-2", review)
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
 				Claim: "reviewer", HandoffRecord: "review-round-2", HandoffVersion: 2})

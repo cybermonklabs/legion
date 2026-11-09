@@ -233,7 +233,7 @@ func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
 func TestALateReviewOlderThanTheNewestChangesNothing(t *testing.T) {
 	submitted := lateApplied
 	webhook := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 12, SubmittedAt: submitted, State: "approved",
-		CommitID: "head", HeadSHA: "head", Author: testReviewApp, Body: "ship it"}
+		CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
 	read := webhook
 	read.HeadSHA = ""
 	for _, tc := range []struct {
@@ -245,14 +245,14 @@ func TestALateReviewOlderThanTheNewestChangesNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedReviewOf(t, pool, "head", "green")
+			seedReviewOf(t, pool, headOne, "green")
 			apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			apply("newest-review", tc.newest)
 			if got := pullRequestAt(t, pool); got.decision != "approved" {
 				t.Fatalf("after the newest review the round's decision is %q, want approved", got.decision)
 			}
 			lateChangesNothing(t, pool, apply, "late-review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, SubmittedAt: submitted.Add(-time.Hour),
-				State: "changes_requested", CommitID: "head", HeadSHA: "head", Author: testReviewApp, Body: "rename the widget"})
+				State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("rename the widget", headOne)})
 		})
 	}
 }

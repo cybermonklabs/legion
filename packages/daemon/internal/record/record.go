@@ -520,10 +520,20 @@ func (p PhaseRow) Completed() bool {
 // between. They live with the decision because the notice is of the approval this decision is: a
 // review that decides the round afresh replaces the decision and the mark with it, and the next
 // head the new approval sticks on is told in its turn. Empty until a notice goes out.
+//
+// Refused is the daemon's own mark too, and the one case where a decision row holds no decision:
+// why the daemon set aside a review that would otherwise have decided the round (workflow's
+// refusesRound), which is what the stuck notice of a round nothing decided names
+// (workflow's undecidedReason). It is written only on a row that holds no deciding decision -
+// State empty - so a refusal that follows an approval cannot erase it, and the clear every entry
+// into a phase makes of the role's row (workflow's clearHandoff) takes it with the decision, so
+// no round inherits the refusal of the round before it. The decision column is jsonb, so a row
+// an older daemon wrote simply has none.
 type ReviewDecision struct {
 	State          string     `json:"state"`
 	Body           string     `json:"body,omitempty"`
 	Head           string     `json:"head,omitempty"`
+	Refused        string     `json:"refused,omitempty"`
 	ToldStuckHead  string     `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState `json:"toldStuckState,omitempty"`
 }

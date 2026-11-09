@@ -557,6 +557,14 @@ type PullRequestReview struct {
 	// review-App review before the fact is applied, and clears this.
 	BodyTruncated bool
 	Body          string
+	// ReadFromList is whether the daemon's own read of GitHub's list of the pull request's
+	// reviews produced this fact (daemon's reviewToApply) rather than the review's webhook, which
+	// the decoder never sets it from. The list answers with GitHub's current commit_id for every
+	// review it holds (LegionHead, dispatch://INFRA-1557), where the webhook's envelope carries
+	// the commit_id the event was delivered with, so the workflow lets a person's listed review
+	// decide no round while the same person's webhook review decides as it always has
+	// (workflow's refusesRound).
+	ReadFromList bool
 }
 
 func (PullRequestReview) isFact() {}
@@ -571,32 +579,80 @@ func (r PullRequestReview) Decides() bool {
 }
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
-// a JSON object naming the session and phase that wrote it (skills/legion-worker/SKILL.md, the
-// reviewer template prompts/roles/reviewer.md).
+// a JSON object naming the session and phase that wrote it and the head it read
+// (skills/legion-worker/SKILL.md, the reviewer template prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
-// LegionSession is the session named in the last Legion footer in the review's body: the session
-// field of the JSON object between the last occurrence of legionFooterMarker and the next `-->`.
-// It is "" when the body carries no footer, the last one's JSON cannot be parsed, or its session
-// is empty. The last occurrence wins, since an earlier footer quoted in the body (a reply, a
-// reviewer's own draft) is not the one that closes it.
-func (r PullRequestReview) LegionSession() string {
+// legionFooter is what the daemon reads out of that JSON object: the session that submitted the
+// review (LegionSession) and the head the review says it read (LegionHead). A role writes its
+// phase there too, which nothing here reads.
+type legionFooter struct {
+	Session string `json:"session"`
+	Head    string `json:"head"`
+}
+
+// lastLegionFooter decodes the last Legion footer in the review's body: the JSON object between
+// the last occurrence of legionFooterMarker and the next `-->`. Every field is empty when the
+// body carries no footer, no `-->` closes the last one, or its JSON cannot be parsed. The last
+// occurrence wins, since an earlier footer quoted in the body (a reply, a reviewer's own draft)
+// is not the one that closes it.
+func (r PullRequestReview) lastLegionFooter() legionFooter {
 	at := strings.LastIndex(r.Body, legionFooterMarker)
 	if at < 0 {
-		return ""
+		return legionFooter{}
 	}
 	rest := r.Body[at+len(legionFooterMarker):]
 	end := strings.Index(rest, "-->")
 	if end < 0 {
-		return ""
+		return legionFooter{}
 	}
-	var footer struct {
-		Session string `json:"session"`
-	}
+	var footer legionFooter
 	if err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {
+		return legionFooter{}
+	}
+	return footer
+}
+
+// LegionSession is the session named in the last Legion footer in the review's body
+// (lastLegionFooter). It is "" when the body carries no such footer, the last one's JSON cannot
+// be parsed, or its session is empty.
+func (r PullRequestReview) LegionSession() string {
+	return r.lastLegionFooter().Session
+}
+
+// LegionHead is the head the review says it read: the head field of the last Legion footer in the
+// review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
+// cannot be parsed, it names no head, or the head it names is not a full commit SHA
+// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
+// which code was read.
+//
+// The workflow holds a review the review App submitted to this rather than to CommitID because
+// GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
+// can name a head the review never saw (dispatch://INFRA-1557). Nothing rewrites the body a
+// review was submitted with, so the footer is the review's own word for the code it read, and it
+// is the only thing a force push back to an earlier head cannot forge: no clock tells those
+// heads apart.
+func (r PullRequestReview) LegionHead() string {
+	head := r.lastLegionFooter().Head
+	if !fullCommitSHA(head) {
 		return ""
 	}
-	return footer.Session
+	return head
+}
+
+// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
+// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
+// chance and GitHub spells every head it reports this way.
+func fullCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it

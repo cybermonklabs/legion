@@ -318,6 +318,38 @@ func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession s
 	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
 }
 
+// refusesRound says why a review that decides (intake.PullRequestReview.Decides) and that
+// DecidesRound counts must still not decide pr's round, "" when nothing refuses it. The whole
+// rule, in this order:
+//
+//   - A review the daemon read from GitHub's list of pr's reviews
+//     (intake.PullRequestReview.ReadFromList) that the review App did not submit decides nothing.
+//     The list answers with GitHub's own commit_id for every review it holds, and that id moves
+//     to the pull request's current head (dispatch://INFRA-1557), so a person's listed approval
+//     would stand for code it never read. The same person's review by webhook decides as it
+//     always has, on the commit_id the event carried.
+//   - A review the review App submitted, listed or by webhook, decides only when the head its
+//     Legion footer names (intake.PullRequestReview.LegionHead) is pr's current head, compared
+//     exactly. The footer is the review's own word for the code it read, written in the body it
+//     was submitted with; no clock answers for a force push that puts an earlier head back, and
+//     GitHub's commit_id for the review moves with the pull request.
+//   - Every other review - a person's, delivered by its webhook - decides as it did before.
+func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest) string {
+	if !e.byReviewApp(review.Author) {
+		if review.ReadFromList {
+			return "a person's review read from the list"
+		}
+		return ""
+	}
+	switch head := review.LegionHead(); {
+	case head == "":
+		return "footer names no head"
+	case head != pr.HeadSHA:
+		return fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA)
+	}
+	return ""
+}
+
 // ReviewerSession is the session recorded on the claim of issue's reviewer, the session a review-App
 // review's Legion footer must name to be the reviewer's own (byReviewer): "" when the reviewer's
 // row holds no claim, the claim has no row, or its session is empty, in which case the login decides
@@ -395,11 +427,39 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		}
 		decides = false
 	}
+	// A review the round's rules count can still be refused the round, for the head it read
+	// rather than for who wrote it (refusesRound). The refusal is recorded on the reviewer's row
+	// below, since nothing else would say why the round has no decision.
+	refused := ""
+	if decides {
+		if refusal := e.refusesRound(fact, *pr); refusal != "" {
+			args := []any{"issue", issue.Key, "pull_request", pr.Number, "author", fact.Author, "state", state,
+				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "read_from_list", fact.ReadFromList}
+			if e.byReviewApp(fact.Author) {
+				e.warnOnCommit(ctx, "workflow: a review decides nothing: "+refusal, args...)
+			} else {
+				e.logOnCommit(ctx, "workflow: a review decides nothing: "+refusal, args...)
+			}
+			decides, refused = false, refusal
+		}
+	}
 	if decides && reviewerSession == "" && e.byReviewApp(fact.Author) {
 		e.logOnCommit(ctx, "workflow: the reviewer's session is not recorded; the review App's login decides",
 			"issue", issue.Key, "pull_request", pr.Number, "reviewer_claim", string(reviewer.Claim))
 	}
 	if !decides {
+		// The stuck notice of a round nothing decided is built from the record when the reviewer
+		// completes (reviewRound, stuckUndecided), which is after the refused review arrived, so
+		// the refusal is kept on the reviewer's row for it to name. It is written only on a row
+		// that holds no deciding decision, so a refusal reaching a round an approval already
+		// decided cannot erase it, and it lives with that decision, which every entry into
+		// reviewing clears (clearHandoff): no later round inherits the refusal of an earlier one.
+		if refused != "" && (reviewer.Decision == nil || reviewer.Decision.State == "") {
+			reviewer.Decision = &record.ReviewDecision{Refused: refused}
+			if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
+				return intake.Result{}, err
+			}
+		}
 		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
 		return intake.Result{}, err
 	}
@@ -609,15 +669,28 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	case !completed:
 		return round{}
 	case decided == "":
-		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA,
-			reason: fmt.Sprintf("the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim: a review-App review with no footer or another session's is set aside and decides nothing), and a COMMENT decides nothing",
-				pr.Number, pr.HeadSHA)}
+		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA, reason: undecidedReason(row, *pr)}
 	case classify.ApprovalSetAside(*pr, row.Decision.Head):
 		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA,
 			reason: fmt.Sprintf("the reviewer approved %s on pull request #%d, which does not approve head %s: a push since may have changed code, so only an APPROVE of %s or a REQUEST_CHANGES ends the round",
 				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
 	}
 	return round{}
+}
+
+// undecidedReason is what the architect is told of a round its reviewer completed with no review
+// that decided it (stuckUndecided): what would end the round, and, when the daemon set a review
+// aside that would otherwise have decided it, why it did (record.ReviewDecision.Refused). The
+// refusal is the only thing that says why the round has no decision - the review is on GitHub,
+// approving what looks like the head - so a reader who was not told it would look for a review
+// that never came.
+func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
+	reason := fmt.Sprintf("the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim, and naming %s as the head it read: a review-App review whose footer names no head, or another head, is set aside and decides nothing, since GitHub's commit_id for a review moves with the pull request), and a COMMENT decides nothing",
+		pr.Number, pr.HeadSHA, pr.HeadSHA)
+	if row.Decision != nil && row.Decision.Refused != "" {
+		reason += "; a review that would otherwise have decided this round was set aside - " + row.Decision.Refused
+	}
+	return reason
 }
 
 // implementationReady moves issue from implementing to testing on the implementer's completion of

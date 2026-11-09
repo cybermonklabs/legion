@@ -116,6 +116,17 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // without an id or a submission time, which the workflow could not order, is an error, as is a
 // failed permission read; either applies nothing.
 //
+// What a listed review decides is the workflow's judgement alone, so that one place decides it:
+// the fact carries intake.PullRequestReview.ReadFromList, and the workflow lets a listed review
+// decide the round only when the review App submitted it and its Legion footer names the pull
+// request's current head (workflow's refusesRound). The list's commit_id is no evidence of the
+// head a review read: GitHub moves it to the pull request's current head
+// (dispatch://INFRA-1557), which is why a person's listed review, whose body carries no Legion
+// footer, decides nothing here where their webhook's review still decides. A review the workflow
+// refuses for its footer is applied once - the event id names the review - and records the
+// refusal that the stuck notice of the round nothing decided names
+// (record.ReviewDecision.Refused).
+//
 // A review is judged once per daemon process, for the read's own judgements, as a webhook's is
 // judged once when it is delivered: a review the workflow did not let decide - its author without
 // write access, or the review App's from a session that is not the reviewer's - is kept as refused
@@ -129,7 +140,7 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 	var candidates []intake.PullRequestReview
 	for _, listed := range reviews {
 		review := intake.PullRequestReview{Repo: pr.Repo, Number: pr.Number, ID: listed.ID, SubmittedAt: listed.SubmittedAt,
-			State: strings.ToLower(listed.State), CommitID: listed.CommitID, Author: listed.User.Login, Body: listed.Body}
+			State: strings.ToLower(listed.State), CommitID: listed.CommitID, Author: listed.User.Login, Body: listed.Body, ReadFromList: true}
 		if !review.Decides() {
 			continue
 		}

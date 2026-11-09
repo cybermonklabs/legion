@@ -106,7 +106,7 @@ func seedRenamedTree(t *testing.T, pool *pgxpool.Pool, prRepo string) {
 		return
 	}
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: prRepo, Number: 42, Branch: "legion/LEGION-209",
-		HeadSHA: "head", HeadUpdatedAt: renamedUpdated.Add(-time.Hour), Failing: []string{}, Generation: 1})
+		HeadSHA: headOne, HeadUpdatedAt: renamedUpdated.Add(-time.Hour), Failing: []string{}, Generation: 1})
 }
 
 // renamedUpdated is the clock every lifecycle fact of the rename tests carries.
@@ -136,7 +136,7 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 			name:   "a pull request opened",
 			prRepo: func(string) string { return "" },
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestOpened{Repo: repo, Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", UpdatedAt: renamedUpdated}
+				return intake.PullRequestOpened{Repo: repo, Number: 42, Branch: "legion/LEGION-209", HeadSHA: headOne, UpdatedAt: renamedUpdated}
 			},
 			want: func(t *testing.T, repo string, after recordSnapshot) {
 				t.Helper()
@@ -149,13 +149,13 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 			name:   "a checks settlement",
 			prRepo: func(repo string) string { return repo },
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestChecks{Repo: repo, Number: 42, HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 7}},
+				return intake.PullRequestChecks{Repo: repo, Number: 42, HeadSHA: headOne, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 7}},
 					Generation: 9, Snapshot: "red-head", Failing: []string{"ci"}, Cancelled: []string{}}
 			},
 			want: func(t *testing.T, _ string, after recordSnapshot) {
 				t.Helper()
 				pr := after.PR
-				if pr == nil || pr.CheckedHead != "head" || len(pr.Failing) != 1 || pr.Failing[0] != "ci" {
+				if pr == nil || pr.CheckedHead != headOne || len(pr.Failing) != 1 || pr.Failing[0] != "ci" {
 					t.Fatalf("LEGION-209's pull request = %+v, want the red settlement of head recorded on it", pr)
 				}
 				if after.Issue == nil || after.Issue.Phase != phase.Reviewing {
@@ -167,8 +167,8 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 			name:   "a review",
 			prRepo: func(repo string) string { return repo },
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "approved", CommitID: "head", HeadSHA: "head",
-					Author: testReviewApp, SubmittedAt: renamedUpdated}
+				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "approved", CommitID: headOne, HeadSHA: headOne,
+					Author: testReviewApp, SubmittedAt: renamedUpdated, Body: reviewBody("ship it", headOne)}
 			},
 			want: func(t *testing.T, _ string, after recordSnapshot) {
 				t.Helper()
@@ -176,7 +176,7 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 					t.Fatalf("LEGION-209's pull request = %+v, want the review it has seen recorded as 7", pr)
 				}
 				reviewer := phaseRowIn(t, after.Phases, claim.RoleReviewer)
-				if reviewer.Decision == nil || reviewer.Decision.State != "approved" || reviewer.Decision.Head != "head" {
+				if reviewer.Decision == nil || reviewer.Decision.State != "approved" || reviewer.Decision.Head != headOne {
 					t.Fatalf("the reviewer's row = %+v, want its round decided by an approval of head", reviewer)
 				}
 			},
@@ -243,38 +243,38 @@ func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(
 		{
 			name: "a push of a commit",
 			fact: func(repo string) intake.Fact {
-				return intake.Push{Repo: repo, Branch: "legion/LEGION-209", Before: "head", After: "pushed-head", Pusher: "author", Sender: "author"}
+				return intake.Push{Repo: repo, Branch: "legion/LEGION-209", Before: headOne, After: headTwo, Pusher: "author", Sender: "author"}
 			},
 			want: func(t *testing.T, after recordSnapshot) {
 				t.Helper()
 				pr := after.PR
-				if pr == nil || len(pr.Pushes) != 1 || pr.Pushes[0].SHA != "pushed-head" || pr.Pushes[0].Before != "head" {
-					t.Fatalf("LEGION-209's pull request = %+v, want the push of pushed-head recorded on it", pr)
+				if pr == nil || len(pr.Pushes) != 1 || pr.Pushes[0].SHA != headTwo || pr.Pushes[0].Before != headOne {
+					t.Fatalf("LEGION-209's pull request = %+v, want the push of the new head recorded on it", pr)
 				}
 			},
 		},
 		{
 			name: "the synchronize of that commit",
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestSynchronized{Repo: repo, Number: 42, Branch: "legion/LEGION-209", Before: "head", HeadSHA: "pushed-head", Sender: "author", UpdatedAt: renamedUpdated}
+				return intake.PullRequestSynchronized{Repo: repo, Number: 42, Branch: "legion/LEGION-209", Before: headOne, HeadSHA: headTwo, Sender: "author", UpdatedAt: renamedUpdated}
 			},
 			want: func(t *testing.T, after recordSnapshot) {
 				t.Helper()
-				if pr := after.PR; pr == nil || pr.HeadSHA != "pushed-head" {
-					t.Fatalf("LEGION-209's pull request = %+v, want its head moved to pushed-head", pr)
+				if pr := after.PR; pr == nil || pr.HeadSHA != headTwo {
+					t.Fatalf("LEGION-209's pull request = %+v, want its head moved to the new head", pr)
 				}
 			},
 		},
 		{
 			name: "that commit's CI result",
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestChecks{Repo: repo, Number: 42, HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 7}},
+				return intake.PullRequestChecks{Repo: repo, Number: 42, HeadSHA: headOne, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 7}},
 					Generation: 9, Snapshot: "red-head", Failing: []string{"ci"}, Cancelled: []string{}}
 			},
 			want: func(t *testing.T, after recordSnapshot) {
 				t.Helper()
 				pr := after.PR
-				if pr == nil || pr.CheckedHead != "head" || len(pr.Failing) != 1 || pr.Failing[0] != "ci" {
+				if pr == nil || pr.CheckedHead != headOne || len(pr.Failing) != 1 || pr.Failing[0] != "ci" {
 					t.Fatalf("LEGION-209's pull request = %+v, want the red settlement of head recorded on it", pr)
 				}
 				if after.Issue == nil || after.Issue.Phase != phase.Reviewing {
@@ -285,8 +285,8 @@ func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(
 		{
 			name: "a review",
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "approved", CommitID: "head", HeadSHA: "head",
-					Author: testReviewApp, SubmittedAt: renamedUpdated}
+				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "approved", CommitID: headOne, HeadSHA: headOne,
+					Author: testReviewApp, SubmittedAt: renamedUpdated, Body: reviewBody("ship it", headOne)}
 			},
 			want: func(t *testing.T, after recordSnapshot) {
 				t.Helper()
@@ -294,7 +294,7 @@ func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(
 					t.Fatalf("LEGION-209's pull request = %+v, want the review it has seen recorded as 7", pr)
 				}
 				reviewer := phaseRowIn(t, after.Phases, claim.RoleReviewer)
-				if reviewer.Decision == nil || reviewer.Decision.State != "approved" || reviewer.Decision.Head != "head" {
+				if reviewer.Decision == nil || reviewer.Decision.State != "approved" || reviewer.Decision.Head != headOne {
 					t.Fatalf("the reviewer's row = %+v, want its round decided by an approval of head", reviewer)
 				}
 			},
