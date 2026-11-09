@@ -1,0 +1,2729 @@
+# Dispatch Package
+
+Dispatch is the React single-page application for coordinating native Dispatch
+issues. The Go server lives in `packages/envoy/cmd/dispatch` and serves the
+production build from `web/dist`.
+
+## Reaching production
+
+An image-pin merge and Dispatch deployment are separate steps: the listener can move while Dispatch
+remains on a previous image until the deployment repository's manually dispatched `dispatch-deploy.yml`
+runs on `main`. A pull request whose behavior depends on a deployed Dispatch server states that
+dependency in its body. For the image-pin comparison and `/healthz` deployment evidence, see
+`packages/envoy/cmd/dispatch/AGENTS.md`.
+
+## Layout
+
+- `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
+- `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
+- `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
+  The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
+  the strings are not fixed-width and sort wrongly as text, and `Date.parse` drops their
+  microseconds. It accepts the form the server's `time.RFC3339Nano` writes and throws on anything
+  else. A value must match the hand-written RFC 3339 pattern in `timestamps.ts`, and `Date.parse`
+  must then read its whole second. So `2023-01-01`, which `Date.parse` reads, throws, as do a
+  lowercase `t` or `z` and the leap second `23:59:60`, both of which RFC 3339 allows, while an
+  impossible date such as `2026-02-30T00:00:00Z` passes both checks and is ordered as 2 March. A
+  list sorted by time adds its own tiebreak (the margin's on the comment or ask id). `isTimestamp`
+  says whether it accepts a value, for a caller ordering times it did not write: `needsYou`
+  (`features/inbox/BlockedOnYou.tsx`) counts a broker `requested_at` it refuses but never takes it
+  for the oldest, since the sidebar's and the compact header's Inbox counts, which add it to the
+  unread threads (below), render outside every page's error boundary.
+- `web/src/features/conversation/` owns the issue's conversations: one card per ask (its replies and its answer with it), one per root comment (its replies with it) and one per root message, targeted or not. `conversation-model.ts` builds them from three unpaged per-issue reads - `GET /issues/{key}/asks?state=all`, `GET /issues/{key}/comments` and `GET /issues/{key}/messages` - each of which returns the issue's whole set, so a conversation older than any window of the event log is listed like every other and the tab has no `Load older` at all. No event line appears here: the issue's event history is the Activity tab's (`features/activity/`). A card's id is `<kind>:<id>` (`ask:`, `comment:`, `message:`), which is its `data-turn` and what a pin records. One `All / Open / Closed` segmented control (`aria-label="Conversations"`) is the only control over the list - Closed is an answered or resolved (including retracted) ask, or a comment thread somebody resolved or whose suggestion was accepted or rejected, and a message thread is never closed - and it is not persisted: every visit opens on All. A conversation whose newest activity is at or after the reader's watermark carries a `New` mark, and `Jump to latest · N new` counts those conversations. The one card that draws no such mark is the phone thread dialog's own (`hideUnreadMark` in `ConversationTab.tsx`): the mark is written from that card a second after it is on screen, and the badge's removal would move the thread's rows under whatever the reader is pressing. The Conversation is also the only writer of `user_issue_state.last_read_seq`: a dwell on the newest card alone marks the issue read through its head, since one watermark cannot say "I read the third card only". Nothing is marked read behind a phone thread over an older conversation: the reader cannot see the card the dwell is reading, so no dwell runs behind such a thread and one already counting when it opens is cancelled rather than completed, and Back gives the dwell back. A thread over the newest conversation is that conversation read, so the dialog's own card carries the dwell instead and the mark is written from the thread, which is what a comment link lands in on a phone. Anchored turns include their quote, per-target delivery state, thread replies, author-only editing, suggestion actions, resolution attribution, copy and pin controls, and a `View in document` link built by `documentItemPath` from the anchor's own artifact, so it lands on that document's canonical route - the issue's Spec tab for its primary document, `/issues/<key>/artifacts/<slug>` for any other issue document. (`documentItemPath` also serves project documents, which the Conversation never reaches: `IssuePage` is its only mount and every artifact it passes belongs to the issue.) The artifact route renders the primary document too, so this is one address per item rather than a repair. An item deep link (`/issues/<key>/comments/<id>`, and the same for `asks` and `messages`) marks the one card that holds the item `aria-current="true"` - and, where the link names a reply rather than the root, that reply's own `data-reply` row too (`focusConversation`) - scrolls it into view, resets the filter to All when the current bucket would hide it, and for a comment opens its thread, inline at a desktop width and in the phone thread dialog on a phone, once per link; selecting a document mark opens the thread in the margin beside the document and never navigates. Its sticky `MentionComposer` is the one human writer: a plain `@` opens roles then live sessions, accepts the title as editable body text while storing the canonical `role:`/`session:` target in its mention span, and visibly pairs each active title with that target. Under `Not running` the picker offers one option per Legion role token the issue's collaborators record that no live agent holds (`stoppedRoleOptions`, reading the live agents' `roles`, the rule the live role options follow), each drawn by that role's newest session the server leaves unreplaced (`legion.replaced_by` null, so a replaced session is never an option of its own) and addressed `role:<token>`; a session the live list itself names is left out whatever its `roles` say, since a live session claiming no role would draw its own `Running` mark inside that group; and a live list whose state is unknown - not read yet, or its read failed - holds every role as far as the picker can tell, so it offers none. Such a mention is delivered to nobody while the role has no holder: `resolveDeliveryTarget` asks the listener for the role, which answers 404, and that failure is not one `retryableDeliveryFailure` retries, so the comment stands on the issue with a failed attempt whose `Retry`, offered inside `DELIVERY_DUPLICATE_WINDOW_MS`, reaches whoever holds the role then. The collaborators behind those options are the Collaborators tab's read under the same `["issue", <key>, "collaborators"]` key, `enabled` only while the picker is open on an issue owner, so a closed picker and a direct message read nothing, a tab read within the shell's 30 s `staleTime` opens the picker with no request of its own, and an event that makes a collaborator refetches it under a picker that stays open: the issue's own detail refresh is exact, `["issue", <key>]`, so it does not reach this read, and the rule that names this key is `changesCollaborators` (`api/event-refresh.ts`). Titles that impersonate canonical routes or contain `@`/line breaks are neutralised. One Send action creates a comment; a leading `/btw ` or `/aside ` strips only when a mention survives and supplies the one comment-level delivery mode. With no surviving mention the body is verbatim and there is no `delivery`. Send refuses an empty draft, and a command with nothing after it where a delivery applies (`/btw ` alone on an Agents row); `draftRefusal` is the one rule for both and `canSubmitComposer` reads it, so Send never refuses without a reason. While Send refuses, the line under it - otherwise `Ctrl/Cmd+Enter to send · Enter for a new line` - says why on screen (`Type a message first.`, `Type the message after /btw.`), Send is described by that line, and it carries the reason on `title`. Send is the shared `components/RefusableButton.tsx`: it refuses through `aria-disabled` so it stays in the tab order, a click on it while it refuses does nothing, and only a save or an upload in flight disables it outright, its label saying which. A successful send and the `Discard draft?` prompt's Discard clear the same draft, in every host - the body, its accepted mentions, a suggestion's replacement and an ask's options (`clearDraft`) - leaving what a fresh mount shows, so a host that keeps the composer mounted, as an Agents row does, shows it empty after either, or holding the channel's own seeded mention (an Agents row's issue comment reaches its agent only through that mention, so every message after the first carries it as the first did); the kind, the urgency and `Allow multiple` are the reader's settings and stay. The composer routes issue owners to `createComment`, document owners to `createArtifactComment`, and the temporary direct session owner to `createAgentMessage`. A retained legacy message-thread reply still uses `createMessage` with its inherited target/delivery until S3 migrates it; comment replies remain comments. Comment delivery attempts and answers join their comment thread, with each target's retry available. Message and comment threads nest replies under the root, quote their parent, and sit at their latest activity; replies to session authors pre-fill a deletable title mention. Cards render newest activity first; an own send follows even while browsing history.
+  The composer holds no length of its own: its textarea sets no `maxLength`, so a draft goes to
+  Dispatch whole whatever it holds and the server decides, and a `CAP_EXCEEDED` refusal is shown
+  in the server's own words beside the draft, naming the block or the field that passed the bound
+  (`isCapExceeded` in `api/client.ts`, read by `refusalMessage` in `MentionComposer.tsx`), where
+  any other failure reads `Couldn't send — <why>`.
+  A send is the request it started as: `send` in `MentionComposer.tsx` freezes the whole request
+  when it begins - the owner, the reply it answers, its kind and anchor, an ask's fields, the
+  draft, and an edit's comment and save - into one `SentRequest`, and `sendRequest`
+  (`send-request.ts`, beside the composer) builds the call from that value alone, so no Reply,
+  issue pick, kind switch or newer anchor, in Send's own task or later, can change what the send
+  is or where it goes, in any host. The types both read - the owner, the kind, the anchor, the
+  reply target and an accepted mention - are the composer's model (`composer-model.ts`), which
+  imports neither, and `DELIVERY_COMMANDS` (`send-request.ts`) is the one table of the `/btw` and
+  `/aside` commands that the send strips and the composer names.
+  While a send is out its draft is the server's, in every host: one disabled control fieldset
+  holds the whole draft — the body, accepted mentions, a suggestion's Replacement, ask controls,
+  and an anchored composer's Close — and the held send covers the same task before React disables
+  it. A send belongs to its target, not to the composer that made it: the held-send store
+  (`features/conversation/held-sends.ts`, one per app beside its `QueryClient`, above the router)
+  holds each send that is out or refused - its request, its draft, its refusal and, for a margin
+  compose, the mark it names - under the composer's send name (`mutationKey`), and every
+  `MentionComposer` reads and writes through it (`useComposerSend`). Whatever unmounts a composer
+  - a collapse, a fold, another page, its session leaving - the send stays, a composer that mounts
+  under the same name shows it (the draft held, `Still sending`, or the refusal with Retry), and a
+  host restores the address it was sent with (the docked composer's and the phone thread
+  composer's reply, an Agents row's reply and issue). An entry leaves when its send lands - the
+  store refreshes what it wrote whether or not a composer is mounted - or when the reader discards
+  its refusal; a reload keeps every entry, an upload's file included (the writes bullet below), and
+  what the reader wrote over a refusal goes back to the entry as its composer unmounts. Sending
+  closes a `Discard draft?`
+  prompt, mention suggestions, and a reference picker; Escape raises no prompt or ends no reply; the reference
+  picker and an upload's Retry wait for the answer; and Conversation and Agents hold every Reply,
+  and Agents its issue picker, from Send's own task on, by reading the send from TanStack's
+  mutation cache (`hooks/useSending.ts`), which counts it from the task `mutate` runs in and until
+  it settles, whether or not its composer is still mounted; that decides only what the reader
+  sees. A refusal therefore hands back exactly the draft that was sent, over nothing written since,
+  and Discard only ever drops a send that has its answer. A composer's send is one write of the
+  page's one write store (`composerSend`, presentation `composer`; the writes bullet below has its
+  loop, its storage, its login stamp and its rules across a reload), so it is keyed, tried again
+  under its key until Dispatch decides it, kept in `sessionStorage` and resumed after a reload.
+  Past `SEND_DEADLINE_MS` (30 s) it is late, not refused: a comment that mentions agents can take
+  the server longer. Every composer's late send then says `KEYED_SEND_LATE_TEXT` (`Still sending —
+  Dispatch has not confirmed it yet. It keeps trying, and the message is delivered once.`) and
+  offers **Stop trying**, holds its draft, and every Reply and issue pick still holds; only a
+  host's Back, Escape and Collapse thread let go (`useSending`'s `untilDeadline`), so a request
+  that hangs never keeps a reader in front of it. **Stop trying** ends retries between attempts,
+  lets an in-flight attempt settle, and returns a refusal (`SendStoppedError`) whose Retry sends the
+  identical request under the same key. What the reader writes over a held refusal reaches that
+  entry too: `MentionComposer`'s `keepDraft` writes the draft through `HeldSends.keep` 300 ms
+  after the last change (`KEEP_DRAFT_MS`), at `pagehide`, and as the composer unmounts, and
+  ignores a send still out, so only a refusal's draft is written and a reload brings it back as it
+  was last left. INFRA-442's rule (Send pressable whenever the box holds text, each press its own
+  write) is about sends to a session; every `MentionComposer` - the Conversation's docked
+  composer, a thread's reply, the margin's compose and reply, and the Agents row's own issue
+  comment - keeps one send at a time under its name, its box held while that send is out and its
+  refusal kept with Retry and Discard. The live view is where that rule holds: each press there is its
+  own write under its own key on the session's line (`session:<id>`, `useSessionSends` in
+  `features/conversation/useSessionSends.ts`), shown as its own `PendingSendTurn`
+  (`[data-testid="agent-send-held"]`, `data-message-id="pending:<n>"`) at the end of the
+  transcript - `Your message: “<body>”` as plain text, never rendered as markdown, `Waiting to
+  send` with Discard while it waits its turn unsent,
+  `Sending…` or `KEYED_SEND_LATE_TEXT` with Stop trying, or refused with
+  `agent-send-error`, Retry and Discard - until Dispatch makes it and the stored message takes its
+  place. The session's Agents row shows the same turns above its own composer, and Retry, Discard
+  and Stop trying there act on the same write; the row's own composer stays empty and free while
+  one is out. A broadcast is a write of the same store (`broadcastSend`,
+  `features/agents/broadcast-queue.ts`, below).
+  An upload carries its target as its own mutation variable, taken by the paste or drop that
+  starts it, so a pick in that task moves the next message, never the file.
+  On a phone, a comment's thread opens full-screen over the Conversation. The docked composer stays
+  mounted under it, hidden, and a comment's Reply answers in the thread by a composer of its own,
+  with its own reply and its own send name beneath the tab's, which the thread view keeps mounted,
+  hidden, across Back and another comment's thread until the reply is sent or cancelled; so a
+  thread opened or left while a send is out leaves that send's composer, its draft and its refusal
+  where the reader finds them. A refusal the thread shows is the reader's to leave: Back, Escape
+  and Collapse thread drop it, its draft with it - the card's reply's, and the thread composer's,
+  whose reply ends with it - and so does the thread composer's Cancel reply, as an inline reply's
+  does (`usePhoneThread`'s `leave` and `endReply`). A composer's refusal is its own target's, not
+  whatever Reply is tapped next: every held send under one name - the docked composer's, which
+  every message's Reply answers at every width and every comment's above the phone layout, and the
+  phone thread composer's, which every comment's Reply answers on a phone - redirects a later
+  Reply for a different comment or message onto the target it already holds
+  (`redirectedReplyTarget` in `held-sends.ts`, read by both `beginReply`s) instead of silently
+  overwriting its draft; on a phone that redirect also opens the held comment's thread, where the
+  reader retries or drops it. A thread card's own inline reply lives in its thread, not the tab,
+  so it names its send beneath theirs (`threadReplySendKey`): every Reply holds while it is out,
+  and so does its thread - Collapse thread, and on a phone Back and Escape - until the server
+  answers or the send's deadline passes. A comment's Reply that another composer answers - the
+  docked one, or on a phone the thread view's own - hides the card's reply composer rather than
+  unmounting it (`hideReplyComposer` on `ThreadCard`), so a draft or refusal it holds is there
+  again once that reply ends. Nothing the reader did not do closes a composer under a
+  send either. A comment whose thread the reader has open - inline, full-screen, or answered by
+  the phone thread composer - stays in the list whoever resolves it, until they close the thread
+  (the tab owns which threads are open). Resolving a comment, or accepting or rejecting its
+  suggestion, closes its thread once the server takes the action - never before, so a refusal
+  leaves the thread and its reply as they were - and not at all while `Resolved` shows or the
+  thread's own reply is out. On a phone that close only hides the thread view (`hide`), as above
+  the phone layout it only collapses the thread: a refusal the thread's replies hold stays, and so
+  does the comment they answer. The viewport widening past the phone layout while a send
+  from the thread view is out leaves the view open, full-screen at any width, until Back. A closed
+  issue takes comments and messages (`closed` on `MentionComposer`): the docked composer, a phone
+  thread's, a thread card's reply and the margin's comment composer show and send there as on an
+  open issue, a refused send shows its refusal with Retry, and Conversation's Reply and delivery
+  Retry show; the composer's Suggest and Ask kinds are hidden, and Resolve, Reopen, Edit, Accept
+  and Reject stay hidden. A suggestion or ask composer whose issue closes stays mounted and shows
+  itself only for a send of its own still out or that send's refusal, with Send refused and
+  `Discard draft` in place of Retry, and otherwise renders nothing - its `frame` with it; an
+  unsent margin suggestion or ask ends as its issue closes, an unsent comment stays. A decided
+  suggestion's thread offers no reply, yet its card
+  keeps the reply composer mounted (`finishing` on `MentionComposer`), which shows itself the same
+  way but sends as ever, Retry included: a reply out when anyone accepts or rejects the suggestion
+  keeps its draft and a refusal until it lands or the reader cancels it.
+  A reply that names one block of its parent (`reply_block`, which a session writes with
+  `dispatch comment --reply-to` or `dispatch message --in-reply-to` and a block reference) quotes
+  that passage in place of the parent's body, `Replying to <author>'s passage — <text>`, and once
+  the parent's edit removed it, `This passage was removed.` (`ReplyQuote`, from `ReplyTurn` and the
+  margin's `ThreadCard`, which names the author of the comment holding the block, `passageItem`,
+  since a comment reply's `reply_to` is its thread's head). A reply the person writes answers the
+  whole item. An edit of a comment carries each block's id through the edit: the composer reads
+  `GET /api/v1/comments/{id}/blocks` when the edit opens, follows each block's span through every
+  edit of the field by the type the browser's own `beforeinput` names (`block-spans.ts`: a block a
+  cut or a drag took out is held and comes back where the same text is pasted or dropped, and a
+  block whose whole text alone is typed or pasted over is reworded and keeps its span), and the
+  save sends `{body, base_revision, blocks}` (`send-request.ts`, `api.editComment`), or `{body}`
+  alone when the route failed or answered `indexed: false`. It never splits the body; the server
+  does, and the new block holding a carried span's start keeps that span's id.
+  `Jump to latest` floats at an edge of the screen the docked composer leaves free, so it covers
+  none of the composer's controls; below `sm` that edge is the right edge of the content column
+  itself rather than a margin outside it, which is why a card under the pill is covered at all.
+  Below `sm`, where the composer sits at the foot of the screen and
+  grows upward with a refusal's Retry, the pill is fixed at that same foot,
+  above whatever the shell's status corner publishes in `--foot-status-inset` and, while that
+  corner shows nothing and the property is unset, above the composer's own
+  `--foot-composer-inset`, and never below the phone's bottom bar; from `sm`, where the composer
+  sticks to the top, it keeps the foot it has there.
+  The list scrolls behind the pill, so a card crossing that foot band passes under it and loses
+  its Accept and Reject to it while it is there, as it loses its Reply and Pin.
+  That cover is accepted: scrolling the card on clears it, and so does the pill's own tap,
+  which jumps to the latest and takes the pill off the screen.
+  While a phone thread covers the Conversation it shows no pill, since the pill acts on the
+  Conversation's place, and the list's copy of the newest card gives up the read mark's dwell
+  there: a thread over an older conversation marks nothing read until Back, which gives the
+  dwell back, while a thread over the newest conversation carries that dwell on its own card
+  and writes the mark from the thread.
+  Opening the tab places the reader at the newest
+  card in the commit that first renders the list, because `ConversationTab` gives
+  `useFollowLatest` no `latestItemSeq` while any of its three reads is pending or failed, and that
+  first placement replaces a tab-switch scroll recorded before the list was on the page: the hook
+  calls `onFirstPlacement` before the parent's restore in the same commit, and `IssuePage` uses it
+  to forget that position (INFRA-303). The live view's transcript has a `Jump to latest` of its
+  own, with its own rules, under `features/agent-view/` below. Every composer fixed
+  at the foot of the screen
+  - the docked one below `sm`, a phone thread's own composers, and a phone margin thread's reply,
+  each placed there by its `frame` - publishes how far up from the screen's bottom edge it reaches
+  (`useFootInset`), and the shell's status corner (`app.tsx`) sits above the highest
+  (`--foot-composer-inset` on the document element, unset while none is there). That corner - the
+  pending-writes indicator and the connection pill - publishes its own reach the same way, into
+  `--foot-status-inset`, so `Jump to latest` rides above the whole corner rather than under it;
+  an empty corner has no box, publishes nothing, and leaves that property unset.
+- `web/src/features/writes/` is the page's one write path: every write the page makes - a composer's send, a broadcast, a pin, a read mark and every other write - is one write of one store (`write-store.ts`, `Writes`, one per app beside its `QueryClient`, above the router, so leaving the page that made a write never drops it) with one lifecycle (`queued` behind an earlier write to its target, `sending`, `late` past `SEND_DEADLINE_MS` with Stop trying, `refused`, then Retry or Discard, and `resume` after a reload) and one storage format. Each write names its kind (`defineWriteKind`; `kinds.ts` loads every kind with the shell, so a reload finds any kept write's kind: `composerSend` in `conversation/held-sends.ts`, `broadcastSend` in `agents/broadcast-queue.ts`, `pinWrite` in `issue/pin-write.ts`, and `plainWrite`), where it shows (`presentation`: `composer`, the composers' inline held state; `indicator`, the shell's `PendingWritesIndicator`; or `quiet`, a read mark, never shown and let go five minutes after its press unconfirmed), and its `target`: writes to one target go out in press order (a session's sends on `session:<id>`; every write to an issue - the header's fields, board moves and component saves - on `issue:<KEY>`; its pins on `pin:<KEY>`; the Conversation's read mark on `read:issue:<KEY>`; broadcasts on `broadcast`), a later one waiting only behind an earlier one still being tried, and a refused or stopped one no longer holding the line (its Retry joins at the back). A write is kept from its press: one queued behind another is kept as the request its press names (`WriteSpec.request`) and its place in the line, so nothing of its attempt runs until its turn comes and a reload resumes the line in press order, each write once. An upload is the one write kept later than its press: its record names the key its file is kept under, so the store keeps nothing of it, and sends nothing, until `kept-files.ts` answers that the file is in IndexedDB under that key - at the press and again at a Retry that moves it to a new key, where the write stands refused under its old key with its old file until the move answers - and where that answer is "not kept" (no IndexedDB, an open the browser refused) it keeps no record of that upload at all, since a record naming a file that is not there is one a reload drops with nothing shown and nothing sent; the upload still goes out, and leaving the page is still confirmed while it is out (`WriteStorage.keepNothing`). Every write on a line of a kind made again from its request (one with no `resume`, `plainWrite`) is made from that request alone - its attempt is `api.send(request)` - and names it through its client method's own builder (`issuePatchRequest`, `agentMessageRequest`, `askSnoozeRequest`, `threadReadRequest`, `issueStateRequest`, `agentStateRequest` in `api/client.ts`, each a `WriteRequest<T>` naming the answer it gives; `useKeyedWrite` takes `target` and `request` for a line write, and no `write`, and `useSendMarkOnce` takes its `request` alone); the store refuses one that names none at once (a `TypeError`: a page bug). `OneRequestPerWriteError` guards a write whose attempt makes its own request (a composer's send, a broadcast, a pin) across its attempts. A write waiting its turn that was never sent (`Write.sent` false, kept as `KeptWrite.sent`) reads `Waiting to send` with Discard - in the indicator, as the live view's and an Agents row's pending turn (`HeldSend` `waiting`), and on the broadcast strip as `Queued: to N agents` - and Discard refuses its press with `WriteDiscardedError` (`Discarded before it was sent.`); one that went out before and waits to go again reads `Sending…` and is not the reader's to discard. `keyed-write.ts` holds the loop (`writeUnderKey`): each attempt is cut off after `KEYED_SEND_ATTEMPT_MS` (15 s) of silence - no piece of its body sent, no piece of its answer received (`api/client.ts`; an upload goes through `XMLHttpRequest`, whose upload progress every engine reports) - and one that ends without Dispatch's verdict (a `NetworkError`, a `RequestTimeoutError`, a non-JSON 2xx's `UnreadableAnswerError`, a `401`, which Dispatch never stores and which also has the store read whoami again, or what `retriesUnderKey` in `@legion/contracts` names: a 5xx, 408, 429 or `409 KEY_IN_FLIGHT`) is made again under the same key after 1 s, 2 s, 4 s … up to 30 s, or after Dispatch's `Retry-After`. Dispatch's `503 DATABASE_BUSY` and `503 REQUEST_TIMEOUT` carry a `Retry-After` it means (dispatch://INFRA-592), so a write they answer waits exactly that out, as a `429` with one does (`busyRetryAfterMs`), and its backoff stays where it was; any other `503`, a gateway's among them, names no wait the page can trust and keeps the backoff. A read so answered waits that `Retry-After` out too, as it does any refusal's, in place of the query client's `QUERY_RETRY_DELAY_MS` (`queryRetryDelay` in `api/query-client.ts`, `main.tsx`). The backoff doubles only after a wait that used it (a `KEY_IN_FLIGHT` or `Retry-After` wait leaves it as it was), and it starts over, its wait woken early but never before 1 s, only when the page learns Dispatch can be reached again on the write's own route (`api/reachability.ts`, which keeps each write route - its method and path, `routeOf` - a request failed at the connection or went silent on, and forgets it as that route answers; a read's route is kept by nothing, since no read waits to learn it can be reached again): the browser's `online`; the live socket opening after a loss that was not a rotation; or an answer below 500 on the write's own route after a request there failed at the connection or went silent. Another route's answer says nothing of this one - a `GET` of the same path included, which every live event on an issue refetches, so it never resets a failing `PATCH` of that issue - and an answer while the route was reachable all along - this route's 5xx - resets nothing, so a route that keeps answering 503, or one a proxy keeps dropping while the rest of Dispatch answers, backs off 1, 2, 4, 8, 16, 30, 30 s. Any other error refuses the write at once. Every attempt sends `Dispatch-Login`, the login stamped at the press and never restamped. `useKeyedWrite` is what a surface that is not a composer calls: each `mutate` is one press under a key of its own, resolving with Dispatch's answer or `null` for a landing without one, rejecting with its refusal or `SendStoppedError`, so the surface keeps its optimistic state until then and rolls it back on anything but a landing; a `mutate` of variables a stopped press was made with (compared by value) is that press again under its key. No write is made outside the store: every `POST`, `PATCH`, `PUT` and `DELETE` method of `api/client.ts` takes the press's `WriteBounds` as a required argument and `send` has one signature, so a bare write fails `tsc`. `write-storage.ts` keeps each unconfirmed write in `sessionStorage` as one `dispatch.write:<key>` entry (format 1: every kept shape a type guard, `WRITE_METHODS` the one method list, so a kept `PUT` or `DELETE` resumes too), and `kept-files.ts` keeps an upload's bytes in IndexedDB under its key, with the file's name and type, its login and a one-day age, until the write lands or is discarded, and makes the `File` again when it reads them, so a reload resumes the upload with its file; the bytes rather than the `File` because WebKit's IndexedDB stores no `File`, and a row of the older shape, which held one, is still read. `PendingWritesIndicator` is the shell's `region[aria-label="Pending changes"]`, absent while nothing is pending: its status line counts what is out (`Saving 2 changes…`, and once one is past its deadline and being tried again `Dispatch has not confirmed 2 changes — still trying`), and it names each write the reader can act on or should see - one held while the person's sign-out in another tab is out (`Write.signingOutElsewhere`), `<label> — Waiting for a sign-out in another tab`, with Discard if it was never sent and no Stop trying; one waiting its turn, `Waiting to send` with Discard; an upload whose body is still going up on its first try, `<label> — Uploading… N%` (`Write.uploaded`, from the upload's progress through `WriteBounds.progress`), which never reads still trying until an attempt of it has failed (`Write.retried`); a late one with **Stop trying**; a refused one as `Not saved: <label> — <why>` with **Retry** and **Discard**.
+  Each entry also holds what its key has already carried (`KeptWrite.carried`, written from the
+  store's own record of every key, `Writes` `#carried`): a write re-pressed under the key of the
+  one it replaces - a composer's Retry, `supersede` - is kept with nothing sent and no request of
+  its own, so the page a reload brings back reads the key's history from that field rather than
+  from `sent` and the kept request, and refuses that Retry once the key has run out rather than
+  sending the person's message a second time. Every entry holds the field - a method, or the
+  `null` of a key nothing has gone out under - and the version stands at 1, so an entry an older
+  release wrote still loads, holding none. `WriteStorage.load` is the one place a missing one is
+  converted, to what that release decided by (`sent` and the kept request): past it the field is
+  always there, absence means only "written before the field existed", and the deploy drops none
+  of a person's unresumed writes.
+- `POST /auth/logout` is the one page `POST` outside that content-write path: it carries no
+  `Idempotency-Key`, because ending the current session cannot create content twice. `PUT` and
+  `DELETE` use the store but carry no key, because repeating either applies the same change.
+- A write belongs to the person who pressed it. `AuthGate` calls `Writes.signedIn(login)` whenever the login `["whoami"]` names changes or whoami answers 401, and tells every other tab through the sign-in channel (`features/shell/sign-in-channel.ts`, `SignInChannel` over `BroadcastChannel("dispatch-sign-in")`), so a sign-in in another tab of the same browser reaches this one. A lapse keeps the person's writes, unless another tab's sign-out of that person holds them here (`holdFor`), in which case the lapse is that sign-out landing - the session it asked Dispatch to end has ended - and their writes go (`dropLogin`), whichever reaches this tab first, the lapse or the hold's end. Each hold is taken under a mark (`Writes.heldSignOut`) and a release names the hold it ends, so a sign-out of the same person begun while an earlier release was still deciding is never lifted by it and holds their writes on its own. A hold whose tab went is not let go on one read: the gone tab's own sign-out may reach Dispatch as that tab dies, so the hold stays on - nothing of theirs goes out while the question is open - over `SIGN_OUT_SETTLE_MS` (2 s), and the check is read again (`heldWritesOfGoneHolder`). A hold let go after that, while Dispatch still named the person (`releaseUnsettled`), keeps that door open for `KEYED_SEND_ATTEMPT_MS`, the longest the page waits on a silent request: the gone tab's own sign-out may reach Dispatch after this tab's read did, and a lapse within that window is it landing late rather than a lapse. A hold its tab said the end of (`release`) closes the door at once: on a 401, from whoami or from a write, every write stops trying after its attempt in flight and none starts (`#hold`), while every entry, refused draft and kept file stays, in memory and in storage; the same login signing in again puts them back in their line (`#rejoin`), and only another login's sign-in drops them, its loops stopped and its kept files removed. While the session is lapsed the sign-in page lists what it keeps (`features/writes/KeptWrites.tsx`, `region[aria-label="Kept changes"]`): `Kept until you sign in again as <login>:` and each write by label, a refused one as `<label> — Not saved` with Discard, since only the person can drop it. Its sign-in link asks nothing on leaving (`Writes.leavingToSignIn`, `WriteStorage.letLeave`), since the kept writes resume in this tab once the person is back; a press on the page (`keydown`, `pointerdown`) or the page shown again (`pageshow`) makes leaving ask again, and a modified click, which opens the link elsewhere, changes nothing. A sign-out still out when the session lapses has landed (`endsWithSession`): the session it was ending is gone, so the page discards the person's writes as a landed sign-out does, rather than keeping them for the next sign-in. Every message on the sign-in channel carries the `tab` that sent it. Signing out first asks the browser's other tabs what of the person's it would discard there (`SignInChannel.unsentElsewhere`: each tab keeps a roster of the others from `{tab, hello}`, `{tab, here}` and, on `pagehide`, `{tab, gone}`, and answers `{ask, unsentOf: login, tab}` with `{answer, tab, unsent}`, each unsent write of that login as its `{key, label}`) and waits at most `OTHER_TABS_ANSWER_MS` (300 ms). It then asks `Sign out and discard N unsent changes?` with each unsent write of the person, in this tab and in every tab that answered - every write not quiet and not yet made, refused ones included - listed by label, each key once (so a duplicated tab's copy of a write is named once), adding `, and any unsent changes in your other Dispatch tabs` after the count when a tab on the roster did not answer in time (`Sign out and discard any unsent changes in your other Dispatch tabs?` with nothing to list); a tab that did not answer leaves the roster until it next speaks, so a tab that went without its `gone` delays one prompt, not every one. Cancel keeps the person signed in. Confirming discards nothing yet: it takes the Web Lock `dispatch-sign-out:<login>:<tab>` (`signOutLockName`, one per signing-out tab, so two tabs signing the same person out neither wait on nor hold each other's), sends the sign-out and posts `{signingOut: login, tab}`, again every `SIGN_OUT_RENEW_MS` (2 s) while it is out, and until Dispatch answers it every write of the person but the sign-out stops trying after its attempt in flight and none starts, here (`#signingOut`, which `#advance` reads) and in every other tab (`Writes.holdFor`). Another tab's hold is keyed by the tab that holds it and ends two ways. That tab's `{stillSignedIn}` says the sign-out did not go through, and the writes go on (`Writes.release`). The tab going says nothing of how it ended - its `{gone}`, the browser releasing that tab's own sign-out lock (which it does when the tab closes, crashes or is discarded, and never while the tab is frozen or its timers throttled), or, only where the browser has no `navigator.locks`, `SIGN_OUT_LEASE_MS` (6 s) with no renewal - so the holder, once every tab whose sign-out held them has ended that way, reads whoami before it decides (`holderGone`, `heldWritesOfGoneHolder` in `app.tsx`): Dispatch's own `401 NO_IDENTITY` is the sign-out landed, and that login's writes go here too (`Writes.dropLogin`) rather than waiting for a sign-in the person already discarded them before; any other answer is a sign-out that did not land, and they go on. A lapse or a login change in the holding tab lifts no hold, and a listener attaching while a hold is on is told to hold at once (`SignInChannel.listen`), so a tab that loads or reloads mid-sign-out holds the writes its app never heard the message for. A write so held reads `Waiting for a sign-out in another tab` - in the indicator (above), on a pending turn, and as `Waiting for a sign-out in another tab: to N agents` on the broadcast strip - with no Stop trying. Only the answer decides: landed - and Dispatch's own `401 NO_IDENTITY` is a landing, since the session it was ending is already gone, while a 401 from anything in front of Dispatch, an authenticating proxy among them, says nothing of the session and is a sign-out that did not go through - this tab drops its writes and kept files (`clear()`) and posts `{signedOut: login}`, where every other tab drops that login's writes and files (`Writes.dropLogin`); refused or stopped, the person stays signed in with every write in every tab (`{stillSignedIn: login}`) and the rail says `The sign-out did not go through. You are still signed in, with every change.` with Retry. A drop starts nothing it drops: `clear()`, `dropLogin`, another login's sign-in and the `LOGIN_CHANGED` path below take every write they drop out of the store first (`#take`) and only then advance each line that still holds writes, once, so dropping a line's first write never starts the one queued behind it. Every kind's `reset` runs whenever the signed-in login changes, to nobody included, and on `clear()`, and a dropped write calls its kind's `undone`, so the pin kind forgets the state it last wrote and the page reads it again. Dispatch refuses an attempt that still reaches it under another person's cookie `409 LOGIN_CHANGED` before anything runs (it reads `Dispatch-Login`), which drops that login's writes and reads whoami again. A reload resumes only the signed-in person's entries; one pressed less than `KEPT_SEND_RESUME_MS` (5 minutes) ago resumes as a write in flight, and an older one as a refusal (`SendInterruptedError`) reading `Not sent: this page was closed before Dispatch confirmed it. Retry asks again under the same key, so it is delivered at most once if you retry within 24 hours of the first try. After that Dispatch no longer knows the key: a Retry is a new write and may be delivered twice.` with Retry under the same key and Discard. A stopped or interrupted write whose key Dispatch still holds ends its text with that note (`sameKeyRetryNote` in `keyed-write.ts`, its hours read from `IDEMPOTENCY_KEY_TTL_MS`, `saved` in place of `delivered` for the indicator's writes), and one whose key has run out (`SendExpiredError`) ends with `expiredRetryNote` in its place, since Dispatch forgets a key a day after its first request. A Retry after Dispatch's own verdict, or of a write whose key has run out, goes under a new key; after a Stop trying or an interruption within the key's day, under the same one (`retriesUnderItsKey`). While any write that is not quiet is unconfirmed a `beforeunload` handler asks the browser to confirm leaving; a read mark never does.
+- What a write's `401` is: the store reads whoami again before it decides (`unauthorized` in `#start`, which answers whether the check, read afresh, still names the person who pressed the write). While it does not - the session lapsed - the lapse rule above holds every write. While it does, the write is asked once more, since the first `401` may be a session that rotated between the two reads; a second `401` in a row, each after the check still named the person, is Dispatch's verdict (`writeUnderKey`), and the write is refused with Retry and Discard rather than held for a sign-in that will never come.
+- A write Dispatch made whose answer is gone is a landing, not a refusal: a `409 KEY_COMMITTED` and a replayed 2xx reading `ANSWER_NOT_KEPT` (`answerNotKept`) resolve the write with `null`. Every surface handles `null` in its `onSuccess` (there is no `onLanded`): what the write could have changed is read again, nothing shows a failure, and a second press never makes a second item. `useKeyedWrite` keeps the last press that landed with no answer (`unanswered`: its variables and when), cleared by the next press or by the form's `forgetUnanswered` on an edit, and every create form reads it and says so in one `p[role="status"][data-testid="landed-without-answer"]` (`features/writes/LandedWithoutAnswer.tsx`) - the new issue (`CreateIssueDialog` clears its title and spec, stays open and navigates nowhere), the project (`ProjectsSection` clears the key and name), the agent token (`AgentTokensSection` clears the label), the document (`DocumentList` closes its form), the session group (`SessionGroupsEditor` clears its name and selection), the named version (`ProofDocument` closes its dialog) and the upload (a staged row drops its file and summary; a pasted or dropped one adds no reference to the draft) - each reading `<What> was made, but Dispatch lost its answer, so it may take a moment to appear.` (`The issue “<title>”`, `Project <KEY>`, `Token “<label>”`, `Document <name>`, `The group “<name>”`, `The version “<name>”`, `The upload of <file>`). The token adds `Its value is shown only once and was lost with the answer, so revoke it and mint another.`, and says `Looking for it…` until the token list is read again after the landing; it then considers only the live tokens of that label whose ids were not listed at the press: none reads `No live token “<label>” made since you pressed New token is listed, so none was revoked.`, one offers **Revoke it and mint another**, and more than one read `<N> live tokens “<label>” were made since you pressed New token. Pick the one to revoke:` with a **Revoke the one created <time>** button for each, newest first. Every such revoke first asks `window.confirm` (`Revoke “<label>”, created <time>? Agents using it stop working at once, and a new token “<label>” is minted in its place.`). A draft upload adds `Its reference was not added to your message.`
+- Where a write's refusal shows: at the control itself (`inline`, the surface showing it and the store letting the refused write go) when the reader is in front of what they wrote - every composer, an ask's answer, clarification and reply, uploads, a new issue, project, document or document version, a document rebuild, the architecture-source save, delivery settings, repository mappings and their removal, the default-assignee pick, credential decisions and the machine-login lookup, grant and machine-login revokes (`RevocableList`), session groups, comment actions, snoozes, board moves, every issue-header field (`useIssueFieldWrite`, `useIssueComponents`), claim release and unsubscribes, and the live view's model and thinking switch; and in the shell's indicator, as a control that rolls back, for every other write, pins among them. Read marks (`useSendMarkOnce`, `useMarkThreadRead`, `features/agents/unread.ts`) are quiet writes: tried and kept like any write, never shown.
+- `web/src/features/activity/` is the Activity tab (`/issues/<key>/activity`, reference `dispatch://KEY/activity`, chord `t v`), the issue's whole event history: every event one line, newest first, in `ol[aria-label="Issue activity"]`, broken by day and by the reader's unread watermark (`New since you last read`), with `Load older` beneath it paging `GET /issues/{key}/events` 200 at a time and each line's own `Pin`. That list is wrapped in a `ViewportAnchor` over `data-event-seq`: it reads `["events", <key>]`, the query the stream prepends each published event to (`prependEventToLog`), and renders newest first, so without it every arrival would push a reader down in the history by one row. `activity-model.ts` holds `activityDescription` - the one place an event becomes words, read here and by the margin's `EventBody` fallback - and `buildActivityItems`, which reads the lines in sequence order so `issue.updated` can say what status it reopened from. `ActivityLine.tsx` renders a description's artifact name as a link to that artifact. The tab writes no read mark (the Conversation is `last_read_seq`'s one writer) and offers no composer and no filters: this is the record, not a place to write. `dispatch://KEY/log` and `/issues/<key>/conversation` still open the Conversation, which is why `buildDispatchReference` keeps the `log` spelling for it.
+- `web/src/features/issue/pin-write.ts` is the one pin write both the Conversation and the Activity tab draw their `Pin` through (`writePin`): applied to `["user-state"]` at once, then one write of the store per pin, ordered on its issue (`pin:<KEY>`), shown in the shell's indicator as `Pin on <KEY>` / `Unpin on <KEY>` and kept across a reload. Each attempt writes the issue's state as the last pin's answer left it, or read afresh, under the next sequence; Dispatch answers a write another tab got in first with `STATE_STALE` and its current row, which the pin is put on once more. Once the issue's last pin lands, the state Dispatch answered replaces what the page showed; a refused or discarded one has the page read its state again. Pin buttons are never disabled.
+- `features/issue/IssueHeader.tsx` keeps issue identity, state controls, and metadata in one dense header, top-down: the key, title, and pin; then the Status pill select, the priority editor (`PriorityEditor`, the editor body the shared `PriorityControl` also renders, driven by the write `IssuePage` owns), the `AssigneeControl` (below), the approval area — the primary document's single approval chip once approval was requested, unless a drawn design-gate step reviews that very document, and after it one line per design-gate step on a root issue whose project gates them (`ApprovalSteps.tsx`), both described under "A document's approval" below — and Close; then the details — the whose-turn indicator, creator when recorded, labels, owner, subscribers, parent, repository, and external links — on one line (`issue-metadata-rail`) that never wraps and never widens the page: it scrolls sideways inside the card (`overflow-x: auto`, `min-w-0` up the flex ancestors), wearing `scrollFadeTrailing` - a 32 px mask, not a colour - while it has somewhere left to scroll, since at a phone width the cut lands inside a control (the Labels button alone is wider than the rail) and looked like clipped text. The repository is `RepoControl`: `Repository:` and the repository the issue resolves to as a badge, muted when inherited and `No repository` when none resolves, with a native `<select>` laid over it in `AssigneeControl`'s way, labelled `Repository of <KEY>` (`Inherit` first, then the repositories mapped to the issue's project), writing the issue's own `repo` through `useIssueRepo`. The badge is hidden from assistive technology, so the select's description (`aria-describedby`, an `sr-only` span) says what it shows: the repository, `, inherited or the project's default` after it when it is not the issue's own, or `No repository`; with Inherit as the select's value, that is how a screen reader hears the target. An issue that resolves to a repository reads the mappings on first reach; one that resolves to none reads them at once and shows nothing until they answer, then shows the item only when its project maps a repository, so a project with no mapping (nothing to pick) adds nothing to the rail. A failed read is never taken for an empty one: it shows `Repository:` with the failure and a Retry (beside the picker when a repository resolves). Every `settings.repo_project.updated` event refreshes the loaded issue details (`api/event-refresh.ts`), so an open issue follows a new, removed or moved default. It sits in the rail rather than the state row because a repository name can be long and the state row keeps every control on one row at 390 px, and its control is 28 px from `md` like the rail's others. A rail scrolled to its end drops the fade, which would otherwise hide the last item; the header measures `scrollWidth - clientWidth - scrollLeft` on scroll and through a `ResizeObserver` over the rail and its children, so labels and a GitHub title arriving late re-arm it. Below `2xl` the title always has its own row (`basis-full`) and the state controls and the details line share the row beneath it (below `md` the state row is full-width and the details line follows on its own); from `2xl` the title slot is content-sized (`2xl:basis-auto`, growing into the free space) so the state controls, and after them the details line, join the title's row when they fit beside the whole title. The slot has exactly one flex-basis whether it shows the heading or the title editor: a basis that changed on edit would move every other control on the blur a mousedown causes, and the browser would then deliver the click to a different element, swallowing the first click after a title edit. Editing the owner opens its form under the rows. The title wraps across as many lines as it needs rather than clamping, so a long title reads whole instead of cut off mid-word (LEGION-559); desktop state controls are compact, and phone controls remain touch-sized. `GitHubLink.tsx` shows a GitHub issue or pull request as `#N` plus its truncated title (the repository while the title is unknown, including when this sign-in has no GitHub App credentials), never the raw address. Its `Subscribers: N` control opens `features/issue/SubscribedAgents.tsx`, whose list shows the persisted subscriptions, each session an `AgentName` (its running state from the agent registry; "How an agent is shown", below), and offers a human `Unsubscribe` action that notifies the removed session. The creator is an `AgentName` too, named by its current registry title first like every agent; historical issues with no creator render no creator entry.
+  While the subscriber read has not answered (it failed, or Envoy's agent list is refilling) that control reads `Subscribers` with no count, since a count is a claim about who is subscribed. A routed issue whose route status is `unknown` says why in the state row: `Route reach unknown: The agent list is refilling. Try again in a moment.` (`issue-route-refilling`) for `route_status_reason: "refilling"`, `Route reach unknown` (`issue-route-unknown`) for an unreachable listener; the issue list and board render nothing for an `unknown` route, never the `no_holder` marker.
+- `features/issue/IssueLabels.tsx` edits issue-header labels through the shared `components/MultiSelect.tsx` (its `onCreate` row): it combines the issue's labels with labels used anywhere in the project, stages changes locally while the popover is open, and saves the final draft when the popover closes; `IssueList.tsx` filters project issues by every selected label through URL-backed, repeatable `?label=` parameters.
+- `features/agents/` owns the `/agents` page and its broadcast. The page's filter bar narrows the listed sessions by one machine, one role, and one search box (`Search agents`, placeholder honest about the last field: "open issue"), whose matching lives in `agent-search.ts` beside the page: `matchesFilters` keeps a session when its title, directory, machine, session id and the issue keys its OPEN asks name together hold every typed word, in any order and case (an answered or resolved ask's issue drops out, since `sessionIssueKeys` reads it from the same open-asks-only inbox fetch the page's `needsYou` counts use, `inbox.go`'s `where a.state = 'open'`); `useAgentSearch` is the page's `?q=` and `useAgentMachine` its `?machine=`, both through the same capped, history-`replace`d `useCappedSearchParam` hook (`lib/query-param.ts`) `useIssueFilters` uses for its own `?q=`, so both survive a reload and a shared link, while the role stays plain component state; the machine is a parameter of its own rather than a word in `?q=`, because the free-text query matches the directory as well as the machine while `/machines/<machine>`'s `Agents on this machine` link must name exactly the sessions on that machine, and each row names its own machine as a link to that machine's page (`buildMachinePath`, `features/machines/` below); the Machine select offers the machines the live sessions occupy and, where no live session reports the machine `?machine=` names, that machine too (`filterOptions`), so an address naming a host whose sessions have all ended empties the list honestly and still shows the filter that emptied it, which `All machines` then clears - with the live hosts alone the control would read `All machines` over an empty list and picking `All machines` would fire no change at all; while a query is present the `Inactive` and `No Dispatch activity` folds open, so a match one of them holds shows, and clearing it returns each fold to the reader's own open or closed state; and `/` on this page focuses that box rather than opening the palette's search-only mode (the `agents` scope's `search` binding, which falls through to the global `/` while no box renders), leaving `$mod+k` the palette with this page's actions. A checkbox on every row ticks one, and the header checkbox directly above the rows (`SelectionHeader`, accessible name `Select all matching agents`) follows the filters. Select-all acts on every row the filters match, folded or not, and walks them in the order the page shows them - the open list, then each fold - so the chips, the wire order and the rows all read the same way round; so the same click on the same filter always sends the same set: its state is the matching rows' (`matchingSelection` in `selection.ts` - unchecked, checked, or mixed through the `indeterminate` property), and a click ticks every matching row unless all already are, and otherwise unticks them (`toggleMatching`). Nothing is picked out of sight: the header says "matching", and each folded section's disclosure counts its selected rows (`foldLabel`: `No Dispatch activity (3)`, then `No Dispatch activity (3, 2 selected)`). The header's count (`selectionSummary`) scopes the selected number to the matching rows and names every other selected session the composer will send to, split by why it is not matching: `12 matching`, `3 of 12 matching selected`, `3 of 12 matching selected · 2 more selected outside the filter` (listed, hidden by an active filter), `3 of 12 matching selected · 1 more selected, no longer listed` (gone from the registry), both clauses when both apply, and `12 matching · 2 selected outside the filter` when none of the selection matches. Beside it sits `Clear selection` whenever anything is selected, which empties the whole selection, hidden rows included. The broadcast composer follows the list and sticks to the viewport's bottom, so its appearance moves nothing above the rows and the header checkbox stays under the pointer. On a narrow or short screen only the composer sticks: the wrapper that holds it and the `Sends` strip is `display: contents` there, so the strip sits at the end of the list and the composer alone counts against the 45% budget below; the e2e measures the outermost sticky box with a refused row present. On a narrow or short screen - the `narrow-or-short` variant in `styles.css`, `(max-width: 767px), (max-height: 500px)`, so a phone in landscape and the band below `md` count - it is a compact grid: the heading on one line, the recipients in one sideways-scrolling line of 44 px chips, the message sized to its text (`field-sizing: content`) from two rows to `max-h-32`, and the mode beside Send, with one notice slot (`composerLine`) as a sideways-scrolling line between them; under `short` (`max-height: 500px`) the heading shares a line with the recipients, the message, held at two rows, shares one with the mode and Send, and the notice slot is the third and last row. The slot holds one notice at a time, the recipient limit over the Excluded line, and the limit hiding the Excluded line hides no name, because every excluded session's chip carries its reason (`<label> · <reason>`). Send says why it cannot be pressed (`broadcastSendState` in `broadcast-plan.ts`, which returns Send's label, the notice line, Send's refusal, and whether that line is the refusal, so where each reason shows is decided in one pure function): with nobody to reach it reads `No recipient` rather than a count, and its reason is the Excluded line, which, when the mode is the cause, ends by naming the mode that reaches the most of them (`Sending as steer would reach 2 of them.`), worded by what the mode does rather than by the control that picks it; over the limit or with an empty message the label stays the count. The reason rides `title` and `aria-describedby` (the notice line, or a hidden line for an empty message), and Send is the shared `components/RefusableButton.tsx`, refusing through `aria-disabled` rather than `disabled`, so it stays in the tab order and a keyboard reaches the reason; nothing disables it outright, since a send in flight does not hold up the next (below). With nothing selected there is no composer, so no Send to explain. The message's `min-h-16` carries the important modifier because the unlayered below-1280 touch floor (`textarea { min-height: 44px }`) otherwise wins over a utility and the box shrank on its first character. The e2e holds it to 45% of the viewport with a filled message at 390x664, 640x664, 700x664, 844x390 and 667x375 (43.1% at the portrait sizes). Its count reads `recipients.length` and `selected.size`, never the chips on screen, so a scrolled-away chip is still counted and reachable. Selection is what the human ticked, not what the filters currently show, so narrowing after ticking never silently drops a recipient, and the composer names every selected session. Three decisions follow from that. Selection, the role filter and the draft (message and mode) are page state by design: they live while `/agents` is mounted and reset when it unmounts, while `?q=` and `?machine=` ride the address and outlive it; the draft is held by the page rather than the composer, so clearing the selection and picking again keeps the typed message and its mode, and Send hands the message to the queue and clears it and the selection at the press, so the next broadcast can be written at once. Wire order is tick order: `session_ids` go out in the order the sessions were selected, and the server keeps that order through deduplication and targeting (`broadcasts.go`). Exclusion is one-directional in two senses. Between selection and send: a selected session that has left the registry, or does not advertise the chosen mode, drops out of the send but never out of the selection, so when it rejoins (or the mode changes) it re-enters the send by itself, and nothing removes a session from the selection that the human did not untick. Between the SPA and the server: the SPA's exclusion is final, since an excluded session is not in `session_ids` at all, and the server can only narrow the set it is given - it re-judges each requested session against one registry read (`broadcasts.go`) and may exclude more, never add. The composer refuses a send over `MAX_BROADCAST_RECIPIENTS` (`@legion/contracts`, generated into Go as `contracts.MaxBroadcastRecipients`, the server's own limit) before asking: Send refuses and a line names the limit and the count. `broadcastPlan` decides, from the live capability list, which of them the chosen mode reaches: one that does not advertise it is shown excluded and left out, never switched to another mode, which is exactly what the server repeats against its own registry read. Send queues rather than waits: each press hands its request - body, mode and `session_ids`, with the key it goes under and the selection it was pressed with - to the page's one write store as a write of the `broadcast` kind (`broadcastSend` in `broadcast-queue.ts`, presentation `composer`, on the `broadcast` target, so a send outlives the Agents page), which the page reads through `useBroadcastQueue` in `BroadcastSends.tsx`. Broadcasts go out in press order: a later one waits only behind an earlier one still being tried, with the tab hidden or not, and a refused or stopped one no longer holds the line; a waiting send keeps the request it was pressed with. Each is tried under its `Idempotency-Key` by every write's loop (`writeUnderKey`, `features/writes/`), so however many attempts reach Dispatch it makes one broadcast, and a `409 KEY_COMMITTED` is a landing whose recipients are read again; a recipient a process death left owed is finished by Dispatch's delivery sweep whether anyone asks again or not (`packages/envoy/AGENTS.md`). Once `SEND_DEADLINE_MS` passes without a verdict the row is late and offers Stop trying (`features/writes/StopTrying.tsx`, busy `Stopping…` while the attempt in flight settles), which fails the send with `SendStoppedError`. A sent send refreshes each recipient's conversation (`agentMessagesQuery`) and `["broadcast"]`. Every send not yet sent is kept in `sessionStorage` with every other write (one `dispatch.write:<key>` entry, carrying the login that pressed it and when), and a reload resumes it by the store's rules (the writes bullet above): within `KEPT_SEND_RESUME_MS` it joins the line again under its key, late already if it was then, and Dispatch answers it with the broadcast the first request made, if it made one; an older one comes back failed in `SendInterruptedError`'s own words (quoted in the writes bullet above), offering Retry, Restore draft and Discard. A second click in the same task, before React re-renders, is dropped (`useSubmitGuard`). The draft, the mode, the selection, a restored request and the key have one owner, `useBroadcastComposition` in `broadcast-composition.ts`, whose only mutators are an edit, a restore and a send, so every edit drops a restored request. The key is one per send: a v4 UUID built from `crypto.getRandomValues` (`crypto.randomUUID` is missing outside a secure context, such as plain HTTP by a non-loopback name), replaced only once Send has handed it to the queue, so two presses of one composition that both reach the server are one broadcast there (the server answers the repeat with the first's broadcast, and a different request under the key with `422 KEY_REUSED`, `packages/envoy/AGENTS.md`), while the next send, even of the same words, carries a key of its own. Each send keeps its own row in the `Sends` strip, newest press first, above the composer and outside it (the composer goes at every press, and the list empties when no agent is connected), read from every broadcast write rather than the latest send, so a later send never hides an earlier failure: `Queued: to N agents`, `Sending to N agents…`, past `SEND_DEADLINE_MS` `Still sending to N agents — Dispatch has not confirmed it yet. It keeps trying, and the broadcast is made once.` with Stop trying, `Sent to N agents` linking its broadcast, followed by how its deliveries stand, read from `["broadcast", id]` as the live feed refreshes it (` — delivering to N agents…`, then ` — delivered`, or ` — not delivered to N`), `Stopped sending to N agents: <SendStoppedError's message>`, or `Could not send to N agents: <reason>`, the last two with Retry (the same request sent again at the back of the line, in a row of its own: under its own key after a stop, under a new one after Dispatch's refusal, which it would only answer again under the refused key, `retriesUnderItsKey`) and Restore draft (its message, mode and selection back in the composer, with the row's whole request: until the next edit to the message, the mode or the selection, Send re-sends that request word for word, under the same key rule, so a stopped send that did land is answered as the repeat it is even after the registry changed, and while it is kept the composer describes that request rather than the live plan - `composedBroadcast` in `broadcast-plan.ts` is that one restored-or-live decision - naming a selected session the request does not include as `not in the refused send; edit to include it` when it has come back since, by the live plan's reason when an edit would still leave it out, and counting a named session that has since left as a recipient, which the server then excludes and names). Each row is a union over its status (`BroadcastSendRow`). Nothing navigates while a send is queued or on the wire; once the only send the strip lists succeeds, if it was pressed on this visit (a send resumed after a reload was not) and no new broadcast has begun, the page opens `/agents/broadcasts/<id>` (`BroadcastPage.tsx`), and while the strip lists any other send, a failure kept from an earlier visit included, it stays and each row links its broadcast. Either way the link carries the response's `excluded` in router state; the first answer's `excluded` is what the row keeps, and a repeat under the key answers that same list, which Dispatch stores with the key's recovery point. A sent row leaves storage at once and the strip with the page (`clearSent`); a failed row stays until Retry or Restore draft takes it, since it is the only copy of a message Send cleared from the composer; and a send still out when the page unmounts shows its outcome on the next visit, or after a reload. The line orders the requests, not their delivery: the server answers a broadcast before it delivers and each broadcast delivers through workers of its own, which outlive the request and which a shutdown waits for rather than cutting off (`packages/envoy/AGENTS.md`), so two broadcasts can reach one agent in either order. That page lists every recipient's delivery state and reply through the same `DeliveryStatus` an agent card uses, reads a recipient with no recorded attempt as `Not sent` rather than as delivered (the server writes every recipient with its first attempt pending, so this names a row that has none), and, until the recipient answers, offers a failed recipient the agent card's `DeliveryRetry` and a recipient with no attempt, or one still pending past the claim lease, a same-mode `Retry`; `/agents/broadcasts` (`BroadcastsPage.tsx`) keeps earlier sends reachable. Both are keyed under `["broadcast", …]`, the prefix `api/event-refresh.ts` refreshes on every issue-less message event, so a recipient's receipt or answer lands without a poll.
+  A session's replies to the viewer's direct messages count unread (`features/agents/unread.ts`, from `GET /me/agents/state`) on the Agents navigation badge and the agent's row until the viewer opens the row, the live view (`features/agent-view/`, `/agents/<id>/live`), or a broadcast page that shows them. The row and the live view show the whole conversation, so they mark read through the newest reply on screen (`useMarkRepliesRead`, a `read_through` mark that covers every reply up to it). A broadcast page shows each recipient's reply to that broadcast alone, so it marks those replies read by their ids (`useMarkShownRepliesRead`, `read_replies`), and the session's older reply to another message, or one newer than the page shows, stays counted until a view shows it. Each marks as it renders the replies, whether or not its tab is visible, so the broadcast page a send lands on, left open in a background tab, reads each answer as it arrives. A failed mark is retried, and `user_agent_state.updated` for the viewer's login refreshes the count on their other tabs and devices. Opening a row shows every exchange the server flagged `unread` when it opened (`useUnreadAtOpen` freezes that set, so marking those replies read never folds them away; the SPA renders the server's verdict and derives none of its own), and a session that has ended keeps a `Replied, no longer connected` row (`EndedAgentsWithReplies.tsx`) whose name, an `AgentName` link, opens the live view that reads it. The live view interleaves the stored messages with the relayed stream: the session's replies as `Reply via Dispatch`, the viewer's own messages on the right, and anything anyone else sent the session with its author (and issue key) on the session's side.
+- The Agents page renders its rows as one keyed list, each fold's toggle an item between the rows
+  (`AgentsPage.tsx`, the Inbox's pattern): a row that a pin, or its own activity, moves between the
+  open list and a fold moves within the one parent, and a closed fold's rows stay mounted, hidden,
+  as do the rows the filters exclude, and `j`/`k` skip them; from a fold's toggle, where Shift+P
+  leaves focus when it moves a row into a closed fold, they step to the row shown after it or
+  before it. A failed refresh of the registry keeps the list it has, under a
+  `Could not refresh agents` line, rather than unmounting every row; when Envoy answered that its
+  list is refilling (`503 ENVOY_REFILLING`, `isAgentListRefilling`) the line is the shared
+  `AgentListRefilling` status instead (`The agent list is refilling. Try again in a moment.`,
+  `data-testid="agent-list-refilling"`, `role="status"`), which is no failure. Only a `current`
+  list (`useAgents`: its latest read succeeded) says who is absent - `No agents are connected.`,
+  the ended agents with replies - and every other view that reads the list (an agent's conversation
+  page's `may have ended`, mention suggestions' `No live agents match.`, a follower's offline dot,
+  a lapsed claim, a missing capability, a subscriber count) waits for `current` the same way and
+  says refilling, or the listener unreachable, in its place. A row mounts its conversation
+  and composer on its first open and keeps them, hidden while it is collapsed, so everything it
+  holds - its draft, a send in flight and its refusal, an upload, a reply in progress, the issue
+  picked, the unread set and what was unfolded - has one owner that no pin, fold, filter or
+  collapse discards, and nothing is ever handed from one instance to another. Only its session
+  leaving the registry, or the reader leaving the page, unmounts a row, and its draft and any
+  refusal go with it. A row's list marks nothing read unless the row is open and on screen - a
+  collapsed row, or an open one a closed fold or a filter hides (the reader folded it, Shift+P
+  moved it, or its agent went quiet for ten minutes), marks nothing - and each time it comes back
+  on screen it freezes its unread set afresh (`useUnreadAtOpen`). The composer takes a changed
+  seed - an issue pick, or a reply that moves the message to another channel - into its live
+  draft in place (`seededDraft`); a message on its way holds the picker, every Reply and Cancel
+  reply, and the composer its whole draft (above), until the server answers, and a refusal hands
+  back exactly the draft that was sent. An opened row reads its send through one `useSending` on
+  `agentSendKey` (`AgentRowDetails`, which mounts on the row's first open, so a row never opened
+  watches no send), a name that belongs to the session, so a row that comes back - the reader
+  left the page, or the session left the registry and returned - shows the send the store holds
+  for it and holds its picker and Reply until it lands. An upload's reference names where the
+  file went, whatever was picked while it was out.
+  The row's name is `AgentName`'s `control` variant ("How an agent is shown", below): the
+  toggle button inside the heading keeps the name, and the component draws the running state
+  before the heading and the live link (`↗`, `Open live conversation with <title>`) after it,
+  both outside the button, so that link is the row's way into the live view and the row's state
+  is the one every surface shows, the last-seen age riding the state mark's `title`. The
+  `Inactive` fold (ten minutes quiet) is the page's own reading of `last_seen`, not a state.
+  A row's session name takes the row's width and is never cut: the heading holds no width of its
+  own (`min-w-0`, never a `max-w-*` cap) and its text wraps, mid-word where a name has nothing
+  else to break on, so a session a person named at length reads whole at every screen width, as a
+  taller row rather than a shortened name or a page wider than the screen, which matters because
+  a person finds a session by the name they gave it. The directory is what gives that width up,
+  down to a floor and no further: from `md` it keeps `md:min-w-48`, enough for its host and last
+  segment to be read and hovered, so a 64-character name costs the row a further line rather than
+  squeezing the directory to no width at all, where nothing is painted and no hover can reach it.
+  From `md` (768 px) it shows `<machine> · <last path segment>`
+  (`lastPathSegment`, which keeps the path itself when it holds no segment at all, as `/` does)
+  and keeps the whole `<machine> · <full path>` as its `title`, since a reader at that width has
+  a hover to ask with; below `md`, where a phone has no hover and the directory already sits on a
+  line of its own under the name (`order-last basis-full`), it shows the whole path. Neither
+  width ellipsises it: the shortened text exists to be read, so a host or last segment wider than
+  the floor wraps inside it rather than being cut, and `e2e/agents.e2e.ts`'s laptop row holds it
+  to `assertWhole` as well as to a painted box.
+  Which side of that line the page is on is answered once for the list
+  (`MD_VIEWPORT_QUERY`, Tailwind's `md` itself so it answers exactly when the row's own `md:`
+  classes apply, through `useMediaQuery` in `AgentsPage`, handed to each row as `mdViewport`), so
+  a list of two hundred rows holds one media-query listener rather than two hundred.
+- A person's direct Send or Aside reaches an Oh My Pi session as that person's own user turn once
+  the session has accepted the attempt with Dispatch, so the live view shows it from the stream,
+  where the session took it. When the stream tags it with its Dispatch id (`dispatchTurns` in
+  `features/agent-view/conversation.ts`), the view hides Dispatch's stored copy only when the
+  streamed row says what the person wrote (`turnSaysBody`: each of the row's lines is the body's
+  next line, the body's side read by the rule it shares with the Claude Code plugin
+  (`comparableLines` in `@legion/contracts`, the pictures taken out, each line trimmed, the
+  empty ones dropped) and the row's side the body's own pictures spent once against what the
+  row carries and what is left trimmed the same way, never stripped of pictures again
+  (`rowLines`, since taking a picture out joins the text on either side of it and that join may
+  write picture markdown neither side held before); only after every one of the body's lines is
+  matched may the row add a bracketed word naming a block it did not render, such as a
+  picture's `[image]`, at most one per picture the body embeds; a bracketed word of the row's
+  own, before those lines or past that count, leaves the stored copy showing. The bus is open
+  to any client, so a picture the row carries counts only where the body wrote that very
+  markdown, caption and address alike, and only as often as the body wrote it, since the row is
+  drawn as markdown under the person's name and a picture of the row's own would otherwise show
+  there with their stored copy hidden), and still names its author when that is
+  not the viewer.
+  A turn the stream missed shows twice, as the streamed message and stored copy;
+  so does a prompt template or file command whose streamed message is its expansion rather than
+  the stored `/name …`.
+  `packages/pi-envoy/AGENTS.md` says which turns the session leaves untagged. The live view's
+  composer offers the modes the session advertises in `MODE_ORDER` (Send, Aside, BTW), so it opens
+  on Send wherever the session takes a steer and on Aside otherwise. In Send or Aside, the
+  session's `commands` frame becomes `sessionCommands`: `isRenderableFrame` takes the whole list
+  only when every `isCommand` entry is valid, latest sequence wins, and BTW or no list offers none.
+  `AgentThread` opens the `/` popover only at message start, ranks a prefix first and terminal-only
+  rows last, caps it at 50, and writes a picked item as `/name `. On `/agents`, only an attempt
+  whose `accepted_as` is `user_turn` reads `Delivered to <session>'s conversation` with no retry
+  row, even after a later `failed` (`takenAsUserTurn` in
+  `features/conversation/TargetedMessageCard.tsx`); every other attempt, an older plugin's
+  included, keeps today's states. The page refreshes on `message.accepted`.
+  A pick in the live view's header (INFRA-195, `SessionSettings.tsx`) is the person's own Send of
+  `/model <id>` or `/effort <level>`: always `steer`, whatever the composer's mode, since a BTW is
+  no user turn, with the id exactly as the session's `settings` frame listed it (the select clips a
+  long id on screen only). Dispatch stores it under the person's name, which is the record of who
+  switched the session and to what, and it bumps `ownSendCount` as a Send does.
+- Every label the dashboard composes for a delivery mode comes from one mapping, `MODE_LABELS` in
+  `features/conversation/delivery.ts` (`steer` is Send, `aside` Aside, `btw` BTW), and a session's
+  advertised capability reads through `capabilityLabel`; `grep -n 'MODE_LABELS\|capabilityLabel'`
+  lists the surfaces. Text Dispatch stored keeps the wire's names and is shown as written: a
+  delivery error such as `session … does not advertise steer` and a broadcast's server-side
+  exclusion reason are diagnostics agents and scripts read, so the SPA does not rewrite them.
+- The mention composer suggests only a prefix every refusing target advertises, and a card offers
+  BTW only when its session takes it.
+- A message with no `/aside ` or `/btw ` command that answers no thread goes in `plainDelivery`
+  (`features/conversation/delivery.ts`): Send when every live session it addresses that takes any
+  mode advertises Send, else Aside when every one advertises Aside, else
+  Send, which the composer warns about; BTW is never picked for the reader. An agent card's reply
+  (`exchangeDelivery` in `AgentsPage.tsx`) falls back the same way for a session that takes
+  neither Send nor BTW. The composer computes it from the
+  addressed sessions' capabilities and freezes it into the `SentRequest` (`plainDelivery`), says
+  "Sending as Aside: … does not advertise Send." while it is not Send, and words its warning for
+  a session that advertises no mode at all ("advertises no delivery mode"), which the agent card
+  shows as `Takes no messages` and the live view as `agent-takes-no-messages`.
+- A broadcast's mode is null in `useBroadcastComposition` until the sender picks one; the page
+  then sends in `broadcastDelivery` (`features/conversation/delivery.ts`) of the selected live
+  sessions: BTW, else Aside when every selected session that takes any mode takes Aside and one
+  refuses BTW, and the composer says "Sending as Aside: … does not
+  advertise BTW.". The server still never switches a mode it is sent.
+- The Agents broadcast page renders recipients in the order the server returns them: the send's
+  tick order after exclusions.
+- A refused broadcast's Restore draft refuses in turn while a broadcast has been begun since:
+  a message in the draft or an agent selected (`composing` in `AgentsPage.tsx`, the test the
+  queue also uses). Send cleared both at the press, so either was started since, and putting
+  the refused send back would replace it. The reason shows under the send's row, and Restore
+  draft is described by it.
+- `web/src/api/client.ts` is the typed same-origin HTTP client. It is the only
+  browser API boundary. A GET is held to `REQUEST_DEADLINE_MS` (30 s) of silence rather than to a
+  total: that long for its response's headers, then that long again for each piece of its body,
+  the timer starting over as every chunk arrives (an error body `errorFrom` reads included). So a
+  body that streams for an hour a chunk at a time succeeds, while one Dispatch stops answering -
+  headers that never come, or a download that stalls - is aborted and fails with
+  `RequestTimeoutError`, which the queries' shared retry policy retries as it does a dropped
+  connection. A write's attempt is held the same way, to `KEYED_SEND_ATTEMPT_MS` of silence, with
+  its request body's upload progress also counting (an upload goes through `XMLHttpRequest`), so
+  only a write that stops moving is cut off. Every other method has no deadline unless its caller
+  names one (`RequestBounds.deadlineMs`). A response with no body - a 204, a 304 - is handed back
+  as it came, never wrapped to watch its body (`watchBody`): Chromium and WebKit give a 204 an
+  empty body stream all the same and refuse a new 204 `Response` built around it, which made
+  every keyed write answered 204 (a `DELETE`) read as unreachable.
+- `features/machines/` owns the two machine pages, `/machines` (`MachinesPage.tsx`, every machine a live session names, with how many of its sessions are in a pane) and `/machines/<machine>` (`MachinePage.tsx`, that machine's tmux layout drawn). Both are built from the agent registry alone - the `tmux_place` each `Agent` of `GET /api/v1/agents` carries, read through the same shared `useAgents` poll the Agents page uses - so neither page has a read, a route or a write of its own, and a browser check holds them to that (`e2e/machines.e2e.ts`, `@machines-readonly`). `machine-model.ts` is the whole of the grouping, pure and without React: `machineList` for the list page; `machineGrouping` for one machine's servers, their tmux sessions, windows and panes; `machineDrawingAge` for how far behind the drawing is, read against the caller's `now` (`DRAWING_STALE_AFTER_MS`, three minutes, the age of the report and not of the pane) - the page calls the last two separately, because the grouping is the registry's alone and is memoised on the rows while the age goes on ageing with every render. A tmux server is the pair (socket, server pid) and never the socket alone (`serverKey`): a socket is reused when a server is started again, and a pane id names a pane only on the server that gave it out, so a heading names the pid as well whenever two servers answer on one socket. Every choice between two reports of one thing is freshest-first with session id breaking the tie, so two polls carrying the same rows draw the same page; a pane two live sessions name is drawn as the fresher one with the other counted and named in its title, never twice and never silently; and a session the page counts in a pane is always a session the page names somewhere, which `@machines-accounts-for-every-session` holds it to. The page says what it cannot know rather than drawing a guess, each sentence a line of its own named by its `data-testid` (`machine-unknown`, `machine-none-in-tmux`, `machine-windows-with-agents`, `machine-drawing-age`, `machine-drawing-stale`, `machine-shared-name`): a session reports only its own pane, so a window holding no agent reports nothing and is in no strip, and a `host` many hosts share (a deployment's `ENVOY_MACHINE_ID`) is marked rather than drawn as one box.
+  `tmux-layout.ts` reads tmux's `window_layout` string into its boxes, and answers undefined for anything it cannot read whole and for anything longer than `TMUX_LAYOUT_MAX` (`@legion/contracts`, the one cap the sender's own client holds to in `packages/envoy-client/src/tmux-place.ts`): the listener stores whatever a session registers and Dispatch answers it unchanged, so the parser caps what it is handed rather than trusting that the sender did, and a refused layout costs the window its drawing and nothing else. `WindowDrawing.tsx` draws one absolutely positioned rectangle per pane at the layout's own percentages, in a box whose height is the window's own aspect ratio in cells of one by two, and falls back to a list of the same panes when there is no layout, when the layout could not be read, or when a pane box would be too small to hold a name and a state at the measured width (`MIN_PANE_WIDTH_PX`, `MIN_PANE_HEIGHT_PX`; the measurement is the viewport's answer, through one `ResizeObserver`, which is why a phone lists what a laptop draws, `@machines-width`); a pane the drawn layout does not name - one a split made since that layout was read - is named under the drawing instead, and both lists are the one `PaneRow`. Each pane shows its session's state through `agents/agent-groups.ts`'s `agentGroup`, the same four states (`needs-you`, `active`, `idle`, `quiet`) the Agents rows use, from counts the page reads once for the whole page out of the queries the shell already makes and hands down (`PaneCounts`), never once per pane. The window a server draws rides the address as `?window=<socket>:<server pid>:<window id>` (`windowChoice` and `chosenWindowId` in `machine-model.ts`), so the picker stays a link, a window is deep-linkable and the back button means something; the server is in the value because tmux numbers windows `@0`, `@1`, … on each server it starts, so a bare id names a window on every server of the machine at once, and each server's part reads only the choice naming it (`@machines-two-servers-one-window-id`). A choice that is absent, that names another server, or that names a window this server does not hold draws that server's first window, so every server always draws one.
+- `features/agent-view/` owns the live view (`/agents/:sessionId/live`), the one route that does not scroll the document: `app.tsx` gives it (the routes `routeFillsViewport` in `features/refs/routes.ts` names) a viewport-tall shell (`h-dvh`, `h-screen` where dynamic viewport units are missing) whose `<main>` is a flex column, the page takes all of it, and the thread is its only scroller, so the page header and the composer stay on screen at any height. `index.html`'s `interactive-widget=resizes-content` makes Chromium on Android shrink that shell for the on-screen keyboard; iOS Safari shrinks only the visual viewport, so while the composer has focus `features/shell/useKeyboardFit.ts` caps `<main>` at the visual viewport's bottom edge (`offsetTop + height`, so a panned visual viewport counts), keeping the composer one page gutter above the keyboard. On Chromium Android the same cap equals `<main>`'s own height and changes nothing. Every other route keeps document scrolling, which `ViewportAnchor` and the sticky composers depend on.
+  The transcript owns its scrolling (`features/agent-view/use-live-follow.ts`), and all four of assistant-ui's auto-scroll options are off on its viewport (`autoScroll`, `scrollToBottomOnInitialize`, `scrollToBottomOnRunStart`, `scrollToBottomOnThreadSwitch`): with them off the library plants no scroll intent and performs no scroll, and Dispatch does all of it. The library's own `thread.runStart` handler scrolled to the bottom every time the session started a turn without asking where the reader was, which was the complaint; its scroll-up detector requires `scrollHeight` to be unchanged, so it never notices a reader scrolling back while a turn streams; and the follow flag it would then keep is internal, so nothing outside the library can clear it. `@assistant-ui/react` is pinned to an exact version, so re-reading those four options and that handler is part of any upgrade of it: a default that moves takes the reader's place away again with nothing failing. The viewport also carries `[overflow-anchor:none]` (the same utility the desktop sidebar wears in `app.tsx`), so the hook's own compensation is the only adjustment the transcript ever makes and no scroll event the browser wrote arrives for the hook to tell from the reader's - WebKit, which has no scroll anchoring to turn off, and Chromium therefore behave alike. The viewport is at the live end when its scroll bottom is within a pixel of its content's, or the transcript is shorter than the viewport. A fall in `scrollTop` is the reader taking over and stops following, whether or not a turn is streaming; the one fall no reader made is a shrink's clamp (a fold collapsing, a rebuild that is shorter), which by definition lands at the live end and is read as following there. While the reader is not following, the transcript shows `Jump to latest`, or `Jump to latest · N new`, centred just above its foot: the control is the viewport's sibling and out of flow, so it changes neither `scrollHeight` nor `scrollTop`, moves the composer nowhere, and can never cover it. N counts every turn added to the merged transcript since the reader scrolled back, whoever wrote it - the session's own turns, the viewer's messages, anything anyone else sent it - and a hidden tab keeps counting, with no cap, as the live view's unread marks already do. An own send the session accepted (the page counts only an accepted one, so a refusal, which renders above the transcript, leaves a reader scrolled back where they are), a move to another session, and a reload each land at the live end. So does a rebuild of the whole transcript from the session's replay (`useAgentStream`'s `replays`: the first connection, a reconnect, and a new session's first replay) that dropped the turn the reader was on, which a replay answered newest-first inside a budget routinely does; a rebuild that still carries that turn puts it back where the reader had it, found by a hit test at the viewport's own top edge rather than a scan over every turn (`features/shell/ViewportAnchor.tsx` makes the same choice). One turn keeps one key across a rebuild, which every rendered turn carries in `data-message-id`: the `turn` mark where a streamed turn took a stored Dispatch message over (`dispatch-marks.ts`, set in `AgentRuntimeThread`), and the message's own id otherwise, so the streamed frame and the stored `dispatch:<id>` copy that replaces it are one turn. The issue page's `Jump to latest` (`features/conversation/`, above) is a pill of its own with rules of its own: it scrolls the window with the newest turn pinned at the top under the composer, this one scrolls the transcript element with the newest turn at its foot.
+  A rebuild's turns are not always in the DOM when its ids arrive: assistant-ui applies a rebuilt transcript in a passive effect, one commit after the render carrying the new `contentIds`, so the hook holds the rebuild and watches the viewport's `[data-message-id]` set, settling the reader's place in the commit the turns themselves changed in. Compensating against the transcript still on screen would move them by nothing and leave their place wherever the rebuild put it. The hook is handed the viewport element itself, not a ref holding it, so the fresh node the error boundary renders when a reset clears its error re-binds the scroll listener and both observers and lets the old one go.
+  The header's model and thinking level (INFRA-195) come from `sessionSettingsView` in `conversation.ts`, never from a value the session did not report. pi-envoy's `settings` frame (`AgentStreamSettings` in `@legion/contracts`) is one singleton on the conversation: `isRenderableFrame` drops a frame with any field of the wrong type, the latest `seq` wins as for `commands`, and each replay rebuilds it. A session not answering the relay (`responding === false`), or whose replay has not arrived, shows the last turn's model (`currentModel`) and no notice, the empty transcript's text standing; a replay with no `settings` frame (an older pi-envoy) shows the last turn's model and `agent-settings-notice` "This session does not report its model and thinking level. Restart it on a newer pi-envoy to show and switch them here."; `reported: false` shows the last turn's model and "This session's Oh My Pi does not tell Dispatch its model and thinking level."; reported settings show the model and level, with the native `<select>`s `Model` (`agent-model-picker`, one `<optgroup>` per provider in the session's order, the current model added when the list lacks it) and `Thinking level` (`agent-thinking-picker`, a disabled `model default` option while the level is null; `no adjustable thinking` and no picker when `thinking` is null) only where the session's `commands` frame lists the built-in `model` or `effort` without `terminalOnly`, and otherwise "This session switches its model and thinking level only at its own terminal.". The shown value, a pill or the selected option, carries `agent-session-model` / `agent-session-thinking`. A pick is one `useKeyedWrite` press, `POST /agents/{session_id}/messages` under one `Idempotency-Key` and tried again under it until Dispatch decides it; `use-session-switch.ts` keeps one switch at a time: from the pick until it ends the composer's Send is disabled (assistant-ui's `isSendDisabled`, placeholder `Waiting for the session to answer the switch…`), both pickers are held (`aria-disabled`, not `disabled`, painted by the `refused:` variant: they keep focus and their keys still step their choice, but neither `Enter` nor a pointer's or popup's pick switches anything until it ends, the pick snapping back), and `agent-switch-status` reads `Switching model to <id>…` or `Switching thinking level to <level>…`. It ends on the first of: the POST's answer already records a failed attempt (`No answer came from the session: <error>`); the session's reply to that message in the stored thread, one already there included (`The session answered: <reply>`, verbatim); the message's latest attempt turning `failed` with an error, unless an attempt was accepted as a user turn - the session's own error reply (`rowAnsweredWithError` in `features/conversation/delivery.ts`: a failed attempt with an envelope id) reads `The session answered: <error>`, and a failure Dispatch recorded itself `No answer came from the session: <error>`; or `SWITCH_ANSWER_DEADLINE_MS` (30 s, a `window.setTimeout` from the POST's answer, so Playwright's `page.clock` drives it) with none (`No answer came from the session within 30 seconds. The header shows the model and thinking level the session last reported.`). A late reply to the latest switch replaces that line; only the latest switch is watched, so an earlier one's reply never changes a newer one's line. A POST Dispatch refuses drops the switch and shows as `agent-send-error` on the session it went to.
+  A header picker keeps the Agents issue picker's keyboard-step rule (`useKeySteps` in `SessionSettings.tsx`, after `markKeyStep` in `AgentMessageComposer.tsx`): the select's own keys (the arrows, `Home`/`End`, the page keys, type-ahead) only move its choice and send nothing, `Enter` switches to the choice reached, a change from the pointer or the native popup switches at once, and leaving the picker without `Enter`, or a new reported value, puts it back on the reported value, which is all it shows once not being stepped. A step taken while the picker is held survives the switch's end, so `Enter` after it switches to that step (`e2e/keyboard-session-pickers.e2e.ts`, "the arrows move a header picker's choice without switching the session, and Enter switches it once", with its rows on type-ahead, on a step left by Tab or a click, and on a held picker).
+  The composer's Send never waits on the session's turn, nor on the viewer's earlier messages (INFRA-442: Send is pressable whenever the box holds text). `AgentRuntimeThread` passes `isRunning: false` to `useExternalStoreRuntime`, explicitly: assistant-ui disables Send and swallows Enter while `thread.isRunning` holds without the `queue` capability (`@assistant-ui/core`'s `composerSendDisabled`, `ComposerInput`'s Enter handler), and with the option left out it reads a trailing running assistant message as a running thread. Dispatch's runtime starts no run, since the session decides what a message does mid-turn by its delivery mode, and each streamed message keeps its own running or complete status, which is what renders; claiming `queue` would be a queue nothing holds. Not running also stops the library planting an empty upcoming assistant turn after the viewer's newest message. Send is the shared `RefusableButton` (`type="submit"` inside `ComposerPrimitive.Root`, so a click and Enter both reach the one `composer.send()` → `onNew` path), and `onNew` hands the body to `useSessionSends` (`features/conversation/useSessionSends.ts`): each press is its own write under its own key on the session's line (`session:<id>`), so the session takes them in press order, and assistant-ui empties the box at the press, so the next message can be written at once. Each message Dispatch has not made yet is its own `PendingSendTurn` at the transcript's end (above), until the stored message takes its place. The empty box is Send's only refusal of its own, "Type a message first.", on the visible line under the input that otherwise reads the Enter hint; a message still out, late or refused holds nothing. A model or thinking switch pending on the session is Send's one hold: the runtime's `isSendDisabled` includes `sendDisabled`, and `AgentThread`'s `held` disables Send while it keeps reading "Send" (`RefusableButton`'s `busy` given Send's own label), drops the empty-box refusal, and has the hint line, which then describes Send, read the switch's placeholder, which text in the box would hide. Because the page, `AgentRuntimeThread` and its one runtime outlive a move to another session (the route has no key), the composer's unsent text is per session only by being swapped: a move keeps the box's text for the session left and puts the new session's kept draft in its place (`useLayoutEffect` on `sessionId`). A sent message belongs to the write store instead, so the live view and that session's Agents row show the same pending turns, and Retry, Discard and Stop trying on either act on the same write. Re-reading `composerSendDisabled`, the Enter handler and `isSendDisabled` is part of any `@assistant-ui` upgrade; `AgentConversationPage.test.tsx` fails if the old Send rule comes back.
+- `web/src/api/live-socket.ts` owns the one `GET /ws/live` socket per `QueryClient`, the delivery
+  view subscriptions, `useLiveSocketState`, and the shell's `useLiveSocketPill`. It reconnects
+  subscriptions from their delivery revisions or event cursor: a 4001 rotation reopens at once
+  without a gap (a reopen that fails is then a loss like any other), and every other loss waits
+  `reconnectDelayMs` (which the document socket's `features/doc/connection.ts` waits on too)
+  before the next socket opens. The first attempt after a lost connection waits a uniform draw in
+  [0, 2 s) (`RECONNECT_SPREAD_MS`), so the tabs one restart or roll dropped together reconnect
+  spread over two seconds rather than in one burst, and so do the whole-cache refreshes of the
+  ones Dispatch does not replay in full; each later attempt backs off exponentially with equal
+  jitter, half of d = min(1 s × 2^attempt, 30 s) plus a random share of the other half. A 1012
+  restart marks a gap and starts the backoff over at that first attempt. A socket silent for 45 s
+  is replaced, a handshake that never ends included; `offline`
+  lets the socket go at once, `online` opens one at once, and a `visibilitychange` to visible
+  replaces a socket that went silent while hidden. A socket refused before it opened, or closed
+  with 1008, reads `["whoami"]` again, at most every 30 s, so a person who was signed out reaches
+  the sign-in page. A `["whoami"]` read answered `401` ends this page's session: every query but
+  `["whoami"]` leaves the cache, as signing out empties it, so the sign-in that follows - this
+  tab's own, or another tab's that this one then reads - starts its reads and its event cursor
+  from the new answer rather than keeping reads older than its `event_head`. After two
+  minutes reconnecting the pill says live updates are not reaching
+  this page and offers Reload. `remove()` sends `unsubscribe` whenever its caller lets a view go,
+  a subscription waiting out a backoff included (only the events feed has one, after a refusal or
+  an `ended`): Dispatch holds that subscription against `LIVE_SOCKET_MAX_SUBSCRIPTIONS` until an
+  unsubscribe arrives, and an unsubscribe for a subscription it does not hold is no error there.
+  `api/event-feed.ts`'s `useEventFeed` subscribes the `events` view, starts its cursor from
+  `whoami.event_head`, which every answer carries (`AuthenticatedUser.event_head` is required: a
+  page of this release is served by a server that answers it, since that server also serves the
+  `/ws/live` the page subscribes on). `AuthGate` mounts the app, and so every read it makes, only
+  once that answer is in, so the first subscription replays exactly what committed since; it adopts
+  `events_start` only when it has no cursor, advances the cursor before it reads an event (one it
+  cannot read is skipped by the next resume rather than replayed), and hands each event's refresh
+  targets to the refresh scheduler. Events are batched: the first event of a burst opens a 100 ms
+  window (`BATCH_WINDOW_MS`) that later events join without extending, and the batch then goes to
+  `refreshQueries` (`api/query-refresh.ts`), the one refresh scheduler. It never cancels a request
+  and fetches one query at most once a second (`MIN_REFETCH_INTERVAL_MS`): an inactive query is only
+  marked stale, and fetches when something mounts it, and a query left while a fetch of it is out or
+  while its refresh waits keeps the refresh it owes, so it is marked stale again once that fetch
+  settles (settling clears the mark) and still fetches when it mounts again; a query already
+  fetching is fetched again once that fetch settles, so the response on its way is never thrown away
+  and no read has two requests in flight; a query whose last fetch began less than a second ago is
+  fetched at that start plus the second; any other query is fetched now, with `cancelRefetch:
+  false`. When a fetch takes longer than the second, the in-flight rule wins: the next fetch starts
+  when it settles. A refresh is owed from the moment it is asked for, and any fetch that begins
+  later - one the scheduler starts, a mount's, a mutation's - pays it. A target is a
+  `RefreshTarget`, `{queryKey, exact?, when?}`: `queryKey` matches by prefix unless `exact`, and
+  `when` tests the query's data at the flush; for a query with a fetch out - a first load or a
+  refetch - the test waits for the response that lands rather than judging the data that response
+  replaces, and the query is fetched again only when the test accepts the response and it was
+  composed before the event, so no fetch is cancelled and its response is kept; when a refetch fails
+  instead, the test judges the data it leaves on screen, and a failed first load, with nothing to
+  judge, retries on its own terms. The live-owned queries (`meta.live`, `api/live-socket.ts`) are
+  never touched: their subscriptions keep them current. Which reads an event names is
+  `eventRefreshTargets(event, signedInLogin)` in `api/event-refresh.ts`, and nothing else;
+  `event-feed.ts` makes that one call. Every event of issue K refreshes its detail `["issue", K]`
+  (exact), its `["events", K]` log and its project's `["issues", "project", P]` lists, whose unread
+  dot moves with every event the issue owns. An event that makes somebody one of K's collaborators
+  also refreshes `["issue", K, "collaborators"]` (exact), which is the Collaborators tab's read and
+  the composer's `Not running` options: a claim, a comment, a message, an ask, a document version,
+  an answer to any of them, or an `issue.updated` that moved the assignee or does not say what it
+  moved. That rule is `changesCollaborators`, which follows the server's own list of what makes a
+  collaborator (`packages/envoy/internal/dispatch/api/issue_collaborators.go`). An `issue.created`, `issue.updated` or
+  `issue.closed` narrows the rest by its `changed` and `ancestors`: a `parent`, `components` or
+  `repo` move refreshes every loaded detail (each is inherited downward, and a descendant gets no
+  event of its own), and any other write every ancestor's detail (every write moves the issue's
+  `updated_at`, the newest of which each ancestor's Children tab shows as its child's activity,
+  and a status rolls up into their progress and child counts); a title or status move refreshes
+  `["issue-summary", K]`, the Reference picker's `["issues", P]` and the Agents page's
+  `["agents", "issue-picker"]`, and the pinned list when it holds K; a title, priority or assignee
+  move refreshes the Inbox's thread reads when one of their rows is a thread on K
+  (`inboxThreadRowsOf`; the Inbox's threads, below); the Inbox is refreshed when it holds a row of
+  K and the write moved its
+  title, status, priority or assignee or closed it, and whole on a reopen (`changed` names
+  `closed_at`); `["architecture", P]` refreshes on any write of an issue its tree lists
+  (`ArchitecturePage.tsx`, below). `artifact.created` and `artifact.version` of K refresh
+  `["issue-summary", K]`, and of a project document the `["doc-summary", P, …]` read whose `id` is
+  the document's. An ask or comment read (`["ask", id]`, `["comment", id]`) refreshes only on an
+  event that names it, and an issue's message reads (`["issue-messages", K]`, `["issue-message", K,
+  …]`) on its message events. `["issues", "pinned"]` refreshes on the viewer's `user_state.updated`
+  whose `changed` names `pinned`, and, when it holds K, on an ask of K opening, being answered or
+  resolved, a block event, or a title or status move; `["user-state"]` only on the viewer's
+  `user_state.updated`; every Inbox read on the viewer's `user_state.updated` whose `changed` names
+  `snoozed` (a snooze or an un-snooze in another tab or device, whose event names no ask: every
+  signed-in feed carries it), and on no other `user_state.updated`; `["me", "replies"]`, the
+  Inbox's thread reads, on a write that can move one of the viewer's thread rows, only when the
+  event's `thread_logins` names the viewer or the viewer wrote it (`movesInboxThreads`; the
+  Inbox's threads, below); a backlink panel (`["references", "to", ref]`) only when the event's
+  `references_changed` names its target (a document as `{kind: "artifact", id, ref}`: the panel
+  opened on `ref`, and any panel whose read reports the node `id`, so one opened on another spelling
+  of the document's address too; a block of a document as `{kind: "block", id, ref, artifact_id}`,
+  which a citation of the block added or removed names and so does a version of its document that
+  changes or deletes it: the read opened on `ref`, any read whose node is the block `id` (a pinned
+  link's too, since a link to a block reads the same key, `blockQuery`), and the panel whose read
+  reports the document `artifact_id`, which lists the edges at its blocks), the event cut its
+  target's kind, or the write moved one of its edges. A document's panel lists an `owned_by` row for
+  each ask and comment the document owns and an `anchored_to` row for each one anchored in it, each
+  showing the head of the item's text, so it refreshes on an ask or comment of that document opened,
+  written, re-anchored or edited (`ask.opened`, `ask.edited`, `ask.anchor_refreshed`,
+  `comment.created`, `comment.answered`, `comment.edited`, `comment.anchor_refreshed`;
+  `appendDocumentPanel`), and not on a resolution, a reopen, an answer, a hand-back or a
+  suggestion's verdict, which move neither the row nor its text. Past the server's cap of 100
+  targets of one kind, an event lists the kinds it cut in `references_changed_truncated_kinds` and
+  still names the targets of the others, and each kind listed refreshes every read of that kind
+  alone (`TRUNCATED_KIND_READS`): `issue` every `["issue"]` read and every issue panel; `ask` every
+  `["ask"]`, `["ask-thread"]` and `["asks"]` read, a document's ask list (an `["artifact", id,
+  "asks"]` read, found as the `["artifact"]` read whose rows are asks), the Inbox and every ask
+  panel; `artifact` every document panel; `block` every block read and every document panel. Only a
+  truncated event without the kinds (an older server), or one naming a kind this build does not
+  know, refreshes every count and panel (`EVERY_REFERENCE_READ`). An event written before one of
+  these fields existed (a replayed one, or one from an older server mid-rollout) falls back to what
+  any value of the field could have moved, and an event type this build does not know refreshes
+  everything. An ask or comment event refreshes only the document it names — the ask's
+  `block_artifact` or its `anchor.artifact_id`, a comment's `anchor.artifact_id` — and no document
+  when it has neither; `message.*` refreshes no document (an artifact page's `Referenced by` list
+  follows a new citation from a message or an un-anchored comment through the event's
+  `references_changed`, above); `["projects"]` (the sidebar's open-ask counts) refreshes on
+  `ask.opened` / `ask.answered` / `ask.resolved`, `block.repaired` / `block.invalid`, an issue's
+  close or reopen, and the project and repository-mapping events, not on an edit or a document
+  event. `ask.follower_added` / `ask.follower_removed` carry the ask under `ask_id` and refresh that
+  ask's read and thread. Every issue-keyed event is also prepended to its `["events", key]` log the
+  moment it arrives (`prependEventToLog`; only an event with no `issue_key` is skipped), ahead of
+  the batched refetch; that refetch's read can predate an event the feed already delivered, so the
+  Activity tab's `["events", key]` query reconciles every response through `mergeEventPages` (inside
+  its `structuralSharing`): the response is authoritative for the range it covers, and cached events
+  above its head stay in front of it, never wiped and re-fetched. The Conversation's
+  `useFollowLatest` (`features/conversation/use-follow-latest.ts`) follows the newest card alone: it
+  re-settles the reader at that card when it changes while they are still at the top, or after their
+  own send, and leaves them where they are once they have scrolled away. After a gap — any reconnect
+  but a 4001 rotation whose next socket opens: a lost or replaced socket, a first handshake that
+  failed, an events subscription Dispatch ended or refused — the feed refreshes every query the app
+  holds but the Delivery and Pipeline pages' live views (`meta.live`, skipped by
+  `api/query-refresh.ts`), which their own subscriptions keep current, once the feed's next
+  `events_start` arrives, however many sends it took to start again, unless that start says its
+  replay covers the gap: `replay_complete` (`LiveEventsStart` in `@legion/contracts`, handed to
+  `onStart` as `replayComplete`), which Dispatch sends true on a subscription whose resume is at or
+  below the log's head (`feedEvents` in `internal/dispatch/api/live_events.go`), so the feed replays
+  every event the page missed and each refreshes what it changed, as any event does. A subscription
+  with no resume and a resume above the head of a log that was reset are replayed nothing they
+  missed and say false, so the whole refresh runs; the page can briefly show its earlier reads, but
+  no event committed during the gap stays absent. Either way the feed re-asks a held credential
+  list, once, at that start, since a restart replays nothing that says so. After a rotation it does
+  neither. Every whole-cache refresh, whoever asks for it (a gap its replay does not cover, an event
+  this build cannot read), runs at most once per 5 s (`WHOLE_CACHE_REFRESH_MS`). An events
+  subscription Dispatch ends before it started (a database that does not answer ends each a second
+  after it is sent) is sent again after the backoff an events `error` gets, from 1 s doubling to 30
+  s, rather than at once. `features/agent-view/useAgentStream.ts` subscribes each agent view through
+  the same socket and rebuilds its transcript from the session replay. Query keys remain literal
+  arrays at their call sites (`["issue", key]`, `["issues", "project", project]`, `["artifact",
+  id]`, `["project", project, "artifacts"]`, `["ask-thread", id]`, …) — one convention, no
+  key-builder module; a component that needs the same data as another reuses the same literal (the
+  label popover reads the `["issues", "project", project]` list the board and list load, through
+  `projectIssuesQuery`, and the Conversation reads the issue's comments under the `["comments",
+  key]` the margin already holds, and its asks under `["asks", key, "thread"]`, beneath the margin's
+  `["asks", key]`, so every invalidation of that key reaches it). `issueQuery(key)`
+  (`api/queries.ts`) is the one `["issue", key]` query every reader of it uses, and its
+  `structuralSharing` keeps the cached issue when the one fetched is older by `updated_at`
+  (`compareTimestamps`, which reads the whole fraction); `setQueryData` goes through the same rule,
+  so a refetch that read before a write and answered after it never replaces the write's answer,
+  `mergeIssue`'s included.
+- A read of a block of a comment or issue message (`blockQuery`, `["references", "to", ref]`, whose node id is `comment/<uuid>#<block id>` or `message/<uuid>#<block id>`) is no target `references_changed` names (the server stores those blocks as `comment_block` / `message_block`, which `refs.CountedChanges` drops), so its item's own events refresh it (`api/event-refresh.ts`): a `comment.edited` refreshes every read whose node is a block of that comment, pinned or not (`commentBlockReads`), since the edit can change the block's text or its pin's state; and a reply that names a block (`reply_block.node` on `comment.created`, `comment.answered`, `message.created`, `message.answered`) refreshes that block's read, which lists the reply (`appendRepliedBlock`). An issue message is never edited, so its blocks' text never moves.
+- `web/src/main.tsx` installs React Router and the shared Query client, a `DispatchQueryClient` (`api/query-client.ts`): its `refetchQueries`, and through it every `invalidateQueries` and `resetQueries`, never cancels a running request; a query already fetching is fetched once more when that fetch settles, so no read ever has two requests in flight, and a mutation's invalidation during a fetch still ends on the answer composed after its write. Every mutation's own `invalidateQueries` call keeps its shape. A failed read is retried twice unless the failure is definitive (`isRetryableQueryError` in `api/client.ts`: a 401, among others), each retry after `queryRetryDelay` (`api/query-client.ts`): a refusal carrying `Retry-After` in seconds (`ApiError.retryAfterMs`; Dispatch sends it with a 503 refusing excess load) waits that long, at most 30 s (`RETRY_AFTER_CEILING_MS`), plus a random share of it again, so tabs refused together do not all come back in the same instant and the whole wait stays under a minute however long a proxy's `Retry-After` is, and any other failure waits 500 ms.
+- `web/src/features/search/` owns the global palette; the rail `Search` control that opens it is a `RailButton` (below). It opens in one of three modes (`PaletteMode`): `all` - `Ctrl/Cmd+K` and the rail control - lists this page's actions and the search hits, `search` (`/`) lists hits alone, and `projects` (`g p`) lists the projects, Enter opening one. Each open is a global keymap binding in `app.tsx`, and the palette registers its own `Ctrl/Cmd+K` close in the `dialog` scope while open. The palette's dialog is mounted only while it is open, so each open starts on its first row and a closed palette holds no search of its own; `Ctrl/Cmd+K` and `g p` open with an empty query, since a query left there would filter a new page's actions, or its projects, down to nothing, while `/` reopens on its last search, selected so that typing replaces it, since its hits do not depend on the page. The action rows are `appKeymap.actions()`, taken on the render that opens the palette (the registry bullet below says why), so the rail control and `Ctrl/Cmd+K` offer the same rows for the same page and focus; with an empty query they all render under `Actions`, above the `Type at least 2 characters` message, and a query filters them by label. An action whose label the query starts stays under `Actions`, above the hits; one that holds the query further in (`issue` in `Close issue`, `status` in `Move card to the next status`) moves to `More actions`, below the hits, so a search and Enter opens a hit rather than running an action that only shares a word with it. Actions, projects and hits are one list of `role="option"` rows, so the arrows, Enter and `aria-activedescendant` cover all three, and an action row shows the keys that also run it (a palette-only action has none). The highlight is the row the reader sees highlighted, held by its id rather than a position: hits that arrive below the actions after the reader has arrowed, or a refetch that re-ranks them, leave it on that row; a new query returns it to the head, and so does its row leaving the list, the head then keeping it when the row comes back. The head is the first row unless the list holds only `More actions`: then nothing is highlighted and Enter runs nothing until the reader arrows, Down to the first row and Up to the last. While the query's search is still out, the arrows walk only the rows above where its hits will go, and with none they do nothing, so a key pressed before the answer cannot land on a `More actions` row that the hits then arrive above. A refresh that fails keeps the hits the query already has, and `Search failed.` shows only when it has none. The dialog is a column no taller than the screen below it, in which only the list scrolls; the list keeps one row's height, so a short window cuts the key hints and then the message rather than the row, and it scrolls the highlighted row into view whenever the highlight moves or the list's own height changes. It groups hits by their issue or standalone project-document owner; document-owned hits use the document name and `/projects/:key/documents/:slug` route, adding an ask or comment query parameter for discussion hits. It renders server snippets exclusively through `snippetSegments`, never `innerHTML`; document routes pass `?q=` through the document surface to mark and scroll to its first matching rendered text node. It queries between 2 and `SEARCH_QUERY_MAX` (`@legion/contracts/dispatch-tools`, 1,000) characters of trimmed text, the server's own bounds, and names the limit in place of a request past it.
+- The palette lists one page of hits, `GET /api/v1/search`'s first 20 in the server's fused order (`packages/envoy/cmd/dispatch/README.md`, "Search"), grouped under each owner in the order of its first hit. When the query matches more than the page holds, the message slot under the list says `Showing the best <n> of <total> matches`, so a partial list never reads as complete. An ask hit whose result carries `ask` adds a status line under its excerpt (`AskHitStatus` in `features/search/AskHitStatus.tsx`, which the create dialog's related items show too): a badge (`Open`, `Answered`, `Closed, no answer` or `Closed after an answer`), who closed it and when, and its latest answer - who gave it, when, the options chosen and the start of its text clamped to three lines. The clamp is CSS only and an option's text is its accessible name, so the text is first cut to `ANSWER_PREVIEW_CHARS` characters (beside `AskHitStatus`) at a word, balanced and closed with an ellipsis (`markdownHead` in `features/refs/markdown-fragment.ts`), and a screen reader never reads a whole long answer as the row's name; the closer is named through `AskResolutionLine agent="static"`, since a link inside the option would be a second control in one listbox row, and a hit from a Dispatch that predates the field shows no line.
+- `web/src/features/shell/RailButton.tsx` is the rail's control for a keyboard binding: a label, then the binding's keys in a `<kbd>`, with the top margin passed by the call site. `app.tsx`'s `NavigationContents` renders it twice, beside the keymap the hints stand for: `Search` (`⌘K` / `Ctrl K`), which opens the palette in its `all` mode, and under it `New issue`, which opens the same `CreateIssueDialog` the global `c` binding opens (`app.tsx` owns the one `createOpen` state both set), showing `c` as `?` and the palette show that binding and `aria-keyshortcuts="C"`, so a person who has not learned the shortcut can still file an issue. Each click calls `onClose`, which closes the compact navigation sheet, before it opens its dialog.
+- `web/src/features/issue/RelatedItems.tsx` is the new-issue dialog's related-item section, between its Spec field and its refusal: `RELATED_DEBOUNCE_MS` (400 ms, `features/issue/related-timing.ts`, a module importing nothing so the Playwright specs read the value the dialog runs on) after the title rests, it asks `GET /api/v1/projects/{key}/related` (`api.relatedItems`, the no-write check, which records nothing) with the title alone and lists what it found, each item a link in a new tab named by its owner alone, so the draft survives the click and a screen reader's link list names the item. Nothing is asked below two trimmed characters or with no project chosen. The query is keyed on the debounced title, so react-query aborts a check a newer title superseded, and what is shown is gated on that debounced title still being the one in the box: an answer that lands under an older title leaves `Checking for related items…` on screen rather than answering a title the reader has left. Which of the three forms an answer holds is `@legion/contracts`' `relatedCheckFormOf`, the one the CLI's lines read too (`packages/envoy-client/src/related-check.ts`); each surface only words that union, so a check that never ran (`No related-item check was made: …`) cannot be read as one that searched and found nothing on one surface and not the other. A past decision is named under the form, who answered it inside the same list item. The query asks fresh for every settled title (`staleTime: 0`, `gcTime: 0`): nothing invalidates its key, so under the app's defaults a title checked a moment ago would be answered from before the issue someone filed since. The section is a polite live region but `aria-busy` while a check is out, so a screen reader hears the answer alone rather than `Checking for related items…` at every pause in someone's typing; and because the section grows with what the check finds, the dialog's own form caps its height at the window and scrolls (`max-h-[100dvh] overflow-y-auto`, `xl:max-h-[calc(100dvh-6rem)]` for the wrapper's padding), or on a phone its Create row and the possible duplicate's **Create anyway** paint past the bottom edge with nothing to scroll. `e2e/create-issue-related.e2e.ts` drives in a real browser what only a browser shows: the found form and its found-nothing control, the fresh check after an issue is filed between two checks of one title, the debounce, the display gate with its `aria-busy`, and the scroll. The not-made form, the past decision, the failed check with Retry, and the two-character and no-project floors are `RelatedItems.test.tsx`'s.
+- `web/src/features/inbox/InboxDrawer.tsx` is the Inbox as a drawer over any page: the same `Inbox` component, mounted once in `app.tsx` beside `<main>` rather than inside `<Routes>`, so opening it never unmounts the page underneath (a live conversation keeps its half-typed message). It opens from `i` (a global binding offered everywhere but `/`, where the page already is the Inbox), from the compact top bar's `Inbox` / `Inbox N` button and from the rail's `Peek` beside Inbox (on `/` the top bar keeps its plain badge and the rail shows no `Peek`); Escape, Close, a click outside it and any navigation close it, and focus returns to what opened it. It docks right at `md:max-w-md` and fills the screen on a phone. `Inbox` takes `filter`, `onFilterChange`, `onQueryChange`, `keymapScope` and `pane` for it: the drawer keeps its filters, its sort, its grouping, its read-thread switch and its search text in its own `useState` instead of the URL (neither a pick nor a typed word may navigate the page beneath), opening on the reader as the page does, registers the Inbox's keys in the `dialog` scope, the only scope consulted while a dialog is open, and passes `pane={false}`, a peek being a strip beside the page it covers rather than a two-column reader. The reader's own preferences - the thread order and the folded bands - are the same in both, being the browser's rather than the list's.
+- `web/src/features/shell/keymap.ts` is the one keyboard registry. A component registers bindings with `useKeymap(scope, [{ id, keys, label, run, when?, inEditable?, palette? }])` (`scope` is a `KeymapScope` — `global`, `dialog`, `inbox`, `project`, `architecture`, `board`, `issue`, `document`, `agents` today; add a member when a page grows bindings, and list it in `ShortcutHelp.tsx`'s `SCOPE_LABELS` (typed) and `SCOPE_ORDER` (a plain array — a scope missing there is silently dropped from `?`) — and `keys` is tinykeys syntax: `"g i"` chord, `"$mod+k"` for Meta or Control, `"Shift+P"`, `"?"`; an array lists alternatives, and `[]` is a palette-only action no key press ever matches), and a page or dialog pushes its scope with `useKeymapScope(scope)`; `useDialog` pushes `dialog` and registers its Escape there. A combo matches the character its key types, so a reader on AZERTY or Dvorak presses the letter a shortcut names wherever the layout puts it; on a Mac, a combo that holds `Alt` also matches the key's position (`event.code`, `KeyM` for `m`), because Option rewrites the character there (`$mod+Alt+m` types `µ`). Elsewhere Alt combos match the character, so AltGr still types its layout's character; no other combo matches by position, since by position Dvorak's `l` would also press `p`. `ShortcutHelp` shows `$mod` as `⌘` and `Alt` as `⌥` on a Mac (`MOD_KEY_LABEL`, `ALT_KEY_LABEL`). `KeymapProvider` (mounted once around `AppShell`) owns the single `window` keydown dispatcher and the bottom-right chord indicator (`data-testid="chord-indicator"`): a key resolves top-down through `["global", …pages]`, the first scope with a match wins, and while any `dialog` scope is on the stack it is the only scope consulted, whatever mounted after it; a `when()` of `false` neither fires nor shadows. Chords wait 1000 ms for their next key. While a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, contentEditable, or an `INPUT` whose type is one of the text-entry ones - only `inEditable` bindings run (`$mod+k`, `Escape`, a document's `$mod+Alt+m`), so single letters and digits never eat typing; such a binding reaches every one of those controls, so one that belongs to only some of them says which in its `when`; a checkbox, radio or button `INPUT` takes no text, so the page's keys keep working when a pointer leaves focus on one; a keydown something else already `preventDefault`ed, or one mid-IME composition, is left alone. Registering a strict prefix of another sequence (`g` beside `g i`) throws in development. Global bindings live in `app.tsx`: `$mod+k` search, `/` search-only, `?`, `c`, `g i`/`g a`/`g s`, `g d` (the route's project Documents, `routeProjectOf` in `features/refs/routes.ts`, which `CreateIssueDialog` preselects from too), `g p` (pick a project), `i` (the Inbox drawer above, offered everywhere but `/`), and `Shift+S`/`Shift+M` toggling the sidebar and the margin, each persisted like its button and offered only where its button renders: from `xl`, and the margin's only on a route that has one, since below `xl` both are sheets that ignore the stored preference. `appKeymap.actions()` is what `$mod+k` offers as rows: the enabled bindings of the scopes beneath the innermost dialog, innermost scope first, less every one whose `palette` is `false`. `palette` defaults to `true` for a binding with one key or none and to `false` for one with several or one that is `inEditable`. A row presses only its first key, and a binding with several keys may pick what it does by the key pressed (the arrows, `1`–`9`, `0`–`3`), so a binding whose keys all do the same thing says `palette: true`, as the Architecture tab's `Enter`/`o` and `h`/`ArrowLeft` do. An `inEditable` key is one that has to work while the reader types, today `Escape`, `$mod+k` and a document's `$mod+Alt+m`, and such a binding is a row only when it says `palette: true`: inside the palette Escape closes it and `$mod+k` is its own key. Rows read innermost scope first and alphabetically by label within a scope, so the highlighted first row is a decision rather than a result of mount timing. `palette: false` marks the keys that walk a list with the row in hand - moving the cursor (`j`/`k`, and the Board's `h`/`l`) and marking rows (`x`) - the List's and the Board's `Enter` beside their `o`, which is already that action's row, the Architecture tab's `l`/`ArrowRight` into children (on a row with children its Open row does the same, and on a leaf it would do nothing), the Inbox's Escape that clears the marks, since Escape in the palette closes the palette, and `/`, which from `$mod+k`'s palette would only reopen it with its actions taken away. A binding that opens something else - `g p`'s project list, `?`'s shortcuts, `c`'s dialog - is a row like any other, since a row runs once the palette has closed. The list is taken on the render that opens the palette, while focus is still on whatever opened it, and a chosen row runs after the palette has closed and `useDialog` has put focus back there — otherwise a `when()` or a `run` that reads the focused element would see the palette's own input, and a row that moves focus would have its move undone by that restore. Running a row calls the binding's `run` with a `keydown` for its first key as written (`key: "Shift+P"` with no modifier flags, where a press of Shift+P reads `key: "P"` and `shiftKey: true`; no row's `run` reads its event today), and only if the binding is still registered and its `when()` still holds at that moment: the row was decided when the palette opened, and since then its control may have gone (another writer reopened the issue) or its component unmounted (the page fell to its error view). `c` mounts `features/issue/CreateIssueDialog.tsx` — project (preselecting the route's project), title, optional first spec line — which `POST`s through `api.createIssue`, shows a `POSSIBLE_DUPLICATE` answer with its candidate and offers **Create anyway** (`force`), and opens the created issue; Escape closes it and returns focus to the caller. The Inbox registers `j`/`k` (and arrows from a focused row) roving real focus over its `tabIndex={-1}` rows - a step taken from inside the reading column puts the focus back on the selected row first (`move` in `Inbox.tsx`), since a step that swaps the column's body unmounts the scroller holding the focus and drops it to `document.body`, where neither branch of Escape holds - `Enter` for the row's answer textarea, `1`–`9` for its fixed options, `o` for the owning issue, document or thread, `y` to copy the focused row's `dispatch://` reference where it has one, an Agent row having none (it clicks that row's own `CopyRefButton`, `COPY_REF_SELECTOR`, so the control confirms), `l` to move the focus into the reading column's own scroller (`read-pane`, `Move the focus into the reading pane`), which records the row it was pressed on - the focused row, else the selected one - for Escape to return to, and does nothing where there is no column: below 1280 px and in the drawer `paneShown` is false, and with no row selected no column is rendered for `paneScroller()` to find, `f` to put the focus in the search box (`search`, `Search asks`; not `inEditable`, so inside the box itself the key types an `f` rather than re-focusing what the reader is already in), `Escape` back to the row and then out - from inside the column to the row `l` was pressed on, else the row the column is showing, and from inside the search box to the list's selected row, or its first row where none is selected (`leave-search`, `inEditable` and offered only while the focus is in the box, so the Inbox's other Escapes are untouched and the drawer's own Close waits its turn) - `x` to mark the focused row - a Reply or Agent row as much as an ask, since the bar writes for both (its own checkbox is the mouse path into the same selection) - `e` to dismiss the focused thread row, which in the Dismissed view puts it back and which an Ask or Approval row has no Dismiss for, and `h` to snooze - the asks in the selection whenever it holds one, from wherever marking leaves the reader (a row, the checkbox they just ticked, the page) but not from inside an ask card, where the card's controls own the keys; otherwise the focused row's own picker - with `Escape` out of the bulk picker returning to the row focus came from (the bar itself when no row is rendered), and `Escape` with no row focused clearing the selection (the assignee filter's popover takes Escape first, since one press should close it rather than also drop what the reader marked). The bar holds both kinds of row and offers each its own write - **Snooze** for the asks marked, **Dismiss** for the threads - and it counts, as those writes touch, only the marks whose rows are on the page: a mark made under a wider assignee filter neither shows nor writes once the filter is back on the reader's own work, one the search box has hidden neither shows nor writes while the text hides it, and one whose row has folded into `Later` neither shows nor writes until the band is opened, since the reader has no checkbox for it there and may well have set that row's own moment since marking it. The mark itself survives all three. **Select all** is the one press that reaches past the page: it marks every row the list's narrowing matches, drawn or not, and the dismiss that follows names each of them by id - the Inbox's own thread read is unpaged, so they are all in hand, the ones behind **Show more** and the ones in a folded band among them - while in the paged Dismissed view, where they are not, it names the list's own narrowing with that read's own mark instead. Each row's own controls are named after its ask (`Select CORE-12: Which release?`, and the same for Snooze), since two asks on one issue would otherwise give two controls one name; where an issue has more than one row in the list the name carries the position too (`Select CORE-12, ask 2 of 2: …`), because two questions can agree for longer than a name can carry; a thread row's checkbox is named after its subject, which is what that row shows. `ProjectPage` pushes `project` and registers `v` (List ⇄ Board; inert on the Architecture and Documents tabs) while `IssueList` registers the List's own rows into that same scope, mounting only while the List shows so the Board never lists them beside its own: `j`/`k` rove real focus over its `tabIndex={-1}` `[data-issue-row]` rows, `o` opens the focused issue and `Enter` does from the row itself, and `j`/`k` are greyed in `?` whenever no row sits outside a collapsed band - a reader who folds every band by hand, as much as a project whose every issue is closed and so has only the band the page renders closed. `roveFocus` steps only over rows a reader can reach - every row that is not inside a closed `details` (`reachableRows`, the one helper the `when` gates count too, so a step and the offer of it cannot disagree; `checkVisibility()` would answer the same and needs Safari 17.4) - so a collapsed status band is crossed rather than dead-ended in: its rows stay in the DOM, can take no focus, and counting them would strand every row past the band; the same rule holds for the Inbox and Architecture rows it also serves, and the Board, which keeps the same four keys for its cards, answers it in its own model (`focusTarget`'s `isCollapsed`, since a collapsed rail renders no card). The Architecture tab pushes `architecture` and registers `j`/`k` (and arrows from a focused row) roving real focus over its `tabIndex={-1}` component rows, `Enter`/`o` to open the focused component (into its children when it has any, exactly like `l`, else its details), `l`/`ArrowRight` into its children and `h`/`ArrowLeft` up one level (focus follows: the first row of the new level, or the row just left), and `Escape` back to the row and then out. The Board pushes `board` and registers `j`/`k` (and arrows from a focused card, column or rail) roving real focus over its `tabIndex={-1}` cards, `h`/`l` to the previous / next column at the same index clamped (an empty column or a collapsed rail takes focus itself), `Shift+J`/`Shift+K` to move the focused card down / up one, `Shift+H`/`Shift+L` to move it to the top of the previous / next status (into Done closes, out of Done reopens - the drag rule), `o` and `Enter` (on the card itself) to open the issue, `p` to focus the card's priority select, `y` / `Shift+Y` to copy the focused card's `dispatch://CORE-12` reference / bare key, and `Escape` back to the card and then out; every move goes through `moveCard` and is read out by the board's `sr-only` `role=status` live region (`Board announcements`: `CORE-12 → Todo, position 2 of 5`, `CORE-12 → Done, closed`, `Copied dispatch://CORE-12`). The Agents page pushes `agents` and registers `j`/`k` roving real focus over its `tabIndex={-1}` session rows, `Enter` to message the focused agent (opening a collapsed row first, then focusing its composer on the next frame), `i` for that row's issue picker - which ends inside the picker's own `<select>`, where the arrows choose, Enter commits the pick and hands the reader on to the composer the issue is for, and Escape closes the picker and returns to the row, from inside the composer and from the row itself (a list that fails or is still out renders no select, so the row is where `i` leaves the reader), while leaving the select any other way - Tab, Shift+Tab, a click elsewhere - drops a choice Enter has not committed, so the open select never shows an issue the message is not addressed to; the picker takes focus only once its list lands and only if focus is still where the open left it - the row, the picker's own button, or nothing - and a pick keeps whatever the reader has already typed, since the composer takes the mention an issue-owned comment needs into the live draft in place - body and accepted mentions together, so what the reader sees and what reaches the wire cannot disagree, with the one exception that the mention a channel seeded is dropped on the way into a channel that seeds none (a direct message already reaches its session), while a mention the reader accepted themselves survives every trip; a message on its way to the server is addressed already, so it holds the picker (disabled, and `i` greyed, until the server answers), every Reply and Cancel reply, and a refusal hands back exactly the draft that was sent; an issue closed after it was picked drops out of the open list on the next read but stays in the select (a disabled option) and on the toggle as `<KEY> (closed)` until another is picked, as a closed issue's header keeps its own status among its Status select's options, and a send to it posts, since a closed issue takes comments and messages - `Shift+P` to pin or unpin it, focus following the row to where the pin moves it - or to the fold's toggle when the row lands in a closed fold, hidden - since moving the row's node can drop focus to the document, and `x` to tick its broadcast checkbox; Escape inside the composer is the composer's own key - `MentionComposer` stops it before the dispatcher sees it - and its close runs the same `Back to the agent row` the `agents` scope registers, so `?` describes it and the binding takes over if the composer ever stops swallowing it. `IssuePage` pushes `issue` and registers the header's own controls: `s` and `p` focus the Status and priority selects, `0`–`3` set P0–P3 through the very write the picker uses - `IssuePage` creates one `useIssuePriority` for the page and hands it to `IssueHeader`, which renders `PriorityEditor` with it, so a refused keyed write rolls back once and is reported by the control the reader is looking at (every other surface - list row, board card, Inbox row - has no second way to write that priority and uses `PriorityControl`, which owns its write), `l` opens the labels popover, `e` edits the title, `Shift+P` pins or unpins, the chords `t s`/`t k`/`t p`/`t c`/`t h`/`t a`/`t v`/`t d`/`t o` select the Spec, Verification, Plan, Conversation, Children, Artifacts, Activity, Decisions and Collaborators tabs (`t a` is already Artifacts and `l` is already the label editor, so Activity takes `t v`, Verification takes its checks' `t k`, and Collaborators, the last tab, takes `t o`), and `Escape` leaves a focused Status or priority select - without it the next key is that select's own type-ahead, where `t` picks Todo or Testing instead of starting a chord. The bindings find their controls through `data-issue-header`, and each is offered exactly while its own control takes a click, so a closed issue greys the ones its header disables. `IssueHeader` registers keyless `close`, `reopen` and `set-p0`-`set-p3` into the same scope: too consequential for a single key, so they are palette-only, on the same handlers and the same guards as the Close and Reopen buttons and the priority editor, and the four priority rows write through the page's one priority write too, so a refused palette pick is reported where a refused digit is. The two that write without focusing a control - `0`-`3` and `Shift+P` - are also withheld while focus is on any `<input>` (an ask card's option radios, the margin composer's `Allow multiple`) or anywhere inside an ask card (`[data-ask-card]`, whose buttons are the card's too), since a key pressed there belongs to that control's own surface. A focused `<button>` is deliberately not withheld: every single-key binding in the registry fires from one, a digit has no native meaning on a button, and after any click - a tab, a disclosure, Copy - focus sits on the button that was clicked, which is where a reader reaching for the next shortcut stands. Single keys reach these controls at all because the registry passes every control that takes no typed text; that permission carries the obligation that a page whose key writes says for itself where the reader may press it (`IssuePage`'s `outsideInputsAndAskCards`, the Inbox's `outsideAskCard`). `ProofDocument` pushes `document` - an issue's Spec and its other documents and a project's document page each render one - and registers `$mod+Alt+m`, `Comment on selection` (Google Docs' chord): `inEditable`, since the editor is where it is pressed, and offered only while that editor has focus, takes edits and holds a non-empty selection, which is when the selection bar offers Comment, so it does nothing from a comment composer or any other field, on a closed issue's or a historical document, or with only a caret. It calls `ProofEditorHandle.commentOnSelection`, the bar's own Comment path (`act` in `@legion/proof-editor`'s `dispatch-action-bar.ts`, which the buttons call too), so the margin's composer opens on a provisional mark exactly as the button opens it. The issue page keeps its Spec mounted, hidden, beside another of its documents, so two documents register the binding at once; `describe()` lists a binding two mounted instances register as one row, enabled when either's `when()` holds. `?` opens `ShortcutHelp`, a `useDialog` overlay rendered from the registry as described the moment `?` fired (grouped by scope, live-filtered, `when()===false` rows greyed, keyless palette-only bindings omitted since they have no key to list, closed by a route change) — adding a binding is the whole change; the help has no list of its own.
+
+`features/delivery/DeliveryPage.tsx` is `/delivery`, the delivery timeline. It is a live view
+(`deliveryTimelineQuery`, `["delivery", "timeline", <view>]`): `api/live-socket.ts` subscribes it
+through the page's one `GET /ws/live` socket, Dispatch answers with the
+`GET /api/v1/delivery/timeline` body for that window, search and facets and then sends only what
+changed, and the client writes both into the query cache (`lib/applyDelta.ts`). Nothing reads again
+on focus, reconnect, or a timer. While the socket is open the freshness row
+(`SourceFreshness`, `lib/freshness.ts`) says Live with the time of the last change the page applied,
+and Reconnecting in red while the socket is lost. Every reconnect resumes the view from the change
+and revisions it holds: a 4001 rotation shows nothing of it, and any other loss also refreshes the
+page's ordinary queries once the event feed starts again. Dispatch sends the freshness verdict it
+holds right after each subscription's first answer (its snapshot, or a resume's delta, or where
+that delta would be when the resume has nothing to catch up), and nothing before it holds one, so
+a verdict that changed while the socket was down, or while the page held no delivery view, shows
+once the view is back. The row reads that frame's verdict whole wherever the socket has carried
+one (`lib/freshness.ts`, over the body's own): the `freshness` object - the last event, the last
+reconcile, its error and the unfetchable count - and the stale-source list together, never the
+stale list alone, so a last error that cleared, or an unfetchable count that rose, shows at the
+frame rather than waiting for the next snapshot. Until the timeline's configuration
+record exists, Dispatch refuses the view
+with a `DELIVERY_NOT_CONFIGURED` error frame, which the client raises as the GET route's `404` and
+the shared retry policy takes as definitive (`isDeliveryNotConfigured`), and the page renders
+`Set up the delivery timeline`, one sentence on what it will show, and `DeliverySettingsForm` in
+the timeline's place, under the same
+`Delivery` heading. The page decides that from the last answer that settled and holds it while a
+new subscription is out, because starting one (a Retry) clears the query's error, and switching on
+it would unmount the form and the draft typed into it. An answer that settles on anything else
+shows that instead: the timeline, or the failure with Retry. Dispatch refuses the view exactly when
+no record is stored, so the page hands the form `initial={null}` and the form reads nothing: its
+fields start empty at once, with placeholders saying what each holds, because this repository is
+public and no deployment's values ship in it. Settings renders the same form as its
+`Delivery timeline` section, after Architecture sources, where the record is changed later; there
+it reads `GET /api/v1/settings/delivery` under `["delivery-settings"]` and starts from the stored
+record (empty, as above, when that answers `null`). Either way the fields are keyed by the record's
+`updated_at`, so a save, or another record handed in, starts them over from that record. A required
+field holding only whitespace, or a required list holding only separators, is kept empty, so the
+browser's `required` check refuses it before the server's `400 DELIVERY_SETTINGS_INPUT` would.
+Save sends `PUT /api/v1/settings/delivery` with each list split on line breaks, commas and spaces,
+shows a refusal under the form as the server wrote it (`409 DELIVERY_SETTINGS_ACCESS` when the
+GitHub App cannot read the deploy repository), and on success invalidates `["delivery-settings"]`
+and every `["delivery", …]` read that is not live (an open run's drill-down). The live views learn
+of the save from Dispatch: the delivery hub keeps a refused view's subscription on the socket and
+answers it with its snapshot once a configuration exists. The `owner/repo` fields here and in
+Settings share one `pattern`, `ownerRepoPattern` in `features/settings/classes.ts`, which the
+browser compiles with the `v` flag, so its `/` is escaped inside each class; `e2e/settings.e2e.ts`
+checks the browser refuses `a/b/c` against it.
+
+The configured page ports the prototype's timeline view (`dispatch://LEGION-567`): the facet column (`FacetPanel`, every option counted by the server's `facet_counts`), the controls row (Timeline/List, `Color merges by`, Swimlanes), `Timeline` (an ECharts canvas, loaded only in the route's chunk), `PRList` and `DrillDown`, with `colorBy`, `lanes`, `mode` and the brush window (`ws`/`we`) kept in the URL and dropped there at their defaults. The chart is pointer-only, as the prototype's is: its host is `role="img"` with a label summarising the window, and List mode is the keyboard path. The list's rows are one tab stop with arrow, Home and End keys and Enter to open, and a deployed row's "deployed" opens its deploy run's drill-down, which is a dialog (`useDialog`). One deviation from the prototype: the waiting-to-deploy line counts the pull requests still waiting at the read window's start (the timeline's `waiting`) and every tracked merge of the window, so the brush narrows its time range and never its population; the prototype dropped every merge before the visible window and drew a stuck pull request as zero.
+
+The page's window is the header's `WindowControl` (`lib/window.ts` holds the presets, `readWindow` and the 84-day check): a rolling preset kept as `window=7d|14d|84d` (the 28-day default leaves the URL bare), or a custom range of whole UTC days kept as `from`/`to`, its exclusive `to` the midnight after its last day, a range over 84 days refused in the control with the limit stated. A preset is subscribed by its days (`liveWindow`), so Dispatch keeps its end at the present and the header names the range it resolved, the answer's `window`; a custom range is subscribed by its ends. Only the control writes the window, and each change clears the brush. Session groups (`dispatch://LEGION-682`) are the server's: a pull request whose first session a group holds has `parent_agent` `group:<id>`, and the timeline carries `session_groups`, `session_titles` and `session_pr_counts`. `lib/parentAgent.ts`'s `parentAgentLabel` is the one place a Parent agent value turns into words (a group by its name, a placeholder in words, anything else as written), read by the facet, the lanes, the list and the drill-down; those values are not agents and stay text ("How an agent is shown", below). `SessionGroupsEditor` (the facet's **Edit groups**, mounted only while open) creates, renames, adds to, removes from and deletes groups through `api.createDeliverySessionGroup`/`updateDeliverySessionGroup`/`deleteDeliverySessionGroup`, invalidates every `["delivery", …]` read that is not live on success (the live views hear of the edit from Dispatch), and shows a refusal as the server wrote it; every session it lists, and every session id the drill-down lists, is an `AgentName`, so a member no window pull request names first, having no stored title, reads by its registry title, else its short id. Coloured by Parent agent, the `Own colour and lane` picker writes repeatable `agents` parameters: `buildColorScale(counts, chosen)` gives the chosen values the palette in the order chosen and every other value `OTHER_COLOR`, and `foldLanes`' `chosen` gives each its own lane, never folded, and the rest one Other lane; with nothing chosen both behave as before.
+
+Above the timeline sits `features/delivery/MeasuresPanel.tsx`, the delivery prototype's `DoraPanel` ported as it is: six KPI cards, the headline strip, and a `Definitions & alternatives` fold holding the alternative definitions and a per-day table, newest first. Every number, target and met/missed verdict comes from the server; the panel computes nothing. The measures follow the page's window, search and facets, and a brush window (`ws`/`we`) as well, which the timeline's own view does not take. With no brush the panel shows the timeline answer's own `measures`, computed from the population that view already holds, so the page subscribes once; a brush subscribes a measures view of its own for the brush window (`deliveryMeasuresQuery`, `["delivery", "measures", <view>]`, the `GET /api/v1/delivery/measures` body), dropped when the brush clears. A brushed measures failure shows its own `QueryError` with Retry and leaves the timeline in place. The cards lay out by the panel's own width (Tailwind container queries), since the sidebar takes a share of the viewport that varies by breakpoint. The charts are `Sparkbars` and `SpreadBars`, which share one scale (`lib/barScale.ts`) and fill with the `chartBar` tokens in `theme/classes.ts`. `e2e/delivery-seed.ts` is the one fixture the timeline's and the measures' browser rows and the docs screenshot seed.
+
+`features/delivery/PipelinePage.tsx` is `/pipeline` (the sidebar's `Pipeline` row under Delivery), the delivery prototype's Pipeline page ported as it is: the header line naming the seven UTC days, six cards with their `data-metric` attributes, then the slowest-jobs and failed-in-24-hours tables (`data-section`, `data-job`, `data-failing-job`). The cards take the prototype's column counts at the prototype's content widths - one column, two from 46rem, six from 78rem, its `md:grid-cols-2 xl:grid-cols-6` less its page padding - measured on the page's own width (Tailwind container queries) rather than the viewport, as the measures panel's are, since beside the sidebar the viewport rule left six cards too little room for their figures. It is a live view on the same socket (`deliveryPipelineQuery`, `["delivery", "pipeline", {kind, at}]`, the `GET /api/v1/delivery/pipeline` body), and computes nothing but the two lead-time cards' met/missed badge (`data-target-met`), judged as the prototype judges it against the `targets` the response carries: merge to production on the seven days' longest change, PR open to merge on their median. A settings row naming no staging end-to-end or staging deploy job answers that card `null`, and the page omits it. `?at=` in the page's URL is the test and screenshot hook: the page forwards it in its view and never writes it, so a fixture dated in the past renders as today, and a failed job's age is measured from it. Unconfigured delivery (`DELIVERY_NOT_CONFIGURED`) links to `/delivery`, whose setup form configures both pages. `e2e/delivery-seed.ts`'s `seedPipelineFixture` (with `PIPELINE_AT`) seeds the browser rows (`e2e/pipeline.e2e.ts`), and its `seedPipelineRows` the docs screenshot beside the measures fixture.
+
+The primary document's `Version`, `Name version`, connection dot, and block-link controls live at the end of the active Spec tab row; on phones they wrap below the tabs. `Conversation`, `Children`, and the artifact list do not render those primary-Spec controls. Every other document page (a project document, an issue's other documents) carries them in `ArtifactHeader`, where `Name version`, `Diff vs current` and the connection dot are one group that wraps as a unit: at 390 px the picker, `Name version` and the dot are wider than the header card, and the dot alone would otherwise wrap onto a line of its own.
+
+An Activity line reads who, when, then what: the author and the time are one `whitespace-nowrap` group, so the time never wraps alone to the start of the next row, and inside it the author takes the width it needs until the row runs out, then truncates with the full label as its `title` - a live session title can be a whole sentence, and an author allowed to set its own width pushed the line, the list and the document past the viewport. The description keeps a `min-w-48` floor beside it, so it wraps as prose rather than one word per line.
+
+The `Children` tab (`features/issue/ChildrenTab.tsx`) lists the issue's direct children, one card per child: the key · title link and status badge on the first line, then a detail line with the child's subtree progress (`D/N done` from `subtree_done`/`subtree_total` — the child itself plus every descendant, any status), a relative `Timestamp` on `active_at` (the subtree's newest activity), and the child's own external links through `GitHubLink` (state and checks are client-fetched via the `githubRest` proxy exactly as the header does; the server sends only the links). On phones the detail columns wrap under the title line. The header's `Parent:` line always renders — a link or `None` — with an Owner-style inline editor whose Save PATCHes `{parent: <key>}` or `{parent: null}`; a `PARENT_INPUT`/`ISSUE_CLOSED` refusal renders the server's reason inline in place of the generic update error. `child.added`/`child.removed` land on the old and new parents' events subscriptions, so an open parent page's Children tab updates live.
+
+An issue's own progress (`features/issue/ProgressChips.tsx`) is the `progress` object every issue read and list row carries (LEGION-542): `tasks`, the task-list items (`- [ ]` / `- [x]`, nested lists and callouts included) of its primary document's latest version, read from its markdown for the checkboxes alone (`pmdoc.CountTasksMarkdown`), so a spec holding a table the Proof schema refuses is still counted; stored on the issue with the version it was counted from by every version write (`docs.RecordTaskProgress`) and counted again once when the server starts, for every row whose stored version is not the document's latest - the rows the migration found, a version a build predating LEGION-542 wrote, and a row another writer held, retried briefly (`docs.Service.RunTaskProgressReconciliation`); and `children`, its direct children, every status, done being `status = 'done'`, computed from the children's statuses on each read. Each is `null` when the issue has none, and the component renders nothing for a null, or for a response with no `progress` at all (an older server during a deploy's overlap), so a list of plain issues stays quiet. The issue header shows each as a thin bar filled to done/total beside `3/7 tasks` (the `bar` prop; a count of one reads `1/1 task`, `0/1 child`), in the wrapping state row with the status, priority and claim, since the metadata rail below clips; a List row and a Board card show each as a `label` pill beside the claim chip. The bar's fill is `progressBarFill` in `theme/classes.ts`. The Children tab's per-child `D/N done` is a different count — that child's whole subtree — and stays.
+
+The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`) for the `EventBody` fallback.
+
+Project pages keep their name, linked project key, project tabs, and, on issue routes, the keyboard-reachable List/Board control in a dense responsive header. At `md` and above these controls form one strip; on smaller screens the name, key, and blocker pill form the first row, with tabs and the view control below. When an open ask waits on the viewer, the header's `Blocked on you · N` pill links to the Inbox; it is absent when no asks are waiting.
+
+A List row (`IssueList.tsx`) is a keyboard target as well as one grid: `tabIndex={-1}` and `data-issue-row`, roved by the `j`/`k`/`o`/`Enter` bindings `IssueList` registers in the `project` scope - there, rather than in `ProjectPage`, because the component mounts only while the List is the view showing, and on the Board `?` would otherwise list each of those keys twice, once per scope. The rows of a collapsed status band are in the DOM, take no focus and are no step, so `j`/`k` cross a folded band and are greyed in `?` when no row sits outside one. Its key and title are one run of text inside the row's link, wrapped in a single span because below 1280 px every link is an inline-flex box (`styles.css`) whose children would otherwise be two flex columns, and the key is `whitespace-nowrap`, so it never breaks at its hyphen. From `sm` the timestamp shares the first line with the reference and the metadata runs below; on a phone the reference takes the whole first line and the timestamp sits at the right of the metadata line, since beside the title it would leave the title a column about 130 px wide.
+
+A project's routes are `/projects/:key/architecture`, `/projects/:key/issues` (the List and the Board; every `?label=`/`?status=`/`?q=` filter URL lives here), and `/projects/:key/documents`; the bare `/projects/:key` (the sidebar's link) is the open-on rule in `ProjectPage.tsx`: it renders nothing while `["architecture-sources", key]` (`projectArchitectureSourcesQuery`, `GET /projects/{key}/architecture-sources`) is pending, then `<Navigate replace>` to `/architecture` when the list names at least one source or to `/issues` — the search forwarded — when it answers `[]`, which is what a project with no source reads as; any failure renders `QueryError`, never a quiet fall back to Issues. That key sits under Settings' `["architecture-sources"]` (`architectureSourcesQuery`, every project's sources), so invalidating the Settings list refreshes every project's too; the event feed refreshes both (`api/event-refresh.ts`), with `["components", key]` and `["architecture", key]`, on `settings.architecture_source.updated`, `architecture.synced` and `architecture.sync_failed`. (`isSourceNotFound` in `api/client.ts` remains for the architecture TREE read, which is still `404 SOURCE_NOT_FOUND` without a source, and stops the shared retry policy retrying it.) The Architecture tab exists only when the project has a source (a direct `/architecture` link without one is `NotFoundPage`). Settings' Architecture sources section (`features/settings/ArchitectureSourcesSection.tsx`) lists one row per source, keyed by project and repository: its project, repository and branch, and a status of `Synced <sha12> · N components <Timestamp>`, or the error with `Previous model stays up at <sha12> · N components`, or `Access verified` before the first import; each row's Refresh and Delete act on that source alone and are labelled with its repository and project (`Refresh architecture source <repo> for <project>`). The form's `Add source` adds a repository as a source of the chosen project, and saving a repository the project already has changes its branch; the copy says a project's model is every source's components together, so a component id must not repeat across a project's sources.
+
+`features/architecture/ArchitecturePage.tsx` is that tab (LEGION-191 slice 1a): `GET /projects/{key}/architecture` under `["architecture", key]` (`staleTime` 15 s; the event feed refreshes it (`api/event-refresh.ts`), with `["components", key]`, on an issue write that moves a status, a parent or a component attachment, or does not say what it moved, and on every import event, so a bar moves in place when an issue closes; it refreshes alone on any other write of an issue the tree lists (`architectureListing`), since a work row shows the issue's title, status, priority, parent, links and `updated_at`, and a side list its title and status). The model is every source's components together, the roots of each source at the top level. Its URL state is two search parameters — `?component=<id>` is the level (when that component has children) and the details panel; `?view=unassigned|none|retired` opens the side list of that name below the rows, and `?view=no-work` filters the rows to the non-external components with no work (each shown with its parent path). The header has one source line per source (`tree.sources`, in the order the project added them), each reading `repo/branch · at <sha8> · checked <Timestamp> · Refresh` (Refresh is one keyed `useKeyedWrite` press of `POST /architecture-sources/{owner}/{repo}/sync` for that source; every line's Refresh is disabled while one is in flight; a refusal of the request itself is the shell's `PendingWritesIndicator`'s, with every other write's, and nothing beside the button repeats it), then the scope line `D/N issues done · N components with no tracked work · N unassigned · N not architectural` (each a toggle for the matching `?view=`), plus `N issues point at retired components` when `totals.retired_links > 0`. Rows (`<article tabIndex=-1 data-component-row>` under `ul[aria-label=Components]`) are the components at the current level (roots when nothing is selected; `?component=` naming an id the model no longer has shows the roots under a `role=status` notice `Component <id> is not in the current model`), each with a chevron into its children (breadcrumb `nav[aria-label="Component level"]` back), the title link to its details, and a bar read from `done/total` alone — nothing from CI or PRs colours anything. The colour rule (`componentTone` in `architecture-model.ts`, over non-external components only): `total == 0` → dashed track and `No tracked work`; `done == 0` → gray track; `0 < done < total` → gray track with the `progressFill` green; `done == total > 0` → the whole bar `progressFillDone` green, unless a non-external descendant has `total == 0`, which keeps the fill bar and adds the `contains components with no tracked work` badge. External components (`external: true`, never attachable — the server refuses them) render as a plain row with an `external` badge and no bar and are outside every count. Trust is per source (`sourceState`/`distrustedSources`): **never synced** (`last_commit` or `last_sync_at` null) says `never synced` in that source's line, and while no source has imported (no components, every source's `last_commit` null) the page shows `No model imported yet — Refresh reads .dispatch/architecture from <repo/branch, …>` in place of the rows; **stale** (`last_sync_at` older than 10 min, twice the sync ticker) renders the age in `inlineWarningText` with `(stale)`; a **failed import** (`last_error`) shows a `role=alert` banner under that source's line, `Last import failed: <error> · showing the model from <sha8>`; stale and failed both hatch the rows of that source's components (`border-dashed` + `trustWarningBorder`), each row judged by its own `component.source`, so one source's failure or staleness never hatches another's components. Vanished-path badges wait for the importer to check paths (slice 2). `ComponentDetails.tsx` renders the selected component below the rows: **Work** — its own issues, unfinished first by lifecycle status then `updated_at` desc, done ones behind `Show N done` (`components/DisclosureToggle.tsx`, hoisted from the Agents page) — each row key · title link, `StatusPill`, `Timestamp`, `GitHubLink`s, and a muted `inherited` or `in <descendant>` marker; a row's chevron expands the issue's children in place, read from the issue's own `GET /issues/{key}` (`["issue", key]`, the query the issue page shares — the tree's side lists carry no `parent`, so every work row gets a chevron and children are fetched on expansion) and placed against the tree (`placeChild`): a child of this component renders as a full row, one counted under another component dims with `elsewhere · <component>`, one declared not architectural dims with `not architectural`, one in no list dims with `unassigned`; the expansion set lives in `sessionStorage` per project+component so Back from an issue restores it, and the details scroll into view once on mount. Then **Code & definition** — the prose through `MarkdownBody`, the `Repository` whose files define it (`component.source`), `paths`, `depends_on` as links to those components' details, the `external` badge. `AttachmentLists.tsx` is the `?view=` lists: **Unassigned** rows carry the `ComponentPicker` (`components/MultiSelect.tsx` over the non-external components; save on close, like labels → `{mode: "explicit", ids}`) and `Not architectural…` (a reason form → `{mode: "none", reason}`); **Not architectural** rows show the reason and `inherited from <KEY>`, with `Reconsider` (→ `{mode: "inherit"}`) only on an issue's own row; **Pointing at retired components** rows name the retired ids and re-attach through the picker, seeded with the issue's surviving live components (the tree rows where it is `direct` or `inherited`), so the save adds the pick instead of replacing the set. Every write goes through `features/issue/useIssueComponents.ts` (`PATCH /issues/{key}` `components`): the issue detail and the tree cache move optimistically (`predictTree` — the row leaves its list, the target components' totals grow; an `inherit` write only removes the issue's rows, since where it lands depends on ancestors the tree does not expose), the row stays rendered in its list, at its index, marked `Saving…` (`role=status`) until the PATCH resolves (focus, which the unmounted picker dropped, then lands on the row at that index), a failure rolls both caches back and shows the server's message inline (`role=alert`), and both the tree and every `["issue"]` query refetch afterwards because descendants inherit the change with no event of their own. The issue header's `Components:` line (`IssueComponentsLine.tsx`) offers the same picker, over every source's components, only when the project's `GET /architecture-sources` (`["architecture-sources", key]`, the list the project page shares) names at least one source — the tree itself is fetched only while the picker is open, never on load; an empty pick there means `inherit`; a chip is the bare id whichever source supplies it; with no source (`[]`) the line stays read-only.
+
+Project issue routes default to the persisted List view and offer a keyboard-reachable Board view. Each signed-in user's List/Board choice is retained separately in the browser. Rank is the only order: the server lists project and pinned issues by lifecycle status, then persisted `rank`, then creation time, and each board column keeps that list order, so List and Board always agree and a card dragged to the top of its column is first on both; priority is a badge and a filter, never a sort key. The Board (`features/project/IssueBoard.tsx`) is the kanban: nine lifecycle columns in a horizontally scrolling row, every column the same `status:<s>` droppable spanning the board's height, so a card can be dropped anywhere in a column's body. Icebox and Done render as collapsed rails (`features/project/CollapsedColumn.tsx`: a 40 px vertical strip with the status name and count, `aria-label="<Status> (collapsed)"`, `board-column-rail`) unless the per-login **Show Icebox & Done** toggle (`aria-pressed`, beside List/Board, Board view only, preference `project.board-edges`) is on; a rail is still a drop target, so dropping on the Done rail closes the issue exactly as the full Done column does. The whole card (`<article tabIndex=-1>`, still an article - dnd-kit's default drag attributes are overridden so cards are not buttons) is the drag activator with one merged node/activator ref: an 8 px mouse move or a 150 ms touch hold anywhere on it lifts it, so a click or quick tap on the title follows the link and a vertical swipe scrolls, while a long press on the title lifts instead of navigating (the accepted trade-off of a whole-card handle; the browser's trailing click is cancelled so a drop never navigates). Mouse and touch are separate dnd-kit sensors so a finger's first move never lifts the card, and `PriorityControl` stops mouse, pointer and touch presses on its select so a tap on the badge opens the picker without lifting. The keyboard never lifts a card: dnd-kit's KeyboardSensor is not installed, and the board's registry rows (above, under `keymap.ts`) are the accessible path - `j`/`k`/`h`/`l` rove focus over cards (`data-board-card`), columns and rails (`data-board-column`, all `tabIndex={-1}`), `Shift+J/K/H/L` move the focused card, `o`/`Enter` open it, `p` focuses its priority select, and the card's `aria-describedby` instructions (dnd-kit's `screenReaderInstructions`) say so. After a keyboard move focus follows the card once the optimistic list has rendered (a status move remounts the article under its new column; a move into a collapsed rail focuses the rail). Every move - pointer, touch or keyboard - goes through one path, `moveCard(key, status, insertionIndex)` in `features/project/board-moves.ts`: `dropTarget` (`board-model.ts`) translates the drop (a same-column drop lands at the passed card's position in either direction, another column's card lands above it, a column or rail appends), the optimistic list shows the card where it landed, one board-level `useMutation` with `scope: board:<project>` serialises the PATCHes (`{status?, rank: {before?, after?}}` naming the visible neighbours) so a second drop computes from the first drop's optimistic state, and the list refetches after every answer. No list the server answered before a move lands over its optimistic placement: `moveCard` cancels the rendered list's in-flight fetch at the optimistic write, and a fetch that starts while a move is unanswered waits for the answer - board moves carry the mutation key `["board-move", <project>]`, and `projectIssuesQuery` (`api/queries.ts`, the one query options the Board, the List, the filter strip and the issue header's label picker all observe the list through, since every observer of a key sets its query function) holds its GET until no such mutation is pending. Any failure rolls back, refetches, and shows an alert: `RANK_INPUT` (the neighbours moved under the drag) reads "The board changed while you were moving this card - refreshed, try again.", anything else the server's message. Cards carry the same unread dot as list rows (`features/project/UnreadDot.tsx`, fed by the shared `["user-state"]` query), the priority badge, labels and the open-ask count; the column header names the status. The scroller is `snap-x snap-mandatory` with `snap-start` columns and rails so a phone swipe lands on a column edge; snapping is switched off while a card is in flight because dnd-kit's edge auto-scroll would otherwise jump whole columns per tick. Priority is edited in place wherever it is shown: `features/issue/PriorityControl.tsx` is the single priority editor - the `P0`-`P3` badge (a muted `Priority` tag when unset) with a native `<select>` laid invisibly over it (Unset, P0-P3; the same picker on desktop and iPhone; the badge keeps its size while the tap target is 44 px, 32 px from `md`), labelled `Priority of <KEY>` (the board's `p` focuses it through the focused card's select) - and it appears on the issue header beside Status, board cards, project list rows, and inbox rows (for asks that belong to an issue). Every instance writes through `features/issue/useIssuePriority.ts`: the new value lands optimistically in the issue detail, every `["issues", "project", ...]` list and every `["inbox", ...]` query, rolls back with an inline Retry on failure, and the lists refetch once the server answers; a second pick while one save is in flight is ignored. It is disabled on closed issues (`closed_at` on the header, `status === "done"` on rows) and while a header write is in flight. Humans can reorder cards or move them into any lifecycle status. Dropping a card into `done` closes it; dragging it from `done` into any open lifecycle column reopens it. An open issue header's Status select offers every open lifecycle status; **Close issue** is the only open path into Done, while the closed-issue callout offers **Reopen** into Backlog.
+
+Swimlanes group the board into five horizontal bands by priority — P0 through P3, then no priority — each holding the same nine lifecycle columns, so rank still orders cards within a lane+column cell exactly as it orders them within a plain column. The `Show lanes`/`Hide lanes` toggle (`features/project/ProjectPage.tsx`, Board view only) is a per-signed-in-user preference (`project.board-lanes`, the same `useUserPreference` mechanism `project.board-edges` uses), off by default. `board-model.ts`'s `groupIssuesByLane` builds the bands in one pass over the project list; `laneDropTarget` resolves a drop onto a lane+status cell (`lane:<l>|status:<s>`, full column or collapsed rail) or onto another card, sharing its cell-resolution core with the flat board's `dropTarget`; `moveIssueToLane`/`moveCardToLane` carry the move out, sharing their splice-and-rank core with `moveIssue`/`moveCard`: dragging a card into a different lane's column reassigns its priority to that lane's, in the same `PATCH` that carries status and rank — the same gesture that reassigns status when a card crosses a column, now reassigning the lane's own dimension. Keyboard roving (`j`/`k`/`h`/`l`, `Shift+J/K/H/L`) stays scoped to the lane holding the focused card or column (read from its `data-board-lane` attribute); with nothing focused yet, the first press lands in the first lane (P0), not the flat board's cross-lane rank order.
+With filters active the board renders only the matching cards — column counts, roving focus and move announcements count visible cards — and a drag's neighbours are the visible cards above and below the drop: `dropTarget` and the insertion indices run against the filtered list and `moveIssue` takes the board's visibility predicate (`useBoardMoves(project, labels, isVisible)`), so the PATCH names visible neighbours and hidden cards may interleave once the filter lifts (Linear's rule), while the optimistic cache write keeps every hidden issue in its place. A labelled board reads the same `["issues","project",<key>,"labels",<labels>]` query the List uses, its moves write and roll back that rendered list, and a successful move refetches the unfiltered list too.
+
+Project issue filters live once, in the URL, and apply to both views (`?unclaimed=1` keeps only issues nobody has claimed, beside `?label=`, `?status=`, `?q=`, `?needs-you=1` and `?unread=1`): `features/project/IssueFilters.tsx` is the one strip `ProjectPage` renders above the List and the Board, backed by `useIssueFilters` (`features/project/issue-filters.ts`) — repeatable `?label=` parameters (the server-filtered issue query both views share), repeatable `?status=` parameters (the List keeps an issue whose status is any of them; the Board ignores them, its columns are the statuses), `?q=`, `?needs-you=1`, and `?unread=1`, every write replacing the history entry, so a filtered view survives a reload and the view toggle. Labels and Status are the same `components/MultiSelect.tsx` combobox the issue header's labels use (`Labels · 2` / `Status · 1` trigger, search input, checkbox rows, `Clear labels`), writing the URL on every toggle; Status rows, Status chips, and the List's group headings show `statusLabel()`'s display text (`In progress`) while `?status=` keeps the key (`in_progress`); the strip shows Status only for the List (`showStatus`), counted and chipped like every other filter, and the Board renders the strip without it. Needs you, Unread, and the removable active-filter chips are `components/Chip.tsx`. The disclosure state stays a per-login `project.issue-filters` browser preference: with no active filters it starts collapsed on every viewport, and its trigger reports `Filters · N active` and keeps the active-filter chips in view.
+The text filter is capped at `SEARCH_QUERY_MAX` (`@legion/contracts/dispatch-tools`, 1,000 characters), because `?q=` lands in the page URL the load balancer refuses past 16 K: typing and pasting stop at the limit, and a longer `?q=` from a link is cut to it, on a code point, at the first edit.
+Once open, the strip stays as the reader left it while they filter in it — clearing the search box or removing the last chip included — until they close it or leave the project or its Issues tab, both of which unmount it (`ProjectPage` keys the strip by project and renders it only while Issues is showing). The stored preference is the only owner of that state: the strip reads it when it mounts, which covers the filters a route from another page, tab or project brings, and again when the signed-in identity resolves, never because the filter count moved. On a strip that is up the count also moves when the view toggle folds a `?status=` in or out (the List counts it, the Board does not) and when Back or Forward crosses entries of the Issues tab (the project key pill pushes a filterless entry beside a filtered one); none of these opens or closes the strip, whose trigger and chips keep every active filter visible and removable. Closing an empty strip stores `collapsed`, so filters arriving on a strip the reader closed show as chips beside a closed trigger instead of opening it. An active-filter chip longer than its row ends in an ellipsis and carries its whole text as `title`, so a 1,000-character search never widens the page.
+
+Resolved asks leave the Inbox and open-ask badges, but their thread and Conversation card remain available with the actor and reason. `features/refs/MarkdownBody.tsx` renders every question, answer, comment, reply, message and broadcast through Proof's own parser, in every surface that shows one (Inbox, margin, Conversation, the Agents and Broadcast pages, the phone review sheet, and the live view's turns of every kind, the session's own, the viewer's, another sender's and a reply sent through Dispatch, each re-parsed as the streamed text grows, at most once an animation frame); its `inline` variant drops the wrapping block for option labels and a resolution reason inline in a metadata line. In the block variant a task item (`- [x] done`) draws a disabled checkbox ticked as its source is (`features/refs/task-checkboxes.ts`), while the `inline` variant and `MarkdownPreview` draw no list and so no box. A surface that cuts text to a line or two - a search hit's snippet, a reference hover card's body, an unfurl card, a reply quote, the margin's collapsed thread roots, the Broadcasts list and the per-recipient Sends strip - renders through `features/refs/MarkdownPreview.tsx` instead: the same engine and schema, every inline mark kept across every block (a heading's words, then the paragraph's bold, code, links and references, then each list item, on one line), and a CSS `line-clamp` on the rendered element after the parse, so a cut the preview makes never leaves half a mark and no surface shows the syntax of the text it formats. A fragment the server cut before the client saw it (a search hit's `ts_headline` snippet at its 24-word window) can arrive with a mark open on one side; `features/refs/markdown-fragment.ts` balances only such a fragment (`searchSnippetMarkdown`: a body under the window came back whole, and every character in it is the author's), pairs delimiter runs as CommonMark would and drops only the run or part of a run that could have matched across the cut, so a `**`, `*` or `` ` `` the parser reads as literal text (`Use ** for bold`, `2 * 3`, `press the \` key`) and anything inside a code span stay as written; a search hit's matched words are re-marked on the rendered text (`highlight`), and a reply quote's `Replying to <author> —` is a plain `lead` the parse never sees. Both components are one `useRenderedMarkdown` (`features/refs/useRenderedMarkdown.tsx`: the layout-phase parse, the literal-text fallback, the reference link pass, the `RefLink` portals and the `DispatchPicture` portals) over a paint function of their own, and load through `features/refs/markdown-engine.ts` (one headless engine per schema version, its soft-break policy chosen per parse: `softBreaks="space"`, the default, reads a single newline inside a paragraph as a space, as a hard-wrapped document means it, and `"line"`, which the live view's turns use, keeps it as a line break, as a model's prose means it; the headless parser drops its own ParserState on a parse it refuses, so the next parse builds a fresh one and a body the parser refuses never blanks the formatting of the next turn or card someone else is reading; the engine is built read-only (`createHeadlessProof({ blockSchema, readOnly: true })`), so a container directive the block schema refuses (`:::note` … `:::`), or a typed block whose content breaks its content rule (an ask holding a heading), is drawn as its literal fence lines around its formatted content and a Pandoc `::: warning` fence or a `::leaf` / `:text{` line reads as paragraph text, where a refused directive or such a line once sent the whole body to the literal-text fallback, which raw HTML still takes, and a typed block whose content broke its rule vanished with its text; `@legion/proof-editor`'s headless parser resolves CommonMark's reference-style links and images, `[text][id]` with its `[id]: url`, which Milkdown's preset has no node for, to the link or image they name, and leaves an undefined reference as the literal text its author wrote; `useMarkdownHeadline` projects Markdown to the plain words a link's text or a card's title can hold, which is what a reference link to an ask or comment shows), and `features/refs/reference-target.ts` holds the reference queries `RefLink`, `Unfurl`, `RefPreview` and `issue/useItemLanding.ts` share, outside `Unfurl.tsx` so the preview's import of `RefLink` closes no cycle. A reference reads what it shows and never the full issue: an issue link and a link to one of its documents share the issue's summary, `["issue-summary", K]` (`issueSummaryQuery`, `GET /issues/{key}/summary`: key, project, title, status and each document's id, slug, name, kind, latest version and whether it is the spec), and a project-document link reads `["doc-summary", P, slug]` (`documentSummaryQuery`, `GET /projects/{key}/artifacts/{slug}/summary`); a link to a block of a document reads the block's graph read alone, `["references", "to", ref]` (`blockQuery`, the key its Referenced by panel shares), whose node carries the block's text and a pinned reference's pin, and a pinned block of a spec reads the issue's summary for the spec's slug its path opens (`useReferencePath`); the block's hover card reads its document's summary for the document's name (`useBlockDocument`). All three are `staleTime: Infinity`, since a page can link a hundred of them, and a healthy one is fetched again only by an event that can change it (`api/event-refresh.ts`); a window focus fetches one again only while it is in error (`refetchFailedOnFocus`), so a read that failed, a 503 past its retries or an event's refetch that failed over the data it held, recovers on the open page. An ask or comment link reads its own record alone, a message link `["issue-message", K, id]` (`messageQuery`, outside the `["issue"]` prefix, so a refresh of issue details leaves it alone), and an agent-artifact link `["agent-artifacts", …]`. An inline `RefLink` shows a title and reads no document text (`useReferenceTarget(route, { text: false })`); the `Unfurl` card and the hover card's document view read it. Of the reference surfaces only the hover card's issue view reads the full issue (`["issue", K]`: priority, labels, open asks, spec), and only while it is shown. `features/refs/markdown-surfaces.test.tsx` lists each clamped surface and every kind of transcript turn, fails on a literal markdown character for one formatted fixture, and holds a Dispatch picture to its shape on each: a block `<img>` captioned by its file name on a transcript turn, a 40 px thumbnail beside the caption on the six preview surfaces (the hover card, the unfurl card, a reply quote, the margin's thread preview, a search snippet, the broadcasts list). Once the schema and the headless engine are loaded (the first body on the page loads them), a body of at most `markdownWorkerThreshold` characters renders synchronously in the layout phase of the commit that mounts it, so a list inserting a turn sees the turn's full height in that commit and `ViewportAnchor` compensates in one measurement; the browser's own scroll anchoring never has to adjust for growth landing in the frame after a programmatic scroll. Only the very first render on a page, a schema that failed to load, or a body past that threshold (the paragraph below) takes the asynchronous path.
+
+A body longer than `markdownWorkerThreshold` (2,000 characters, `features/refs/markdown-worker-threshold.ts`) is not parsed on the page's thread at all. It goes to `features/refs/markdown-parse.worker.ts`, a module Web Worker Vite bundles as a chunk of its own, created with `new Worker(new URL(…), { type: "module" })` the first time a page draws such a body: `warmMarkdownRenderer` starts none, so a page that draws no long body downloads none of it. The worker builds the same read-only headless engine from the same block schema the page loaded (posted once, ahead of the first body) and answers each `{ id, markdown, softBreaks }` with the parsed document as `toJSON` writes it, which the page turns back into a node of its own schema - the one carrying `renderBlock` - with `nodeFromJSON`; the answer carries the open-`mermaid`-fence check beside it, so a streaming turn costs one round trip a frame rather than two parses. The threshold is what a body costs, measured on the worst shape a page still parses itself - 49 list markers on one line, then blank lines to one character under it - in the slowest engine of the three: the Conversation parses such a body twice, once for a card's preview and once for its open body, and that takes 475-484 ms of Firefox's thread at 2,000 against 684-858 ms at 4,000, where the bound every heavy-body row holds the page to is 1,000 ms (sjawhar/legion#2519; `markdown-worker-threshold.ts` carries the table). Nothing under the threshold is worth a round trip. Answers are kept by schema version, soft-break policy and source (the newest four), so a new decision card, a new `paint` or a new `decorate` repaints a body the page already has without asking again. A body the worker parsed is built off the page a slice of work at a time and then put into the element a batch of nodes at a time (`paintBlockInSlices`: at most `SLICE_MS` of off-page work a task, at most `ATTACH_BATCH` nodes into the page a task, and each batch laid out before the next one is added to it). The two bounds differ because the costs do: building nodes is this thread's own work, which its clock can see, while what an engine spends on a batch is the style and layout of what has just arrived, after the task and out of that clock's sight - so the painter ends a task on a full batch rather than on a budget, and the hook driving it reads the element's geometry once per batch, while that batch is all of the page that is dirty. An 8,000-item list put in with one `replaceChildren` holds the thread for 918-971 ms in WebKit and 211 ms in Chromium; put in 500 nodes at a time, 72 ms and 124 ms. Which paint is built that way is decided by the source, not by whether the element already holds one: a source that differs from the one last painted there is sliced however much is in the element, so an edit of a long comment and a streamed turn that crossed the threshold after a short paint never land in one task, while a repaint of the same source - a new decision card, a new `decorate` pass - lands in the commit that asked for it. `content-visibility: auto` on such a list's items saves Chromium about 140 ms of one layout and nothing measurable in WebKit, and it makes every per-element read of layout over the body - a browser test's DOM recorder taking a snapshot - force its items relevant one at a time, which is seconds of WebKit's thread, so the items carry no such rule. A preview of the same body (`MarkdownPreview`'s `paintOneLine`) puts every run of plain blocks in as one text node rather than one node a block, for the same reason: the two or three lines a reader sees of an 8,000-item list would otherwise cost 16,000 nodes, ~2 s of WebKit's thread, and read exactly the same. Since such a body formats after the commit that rendered it, that late paint keeps the reader's place itself - once per batch, and holding to wherever the reader has scrolled to since the last one, so the correction for the body's growth never carries a reader off a place they chose while it was still landing - and tells `features/conversation/use-follow-latest.ts` about it (`onMarkdownLatePaint`), because `ViewportAnchor` measures once per commit and the follow hook places the reader once.
+
+Until the worker answers, the element holds the body's own literal text - selectable, under nothing - and carries `data-markdown-pending`; where it already holds a paint of an earlier source it keeps that paint and is marked pending instead, so a streaming turn never flips back to its source between frames. A paint still filling the element across tasks counts as such a paint: nothing but the paint that replaces it, or the unmount, stops one, so a frame arriving mid-paint writes no text of its own and leaves the element to the batches still landing - text written there would stand in front of them until that frame's own answer and whole paint arrived. The marker also covers a paint the hook builds across tasks whether or not the worker was ever waited for: a body the engine answers from its cache on a fresh mount is sliced all the same, and between those tasks the element holds part of a body. `data-markdown-pending` is interim and says nothing about whether the body can be formatted. `data-markdown-fallback` keeps exactly the meaning it had: the parser refused this body (or no schema and engine could load), which is a body's one final failure, so a row that reads it still reads "this body is never formatted". Only the parser's refusal ends there. A worker that cannot be created (the constructor threw, as it does where a page forbids one), whose chunk does not load, that crashes, or that holds a body past `PARSE_TIME_LIMIT_MS` (10 s, counted from the moment the worker could start on that body, never while its chunk is still downloading) leaves that body - and, bar the deadline's own queue, every later one - to the page's own thread: the reader waits for a parse of their own and then reads the body formatted. That page parse runs only while an element is still waiting on the body: a deadline that fires for a body only places kept on a posted parse (below) still hold runs no parse at all, so a body its reader has left costs that reader's thread nothing, where it used to park a whole parse on it. The worker is not terminated for a body the page has moved on from, where the diagram renderer's is: a fresh parse worker costs more than the one stale parse letting it finish costs, so a turn streaming into the live view hands it exactly one stale frame and the frame the reader waits for is posted the moment that answer lands. Every element drawn through `useRenderedMarkdown` is still given the answer to a frame it has moved on from, and paints it, since that is the newest parse a streaming turn can be shown before the stream pauses; it stays marked pending through that older frame's paint, because the frame it is on is still owed, and the answer to that newer frame paints over it when it lands. Both queues are the one in `features/refs/worker-queue.ts`, which holds the ready handshake, the single job in flight, the deadline, the terminate-and-replace, the drop of what nobody waits for and the stale-answer rule for each of them; what each supplies is what differs - a refusal for the diagram, the page's own thread for the parse.
+
+A fenced `mermaid` code block in a `MarkdownBody` of the block form (a comment, a reply, a message, an ask's question and answer, a live-view turn, every other full body) draws as the diagram the document editor draws (`features/refs/mermaid-diagrams.ts`, INFRA-528): `useRenderedMarkdown` runs it last, after the reference, decorate and picture passes, so a `dispatch://` in a node label is never linkified or collected. The renderer is `renderMermaidMarkup` from `@legion/proof-editor/mermaid-render` (upstream's `renderProofMermaidSvg`: its validation, beautiful-mermaid and ELK), and it never runs on the page's main thread: ELK's layout time grows faster than the diagram (on a 2-CPU issue pod, a flowchart of 400 nodes with 2 edges each took 10.7 s on that thread), any comment, ask or message reaches readers who did not choose it, and a document is where diagrams get edited. It runs in one shared Web Worker, `features/refs/mermaid-render.worker.ts`, created with Vite's `new Worker(new URL(…), { type: "module" })` once a body or a document holds a mermaid block not drawn before, so the entry, the headless engine's chunks and the editor's chunk carry none of the renderer (only the worker's bundle does; `web/vite.config.ts` adds each worker bundle's inputs to `THIRD_PARTY_NOTICES.txt`). A document's mermaid blocks (the live editor, a read-only document, a past version in `VersionView`) draw through the same worker, queue, time limit and cache (INFRA-532): the editor's `drawMermaid` (`features/doc/editor.ts`) is `requestMermaidDrawing`, which the editor's code-block view asks once when a block opens and again 300 ms after the last edit of its source, keeping its last drawing until the answer replaces it; with no worker (one that failed to start or load, before the block asked or while it waited) the answer is `{ unavailable: true }` and the block shows its source, dropping any drawing of an earlier source. Every focus in a document runs again once the drawing around its target has settled (`refocusWhenSettled`, in `features/doc/refocus-when-settled.ts`): no source waiting (`mermaidDrawsSettled`) and the editor's own drawn root, which a hosted decision card or a picture drawing after the editor opened grows, quiet for 200 ms. It is dropped if the reader pressed, scrolled, touched or typed since, so the focus lands on its target whether or not a diagram or a card above it had drawn: in the live document `ProofDocument`'s `focusInEditor` runs a block link (`#b-<id>`), the margin bridge's `focusMark` and `focusBlock` (a comment or ask link's quote, a selected card's mark or block) and the open-decision link and block references badge, a newer focus replacing an older one's re-run; `VersionView` does the same for a past version's highlighted mark. The worker draws one source at a time, in the order they were asked for, and the page turns its markup into an element with `mermaidSvgElement` from `@legion/proof-editor/mermaid` (a stricter allowlist sanitizer, `packages/proof-editor/AGENTS.md`). A source the worker has not answered 5 seconds (`RENDER_TIME_LIMIT_MS`) after it started on it is refused with `Unable to render Mermaid diagram: it did not finish within 5 seconds`, and the worker is terminated, which is the only way to stop a layout already running, and a fresh one takes the sources still waiting; how large a diagram meets that limit depends on the reader's machine. The two time-limit browser rows (`e2e/mermaid.e2e.ts`, a comment's and a document's) hold the worker so it never answers, so their refusal depends on no machine's speed. The worker clock starts once its module has loaded (it posts `{ ready: true }`), never while its chunk downloads. A worker that fails to start or load (its `error` event, or a constructor that throws) leaves every block as code (each waiting draw, and each later request for an uncached source, gets `{ unavailable: true }`) and logs one `console.error`, and no worker is started again until the window's next `online` event, so a live-view turn re-painted every frame does not retry or log on each paint. Inside the worker, `self` reads as undefined while a source draws: ELK's bundled engine, finding `self` and no `document`, would take the worker for an ELK worker of its own and refuse every flowchart, and beautiful-mermaid's own `delete globalThis.self` does not reach a browser's `WorkerGlobalScope.prototype` accessor. The block becomes a `figure.dispatch-mermaid`: the SVG, mounted by `showMermaidSvg` (`@legion/proof-editor/mermaid`, which the editor's code-block view uses too) in an open shadow root, so the diagram's own `<style>` reaches only that diagram and its marker ids resolve inside it, then on a refusal a `role="status"` line `Unable to render Mermaid diagram: <reason>`, then the original code block in a `Mermaid source` disclosure, closed the first time a diagram draws, open again on a later paint of a source the reader opened, remembered under the same entry limit as the drawings, closed again once its source changes, and open on a refusal. `.dispatch-mermaid` in `styles.css` gives the SVG `--bg-color: transparent` and `--text-color: currentColor`, on the figure rather than `.dispatch-markdown`, which also sits inside documents. What stays code: `MarkdownPreview` and the `inline` variant, which write no `<pre>`, and a mermaid block whose fence the parser still reads as open (checked by re-parsing the body with a probe line after it, inside the last line's quote or list item), which is still being streamed (the live view re-parses every frame, and drawing each frame would run the renderer and flash a refusal). Drawn results (the sanitized SVG, cloned per use, or the refusal) are cached by source, the newest 32. A cached source draws in the layout effect that painted its body; every other one shows as code and is drawn when the worker answers, after the layout effect, so the content below a diagram moves once when it first draws. `drawMermaidDiagrams` returns the cancel for those late draws, which the layout effect's cleanup runs: it takes that call's own draws off each source's waiting list, so a body that re-painted or unmounted is never drawn into and holds none of its DOM while the worker works. A source no body waits for any more is then dropped and never sent, and one the worker is drawing is stopped (the worker terminated, nothing cached for it, a fresh worker taking the sources still waiting), so a reader who leaves a page of slow diagrams does not wait for them on the next; that check runs on a microtask, so a body re-painted with the same block in one commit (the live view, every frame while text after a finished diagram streams) keeps its source's place and the draw in flight.
+
+A typed block in a body is drawn as a document draws it (INFRA-526). `markdown-engine.ts` hands the headless engine a `renderBlock` (`features/doc/typed-block-drawing.ts`, below), which becomes each typed block's `toDOM`: a callout gets `renderTypedBlock`'s header (the block's name, its `kind` badge and its `title`), and an `ask` block gets the decision shell (`renderAskBlockShell`). `useRenderedMarkdown` mounts the read-only decision card into the shell's slots. That is `TextAskBlockCard`, `AskBlockCard` with `readOnly` and `detached`, which the app provides through the `TextAskCard` context (`features/refs/markdown-cards.ts`). It is a context because `AskBlockCard` → `AskOptionRow` → `MarkdownBody` → `useRenderedMarkdown` would be an import cycle. The hook finds each shell's slots with `askShellSlots` and writes the shell through `applyAskBlockShell`, which folds the source option list (`data-dispatch-ask-options="rows"`), only on a shell where it mounted a card, so a body with no provider keeps the options as a list (INFRA-612). `detached` drops the malformed card's "re-activates once it parses" line, since no server reads a body. The read-only parse (`remarkReadOnlyDirectives` in `@legion/proof-editor`) drops every attribute the block schema marks `server` from a typed block it keeps, so each reads at its default: no server wrote one in a body, so a body never shows an answer, a choice or a copy source that its author typed. The header and card rules in `styles.css` apply under `.dispatch-markdown` as under `.dispatch-doc`. The `inline` variant, `MarkdownPreview` and `useMarkdownHeadline` draw no header or card and stay one line of text.
+
+An open ask card lists every session the server routes the ask's answer and replies to, under `Reaches N` (`features/inbox/AskRecipients.tsx`), which sits below the answer form and is folded at rest behind the shared `DisclosureToggle`: routing is chrome a reader opens less than once per visit, and the count alone answers the common question, so it never sits between the question and its options (LEGION-67). Four groups make up that set, and each session is listed and counted once: as a follower, else as a subscriber, else under the claim, else under the route, so it keeps the control it has, and `Reaches N` is the number of distinct sessions reached now (`reachRows`, a pure function the card renders from). First the ask's followers — the session that opened it, every session that replied, and any session a human added — read from the same `GET /asks/{id}` thread fetch the card already makes; each has an `Unfollow` control that confirms in the shared `UnsubscribeDialog` before `DELETE /asks/{id}/followers/{session}`. Then, from the same thread's `claimant`, `route`, `route_status` and `route_holder`, the session holding the issue's claim under `via claim` (Dispatch's claimant route) and the session the route reaches under `via route` — `route_holder` when the server names one (for `role:<name>`, the session holding the role, whose row reads `via route (role:<name>)`), else a `session:<id>` route's own session, which the listener does not list — through the same once-only rule, so a role holder that is also the claimant, a follower or a subscriber is listed and counted once; only while no session holds a role route (`route_holder` null) does the card show the bare `role:<name>` row, left out of the count since it reaches nobody now: a role is not an agent, so the row has no running state and carries the issue's `Nobody holds it right now` marker (`UnreachableRouteMarker` in `features/issue/RouteReach.tsx`) instead. While `route_status` is `unknown` (the Envoy listener did not answer, so a null `route_holder` says nothing) the route's row claims neither that the route reaches someone nor that nobody holds it: it carries the issue page's `Route reach unknown` marker and title (`RouteReachUnknownMarker` beside it, shared with the header); a `session:<id>` route still lists and counts its session, which is published to either way and keeps the running state the registry gives it, and a role route is the bare `role:<name>` row, left out of the count, with the toggle reading `Reaches N + route (unknown)` (`reachLabel`) so the count never says the route reaches nobody. Neither row has a control, since the claim and the route change on the issue, not on the card; a follower that is also the claimant or the route's session (a role's holder included) stays a follower, and its Unfollow confirmation says a person's answer and replies `still reach them through the claim` (or `the route`) instead of promising delivery stops. While a role route's reach is unknown and no holder is named, any session may hold the role, so a follower the card does not otherwise know to be reached is told a person's answer and replies `may still reach them through the route: Dispatch could not tell who holds it` rather than that delivery stops. Then, under `via issue subscription` (or `via document subscription` for an ask on a project document), every session whose persisted Envoy interests cover the owner's topic family and that is not a follower — the same rows as the issue header's Subscribed agents panel, read through the same `["subscribers", <key or artifact id>]` query (`GET /issues/{key}/subscribers` or `GET /artifacts/{id}/subscribers`, both needing the `person` scope, so the card only asks once `/auth/whoami` says the principal is a user; each fetch is two Envoy listener round trips, so the card holds it fresh for 30 s rather than refetching on every mount and focus, and `nav.e2e.ts` exempts it from the Inbox no-per-issue-request guard) — when that fetch fails the card shows `Subscribers unavailable — Envoy listener unreachable.` with Retry under the heading rather than passing the follower count off as the whole set; each removable row has an `Unsubscribe` control that confirms and then `DELETE /issues/{key}/subscribers/{session}` (or the artifact route), the route that actually stops delivery, and whose confirmation says a person's answer and replies `still reach them through the claim` (or `the route`) when the subscriber is the claimant or the route's session (a role's holder included), or `may still reach them through the route` while that unknown role route names no holder, while a row subscribed only through a wider topic (`notifications.dispatch.>`) names that topic and has no control. Unfollowing a session that is also an issue subscriber moves it into the subscription group rather than off the card: the ask still reaches it, and its Unfollow confirmation says so (`still reach them through the issue subscription`) instead of promising delivery stops. Every session row — follower, claimant, route session or subscriber — draws its session through `AgentName` (`features/refs/AgentName.tsx`): its name, its running state from the agent registry (not the subscribers endpoint's `live`, a second snapshot of the same listener list), and its live link; the confirmations name it through `useAgentText`, and the removed session is told. Every group refreshes over the live socket's event feed, so a session that unfollows, re-follows, or is unsubscribed from the header appears or leaves without a reload, and every cached ask thread on an issue refetches when its claimant or route moves, so a claim or route change moves its row too: on `issue.claimed` and `issue.released`, and on an `issue.updated` or `issue.closed` whose `changed` names `route` (one PATCH that sets the route and closes the issue emits `issue.closed` alone; a close that releases a claim appends its own `issue.released`; an event without `changed` refreshes them, and `issue.deployed` moves neither). No query key names an issue's threads, so the rule tests each cached `["ask-thread", id]` for its ask's issue, and a thread still on its first load is judged on the response that lands (`askThreadsIssue` and `askThreadsOn` in `api/event-refresh.ts`). An Inbox body in flight when such an event lands still names the old claimant and route, and a card that mounts from it later would seed its thread (held with an infinite `staleTime`) from that, so the feed also marks the issue with the in-flight Inbox generation (`markPendingAskThreadsOnIssue` in `features/inbox/ask-thread-freshness.ts`, beside the per-ask marks): a card whose ask is on a marked issue reads `GET /asks/{id}` instead of trusting its row (`hasPendingAskThreadInvalidation`), its own read leaves the mark for the issue's other cards, and only a newer Inbox response that arrives clears it (`e2e/recipients-claim.e2e.ts`, `__tests__/sse.test.ts`).
+While Envoy's agent list is refilling the card shows the shared refilling line there instead (`QueryError` takes the failed read and says it as status, not alert), and in either case its toggle reads `Recipients` rather than `Reaches N`, since a subscriber read that failed counts nobody; every recipient's running state (`AgentName`) reads unknown, never not running, while the agent list's latest read failed.
+
+`features/refs/RefPreview.tsx` is the one hover card for every reference: resting the pointer on a `dispatch://` anchor in a Markdown body, a Proof document link mark, a board card, a list row or parent pill, an Inbox owner link, a child row, or a search result for 300 ms (or moving keyboard focus onto one) opens a `role="tooltip"` card, linked to its trigger by `aria-describedby`, that shows the target — issue: key, title, status, priority, labels, open-ask count, and the first three rendered lines of its spec; document: owner, name, latest version, and the first three rendered lines of its text; ask: the question in two rendered lines, state, option count; comment or message: author and the first three rendered lines of its body. Each of those texts is Markdown and renders through `MarkdownPreview`, formatted and then clamped. The card is a single click-through to the trigger's href, never interactive, so an agent it names (an author, an agent reference's session) is `AgentName`'s `static` variant, its name and running state with no link of its own ("How an agent is shown", below). The hover itself calls `prefetchReference` (`reference-target.ts`), which warms what the card will read: for an issue its full read (`["issue", K]`) and its primary spec's text, which no link reads; for an issue's document the issue summary (`["issue-summary", K]`), for a project document its summary (`["doc-summary", P, slug]`), then that document's text once its id is known; for an ask, a comment or a message its own read (`["issue-message", K, id]` for a message). So the card opens populated and otherwise shows `RefLink`'s short form, never a spinner. Every trigger is an element carrying `data-dispatch-ref` (React links spread `referenceTriggerProps(route)`; `collectReferenceAnchors` tags Markdown anchors) or Proof's `data-dispatch-href`; one `RefPreviewHost` in the shell owns document-level `pointerover`/`pointerout`/`focusin`/`focusout` listeners for all of them, so anchors React never rendered are triggers too, keeps exactly one card open in a module-level store, and renders it into `document.body` (fixed, clamped to the viewport, flipping above the anchor when it will not fit below). Focus opens the card only when the trigger matches `:focus-visible` (the browser's own keyboard-versus-pointer verdict); a touch pointer or a held button (drag-selection) never opens one, so a tap follows the link as before. The anchor and its card are one hover zone (`inHoverZone`): a `pointerout` that leaves the zone gives the pointer 150 ms to come back, a `pointerover` that re-enters it keeps the card whether or not a button is held (so a drag-selection that leaves the reference and returns keeps it), and a move that lands directly on the other never leaves the zone, while one that crosses the 6 px gap between them is carried by the same 150 ms. Focus has the same exception of its own (`onFocusOut` skips a `focusout` whose destination is inside the card); leaving the zone for 150 ms, blur, Escape, any click, or the anchor leaving the DOM closes the card, and so does scrolling — unless the anchor holds keyboard focus (focusing it may itself scroll), in which case the card follows the anchor.
+
+A reference to one block of a document (`dispatch://KEY/spec#b-<id>`, `…/artifact/<slug>#b-<id>`, `dispatch://PROJECT/artifact/<slug>#b-<id>`, optionally pinned `@v<N>`) is a spec, artifact or project-document route carrying `block`, its `{ id, pin? }` (`BlockTarget`); one to a block of a comment or issue message (`dispatch://KEY/comment/<id>#b-<id>`, `dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<id>`, a comment's optionally pinned `@v<N>` to a revision of the comment, and `dispatch://KEY/message/<id>#b-<id>`, which takes no pin) is a comment, message or project-document comment route carrying `block` (`itemOfBlock` names its item). The block grammar lives in `features/refs/block-reference.ts`: `parseBlockReference` reads a reference's fragment as the server's `text.parseBlock` does and `withBlock` admits only a holder that can have blocks - a document at no version, a comment (a project document's at any version, since a comment's blocks are its own), an issue message unpinned - which `parseNodeReference` (`routes.ts`) composes; `referenceRouteFromHref` and `nodeRouteFromHref` read a live document page's `#b-` fragment as that block, never a version page's (a version of the spec, `/spec?v=N`, is the spec's artifact at N, as the server and `dispatch read` read the page), and a comment's or message's page's as a block of that item; a document page's `?comment=` names the comment whatever its fragment, since the document writes its own block's fragment there. The graph node a route names is `features/refs/target-id.ts`'s: `routeTarget` is its target id (Go's `text.TargetID`, `comment/<id>#<block>` for a comment's block) and `referenceTargetKind` its kind, `"block"` for a block. The readers of plain text - `parseDispatchReference` and `referenceRouteFromHref`, behind bare-text linkification (`linkifyDispatchRefs`, `shortenReferences`), a URL an author left as text in a rendered body (`collectReferenceAnchors` of an anchor whose words are its target, `isTextUrl`: what GFM autolinks, bare or in angle brackets, `<dispatch://…>`, and a link whose words are its own target such as `[dispatch://X](dispatch://X)`, the target read from Proof's `data-dispatch-href` where it moved it) and the composer's pills and unfurls (`composerReferences`) - hold a route to the bounds the server indexes by (`routeInBound`: a target id of at most `MAX_REFERENCE_TARGET_BYTES` and a block id of at most `MAX_BLOCK_ID_BYTES`, both counted by `utf8Bytes`), so past them an `http(s)://` URL stays the plain link it is, as the server keeps it a URL, and a `dispatch://` one becomes its words as plain text, as a bare one renders, with no link and no hover trigger. Every other reader draws or opens a node and reads it whatever its length: a node's reference the server returned (`parseNodeReference`), a search hit's href (`nodeRouteFromHref`), a copied block's source document, a picture's source (`pictureReference`, `collectPictureAnchors`), a link target an author wrote (`collectReferenceAnchors` of any other anchor, a Proof `dispatch://` link with words of its own among them, and `RefPreview`'s `data-dispatch-href`) and the document view's link click. Every link to a block writes its fragment through `blockFragment` (`block-reference.ts`), the id as `encodeBlockId` (`@legion/contracts`) writes it. The reference's data is the block's graph read, `referencesQuery` (`GET /api/v1/references?to=<reference>`, `reference-target.ts`), whose node carries the block's whole `text` and, pinned, its `pin` (a block of a comment or message is read from that node alone): `useReferenceTarget` titles the link with the headline of `pin.text` for a pinned reference and of the node's `text` otherwise, and `RefPreview`'s `BlockPreview` shows `<owner> · <document name>` (for a block of a comment or message, `<owner> · Comment` or `Message` and its author), then, pinned, `Version N` and one state line (`Changed in version M`, `Unchanged since version N`, `Removed in version R`; `Revision` and `revision` for a comment's block), then that text; a read that fails shows the short form, as every other card does. An unpinned block link opens its live document, comment or message at the block; a pinned one opens version N of its document (`buildReferencePath`), an issue's spec under its own slug once `useReferencePath` has read the issue, the live spec at the block until then, since a version's stored markdown holds no block ids to land on, and a pinned comment block opens the live comment at the block, a comment's revisions having no page of their own; a block of a project document's comment opens that comment (`?comment=<id>`, no fragment), so the document never reads the block's id as one of its own.
+
+A document's approval (`features/doc/ApprovalChip.tsx`) is a human review pinned to a version: the header of an issue document, the issue's Spec header, and a project document page show a chip (`Awaiting approval`, `Approved v12`, `Approved v12 · changed since` when edited after approval, `Changes requested`) that opens the review history, plus `Approve` (`Approve v<latest>` when stale) and `Request changes` (reason required) controls that `POST /artifacts/{id}/reviews`; draft documents render no chip or approval controls. A request that covers two documents - a spec and its issue's Verification document, which `dispatch request-approval --include-verification` opens as one ask - names both on the chip of either (`Awaiting approval of spec.md v3 and verification.md v2`, from `approval.documents`), and the one answer writes a review on each. A plan is approved by its plan review, never by a person (`dispatch plan-approve`, `POST /artifacts/{id}/plan-reviews`), so its chip reads `Approved by plan review v12` (`approval.kind`) and `dispatch request-approval` on it is refused `409 PLAN_APPROVED_BY_REVIEW`. An agent's `dispatch request-approval` opens an ask of `kind: "approval"`, which the Inbox card renders as `Approval requested` with two fixed options and no Other row, requiring a `Reason` when `Request changes` is chosen; answering it is the same review. Its question is `Approve <name> (version N)?`, or `Approve <name> (version N) and <name> (version N)?` for a request naming two documents, followed by the requester's summary of what the human is approving. A request on a document a human approved before carries that approval (`ask.approval.approved`: its `version`, `at` and `by`), and the card, in both variants, puts `Approved at version N on YYYY-MM-DD by <name>.` and a **Show diff** control (`features/inbox/EarlierApproval.tsx`) directly under the question: pressed, it fetches the approved version and the version the request names (the document page's `["artifact", id, "version", n]` reads) and shows their `ChangeView` with every decision block cut out of both (`features/doc/decision-blocks.ts`, `cutDecisionBlocks`, line-based and keeping fenced code whole, since a block written as an example inside a fence is text; the Go server's `CutDecisionBlocks` cuts the parsed tree, and `packages/contracts/fixtures/decision-blocks/` holds the fixtures both must agree over, `fenced-example.md` among them), so the human reads what changed outside the blocks he himself decided; nothing is fetched until it is pressed, and a first request, on a document nobody has approved, shows neither the line nor the control. A human's answer to a decision block can carry his approval to the version it writes (the answer was the whole change since the version he approved), so no approval request follows that answer; a carry on one document of a request that covers two closes that request only once both stand approved at the versions it names. A document version moves that open request in place - a new version of either document it names - preserving its thread and filing it under Waiting on agents until the agent hands it back with another `dispatch request-approval` call. An agent requests approval rarely, only for a spec with no open decision blocks whose every point the human has already agreed to and whose current version they have not yet approved (Legion's design gate among them), so nothing about it is prominent.
+The chip's pill wraps and shrinks (`approvalPillClassName` in `web/src/components/Pill.tsx`, the one class string the `Not requested` span shares): the two-document label is wider than a 320 px phone, and a pill that could do neither pushed the page sideways at every width a phone lays out. It is clamped by nothing and carries no `title` of its own, so a phone reader reads the whole label.
+
+A root issue of a project whose Legion deployment gates design-gate steps reads its gate step by step as well (`features/issue/ApprovalSteps.tsx`, drawn in the header's state row after the one chip's place): one line per step the deployment published (`Project.gated_steps` on `GET /api/v1/projects`, in the order it publishes them), each naming the document that step reviews - `Decisions`, `Verification`, `Spec` (`features/issue/gated-steps.ts`, `STEP_LABELS` and `gatedStepEntries`, which takes each document by the id the issue names for it) - and then that document's own approval, as the same `ApprovalChip` with the same words. A step whose document the issue holds none of, or whose document has no approval or a draft one, reads `Not requested`: nobody has asked for that document to be reviewed, and the dashed pill is a `span`, since there is no review history to open. `Approve` and `Request changes` ride the primary document's line alone, under the condition the single chip has always used, so the header carries one pair however many steps it draws, and one press of it answers a request covering two documents once, as above. Each step whose document stands at `changes_requested` adds one wrapping line beneath the list (`data-approval-step-reason`) naming the step, the reviewer, the version and the whole reason, which is free text no header row can hold and which a `title` would keep from a phone reader. The primary document's own chip never leaves the header: `IssueHeader.tsx` draws it, unchanged, whenever no drawn step entry holds that document (`entry.document?.id === issue.primary_artifact_id`, asked of the entries rather than of the gate's words, since which document a step reviews is `gated-steps.ts`'s to say). That covers the issue with no steps at all - a child issue (only a root stands in the gate), a project that publishes no list or an empty one, and a project row the page has not read yet or whose read failed, since the header never claims a gate it has not read - and equally a gate like `["decisions", "criteria"]`, which names no step for the spec: the steps then follow the chip in the row, so a reader meets the primary document's state first and then the gate's steps, and an open request on that document can still be answered. The list is the shell's own shared `["projects"]` query, which `api/event-refresh.ts` invalidates on `project.updated`, so a publish by the daemon redraws the steps with no reload and the issue page makes no per-issue read. `e2e/gated-step-approvals.e2e.ts` proves each of these cases in a browser, one row per case, the longest approval label among them at 320 px and 390 px.
+
+`features/doc/ChangeView.tsx` is the one view of what changed between two versions of a document's markdown **source**: `VersionDiff`, which drew whole changed lines, is gone, and the paragraph below is the other mechanism, over the rendered document. It cuts both texts into blocks with `features/doc/document-blocks.ts` (`splitBlocks`, which keeps a fenced code block and a `:::ask` block whole by the same fence rules `cutDecisionBlocks` reads, one scanner for both), pairs the two block lists with `diffArrays` and word-marks each changed pair with `diffWordsWithSpace` (`features/doc/change-set.ts`, `pairBlocks` and `changedWords`, which the reading pane's marks share, so both surfaces read the same pairing and the same word-diff functions). They do not mark the same words: this view pairs the blocks' markdown source and `change-marks.ts` pairs the rendered blocks' `textContent`, so a formatting-only change (`**bold**` added) is `changed` here and unchanged in the approval column. That word diff is bounded (`maxEditLength`, 800 edits): one block is a whole list, table or fenced code block, and the pairing pairs by position, so two large unrelated blocks would otherwise hold the main thread for seconds (1000 words 0.7 s, 3000 words 7.7 s, 6000 words 39 s). A pair the diff cannot finish inside that bound is the whole of the older block removed and the whole of the newer one added, which both surfaces draw as the one struck through beside the other. A changed block carries `data-change="changed"` with its lost words in a `del` and its gained words in an `ins` and the rest of it unmarked, a block only the older text holds is `data-change="removed"` and struck through where it stood, and one only the newer text holds is `data-change="added"`. Every run of more than two unchanged blocks hides behind one `Show N unchanged blocks` control, one unchanged block of context staying on each side of every change, and the heading of the section a change sits in is drawn above it (`data-testid="change-section"`) where the text above does not already show it. Its three call sites are the card's `Show diff` (`EarlierApproval.tsx`), the version history's From/To compare (`features/artifacts/ArtifactDetails.tsx`) and the document page's version view (`ProofDocument.tsx`'s `showDiff`), and its root is `data-testid="change-view"`.
+
+The same change, over the rendered document rather than its source, is drawn by editor decorations: one `ProofEditorHandle.setChangeDecorations({ text, widgets })` (`packages/proof-editor/src/editor-change-decorations.ts`), beside `setActiveMarks` and `setActiveBlocks`, so no class is written into editor DOM. One call carries the whole set and replaces the last one, because a host computes both lists from one `ChangeMarks`. A text decoration names a top-level block by its index and, optionally, a `range` of character offsets inside that block's own text - the two ends are one field, so a decoration with only one end cannot be written: with a range it is a `Decoration.inline` over those characters, with none a `Decoration.node` over the whole block. A block widget names an index and draws text the document no longer holds as a `Decoration.widget` - before the block for a block removed since the baseline, and at a character offset inside it for a run of words the block lost. `features/doc/change-marks.ts` computes both from a baseline markdown text and the editor's own document (`changeMarksAgainst`): it parses the baseline with the headless engine, pairs the two sides' block texts through `change-set.ts`, and names the four classes `dispatch-change-block`, `dispatch-change-added`, `dispatch-change-removed` and `dispatch-change-removed-words`, which `styles.css` draws. `features/doc/VersionView.tsx` applies them when it is given `changeBaseline`; the document page passes none, and the Inbox's reading pane is the one surface that does.
+
+Each open ask card (`features/inbox/`) keeps the full clarification exchange directly under its question: its two newest replies appear newest first, and **Show N more replies** (`aria-controls` names the older-replies list it reveals) reveals the older replies below them; **Show fewer replies** restores the two-reply view. The one answer composer still serves both outcomes. Urgency appears as a colored left border; blocking and high asks also have a small top-border notch, while every urgency remains in the article's accessible name. The question is the card's headline at 15 px medium; one provenance line follows it and nothing else separates it from its options (an approval request's earlier-approval line and its `Show diff` control sit between the question and that line, the one exception). That line reads turn (`data-testid="turn-<id>"`, the only part of it a reader acts on), author, time, and the ask's own `dispatch://` reference. Below a 24rem line (`@container`, a phone or the 280 px margin) the turn label takes a line of its own and the author, its live link and the time share the next, so the author's name is read whole beside the `control` variant's 44 px live link (`e2e/agent-name.e2e.ts`). A session author's own handles - its ID, its title, its tmux target - fold behind the author chip, which is a button (`aria-expanded`) that opens them onto a `basis-full` row of the same wrapping line: five 44 px copy controls cannot share one row inside a 390 px phone or a 280 px margin without pushing the reference past the card's edge, and a session identifier is chrome a reader wants perhaps once a week. The chip is `AgentName`'s `control` variant ("How an agent is shown", below): the button keeps the agent's name and its handles, and the agent's live link sits beside it, outside the button, with the running state before it. Each handle copies through the shared `components/CopyButton.tsx` (`Copy <what> <value>`), and the reference copies through `features/refs/CopyRefButton.tsx`: each confirms a successful copy for 1.5 s and, when neither clipboard path succeeds, prints the value it tried in a selectable `<code>` (or says to select the text when the button already shows it). `CopyRefButton` is the one copy control for a node's reference — the same quiet glyph over `CopyButton`, taking the node's `DispatchReferenceRoute` and building the string with `buildDispatchReference` — and it is mounted wherever a node is shown: the issue header (with `primary` = the issue key, so a click copies `CORE-12` and a Ctrl/Cmd-click copies `dispatch://CORE-12`; the button's name says so), every `AskCard` (`dispatch://CORE-12/ask/<id>`, or `dispatch://CORE/artifact/<slug>/ask/<id>` for a project-document ask — Inbox rows carry `document`, the margin passes its `owner`), the `AskBlockCard` header, the document headers (`SpecToolbar`: `dispatch://CORE-12/spec`, or `dispatch://CORE-12/artifact/<slug>@vN` when a historical version is shown; `ArtifactHeader` on issue artifact and project document pages likewise, via `documentRoute(artifact, version)` in `refs/routes.ts`), Artifacts-tab and project Documents rows, margin thread comments (`dispatch://…/comment/<id>`, `itemRoute` picks the issue or document form), and Conversation turns (`dispatch://CORE-12/message/<id>` for a message or targeted message, `dispatch://CORE-12/comment/<id>` for a comment turn). `RefPreview` stays non-interactive; a `CopyButton` given a function `value` picks what to copy from the click's modifiers and names itself through `label`. Option-bearing question asks append an **Other** row; selecting it records no fixed option and requires free text. A chosen row takes the same `selectedCardBorder`/`selectedCardBg` the recorded answer shows afterwards, so choosing and having chosen read alike. A human can add free-text context to any fixed option, then selects **Answer**, or **Ask back**; question-shaped free text with no option chosen is offered as a clarification first, while answered asks retain their separate **Reply** composer (`AskReplyComposer`). Where the thread is collapsed (the Conversation and decision blocks; the margin's compact cards keep the inline thread and its composer) it sits behind a **Write a reply** control, named apart from the form's own **Reply** submit button, which renders that composer directly after itself and names it in `aria-controls`, so focus stays on the control and the next Tab lands in the field. The composer's unsent draft and its send belong to the ask, not to the card (`features/inbox/reply-drafts.ts`, a store every composer for the ask subscribes to, and the `["ask-reply", <ask id>]` mutation key): two composers for one ask on one page (the margin beside a Conversation card or a decision block) show the same draft, a composer that remounts (switching the margin from Comments to Pinned and back, or closing and reopening **Write a reply**) picks the draft back up, and while a reply is out every composer for that ask, including one mounted since, shows it disabled, so a remount mid-send cannot post it twice. A sent reply, an emptied field, or the ask resolving drops the draft. Moving an answered ask from **Needs you** to the decided list does not remount its card (`CommentsTab` keys both groups in one list). Approval asks keep their server-defined fixed choices and no **Other** row; a human to-do is an ordinary question with whatever options its asker chose, rendered through the same rows as any option question. Every Dispatch-owned multi-line input keeps Enter for a new line and submits with Ctrl/Cmd+Enter.
+
+`AskCard` has `full` and `compact` variants, and both render the ask's fixed options as the same `AskChoiceRow` radio / checkbox rows (`features/inbox/AskOptionRow.tsx`, shared with `AskOptionList`): the options `<fieldset>` and the label/description column are both `min-w-0` (a fieldset's UA default is `min-inline-size: min-content`, so without it one unbroken identifier widens the whole fieldset past the card), and `MarkdownBody`'s `break-words` then folds the word, so a long label wraps inside a 280 px margin or a phone sheet instead of running past the card. The Inbox uses the full variant, whose free-text field and Answer / Ask back row are always shown. The Conversation timeline, the margin, the responsive review sheet, and the decision blocks of a live document (`AskCard`'s `frame="block"`, below) use the compact variant, which folds that field and row behind **Add a note or answer in your own words**, shows a lone Answer button under the rows once an option is picked, and opens the disclosure itself when the pick needs words (Other, or an option requiring a reason). The Conversation timeline is on that list because the margin already shows an issue's open ask in full beside the document: a second full composer in the timeline is the same question, options and answer controls twice on one screen, and the timeline is the record (LEGION-67). When the picked option needs text (`Request changes` on an approval), the field is labelled `Reason (required)` and takes focus (in the compact variant, again each time the disclosure reopens), and the disabled Answer button carries an `Add a reason to send <option>` helper and `title` until a reason is typed.
+Every non-block `AskCard` with a quote anchor names its anchor document as a link above the cached quote; an anchor block adds the document's `#b-<blockId>` fragment, so Inbox, margin, review sheet, and Conversation readers have the question's context in place.
+
+Each answer includes the nullable `edited_at` revision the human reviewed. On an `ASK_EDITED` response, the card reloads the latest question, keeps the draft text, clears its selected option, and requires explicit reconfirmation, so the next answer is to the new wording and carries its revision. `useAskAnswerForm` decides what a failed answer shows (`answerFailure`), and the card renders one `QueryError`: a refusal the same answer is refused with again - `ASK_CLOSED` (answered elsewhere), `ASK_RESOLVED` (closed or retracted), `ASK_EDITED`, and `CAP_EXCEEDED` (even the answer's server state would leave the document's live state past what the server can decode; the card shows the server's reason) - says why and offers no Retry; any other failure says "Could not save your answer." with a Retry.
+
+An answer stays editable by the person who gave it. Every completion card offers **Change answer** to the answerer of a non-approval answer alone (`canChangeAnswer` in `useAskAnswerForm.ts`: the recorded `answer.user` is the viewer by `isViewer`, `features/refs/actor.ts`); it reopens the card's form seeded with the current options and note, with **Save answer** and **Cancel**, and the send carries `expected_answer_at`, the current answer's `at`. A compact card whose change seeds a note opens its note disclosure, so a seeded note is never sent hidden. On success the card appends the new answer to its `["ask-thread", id]` read and invalidates it and `["me", "answers"]`, and `AskAnswerHistory` (`AskCompletionCard.tsx`) shows `Changed <time>` over **Show N earlier answer(s)**, oldest first, from the thread's `answers`. `ASK_ANSWER_CHANGED` (someone changed it since the card loaded), `NOT_ANSWERER` and `ASK_APPROVAL_REVIEW` are refusals the same send meets again: each closes the form, reloads the thread and shows the current answer under the refusal, with no Retry. An `ask.answered` carrying `previous_answer` reads `Answer changed: <question>` in event descriptions, `changed the answer to “<question>”` as a Conversation activity line, and `EventBody` strikes the replaced answer through.
+
+`/answers` (`features/answers/AnswersPage.tsx`, `ANSWERS_PATH`), linked as **Answered by you** from the Inbox page's heading (the drawer stays a peek), lists every answer the signed-in person gave and every reply they wrote on an ask, newest first: one `useInfiniteQuery` on `["me", "answers"]` over pages of 50 of `GET /api/v1/me/answers` with **Show more**, which `api/event-refresh.ts` refreshes on `ask.answered` and on an ask reply's `comment.created`, so every loaded page refreshes together. A row (`data-answer-row=<ask id>`) shows its time, its issue or document (a link to the issue or document itself), the question, the options and note it chose or the reply it wrote, `Changed since` once the answer is no longer the ask's current one, **Open**, which follows the server's `ref` (an issue ask's item route `/issues/<KEY>/asks/<id>`, which selects an anchored ask on its document and focuses an unanchored one's Conversation turn; a document ask's `?ask=` link), and **Change answer** on a current non-approval answer. That opens the ask's `AskCard` in `mode="change"` (`initiallyChanging`) as a sibling item, `<li data-answer-card=<ask id>>`, under the first answer row naming the ask (a reply the person wrote on it later sorts above and is never that row), in the one flat keyed list: a card nested in its row would remount, and reopen its form, when the change puts the new answer's row above it, so the card stays open after Save with both answers.
+
+The Inbox lists two kinds of row, and `features/inbox/list-row.ts` is the one place either is read through. An **ask** row is an open ask of the one `api.getInbox()` read (below). A **thread** row is the reader's own, in two shapes: a **Reply** row is a thread they wrote in - an ask's thread, a comment thread, an issue message thread - that somebody else has written in since they last read it, and an **Agent** row is a one-off message they sent an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) that the session has replied to. Both come from one unpaged `GET /api/v1/me/replies?kind=reply,agent&state=inbox` (`inboxThreadsQuery`, `["me", "replies", "inbox", "inbox"]`), asked only once `/auth/whoami` names a person since the route needs the `person` scope, and the Inbox page and its drawer are its only readers; a thread stays in that read, read or not, until the reader dismisses it. The reads beside it are the shell's one unread number (`myRepliesCountQuery`, `["me", "replies", "count"]`, read by `useUnreadThreadCount` in a module of its own so the shell never loads the Inbox) and what the reader has dismissed out of the Inbox, which the **Dismissed** view reads a page at a time and nothing else reads at all (`dismissedThreadsQuery`, `["me", "replies", "inbox", "dismissed"]`, `state=dismissed`, `INBOX_DISMISSED_PAGE` rows a page from the cursor the page before it named). `InboxListRow` is a union - `{kind: "ask", ask}` or `{kind: "thread", thread}` - rather than one widened row, because `InboxRow` and `MyReplyRow` share nothing but the facts the list sorts, groups, filters, selects and draws by: `rowId`, `rowLastActivityAt`, `rowPriority`, `rowUrgency`, `rowProject`, `rowAssignee` and `rowType` ask those facts of whichever row they hold, and nothing else reads inside a row, so the bar's counts, the grouping, the sort and the row itself cannot mean different things by one word. `rowId` is what `?item=` carries - an ask by its own id, a thread as `reply:<thread id>` or `agent:<thread id>`, so the two can never collide in the address - and `rowType` is the one vocabulary the Type filter, the Type grouping and the row's own icon share (`question`, `decision`, `approval`, `reply`, `agent`); `rowId` spells a thread row's half through `rowType`, so the address and the icon can never disagree. What a thread has none of is deliberate: urgency is a question's, so every thread row is `none` under Urgency; an Agent row belongs to no issue, so it has neither project nor priority; and a thread row is held by whoever is reading, the route answering nobody else's threads, which is why `rowAssignee` takes the viewer as an argument rather than looking it up again. An ask-only control - the bulk snooze and the reading pane's answer form - is drawn for an ask row alone, so a thread row simply offers none of them. Below the reading pane's width, and in the drawer at every width, a thread row is `ThreadRowCard.tsx`, the card beside an ask's: the kind icon, the title and the time of the last write, then the priority tag and the owner (an Agent row has none, so it names its session), the thread itself drawn exactly as the pane draws it (`ThreadBody`, below), and the three controls a thread row offers - **Open**, which follows the server's `ref` to the thread's root, **Mark read** and **Dismiss**.
+
+One bar sits above the list (`features/inbox/InboxBar.tsx`), a sibling of the scrolling list rather than an item in it, so it stays put while the rows move: **Filter** at the left, **Mark all read** beside it while the list holds a row to mark, **View** at the right end, and under them one removable token per thing the reader narrowed by, with **Clear filters**. **Filter** opens the five fields the Inbox filters by - Priority, Urgency, Type, Project and Assignee - each a searchable `MultiSelect` whose rows carry how many rows that value holds; every field's counts are taken under the OTHER four fields' filters (`filterCounts`), so a value the narrowed list has something for never reads 0 and ticking one never empties the list by surprise. The assignee filter is one of those five and lives inside the Filter control (`AssigneeFilter.tsx`), not in a strip of its own. **View** (`ViewMenu.tsx`) holds four sections: **Sort by** (`newest`, the default, then the same five fields), **Group by** (the same five, plus **Waiting on** and **None**, with `priority` the default), **Show** (**Inbox**, the default - every undismissed row, read or not - against **Dismissed**) and **Thread order** (**Oldest first**, the default, against **Newest first**). Where each choice lives is the point. Everything about the list is in the address - `?sort=`, `?group=`, `?priority=`/`?urgency=`/`?type=`/`?project=` as comma lists, `?assignee=` repeated, `?show=dismissed`, `?item=`, `?agent=`, `?section=needs-you` - each absent while it holds its default, so a plain `/` is the Inbox as it opens and a link carries the whole list (`parseInboxSearch`/`buildInboxPath` in `features/refs/routes.ts`, written with `replace` rather than a push, so a reader trying views out has no history to walk back through; a value this build does not know is dropped rather than refused, the list being a client-side split of what the two reads answered). What belongs to the reader's browser is kept there instead, through `useUserPreference`: the thread order (`inbox.thread-order`), which bands are folded under each Group by (`inbox.folded-groups`, one list of band keys per grouping, so folding `P1` says nothing about the Project bands, and **Later** is the one band folded until they touch one) and the pane's width (`inbox.pane-width`). The page and the drawer read the same preferences, so the two agree; the drawer keeps the address side in state of its own (`filter`/`onFilterChange`, above). `?section=needs-you` keeps the name it was linked by while Group by's value for that same banding is `waiting-on`: the two are one idea, and the address keeps the older name rather than breaking links already written (`INBOX_GROUP_BYS` in `routes.ts`).
+
+`features/inbox/grouping.ts` is every ordering and banding rule, and `dimensionValue` is the one reading of a row's five fields, in the vocabulary the address and the Filter control both write: `P0`-`P3`, an urgency word, a row type, a project key, a login, `none` where the field says nothing about the row, and `unassigned` for the assignee field alone. `sortRows` orders by the chosen field with `none` last and ties newest first - `newest` is the last write in the row (`rowLastActivityAt`), and `rowId` breaks a tie that reaches it, so the order never depends on the order two reads happened to arrive in. `group` bands the sorted rows by one of the five fields, by **Waiting on** (the turn bands, below) or not at all under **None**, which draws one unheaded band; bands are ordered by their own field (P0 first, blocking first, question to agent message, a project by key, a person by login, the turn bands top to bottom), a band is drawn only when it holds a row, and a snoozed ask folds into **Later**, last, under every grouping, since deferring it is the reader saying it is not for now. Each band draws `GROUP_PAGE` (50) rows and holds the rest behind one **Show more**, which adds another 50 to that band alone (`features/inbox/InboxGroups.tsx`, `groupItems`, `data-inbox-show-more=<band key>`; the button says how many it would add and, under a headed band, which band). `groupItems` is a function rather than a component, so every row stays a direct child of the one keyed `<ul>` and a row that changes band moves there instead of remounting under another parent; and the caller decides which rows are drawn, because the same rule has to decide what the keyboard steps through and what the marks count - a folded band draws only the rows whose own snooze write is still in flight.
+
+Reading a thread on screen marks its row read, and the row stays in the list, drawn as read, until the reader dismisses it. `useMarkThreadRead` (`features/threads/useMarkThreadRead.ts`) answers `{ref, unread}`: a ref for the thread's newest write's own element, so a thread taller than the screen still clears, and the ids of the writes the reader has not read among the ones it was handed (`writes`). It watches only a thread in its owner's unread set (`["me", "replies", <owner>]`, `?issue=` or `?artifact=` with `limit=200`, one request however many threads the page mounts; past 200 rows every thread is watched and the server, which writes nothing for a thread it holds no row for, decides) and marks it read through that write's server time once per thread and time. The unread set is that same read's own answer, the row it holds for the thread read by the one unread rule (`unreadWrites` in `features/threads/thread-layout.ts`, beside the fold rule that consumes it: a thread with nothing unread holds nothing, an Agent row names its unread replies by id, and every other row holds whatever was written after its `read_through`), so no surface asks a second time to find out which replies in front of the reader are new. It is built from two pieces the existing read marks share: `features/shell/useDwell.ts`, the on-screen rule (an element three-quarters visible, or filling three-quarters of the screen when it is taller than the screen, for one second, and a rejected `onDwell` re-arming its timer while the element stays), whose one IntersectionObserver every `useDwell` on the page shares, however many threads mount a watch, and which the Conversation's issue read mark (`last_read_seq`) also runs on; and `lib/useSendMarkOnce.ts`, the send-once write (one send per key, two retries, and a final failure forgetting its key only while that key is still the latest), which `features/agents/unread.ts`'s Agents read marks wrap. The routes that need the `person` scope are asked only once `/auth/whoami` names a person (`hooks/useIsHuman.ts`, which the Inbox's thread reads, its unread count and an ask card's subscriber list read too). It mounts on: `ThreadCard` while expanded (the Conversation's comment turn and its phone thread dialog, the margin thread and the margin's phone sheet); the Inbox's own `ThreadBody`, for an unread Reply row (below); and `AskCard` behind `markRead`, which only the ask's own pages set - the Conversation's ask turn, `MarginAskCard` and `AskBlockCard` - so an Inbox ask card, in the page or the drawer, and `/answers` start no unread-set reads of their own. A card that marks nothing reads nothing, so it takes the unread set from its host instead (`unread` on `AskCard`): the Inbox passes the one its own row names, since a card that folded by count alone would hide replies behind **Show N earlier replies** that the row's mark then read unseen. An answer is a write like a reply, so the card watches whichever is newer: its newest reply's own element (`markNewest`, which it passes through `AskThreadDisclosure` to `AskThread`), or, when the recorded answer came after every reply, the answered record (`markRef` on `AskCompletionCard`), marking through the answer's own `at`. And an issue message thread's newest reply (`Thread`, beneath both `MessageTurn` and `TargetedMessageTurn`). A person's own reply or answer needs no mark: the server moves it with the write. Landing on a comment link from anywhere (`/issues/K/comments/<id>`, from an Inbox row, search or a copied reference) opens that comment's thread, so its replies are on screen to be read; a message link already shows its thread's replies, and an ask link focuses its Conversation turn or redirects to the document whose margin card or decision block shows it.
+
+A thread the reader has read stays in the list, drawn as read; only **Dismiss** takes it out. Each shape marks itself from inside `ThreadBody`: a Reply row runs the dwell mark its own pages run (`useThreadRead` over `useMarkThreadRead`, `PUT /api/v1/me/threads/{id}/read` through the row's newest write), and an Agent row marks the unread replies the row names by their ids (`useAgentThreadRead` over `useMarkShownRepliesRead`, `read_replies` on the session's state), never by moving that session's own read mark, so a reply in its live conversation or in another of its threads stays unread. The mark tells the list nothing and holds nothing: the next list read answers with the same row, now read, so there is nothing to hold a row the reader has read on screen. **Mark all read** (`features/inbox/mark-all.ts`) is one `POST /api/v1/me/inbox/read` carrying the read mark of the list read the page is showing (`as_of`) and the list's own narrowing: the kinds the Type filter shows, and the priorities, urgencies and projects the other three show, each absent field meaning every value, and the assignee filter deliberately absent, since a thread row is the reader's own and a selection naming anybody else leaves no thread row to mark. `marksThread` is the server's own scope rule (`inboxReadScope`) read here as well, so the press redraws exactly the rows the request marks: a thread written in since the read mark stays unread, and the button is offered only while the list holds a row this would mark. The press is applied before the server answers - every row it marks stays where it stands and is redrawn as read (`applyMarkAll`) - and the shared unread count drops by what it marked, clamped at zero, so the sidebar's Inbox number and the compact header's Inbox link are both at zero at once; a refusal puts the list read and the count back as they were and the bar says `Nothing was marked read.`
+
+What moves a thread row is `movesInboxThreads` (`api/event-refresh.ts`), over `["me", "replies"]` - the Inbox's own unpaged read, the paged Dismissed read, the unread count and every owner's unread set: a write the server counts (`comment.created`, `comment.answered`, `message.created`, `message.answered`, `ask.opened`, `ask.answered`, `ask.resolved`, an issue-less message among them, which is how an Agent row opens and how it becomes unread), or an issue closing, reopening or being reassigned, each of which moves its open asks' threads into or out of the Reply rows. `thread_logins` names whose rows the write moved - for an issue-less message the thread root's author, whose Agent row it is - so only theirs and the writer's own refresh; without it every such write refreshes, except an `issue.updated` whose `changed` says it moved neither status nor assignee. The viewer's own `user_thread_state.updated` and `user_agent_state.updated` refresh them too, so a thread read in another tab, on the Agents page or in the live view is drawn as read in this list as well, and a thread somebody else writes in comes back out of the Dismissed view. Beside that rule, a conditional target (`inboxThreadRowsOf`) refreshes the listed reads when a listed row's issue moved its title, priority or assignee; it tests the rows it holds and needs no field of the event, so an older server's event reaches it. **The known limit:** a new page against an old server gets no `thread_logins` on a reassignment, so a Reply row that should appear - an open ask on an issue assigned away from the viewer - does not until the next list read, the conditional target covering only the other direction, where a listed row carries the issue's key.
+
+**Waiting on** is one of the Inbox's groupings rather than the shape of the list (`features/inbox/sections.ts` holds it whole: the band list, their titles, which fold, and `sectionOf`). Under it a row sits in the band whose turn it is — the server's `waiting_on` on every open ask (`human` → `Waiting on you`, or `Waiting on a person` wherever the assignee filter names anybody but the reader alone (`sectionTitles`), `agent` → `Waiting on agents`; `waitingOnHuman` in `features/inbox/BlockedOnYou.tsx`), never who replied last — and a thread row is a write nobody but the reader can deal with, so it waits on them: `human`. Nothing snoozes a thread, so no thread is ever in **Later**. A moved approval request is `agent` while its `requested_version` is below its document version; a hand-back (`ask.handed_back`, which refreshes the Inbox like any `ask.*` event and leaves the question's `edited_at` and edit history alone) then returns the same request to `human` until a reply newer than the one it answered takes the turn. After that, an agent's progress note (a reply posted with `turn: "agent"`) leaves its ask under `Waiting on agents` while a human's reply always moves the ask there. The order WITHIN a band is the list's own sort (`sortRows`, above), not the server's: the SPA re-sorts every read it draws, so `listInbox`'s `order by` (`packages/envoy/internal/dispatch/api/inbox.go`) decides only what a tie falls back to. No row appears in more than one band. Each open ask card carries a status line, `Waiting on you` or `Waiting on <agent>` (`askTurnHolder` in `features/inbox/ask-turn.ts` returns who holds the turn - the agent whose progress note is the newest reply, else the asker - and the card draws that agent through `AgentName`), and an Inbox ask row whose turn is the human's shows a `<agent> replied` chip when an agent spoke last. With `?agent=<session id>` the Inbox shows only that agent's asks (and only those waiting on the viewer with `section=needs-you`) under a clearable `Asks from <title> · clear` link (`Clear agent filter`), which is `AgentName`'s `control` variant, so the agent's live link sits beside it: the title is the registry's while Envoy lists the session, else the one its asks stamped, else its short id. Both of those narrowings are about asks - one is what an agent asked, the other what waits on the reader now - so neither lists a thread row at all (`asksOnly` in `Inbox.tsx`), and **Mark all read** is not offered under either. Every count of work waiting on the reader is one rule, `needsYou` beside `waitingOnHuman`: open asks whose turn is a person's, on issues assigned to that reader (`isMine`), that they have not snoozed, plus every pending credential request they may decide (below). The Inbox's `Blocked on you` banner reports exactly that count with the oldest of them, a project page's `Blocked on you · N` pill reports it over that project's rows and no credential request (a request belongs to no project), and each Agents card reports it as the first of its two numbers, over that session's asks; the sidebar's Inbox entry and the compact top bar add the unread threads to it, which is `useInboxCount()` (`features/inbox/useInboxCount.ts`, the module the shell already reads, so neither site loads the Inbox to count), since both kinds of row are in the one list now - the badge each of them draws around that number is its own. None of them reads the assignee filter, so a reader who widens it sees a list longer than the count beside it — the price of one meaning everywhere. Each issue header applies the ask predicate to its own open asks — `GET /issues/{key}` carries `waiting_on` and `last_reply` on every `open_asks` row exactly as the inbox does — and shows `Waiting on you (N)` or `Waiting on agents (N)` immediately, at every width. A response whose open asks carry no `waiting_on` (an older server) shows no indicator rather than a wrong one. The reply composer for a session author is not in the SPA: humans reply from the card, and a human's reply is always `turn: agent`, so the SPA offers no turn control.
+
+A reader defers a row instead of answering it: every Inbox ask row carries a **Snooze** picker (the same invisible-`<select>`-over-a-badge control as priority and assignee), and the picks are `Later today` (three hours, clamped to the last instant of the reader's own day so it never names tomorrow, and falling through to the next morning in the last few seconds where that clamp would land inside the request's own latency), `Tomorrow` and `Next week` (09:00 in the reader's own timezone, next week meaning the coming Monday), and `Until I clear it` — `SNOOZE_INDEFINITE`, a far-future sentinel the server stores like any other moment, so one nullable `snoozed_until` column carries both kinds. A thread row has none of this: it is read or it is not. `features/inbox/snooze.ts` owns the presets and `isSnoozed`; `useAskSnooze.ts` is the one write (optimistic on the shared `["inbox"]` key, rolled back on refusal, refetched on settle). The reader's other tabs and devices follow it: a snooze or an un-snooze that moves the row appends the reader's `user_state.updated` with `changed: ["snoozed"]` and nothing but the reader's `login` - every signed-in feed carries it, so it names no ask - which refreshes every Inbox read there and `["user-state"]` (`api/event-refresh.ts`). Several at once is the same write repeated: `x` (or a row's checkbox) marks rows, and a bar above the bands - and in the empty state a pick can leave behind, which has no bands - reads `N selected` with the same presets and a Clear, over `useAskSnoozeMany` (which `Inbox` owns, since the optimistic move can unmount a bar that held its own write mid-flight) - one `PUT` per ask, the same optimistic move and a rollback per refused id, the ids the server took leaving the selection while a refused one stays marked under the server's own reason (`Could not snooze K of N: <reason>`, plus how many other reasons there were when they differ). While a pick is in the air the bar counts that pick (`Snoozing 2…`) rather than a selection the move has emptied, and its picker takes no second pick until the first settles - `aria-disabled` and an ignored change rather than `disabled`, which would take focus off the control under the reader and leave them on the document with nothing to Escape from; Escape with no row focused clears the selection and any refusal showing. A row inside its window sits in the collapsed **Later** band, under whichever grouping the list is on, showing when it comes back and the one control that ends the snooze early. **The snooze outranks whose turn it is**, and every other banding with it: `group` puts a snoozed ask in **Later** before it reads any field, `sectionOf` routes it there before it reads `waiting_on`, and `waitingOnHuman` excludes it, so an agent replying to a deferred ask does not pull it back onto the list or into the sidebar's Inbox count or the `Blocked on you` banner — only the moment passing or the reader's own un-snooze does.
+
+Every issue has an assigned human — `assignee`, the lowercase email of who answers its asks, or null — and the Inbox opens on the reader's own work every visit, remembering nothing between them. The page makes two reads and splits both on the client: ONE `api.getInbox()` under the shared `["inbox"]` query (`app.tsx`'s needs-you count, `Sidebar.tsx`, `AgentsPage.tsx`, `useMarginItems.ts`, and `useAskAnswerForm.ts` — which removes answered rows from exactly that key — all read it; a second key would leave answered rows visible until refetch), and the one unpaged thread read above. Every filter, the sort and the grouping are splits of those two answers, the assignee filter among them, which is why an unknown value matches no row rather than being refused. `features/inbox/AssigneeFilter.tsx` is the shared searchable `MultiSelect` over `Unassigned` and everyone who has signed in (`GET /api/v1/users`, fetched on the filter's first open so a reader who never filters costs no request), takes several at once, and its trigger reads `Assignee · you` / `· everyone` / `· Unassigned` / `· <email>` / `· N`; it sits inside the bar's **Filter** control beside the other four fields, and carries the same per-value counts they do. `inAssigneeFilter` (`features/inbox/sections.ts`) is the one rule for what a filtered list holds: an empty selection is the cleared filter and keeps every row; otherwise a row is kept when its issue's assignee is one of the selected, or when nobody holds it (`isUnassigned`: an unassigned issue, and every project-document ask, a document having no assignee) and `unassigned` is selected. A thread row is the reader's own, so it survives their own selection and no other. The selection is the address and nothing else — repeated `?assignee=` values, each a lowercase email or the literal `unassigned`, no parameter at all meaning the reader's own work and `?assignee=everyone` the cleared filter (`parseInboxSearch`/`buildInboxPath`, written with `replace` rather than a push, so a reader trying people out has no history to walk back through) — so a link carries the list and nothing is remembered behind the reader's back; the drawer keeps its own selection in state (above). The search box beside that filter is the second client-side narrowing of the same one response, never a read of its own: `shown` in `Inbox.tsx` is where both are applied, so the band counts, the row ordinals, the keys that walk the list and the selection all speak for the narrowed list, and the one exception the assignee filter already makes covers the typed text too - a row whose `Assign to me` write is in flight stays listed. `features/inbox/inbox-search.ts` is the rule: `inboxSearchHaystack` joins the row's issue key, its issue's title, the name of the document a row standing on a document alone belongs to (guarded on the row having no issue, since the server fills `document` on issue-owned rows as well), the question - where an approval request's generated prefix lives, so the words of that prefix match - and the author as the ask carries it (`author.id`, and a session author's `origin.session_title` and `owner`, never the agent label a card resolves from a later registry read, which only some widths draw), lowercased once per row; `matchesInboxSearch` keeps a row holding every word of `searchWords(query)` and keeps every row for an empty query. The text is one `?q=` (`InboxRoute.q`, `parseInboxSearch`/`buildInboxPath`, written with `replace` for the assignee values' reason and kept by the `Clear agent filter` chip), cut by `capSearchQuery` (`lib/query-param.ts`, shared with `useCappedSearchParam`) in the box's change handler rather than by a `maxLength` on the box, so what is written and what is filtered by are the one rule and the cut is provable from a browser; the box itself is `<input type="search" aria-label="Search asks" placeholder="Issue, title, question or author">` beside the filter in the header, and the drawer passes `onQueryChange` to keep its own text (above). A row the text hides leaves the bulk bar's count and its write like a row the assignee filter hides, and keeps its mark, which is pruned only against the rows the server still sends. The credential requests section and `BlockedOnYou` read the unnarrowed answer and are untouched. The motion hold is told which rows the text excluded (`matchesInboxSearch` beside `presented.current` in `Inbox.tsx`) rather than handed the narrowed list, so a row the reader's own typing drops goes at once even under a resting pointer, while a row the server stopped sending is held as before. No banding but the Assignee one has an `Unassigned` band: a row nobody holds sits in its band like any other and is reached by selecting `Unassigned` in the filter, and every listed ask row whose issue has no assignee carries an `Assign to me` button (`AssignToMe`, one PATCH `{assignee: <viewer>}` through `useIssueAssignee`, so the row is the reader's at once and rolls back with the server's reason if refused) while a document row, having no issue, has none. A row whose assign write is in flight or failed stays listed even once it no longer matches the filter (`assigning` in `Inbox.tsx`): taking a question under `Unassigned` is exactly that case, and unmounting the control would take `Assigning…`, a refusal and its Retry off the screen with it. `sectionTitles` heads the **Waiting on** grouping's first band `Waiting on you` only for the reader's own list and `Waiting on a person` under every other selection, cleared and `unassigned` included, since another person's question is not waiting on this reader. The empty state reads `Nothing needs you` on the reader's own list, `Nothing needs anyone` with the filter cleared and `Nothing matches this filter` under any other selection, and only when every section the Inbox renders is empty: no band has a row and the credential-request list (below) has come back empty. Under it one more line says where the threads are (`emptyThreadLine`): with the switch off, that the ones already read are behind it, and only while there are any; with it on, that there is no thread at all; and neither under `?agent=` or `?section=needs-you`, which list no thread row for either sentence to be true of. While the credential list is still loading no empty state shows, and after it fails the section says so and none follows, since the Inbox cannot then say nothing is waiting (`emptyStateMessage`). The Inbox reads that list once (`useCredentialRequests`) and hands the one answer to the section, the banner and the empty state, everything above the bands being one `header` whether or not a band has a row. With a word in the search box the line is `Nothing matches this text` ahead of all of that: `emptyStateMessage` answers on the typed words first, before the agent line below and before the credential rule that otherwise leaves the list silent, since what the reader typed is the nearest cause of the empty list and the credential requests are not what they searched. With `?agent=` the empty line is about that agent's asks alone (`No open asks from <title>`). A document ask with no issue is titled `Document ask`, so `Unassigned` means one thing wherever it is offered. `features/issue/AssigneeControl.tsx` is the single assignee editor, a sibling of `PriorityControl` built the same way — the email (or a muted `Unassigned`) as a badge with a native `<select>` laid invisibly over it, labelled `Assignee of <KEY>`, options `Unassigned` first then everyone who has signed in, from `GET /api/v1/users` (`["users"]`), the same picker on desktop and iPhone — mounted on the issue header beside Priority and disabled on closed issues; anyone signed in may reassign. Every assignee write goes through `features/issue/useIssueAssignee.ts` (`useIssuePriority`'s shape: useMutation + `useSubmitGuard`, the new value landing optimistically in the issue detail, every `["issues", "project", ...]` list and every `["inbox", ...]` query, rolled back together on failure with the server's message — `ASSIGNEE_NOT_ALLOWED` names the email — and `mergeIssue` applying the PATCH response on success).
+
+An ask row's card opens with one line: the issue or document it belongs to on the left, truncating, and the controls that defer or reroute it - priority, `Assign to me`, `Snooze` - grouped at the right, so a phone reader sees the same shape a desktop reader does. The line wraps rather than overlapping: the owner link holds a `basis-48` minimum so its title survives beside the reply chip (which truncates at `max-w-[40%]`), and a refusal from `Snooze` or `Assign to me` is `basis-full` inside the right group, so the retry never draws over the issue key. `BlockedOnYou`'s banner is a full-width neutral strip (`w-full` is load-bearing: below 1280 px an unlayered `a:not(.prose a) { display: inline-flex }` in `styles.css` beats Tailwind's `block`, and the strip would otherwise sit beside the bar above it); it counts every ask waiting on the reader whatever its urgency, and every pending credential request, so it carries no urgency hue. The Inbox is one `<ul>` keyed by row id, with each band's heading drawn as a label - an `<h2>` holding that band's `DisclosureToggle`, `<label> (<count>)`, `text-xs` semibold uppercase, quieter than the rows beneath it - in a `role="presentation"` item between the rows, and the band's **Show more** in another; each row is `<li data-inbox-row=<id> data-inbox-group=<band key> data-inbox-section=human|agent|later>`, and the row the reading column is showing adds `aria-current="true"` and `data-inbox-selected="true"`. A row whose band changes - a `waiting_on` that flips, a priority somebody moved, a thread the reader read - moves within the same parent, so React moves its node instead of remounting it and the draft, chosen option, disclosures, and focus inside its `AskCard` survive; rows reorder freely and a new ask appears at once, never behind a click. Drafts therefore live where they always did - in the card's `useAskAnswerForm` state - not in an Inbox-level store. What keeps the reader's place is `features/shell/ViewportAnchor.tsx` (`<ViewportAnchor item="data-inbox-row" group? enabled? rootRef?>`), the one viewport-stability mechanism, shared with the Conversation (`item="data-turn"`, `enabled={() => !follow.pinnedToTop()}`): in `getSnapshotBeforeUpdate` - the commit phase, immediately before React mutates the DOM; a class because no hook runs there, and a render-phase measurement is stale whenever React yields between render and commit (it undid the Conversation's Jump to latest) - it picks the *current* row: the row with focus within, else the row under the pointer (tracked from `pointerover`/`pointerout`), else, only once the reader has scrolled, the row nearest the list's visible centre (`elementFromPoint` probe); records its viewport top; and in `componentDidUpdate` `window.scrollBy`s the delta so the same id sits where it was, wherever content around it moved. A row that itself left for another `group` (the Inbox passes `group="data-inbox-section"`) was relocated, not shifted, and is not followed: the reader's place is where the row was, not where it went. The browser's own scroll anchoring handles what no React commit sees (a card's thread loading, Markdown rendering); it only works because the desktop sidebar `<aside>` carries `[overflow-anchor:none]` - first in the document and viewport-tall, it would otherwise be the anchor node and nothing would ever be compensated. The Inbox reads the focus/pointer choice during render through the instance (`viewport.current?.interacted()`, which does no layout reads; `current()` adds the centre probe and is what the commit uses): when the reader's hand is on a row and the server drops it (answered or resolved elsewhere) or hands its turn the other way (their own ask-back, an agent's progress note or reply), the Inbox keeps it where they last saw it - `held`, in the band it was in, placed after the nearest still-listed row above it - so neither the row nor the view moves under them; a dropped row shows the thread's recorded outcome through `useAskAnswerForm` once `GET /asks/{id}` says the ask is no longer open, and `AskCard` hands focus to the row from a vanishing form (`handOffFocusOnRemoval`) and from a control that disables itself under focus - Ask back while sending and once its text is sent - before the browser would drop it to the document body (`handOffFocus`, in a layout effect). The row is released - leaves, or takes its new band - when focus and the pointer have both left it. The reader's own answer is the same hold while in flight (the card shows Answering…, or the error if the server refuses it, under their draft); once the server records it (`AskCard`'s `onAnswered`) the row is released and leaves. Assign to me is not a hold either: the row becoming the reader's at once is the feedback for that click, and what keeps it listed while that write is in flight is the filter's own exception (above), not this one. A thread row the reader read is held by its own rule, the read-hold above, rather than by this one.
+
+A row's owner is `InboxOwnerLink` (`features/inbox/AskOwnerLink.tsx`), which opens the ask inside its issue or document, and a thread row's is `AskOwnerLink` over the thread's own issue or project document; an `/answers` row renders the same `AskOwnerLink` without an ask, so it opens the issue or document itself, since that row's **Open** already goes to the ask. A refetch never moves a row under a travelling pointer: the Inbox renders `useMotionHold`'s copy of each of its two reads (`features/inbox/motion-hold.ts`, over the `["inbox"]` rows and over the thread rows alike), which holds what it last adopted while the pointer moves across the list and adopts the newest once the pointer has been still for 400 ms, leaves the list, or presses inside it. `ViewportAnchor` keeps the reader's row where it was; the hold keeps the rows around a moving pointer from sliding under it before it settles. The pointer moving onto the hover card a row's own owner link opened is not leaving the list, in either of them: the card is `fixed` over the page and portaled out of the list, so the list hears `pointerleave` and the row hears `pointerout` for a reader who moved onto what their row drew. `features/refs/ref-preview-card.ts` is the whole tie - the card's id, and the `aria-describedby` `RefPreview` writes on the reference whose card is open - so a list recognises its own card without importing the card. The hold then ends at its settle, as it does for any pointer that stopped, and `ViewportAnchor` keeps that row the reader's place for as long as the card is open: the pointer leaving the card closes it (`REF_PREVIEW_CLOSE_DELAY_MS`), and the row is let go with it.
+
+From 1280 px wide the Inbox page is a reading pane: the rows in a left column and the selected row's own surface in a right one (INFRA-575, `dispatch://INFRA-575/spec`). `Inbox` takes `pane?: boolean`, default true, and shows the pane while that prop holds and the viewport matches `READING_PANE_QUERY` (`(min-width: 80rem)`, `features/shell/useDialog.ts`); `InboxDrawer` is the one call site passing `pane={false}`, so the drawer keeps the cards at every width, as does every width below the query. The gate is a prop rather than a width alone because the drawer mounts the same component at 1440 px. `InboxProps` is that prop beside the four a host that embeds the Inbox passes instead of the URL: `filter`, `keymapScope`, `onAssigneesChange` and `onQueryChange`, the last of them the drawer's search text (above). With the pane on, `app.tsx` makes the Inbox page fill the viewport, each column scrolls in itself, the list column (`data-testid="inbox-list"`) is what `ViewportAnchor` is given as its `scroller`, and each row renders short in place of its card: two lines, the mark checkbox, the row kind's icon, what the row is about - a question's first line (`features/inbox/question-line.ts`), or a thread's subject as a link to the thread itself, bold with a dot while it holds a write the reader has not read (`ThreadTitle`, which the card below this width draws too, as plain text under its own **Open**) - and the time of the last write; then, under them, the priority tag, an ask's urgency mark, the owner link (an Agent row has none, so it names its session) and the Copy ref control where the row has a reference of its own. The layouts are four components, one per kind of row on each side of that width - `AskShortRow` and `ThreadShortRow` beside the column, `InboxCardRow` and `ThreadCardRow` without it - chosen by the row's own kind under the same `paneShown` the rest of the Inbox reads, so no layout reads `row.kind` again inside itself; the two short rows share the two-line frame they draw in (`ShortRowFrame`), and all four share the `<li>` that `InboxRowShell` draws (where the row is, the click that selects it, the release when the reader's hand leaves it) and the mark checkbox. The reader's own threads are the list's other half, and `useInboxThreadRows` is where that half lives: whichever of the two reads is showing - the Inbox's own unpaged one or the Dismissed view's paged one - the pointer hold over it, and the **Show more** that follows the dismissed read's cursor. The page is one root whether or not a row is selected: the pane column is what appears and disappears beside the list, never the list itself, so a selection that empties for a commit - which the reader's own bulk snooze of the selected row does, until the settling effect hands the selection on - never unmounts the list, the keyboard's place in it or the bulk bar. The selection is one hook's, `usePaneSelection` in `features/inbox/pane-selection.ts`, which owns the selected id, `select`, the `j`/`k` step, `paneRow`, `nextAfterSelected` and the two effects below - the one that settles `?item=` against the rows the list holds and the one that keeps the selected row on screen - so `Inbox` chooses its step function and its label noun once, and a binding reads `paneShown` itself only where the column changes what its key does: Enter's `when` and `run` (the compact card whose note disclosure Enter presses is the column's alone), `h`'s `when` (it stands down inside the column's own card), `l`'s `when` and the step out of the column that `move` takes first (without a column there is nothing to step into or out of), and Escape's way back from the column to the row `l` was pressed on, else the row the column is showing. It is React state written to `?item=<row id>` with `replace`, not focus: the first visible row is selected when the Inbox opens, a click or `j`/`k`/the arrow keys select another, an `?item=` the list does not hold selects the first visible row and rewrites the URL, one in the folded `Later` band opens that band, and every way the selected row leaves the bands hands the selection on - the reader's own answer once the server records it, their own snooze, their own dismiss, and the server withdrawing, resolving or answering that question elsewhere, which takes its row out of the list at once, since a withdrawn question with a live answer form invites an answer the server refuses and the row was selected for the reader rather than by them (`handId` is the row the reader's hand is on, as it is without the column, so the selection holds nothing listed) - to the next row they can see, else the one above it (`nextAfterSelected`, read on every commit, held while a snooze of that row is out, since the optimistic snooze folds the row into `Later` on the pick, and held on the commit that drops the row, which is the commit the settling effect reads it on), and to no row at all when none is left, which clears `?item=` so a reload never opens the folded band in front of them. `j` and `k` from a question the column is holding past its row step from where that row stood, which is the row `nextAfterSelected` already names, rather than from either end of the list. Two things outlive the row, and both are the reader's own answer to the question it carried. The first is an answer they have not sent: while the reader has typed into the selected question's answer box, the row the server drops leaves the list like any other, but the column keeps that question and the selection with it until they select another row - the card's closed state in place of the answer form, with what they typed under it (`ask-unsent-answer`, `unsentAnswer` in `useAskAnswerForm.ts`) where they can read and copy it - because an answer somebody is in the middle of writing is not something to take off the screen under their hands (`paneRow` in `pane-selection.ts`; the draft is the ask's own, held by ask id in `features/inbox/answer-drafts.ts` as a reply's is in `reply-drafts.ts`, each of them one `createDraftStore()` of `features/inbox/draft-store.ts` so a fix to the subscription or the updater reaches both, so it outlives the form and the `["inbox"]` read alike, and the server recording the answer drops it; the text of a recorded answer the reader is changing is this form's own state, never that draft, so a change they cancel or walk away from leaves nothing there to be shown back to them as unsent). The second is one they have sent and the server has not decided: `useAskAnswerForm`'s own optimistic update drops the answered row from the `["inbox"]` read the moment the answer goes out, so the form registers the ask in `features/inbox/outstanding-answers.ts` from inside that `onMutate` - before the removal, and from wherever the card is hosted, the document's own decision block included, which takes no prop of the Inbox's - and `paneRow` keeps the question in the column while it is registered. That hold is the write's own liveness, in flight or refused, the `pending || failed` a snooze reports by (`SnoozeControl`), so an answer the server accepts behaves exactly as it always has - `AskCard`'s `onAnswered` hands the selection on and the row leaves - and one it refuses leaves the question in the column under the card's own refusal and its Retry, beside what the reader answered, as it does below this column's width where their hand holds the row; that card is the only surface the refusal is shown on, `useKeyedWrite({inline: true})` letting a refused write go from the store. It is `snoozing`'s rule for the one write whose optimism takes a row out of the Inbox read rather than out of this view, which is why no filter exception can keep that row listed while the answer is in flight; the refusal's rollback lists it again. A row the reader defers keeps the selection while its write is out or refused: the head's Snooze reports through the Inbox's own `onSnoozeLive`, as a row's own control does, so `snoozing` (beside `assigning`) keeps the row listed inside the fold and the column stays on it with the reason and its Retry. Today's other keys keep their meaning against the selected row and the pane: `1`-`9` pick an option of the selected question, and Enter opens its compact card's note disclosure (`[data-ask-note-disclosure]` while it is still shut, the card's own handle as `data-ask-answer` and `data-ask-option` are) and focuses the textarea behind it - both of them against that question's own card in the column (`[data-ask-card="<id>"]`, the card's own handle, matched with `CSS.escape` by `answerHand` in `Inbox.tsx`) rather than the column as a whole, since the column of a decision draws the whole document and hosts an answerable card for every open block of it; a thread row has no card of its own, so both keys stand down on one. Enter fires from a row itself, and with the focus on nothing (`document.body`), and nowhere else: the registry's handler calls `preventDefault` for every binding that fires, and everywhere else the key belongs to the control holding it - a row's owner link, a band's fold, `Show more`, the bulk bar, a filter control, an option or `Ask back instead` inside the column - as `h` stands down inside an ask card (`outsideAskCard`). `x` marks the row and `h` snoozes it, `h` only on an ask; `e` dismisses a thread row, `o` opens the row's issue, document or thread, and `y` copies its reference where it has one, each acting on the pane head's own control while the column is on.
+
+`features/inbox/ReadingPane.tsx` is the right column (`data-testid="inbox-pane"`), and every flow in it draws under the frame they share (`PaneFrame`, in `features/inbox/PaneDocument.tsx` beside the one live-document read, placement and section bar every body that shows a document beside the list runs on, `useDocumentAtBlock`) with only its own reads and its own effects: a question under `ReadingPaneHead` - the issue or document, **Open page**, the priority, **Assign to me**, Snooze and Copy ref, which is where `h`, `o` and `y` find their controls while the column is on - and a thread under `ThreadPaneHead`, which carries the thread's owner, **Open page** (the thread's own page, which the server names in the row's `ref`: the document with the thread open, the issue's conversation, or `/agents/<id>/live` for an Agent row) and **Copy ref**, and no Snooze, priority or **Assign to me** at all. `PaneFrame` draws `<section aria-label="Selected question" data-testid="inbox-pane">` around the head and the one scroller every body draws in, and that scroller is the column's own focus stop: `<section aria-label="Question body" data-testid="inbox-pane-scroller" tabIndex={0}>`, a named region (a labelled `<section>` is `role="region"`, and neither name holds the other, since Playwright matches an accessible name by substring) that `l` moves the focus into (above) and that the browser itself scrolls on the arrow keys, Page Up, Page Down, Space, Home and End, so the column writes no scrolling code for them. An Agent row has no **Copy ref** either: Dispatch's reference grammar has no form for an issue-less message, which is why `y` does nothing on one. A question is one of three bodies. `DecisionBody` draws a decision block as the document itself (`ProofDocument` with `surface="pane"`, its text read through the page's own `liveTextQueryOptions`, scrolled by `scrollBlockToTop` so the heading of the block's section sits at the top, a bar from that heading down to the block, `data-testid="pane-section-bar"`, positioned from `blockOffsets` and drawn beside the editor). `ApprovalBody` draws an approval as `VersionView` of the artifact's latest version with `changeBaseline` holding the markdown of `ask.approval.approved?.version`, and offers `Next change` to step the marked blocks only while the drawn version carries any: the marks are the headless engine's, which may never warm, and a button with nothing to step did nothing. It draws the request's own question above that document - `MarkdownBody` of `ask.question` in a block of its own, `data-testid="pane-approval-question"`, the renderer `AskCard` draws a question with, so a message carrying a list or a link reads as it was written and a rule tells it from the document's first paragraph - in every state but the fallback: the block stands while the document's skeleton does, waiting on none of the document's reads, and where the column falls back to the question's card it is not drawn at all, that card drawing the whole question itself, so the question is on screen exactly once. `CardBody` draws an anchored question or one in no document as today's `AskCard`. A thread is one of four, in a module of its own beside the thread body (`features/inbox/ThreadPane.tsx`, each body marked `data-inbox-pane-body`): `document` is a comment thread anchored in a project document, drawn as the live document opened at the anchored block's section with the quote highlighted and the thread itself inside the document column directly below that block, through the node view's own slot; `ask` is a decision block's ask, whose block draws the question, its answer and its exchange itself (`AskBlockCard`); and `issue` and `agent` are the threads that need no document - a comment thread on an issue, an issue message conversation, an ask that is no decision block, and a one-off message to a session - each drawn whole under its subject line. The first two are one component (`ThreadDocumentBody`): both open the document at the thread's own block, and they differ only in the thread the block carries - the anchored one, drawn in the slot, against the block's own - and in whose issue the document belongs to. A document body that cannot place its thread falls back to the thread alone with the text it is anchored to (`data-inbox-pane-fallback`): the document failed to open, the anchor is orphaned, or it names a block the document no longer holds - the last of those being the thread the pane must place itself, since a decision block that draws its own needs nothing placed. Every one of them draws the thread through one component, `features/inbox/ThreadBody.tsx`: the four shapes a thread comes in, read when it is shown, every message rendered whole with `MarkdownBody`, each message the reader has not read marked **New** from the row's own record (a Reply row's `read_through`, an Agent row's `unread_reply_ids`), and ending in the composer of the thread's own page, so a reply sent from here goes where one sent there goes, under a send name of the thread's own (`inbox-thread-reply`) so a reply still out or refused is shown by whichever surface mounts the composer again. What a thread draws and in what order is one rule, `features/threads/thread-layout.ts`, and the reader chooses it once in the View menu for every thread in Dispatch - the Inbox's pane and its cards, an ask's thread, a document block's thread, a document page's margin thread and the Conversation tab's threads all lay their replies out by it, and none of them offers a control of its own (the choice itself is `features/threads/thread-order.ts`, kept for the reader's browser under `inbox.thread-order`). A collapsing surface shows the root and the two newest replies and folds the rest behind **Show N earlier replies** (`EarlierReplies`, the one fold control the Inbox's thread body and an ask's thread both draw), except that an unread reply is never folded; **Oldest first** draws the fold control under the root, then the replies oldest first, then the reply box, and **Newest first** draws the reply box under the root, then the replies newest first, then the fold control - either way the box, and an ask's options and answer box with it, sits next to the newest message, which is `composerFirst` in that same module, read by the surfaces that draw no replies of their own rather than worked out again. The pane opens a thread at its first unread message under **Oldest first**; a card never does. The column mounts one document room per artifact, 200 ms after the last selection change, and falls back to the card or the thread with `Open page` on a load failure or a refused admission - which `ProofDocument` reports through `onUnavailable` in pane mode rather than drawing the document page's repair or rebuild prompt. A document the column opened at a section is held there (`features/inbox/pane-placement.ts`, `holdSection`): one scroll is never enough, since the editor draws its blocks in pieces and every block that lands above the heading pushes it down again, so the placement is applied on every change of the drawn document until the reader presses, scrolls, touches or types in the column, which ends it. The line between the two columns is `features/inbox/PaneDivider.tsx`, an `hr` carrying a slider's own attributes, as the document margin's resizer is: the pane starts at `DEFAULT_PANE_WIDTH` (0.6) of the width the two columns share, an arrow key moves the line `PANE_WIDTH_STEP` (0.02) while it has the focus, a drag moves it under pointer capture, a double-click puts it back, and the share is clamped between 0.3 and 0.8 and kept for the reader's browser (`inbox.pane-width`). The width is a share rather than a number of pixels because the two columns are a grid of two fractions with the divider as its own column between them, so what the reader dragged to is exactly what the grid takes at any viewport width; the grid is one row of `minmax(0, 1fr)`, since an implicit `auto` row would be as tall as the taller column and neither column would then scroll in itself.
+
+`web/src/components/` owns the shared status, label, approval, attention-count, empty, and loading primitives, plus `CopyButton.tsx` (the copy glyph behind every copy control, including `features/refs/CopyRefButton.tsx`), `PinButton.tsx`, `Chip.tsx`, `MultiSelect.tsx`, and `RefusableButton.tsx`. `PinButton` is the one pin glyph (outline, filled once pinned, `aria-pressed`) behind the issue header, agent rows, and every Conversation turn's top-right pin (`quiet`, borderless at rest so a list is not a column of boxes). `RefusableButton` is the button that says why it cannot be pressed, behind both Send buttons (the broadcast's and `MentionComposer`'s) and the Sends strip's Restore draft: given a `refusal` it is `aria-disabled` rather than `disabled`, so it stays in the tab order, carries the reason on `title` and through `aria-describedby` on the line that shows it (`refusalShownBy`), or on a hidden line of its own where none does, and does nothing when clicked, a submit button included; only `busy`, a press in flight its label names, renders `disabled`. Its `look` is one entry of a map of whole static strings: the filled primary (`primaryButton` in `classes.ts`) or the compact outlined secondary (`secondary-compact`, `secondaryButtonCompact`). Neither restates its cannot-press look for `aria-disabled`: the `refused` custom variant in `styles.css` matches `:disabled` and `[aria-disabled="true"]` alike, and `primaryButtonDisabled`, `primaryButtonEnabledHoverBg`, `secondaryButtonHoverBorder` and `secondaryButtonDisabledText` are written in it (`refused:`, `not-refused:hover:`), so every button wearing them, refusable or not, skips its hover and shows its cannot-press look for either attribute. Every primary button that cannot be pressed reads slate-700 on slate-300 (slate-300 on slate-700 in dark), 6.97:1, registered as a contrast check, because its label may be the only thing on screen saying why; a secondary that cannot be pressed keeps the dimmed label secondary buttons already had (`secondaryButtonDisabledText`), and the refused Restore draft has its reason on the line under it. `Chip` is the one interactive chip — a single `<button>` carrying the border, the fill, and the 44 px hit area, so the outline is always the shaded shape (never a border on a tall button wrapped around a smaller `Pill`); `selected` renders `aria-pressed` and the selected fill (`tone` picks the neutral strong surface or an ask urgency's badge, as the margin composer's Urgency row does), `removable` appends the `×` glyph and the whole chip is the remove control. A chip is never wider than its row (`max-w-full`): its text is a `TruncatedText` that ends in an ellipsis where it does not fit, and a host whose text can run that long passes it whole as `title` (the filter strip's active-filter chips). A non-button host that must look like a pill stays one element through `pillClassName` (the List's parent link). `MultiSelect` is the one searchable multi-select: a trigger (`aria-haspopup="listbox"`, `<label> · N`), a portalled popover with a `combobox` search over an `aria-multiselectable` listbox of checkbox rows, arrows/Enter/Escape/Tab from the input, outside-press close, focus returned to the trigger; the host owns `open` (so the issue header stages and saves) and `onCreate` adds the `Create "…"` row. Project lists and boards, Inbox, the margin, and Agents use the same icon-less empty state and card-shaped skeleton, so every loading or empty result preserves the surface's hierarchy.
+
+Text that truncates inside a control that is a flex container goes in `components/TruncatedText.tsx`, and the control keeps `truncate` on itself. Below 1280 px every link that is not `.prose a` or `.dispatch-inline-link` (an inline link keeps its own line box instead) and every button is an inline-flex box with centred items (`styles.css`, unlayered, so it beats a `block` or `items-*` class on the control); `text-overflow` never applies to a flex container's own text, so the control alone clips mid-word with no ellipsis. The span is the flex item the ellipsis applies to, and where the control is a block the control's own `truncate` draws it. The span takes a `className` for its flex sizing (`min-w-0 flex-1`, a `max-w-[18ch]` cap) and an explicit `title` — it derives none of its own, so a host passes one only when it wants the pointer tooltip: a host that already carries its own `title` on the wrapping element, a host whose link already opens a `RefPreview` hover card through `referenceTriggerProps` (both kinds of Inbox row owner, and attachment lists and component work rows), or a host whose truncated text is a quoted excerpt rather than a name — restating it in a tooltip would only repeat text already visible in the turn above it (`ReplyQuote`, whose quote is a `MarkdownPreview` given no `title` for that reason) — passes none, since a native tooltip would either duplicate the wrapper's, draw over the preview card, or restate text already on screen. A link that is not a flex item also needs a width cap (`max-w-full`), since an inline-flex box is as wide as its whole text. A link or button whose content is several lines stacks them itself, `flex flex-col` with `self-stretch` on each line (an item's `align-self` wins over the container's centred `align-items`), since below 1280 px a `block` control lays its lines side by side. Every truncating link and control does this: the project Documents list, the Artifacts tab, both kinds of Inbox row owner, the architecture rows, attachment lists and component work rows, `GitHubLink` (a pull request's title and a non-GitHub address), a document's open-decision link, the issue header's `Message route` button, a Broadcasts row, an @ picker option, `MultiSelect`'s label-picker option row, `AskCard`'s author chip, `Chip`, and `ReplyQuote`. An Agents-page row's name button is deliberately none of them: its name wraps whole at every width (`features/agents/`, above), so it holds a plain `break-words` span rather than a `TruncatedText`, and its `title` repeats the name for a reader who wants it in one line. From `sm` a Documents row is a four-column grid; on a phone the name takes its own line and the kind, issue and time share the line under it.
+
+## Margin threads
+
+Every margin — issue and standalone project document — owns anchored comment threads beside the
+document (Proof's model): cards with document-relative placement, document-mark highlighting,
+suggestions, replies, resolved-thread disclosure, and the phone thread dialog. Clicking a
+highlighted mark opens its thread in the margin (the compact sheet on small viewports) and never
+navigates away from the document. Two readers' comments, suggestions or asks may cover the same
+text: the record marks declare `excludes: ''` (the pinned fork's schema for comments and
+suggestions, `packages/proof-editor/src/dispatch-marks.ts` for asks), so their spans nest. Which
+span nests inside the other follows the order the marks were made in, so a click on text two marks
+cover opens the narrowest mark's thread - the mark whose range is the smallest, and of two the same
+size the innermost span's (`packages/proof-editor/src/record-mark-target.ts`) - and hovering there
+marks that same thread; a narrower comment inside a wider one is always reachable from its text.
+Removing a mark removes that mark's instance, never
+the type over its range. A selected margin item, its orphaned block, and the brief focus pulse are
+editor decorations (`ProofEditorHandle.setActiveMarks`, `setActiveBlocks`, `focusMark` and
+`focusBlock`), never classes Dispatch writes into editor DOM: ProseMirror reads such a write back
+as a document edit. Issue margins additionally show Pinned and their Ask section. The Pinned tab
+lists each conversation pinned from the Conversation tab (`<kind>:<id>`, its body and author read
+from the issue's own ask, comment and message lists) above each event pinned from the Activity
+tab, which retains its original event body; both have an `Unpin` action, so a pin made before the
+Conversation became a list of conversations stays its event's line here and remains removable.
+
+An issue's Spec tab also shows its decisions (`GET /api/v1/issues/{key}/decisions`, under
+`["decisions", <key>]`): `useMarginItems` makes one `decision` item of each decision that is not
+replaced at each spec block it links, placed at that block (`DecisionList` in
+`features/margin/DecisionCard.tsx`), an unsure one in the unsure colour; selecting it lights up
+and focuses the block. The same page marks blocks through `ProofEditorHandle.setBlockMarks`,
+never a class in editor DOM, for the reason above (`features/doc/spec-marks.ts`'s `useSpecMarks`):
+each block a `stale` link of the view names gets `staleBlockMark` and the title `A decision that
+shaped this block changed after it.`, and, when the person has read a version of the spec
+(`GET /api/v1/me/documents/{id}/read`), each block whose `changed_version` in the spec's
+`part_of` read (`GET /api/v1/references?to=dispatch://KEY/spec&kind=part_of`) is above it gets
+`changedSinceReadMark`, with one `role="status"` line above the document naming the heading of
+each such block's section. The page then records the version it shows as read, a quiet write
+(`documentReadRequest`); the read version is the one the visit opened on, so the marks stay for
+the visit.
+
+A margin thread's own reply holds its draft and refusal while its send is out, as every composer
+does, whatever unmounts its card: the card mounts its reply composer whenever it expands, under
+the thread's reply send name (`marginReplySendKey`), and the held-send store keeps a reply that
+is out or refused for the thread - through another thread expanded, the Pinned tab, the desktop
+margin's rail, a move between the open and resolved lists, another document or another page.
+Coming back to a document opens a thread whose reply is held there. A thread whose reply the
+store holds also stays in the list it was in, open or resolved, whoever resolves or reopens it,
+the reader's own Resolve included (`held` on `useMarginItems`), so the card the reader was in
+stays on screen. An inline reply's Cancel reply drops the draft and any refusal with it. On a
+phone the thread fills the screen instead, and its Back and Escape wait for its reply until the
+send's deadline, as a Conversation phone thread's do; past it they leave the thread and the reply
+keeps its send, and otherwise they drop the reply, draft and refusal with it.
+
+The composer a selection-bar action opens is anchored to the provisional mark the editor wrote, and
+the margin owns that mark from then on (`margin-context.tsx`): its Comment / Suggest / Ask switch
+retypes the mark through `ProofEditorHandle.retypeMark` so the server verifies a mark of the kind
+being sent, and the mark is removed when the composer ends unsaved — cancelled, or replaced by a
+newer composer. The server leaves that mark where it is while the reader is there: its sweep of
+the marks no `asks` or `comments` row records keeps one whose `by` names a user with a browser on
+the room, and counts the mark's time to live from that author's last presence, so a composer open
+longer than the minute a stray mark is given still sends, and a tab that closes or goes offline
+loses the mark it left one more minute later. Each document has one compose send
+(`marginComposeSendKey`, beneath
+`MARGIN_COMPOSER_SEND_KEY`), and from Send on the compose is that send's: the margin hands its
+mark to the held-send store, which keeps it until the send lands or the reader discards the
+refusal (the margin then removes the mark), and the editor's promise resolves. A Retry of the
+refusal is no Discard: the retried press takes the refused write's place (`Writes.supersede`,
+which tells no outcome), so the mark stays for it. A newer
+selection-bar action on a document whose compose send is out is refused and the editor takes its
+mark back, so a send's outcome lands on the composer and mark it was sent from; the margin then
+brings that composer back on screen - the Comments tab, the compact sheet - saying the new
+selection waits on its send. A refused send gives way: the newer compose takes the composer the
+reader has there, which keeps its draft, and the refusal and its mark go. Every compose the margin
+shows, a new one, a turned-away one or one held for the document the reader comes back to, opens
+the desktop margin out of its rail (`Margin.tsx`). A send on another document holds no compose
+here: the check is the document's own. `MarginSheet` keeps the composer mounted, hidden, under
+the Pinned tab, under a phone margin thread, and under the rail the desktop margin collapses to,
+so an unsent draft is where the reader left it. A composer mounts as its compose opens, before the
+margin has opened the compact sheet or come back from its rail or the Pinned tab for it, where its
+field can take no focus, so it takes focus the first time it is on screen (`onScreen` on
+`MarginComposerSlot`, `autoFocus` on `MentionComposer`, which focuses once). Leaving the document
+ends an unsent compose, and the issue closing ends an unsent suggestion or ask (a closed issue
+takes a comment, so an unsent comment compose stays and sends); a sent one is the store's, shown
+again on its document, and on a closed issue a suggestion or ask shows only that send and then its
+outcome, as a closed issue's composers do. A switch over text another reader's mark of the new
+kind covers goes through and
+leaves that mark whole, as any record mark over another does. The composer's own mark writes are
+never undo steps (`@legion/proof-editor`'s `recordMarkHistoryPlugin`), in prosemirror-history or
+y-prosemirror's UndoManager: neither undo nor redo writes one back, beside a recorded suggestion,
+after the reader refines the selection under an open composer, or over someone else's comment. A
+switch the editor refuses (the mark is gone, or a suggestion over text upstream will not mark) is
+said under the switch in the reader's words, and the kind stays.
+
+A closed issue's document is read-only, and its socket is admitted read-only, so the browser can
+write no mark there; the server still writes a comment's mark on it (`docs.WithCommentMarks`). So
+on a closed issue's document the selection bar offers Comment alone (the editor's `access` is
+`"comment"`; an open issue's is `"edit"`, or `"read"` after a read-only admission), and only for a
+selection that holds text; it writes nothing and reports a `quote-comment` with the selection's
+range. Should `quoteAnchor` still find no text there, the page says so under the closed-issue
+notice and opens no composer. `quoteAnchor`
+(`features/doc/quote-anchor.ts`) reads the selection as the server's `FindQuote` reads a document -
+text nodes in order, one space wherever text does not run on, U+0000 as U+FFFD - and names it by its
+quote and the occurrence of that quote it is, overlapping matches counted, without a leading
+heading marker the server would read as a heading's title. The compose carries that quote anchor
+(`ComposerAnchor` without `mark_id`), the send posts `anchor: {artifact, quote, occurrence}`, the
+server writes the mark where the reader selected, and the thread arrives over the socket like any
+other. A quote compose has no mark to remove or retype: ending it unsent takes nothing out of the
+document, and its kind switch, offered only if the issue reopens under it, is refused in words. On
+an open issue a socket admitted read-only for an outdated schema ("Reload to edit.") offers
+nothing: that editor's reading of the document may not be the server's, so the occurrence it
+counts could name other text. On a closed issue the server admits every socket read-only, so the
+admission cannot tell an outdated schema apart, and the bar offers Comment either way.
+Suggestions and asks stay unavailable on a closed document.
+
+Issue Conversation stays the record of the same comments, one card per thread rather than a
+chronological event list: collapsed comment turns provide a reply summary, a comment deep link
+marks its card and opens its thread there, and on phones opening one uses a full-height dialog
+with a bottom-pinned reply composer and Back or Escape close.
+
+`AuthGate` resolves `GET /auth/whoami`; unauthenticated visitors see the Google
+sign-in link at `/auth/start`. Authenticated humans can create native projects,
+manage repository-to-project mappings (each row's **Default** radio makes it its project's one
+default repository, the one an issue with no repository of its own or on its parent chain
+resolves to; a mapping issues name is refused by the server, whose reason the page shows; every
+mapping write reads the mappings again once it settles, since its answer is one row as saved, not
+the project's mappings when it arrives), and
+mint or revoke personal agent
+tokens at `/settings`. A personal token's session writes display the agent's name (`AgentName`,
+below) followed by `(for <owner>)`. All application requests use the same origin
+so the browser sends the signed-in cookie.
+
+## How an agent is shown
+
+An agent (a session) is shown in one place: `web/src/features/refs/AgentName.tsx`, which reads
+the agent registry through `features/refs/agent-registry.ts`. Every visible agent name in the SPA
+is an `AgentName`; nothing else draws one with markup of its own, hand-builds a `session:` string,
+or links to `/agents/<id>/live` itself. `<AgentName actor={…} />`, or `sessionId` and
+`storedTitle` for a bare recorded id, names a session by its current registry title while the
+registry lists it, else by the contracts rule (`packages/contracts/src/actor-label.ts`: the title
+stamped on the write, else `session:<8>…`), followed by its attribution (`actorAttribution`:
+` (for <owner>)`, ` (as ns/name)`) as text after the name's link, so the link is named by the
+name alone and a screen reader hears the attribution once, all in one
+`<span data-agent-name=<id> data-agent-state=…>`. A name in the short form carries the full
+session id as that span's `title`: ids minted in the same minute share their first 8 characters.
+One resolver in the module (`resolveAgent`) gives the name and attribution to every drawn and
+spelled name there. A `user` or `system` actor renders its id as plain text, inside the host
+control for `kind="control"`, and reads no registry. A role address (`role:…`)
+is an address, not an agent, and stays text. `className` lands on the outer span, which is always
+`min-w-0 [overflow-wrap:anywhere]`, so a name can never widen its host: in a flex row it shrinks
+below its text, and a long title with no space breaks mid-word rather than pushing a 390 px page
+wider (`e2e/agent-name.e2e.ts`). A host that wants one line keeps its own truncation around or on
+the name (`TruncatedText`, `min-w-0 truncate`), and its `nowrap` still ellipsizes.
+
+It has three variants, one `kind` prop:
+
+- `link`, the default: the name is the link to the agent's live conversation. `inline` keeps it
+  in a sentence's line box (`.dispatch-inline-link`); standalone it is an ordinary control under
+  the 44 px touch floor below 1280 px.
+- `control`: the host keeps its own control around the name (`control={(name) => …}`) - the ask
+  card's author chip that opens the copy handles, an Agents row's toggle, the Inbox's
+  `Asks from` clear link, a broadcast recipient chip, the issue header's route button, a session
+  group's checkbox label - and the component renders the live link (`↗`, named
+  `Open live conversation with <label>`) beside it, a sibling outside the host control, so no
+  link ever sits inside a link or a button.
+- `static`: the name and its state with no link, at three named places only. E1, the reference
+  hover cards (`RefPreview`): the card is a `role="tooltip"` that is one click-through to its
+  reference and never interactive, so a link inside it could be neither nested nor reached. E2,
+  the @-mention picker: each suggestion is a `role="option"` button in a `role="listbox"`, which
+  may own only options, so a link inside or beside one breaks its semantics and its keys. E3, the
+  live page's own header: it is that agent's live conversation already.
+
+The state mark comes from the registry alone (`AgentState`):
+
+- running: the latest successful `GET /api/v1/agents` lists the session. A filled dot, named
+  `Running`, whose `title` adds `seen <time>` from its `last_seen`.
+- not running: the latest read succeeded and does not list it. A hollow ring, `Not running`.
+- unknown: no read has succeeded yet, or the latest one failed. A dashed ring,
+  `Running state unknown`, never shown as not running; the name still uses whatever titles the
+  cache holds.
+
+Filled, hollow and dashed read apart without colour and without a hover. Running means listed by
+the Envoy listener in the latest successful read, not a process probe: the listener drops a
+session a set time after its last heartbeat and can briefly omit a running one while it refills.
+The live page's stream-status dot is another fact, the relay connection, and says so.
+`Claimed by` keeps its visible `· not running` beside the hollow ring, since those words say the
+claim is free to take.
+
+One poller keeps the registry fresh: `AgentRegistryPoller`, mounted once in `app.tsx`, refetches
+`["agents"]` every 15 s (`AGENT_REGISTRY_POLL_MS`) while any session `AgentName`, or any
+`useAgents(…, true)` caller, is mounted (`useRegistryPolling`'s count, read through
+`useSyncExternalStore`), and not in a hidden tab. A reader (`useAgentRegistry`, `useAgents`)
+never sets a `refetchInterval` of its own: TanStack runs one interval per observer, so names
+mounted at different times would each poll. That is one request per 15 s per tab however many
+names are on screen, and never a request per agent.
+
+Where only a string fits, `useAgentText()` (`label`, `part`, `sessionText`, `initials`) names an
+agent by the same rule: an `aria-label` or `title`, `document.title`, a confirmation dialog's
+sentence, the composer textarea's `@Title` mention text and its notices, a clipboard value, the
+Inbox empty state, and the Conversation avatar's initials. Never a visible name in a byline,
+chip, heading or sentence. A sentence that names agents keeps them as `AgentPart`s (a string,
+`{ actor }`, or `{ sessionId, storedTitle }`) until it renders through `AgentParts`, which draws
+each agent as an inline `AgentName`: the activity and event descriptions (`askResolutionParts`),
+a delivery attempt's recipient, the broadcast composer's Excluded line. `AskResolutionLine` is
+`Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue` (an ask
+an issue's close withdrew, whose server-written reason `askResolutionReason` in
+`features/refs/actor.ts` drops, since it only repeats the sentence).
+
+Delivery's `Parent agent` values (the facet, the lanes, the PR list, the drill-down) are not
+agents: the server sends a session title, a session group or a placeholder, never a session id,
+so there is no one agent to link and they stay text.
+
+A lint rule holds the boundary. The root `biome.json`'s last three `overrides` turn on
+`style.noRestrictedImports` at `error` for `packages/dispatch/web/src/**`, tests included: no
+import of `actorAttribution`, `actorLabel`, `actorName`, `sessionLabel` or `shortSessionId` from
+`@legion/contracts`, and no `AGENT_LIVE_PATH` from a `**/refs/routes` or `./routes` specifier.
+`app.tsx` keeps the naming ban but may import the route path, which it mounts; `AgentName.tsx`
+and `routes.ts` are exempt, the latter for its reference short form (`agent/session:<8>…/slug`),
+a `dispatch://` reference rather than a shown agent. `bun run lint` here and `bunx biome check`
+at the root both fail on it. Where it stops: a namespace import
+(`import * as contracts from "@legion/contracts"`, then `contracts.actorLabel(…)`) is not
+caught, so review runs the audit, from the repository
+root, which catches the member use:
+
+```bash
+rg -n --glob '!*.test.*' "LiveDot|FreshnessDot|liveDotBg|offlineDotBg|/live\`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title" packages/dispatch/web/src
+```
+
+Its only expected hits are `AgentName.tsx`, `routes.ts`, `app.tsx` (the route),
+`theme/classes.ts` (the colours), `AskCard.tsx` (the copy-title handle's value),
+`AgentConversationPage.tsx` (the stream-status dot's colour) and the delivery pages'
+`session_titles` facet; any other is a place drawing an agent of its own.
+
+## Visual hierarchy
+
+Every screen declares one **primary** (the thing it exists for), a small **secondary** set (what a
+reader needs to act on the primary), and **chrome** (identity, provenance, routing, rare actions).
+Chrome never sits between a reader and the primary content and never takes a row of its own above
+it: it goes after the primary or behind a fold. Six type roles exist and no others - page title
+(22 px semibold, `tracking-tight`, one per screen), primary body (`text-[15px]` medium, an ask's
+question and document prose), section label (`text-xs` semibold uppercase, the band headings that
+divide a list), body (`text-sm`), metadata (`text-xs`), eyebrow (`text-[10px]` semibold uppercase,
+the urgency notch). Spacing is a 4 px base and only these steps: 8 px inside a row, 4 px between a
+label and its content, 12 px between the sections of a card and between cards in a list, 16 px
+between the parts of a page, and a 16/24 px page gutter; a child contributes no outer margin,
+because the parent owns the rhythm. Colour is state, never decoration: slate is structure, sky is
+the accent and the one selected thing, rose/amber/sky/slate are urgency descending and appear on
+nothing else, emerald is settled, and one filled button per surface names the action that surface
+wants. Anything a reader uses less than once per visit folds behind a labelled control that still
+names its count. The full vocabulary, with the reason each call beat its alternative, is the
+`LEGION-67` specification in Dispatch.
+
+## Credential requests
+
+`features/credentials/` renders the secrets-broker credential surface Dispatch still owns —
+directed, signature-verified, immutable-record requests the broker owns and decides. A **machine
+login** is decided here, by its typed code, and Dispatch relays, renders and names the deciding
+human for it and for every revoke; a **secret request** is not: the broker decides one on its own
+page alone, and Dispatch links there (`brokerPage.ts`, below). The feature is off — the inbox
+section and the
+Settings grants section hidden — whenever `DISPATCH_AGENT_SECRETS_URL` is unset on the server, and
+the SPA learns so from the pending list itself, never a separate capability flag: there it answers
+`200` with `null` (every other credential route answers `404 FEATURE_OFF`), since every page reads
+that list for the `Needs you` badge and a 404 made each page of a deployment without a broker log a
+failed request. The server reads its broker setting once, at boot, so `credentialPendingQuery` holds
+a `null` answer until the page reloads or the event feed starts again after a gap (any reconnect
+but a 4001 rotation whose next socket opens, `api/live-socket.ts` above): the query is not fetched
+again while its data is `null` (`enabled` is false) - not when another reader mounts, on a focus,
+or when the event feed refreshes every query - but the feed's first `events_start` after a gap,
+the one moment the server may have restarted with a broker configured, asks it once more over the
+held answer (`reaskHeldCredentialList`, from `api/event-feed.ts`); a rotation, which no restart
+caused, asks nothing. Nothing blinks while it is out, and a list that comes back makes it an
+ordinary query. `features/inbox/Inbox.no-broker.test.tsx` holds both.
+`CredentialRequestsSection.tsx`
+mounts in `features/inbox/Inbox.tsx`, above the ask sections and outside its
+roving-focus/`ViewportAnchor` mechanism (it is not an ask row): each pending row shows a kind
+badge ("Secret request" for `agent_secret`, "Machine login" for `launcher_credential`), the
+requested identifiers, and a
+relative `Timestamp`. A machine-kind row links to `/credentials/machine`, since only the typed
+code selects a machine login (a direct record link can never approve one). A secret-request row
+is an `<a>` to the broker's own page, the `approve_url` the broker names on the pending row and
+`brokerPage.ts` takes only as an absolute `http:` or `https:` URL (anything else, a
+`javascript:` URL among them, reads as absent, since the body is the broker's word relayed
+verbatim; the check itself is `lib/external-href.ts`, shared with the issue header's external
+links); from a broker that names no page the row is the same summary with no link at all, a plain
+`<div>` rather than an anchor (`PendingRowLine`), since Dispatch decides no secret request of its
+own any more. Below that line each row shows the session the
+broker's `session` field names (LEGION-587: `{request, enrollment}`, either null): each id as an
+`AgentName` - its name, its running state and its live link - followed by the full id in text,
+because the id is an unsigned claim (`session.ts`) and `session:<8>…` alone would let another id
+with the same prefix pass for it: ` · <id> · <folder> · <machine>` while the agents list lists
+it, ` · <id> isn't running.` when the list answered without it, and
+` · couldn't check whether <id> is running.` when the list hasn't answered, or Envoy is down or
+unconfigured (the words read the same registry state as the mark); and neither id ever set, "No
+session named." The enrollment's id
+alone, or both agreeing, shows one unlabeled line. A request-only id (the common host-session
+case, which has no enrollment `session_id` of its own) shows one line with no preamble
+(`session.ts`'s `credentialSessionLines`). Both ids set and differing shows both lines: the
+enrollment's under "The session that enrolled:", since that is the one the broker verified, and
+the request's bare (`CredentialSessionLines.tsx`, which this row is the one caller of);
+never "Requested by". `pending.ts`'s
+`useCredentialRequests` is
+the one reading of that list - `listed` (empty under `null`), `loading` or `failed` - and
+the section, the Inbox's empty state, its `Blocked on you` banner and both Inbox counts (the
+sidebar's and the compact header's)
+all read it, so a request one of them counts is one the section lists.
+
+`MachineLoginPage.tsx` (`/credentials/machine`) is the one page Dispatch renders a credential
+record on. `app.tsx` routes `/credentials/*` to the Inbox, and React Router ranks that static
+machine path above the splat, so every other `/credentials/...` path - an old link to a single
+record among them - opens the Inbox. A secret request is decided on the broker's own page,
+which the Inbox row links; Dispatch serves no page of its own for one.
+The machine page looks a pending machine login up by the 8-character code the operator typed
+(`POST /api/v1/credential-requests/machine-lookup`), and renders `CredentialRecordFacts.tsx`
+(kind, which reads "Machine login" since the lookup returns nothing else; identifiers; lifetime;
+requested/expiry timestamps; policy version; approver, the broker's `anyone`, which a shared
+secret's request and a service's machine login name, reading "Anyone signed in to Dispatch"; then
+the agent's reason) above
+`CredentialDecisionButtons.tsx` (the Approve/Deny pair, shown while the looked-up login carries no
+decision; a service's login gets Deny alone, since no person approves one any more).
+That lookup selects machine logins alone, and the broker leaves such a record's enrollment and both
+of its session ids empty, so the facts carry no enrollment, no worker slot and no session line; the
+session lines are the Inbox row's own. A record waiting on
+`anyone` is in every signed-in person's pending list, since the broker lists it for every approver,
+and any of them decides it the same way; a person's own machine login is decided by that person
+alone.
+The reason renders inside a `<blockquote>` as **plain text only** — no Markdown pipeline, no
+linkification, `white-space: pre-wrap` — since it is the agent's own words, not reviewed content;
+a pending machine record adds the sentence "Approving lets `<host>` start agent sessions as
+you." verbatim, or, for a service's login (the record's `service` set, the Legion daemon's), the
+sentence that it is a login from before services logged in with their own Kubernetes token and no
+one can approve it any more: deny it, or let it expire. The decision shown in the buttons' place -
+one made here, or the one a looked-up login already carried - reads "Approved. `<host>` can start
+agent sessions as you." or "Approved. `<service> on <host>` can start worker pods as
+`<service>`."; any other decision reads its own word capitalised, as in "Denied. `<host>` is not
+logged in."
+A decision is one plain
+POST: approve and deny both send `{code}`, the code the viewer typed for that lookup (the broker
+requires it on either decision). The page never says who decides: Dispatch's server names the
+signed-in viewer (below),
+and the broker refuses anyone a machine login's rule does not admit (anyone signed in for a
+service's login; otherwise its approver) with `403 NOT_APPROVER`, surfaced verbatim. A secret
+request's decision never reaches that rule through Dispatch: the broker answers
+`403 DECIDE_ON_BROKER_PAGE` to every caller on either decide route, which is why the Inbox row
+links the broker's page and Dispatch renders no Approve or Deny for a secret request at all.
+A login looked up already decided (`approved`, `denied`, `expired`, `cancelled`, `revoked`)
+renders that recorded decision and no buttons, as one decided here does; every broker error
+surfaces verbatim through `ApiError`'s message, never reworded.
+
+`RevocableList.tsx` is the revocable table both lists below render through: each section hands it
+its query (narrowed to the rows with `select`), its columns, its revoke call, an optional
+`window.confirm` question and what to invalidate on success. It owns the loading, failed and empty
+states and the one revoke in flight: every Revoke button is disabled while a revoke is pending, a
+`useSubmitGuard` ref drops a second press that lands before that re-render, and a refused revoke's
+broker message (a `403 NOT_APPROVER` among them) shows under the table, never silently. A section
+that lists rows the broker lets nobody revoke gives it `unrevocable`, which names why for such a
+row; that row then renders read-only, with that line where its Revoke button would be, so the page
+offers no button that can only fail.
+
+`GrantsSection.tsx` renders on `/settings` only where the pending list is not `null`: every live
+grant of a session the viewer operates, automatic or approved by anyone, and every grant the viewer
+approved (`grants.ts`'s `credentialGrantsQuery`, `?approver=me`). Each row names how it was
+granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; the generated
+`ApproverGrantResp.granted` is the closed union `"automatic" | "approval"`, which the Go field's
+`enum` tag states, so the page reads the discriminant the broker writes rather than inferring it
+from a null approver), a pod enrollment's slot under its enrollment - the broker's
+`enrollment.slot` (`implementer-g3`, null without one), which is what tells two roles' grants in
+one pod apart, since they share the pod's kind and runtime id - and has a Revoke button that POSTs
+to `/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
+one makes that session ask before it gets those secrets again: its other automatic grants of them
+end with it.
+The list also holds, for every signed-in person, every live grant that belongs to no person: one
+the policy gave without asking (`granted` "automatic", so no approver) on an enrollment with no
+operator, which the broker lists to everyone so that what a pod took is on somebody's page.
+`mayRevoke` refuses every person for such a row, so `unrevocable` makes it read-only and says
+`Ends with its machine login`: revoking the service's machine login ends every session under it,
+which is what ends the grant.
+
+`MachineLoginsSection.tsx` renders under the code entry on `/credentials/machine` as **Machine
+logins**: the machine logins the viewer may revoke that can still reach a secret
+(`GET /api/v1/machine-logins`, `machineLogins.ts`'s `machineLoginsQuery`, which an approval on the
+page also invalidates), the viewer's own machines' and every service's whoever approved it, since
+anyone signed in approves and revokes a service's login and a person's machine login is that
+person's alone. One row per login with its machine (the host, or `<service> on <host>` for a
+service's login such as the Legion daemon's), its credential id (`credential_id`, which every
+enrollment the login made names, while the host is the machine's own claim, so two logins of one
+service on one host differ only there), who approved it (`approved_by`), when it was issued and
+when it expires, and a Revoke button that asks
+`window.confirm` first and then POSTs `{}` to `/api/v1/machine-logins/{id}/revoke`. A login's
+sessions outlive its expiry, so the broker also lists an expired login while one of its sessions
+runs (`expired: true`), and its row reads `expired, sessions still running` under the machine. The
+confirm for a service's login says every session it started, its worker pods included, ends and the
+service needs a new login approval. Revoking ends the login and every session it enrolled, so it
+also invalidates the Live grants list.
+
+`SignInsSection.tsx` renders on `/settings` beside Live grants, under the same `null`-pending
+gate, as **Sign-ins**: the machines the viewer has signed in on with `agent-secrets login` and
+has not revoked (`GET /api/v1/signins`, `signins.ts`'s `signInsQuery`), over the same
+`RevocableList.tsx`. Nobody sees anyone else's — Dispatch names the person from its own session
+and the broker lists that person's alone, and a revoke of another person's id is the broker's
+`404 NOT_FOUND`. One row per sign-in with the machine's fleet account, the first twelve
+characters of the box key's RFC 7638 thumbprint under it (the full value in the cell's `title`),
+which is what tells two boxes of one fleet apart, when the person signed in there and when that
+box last used the sign-in, and a Revoke button that asks `window.confirm` first and then POSTs
+`{}` to `/api/v1/signins/{id}/revoke`. Revoking ends that box's trades and every access token
+already minted under the sign-in, so the sessions running there lose Dispatch and its secrets at
+once; the viewer's other machines are untouched. It sits on Settings rather than on
+`/credentials/machine` because that page is itself conditional (below), and a deployment whose
+machines sign in with their own cloud identity is exactly the one with sign-ins to manage.
+
+`/credentials/machine` is served only while the broker still serves RFC 8628's device grant,
+which is the only thing that makes a machine print a code. A browser reaches no broker, so
+Dispatch relays the one fact: `GET /api/v1/credentials/capabilities` answers
+`{"machine_code_page": <bool>}` from `agentsecrets.Client.ServesDeviceGrant`, a cached read of
+the broker's RFC 8414 metadata (`/.well-known/oauth-authorization-server`), and
+`capabilities.ts`'s `credentialCapabilitiesQuery` is what `app.tsx`'s `MachineLoginRoute` and
+`CredentialRequestsSection`'s machine row read: a false answer renders `NotFoundPage` and leaves
+the Inbox row unlinked, and while the answer is still out the route renders nothing rather than
+"not found". No Dispatch setting says any of this — the deployment turns the device grant off in
+one place, the broker.
+
+`packages/envoy/internal/dispatch/agentsecrets/client.go` is Dispatch's server-side client for the
+broker's named-caller API (`DISPATCH_AGENT_SECRETS_URL`, and
+`DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, the file holding Dispatch's own projected Kubernetes
+ServiceAccount token, both resolved in `cmd/dispatch/main.go`'s boot config, threaded through
+`api.Deps`/`routes.AppContextOptions` as `Deps.AgentSecrets`, nil when unconfigured). Every call
+presents that token, read from the file at call time behind a 30-second cache since the kubelet
+rewrites it in place; the broker verifies it and finds Dispatch in its `BROKER_API_ACCOUNTS`. Its
+reads and the machine lookup return the broker's JSON body as `json.RawMessage`, relayed
+unmodified. The listed account's token is the approval credential: the broker takes the approving
+human from the request body on that caller's word, so Dispatch builds every decision
+body itself. `Approve` and `Deny` take an `agentsecrets.Decision{Approver, Code}`, where `Approver`
+is always `canonicalLogin` of the person `actingPerson` resolved and `Code` is the only field read from the
+browser's body; any other field the browser sends, an `approver` among them, is dropped.
+`RevokeByApprover`, `MachineLogins` and `RevokeMachineLogin` send only the caller's canonical login
+as the approver. Cookie-authenticated unsafe requests
+must be same-origin (`enforceCookieOrigin` in `packages/envoy/internal/dispatch/routes/router.go`),
+so another site cannot send a decision from a signed-in human's browser.
+`packages/envoy/internal/dispatch/api/credential_requests.go` mounts
+the eleven proxy rows every page above calls, each held to the `person` scope:
+`GET /api/v1/credential-requests`, `POST /api/v1/credential-requests/{id}/approve|deny`,
+`POST /api/v1/credential-requests/machine-lookup`, `GET /api/v1/credential-grants`,
+`POST /api/v1/credential-grants/{id}/revoke`, `GET /api/v1/machine-logins`,
+`POST /api/v1/machine-logins/{id}/revoke`, `GET /api/v1/signins`,
+`POST /api/v1/signins/{id}/revoke` and `GET /api/v1/credentials/capabilities`;
+each decision and revoke needs `approve` as well.
+Every handler is reached only past that scope gate (`gateRouteScopes`), then needs a
+configured client (`404 FEATURE_OFF` on a nil one), except the pending list, which answers `null`
+without a broker once its input is checked, and the capabilities row, which answers
+`{"machine_code_page": false}` for a Dispatch with no broker, since a 404 would leave the page
+unable to tell a deployment without a broker from a route it failed to reach;
+the two `?approver=` routes accept only the
+literal string `"me"` (`400 APPROVER_ME_ONLY` otherwise) and resolve it to the caller's own
+canonical login — the UI never asks for anyone else's list. A `*agentsecrets.Error` forwards the
+broker's exact status and body verbatim (e.g. `403 NOT_APPROVER`, `409 RECORD_TERMINAL`); a call
+that stopped at Dispatch's own token, a file missing, unreadable or empty, is
+`500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE`, logged with the file's path, since the broker was
+never asked; any other failure is `503 AGENT_SECRETS_UNAVAILABLE`. `credential_requests_test.go`
+pins the decision bodies
+against a fake broker, and `internal/dispatch/api/contract_test.go` round-trips a real broker
+(`brokerapi.Register` with real services on `BROKER_TEST_DATABASE_URL`): Dispatch's approve and
+deny of a secret request each refused `403 DECIDE_ON_BROKER_PAGE` naming the record's page on the
+broker, by its approver as much as by another login and whatever the browser's body names, and
+the approver's approval on that page releasing the value; a shared secret's request in two
+people's lists and approved on that page by the second; an automatic grant listed as automatic,
+revoked, and the same session's next request for it waiting on its owner while another session
+still gets it at once; once the operator has withheld AUTO_TOKEN, another person's approval on
+the broker's page of the session's request that was waiting on anyone for it deciding nothing and
+the operator's releasing it; a person's
+machine login listed for the person who approved it alone, another person's revoke refused
+`403 NOT_APPROVER` whatever their body names, and the approver's revoke ending the session it
+enrolled and its launcher proofs; a person's machine login refused `403 NOT_APPROVER` to another
+person's approval; and a service's login approved by a person it names nowhere, listed with its
+service and its approver for every signed-in person, and revoked by another.
+
+## Dark mode
+
+Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
+Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query, already
+active via `@import "tailwindcss"` in `web/src/styles.css` — there is no `@custom-variant`
+override). Components never write a Tailwind color utility literal directly; each imports a
+named composite (e.g. `card`, `textPrimaryOnSurface`, `dangerText`) from `web/src/theme/classes.ts`
+and interpolates it into `className`. `classes.ts` is the only module where a `dark:`-paired
+className string gets built — every export is a static string literal, since Tailwind's
+build-time scanner reads source files as plain text and cannot see a class name assembled at
+runtime. `web/src/theme/palette.ts` holds the raw OKLCH swatch values (copied from
+`tailwindcss`'s own theme, since Tailwind v4 recomputed several hues from their Tailwind v3 hex
+constants) and `contrast.ts` is a pure OKLCH→sRGB→WCAG implementation; `classes.ts` is the only
+file besides tests allowed to import either. Four tests and a post-build check enforce this:
+`palette.test.ts` asserts every registered foreground/background pair meets WCAG AA (4.5:1 text,
+3:1 for the focus-ring UI-component boundary); `no-raw-colors.test.ts` greps every `.ts`/`.tsx`
+(including `e2e/`) for a raw Tailwind color utility (numbered shades and the `white`/`black`/
+`transparent` keywords) or a runtime-concatenated class-name pattern; `classes-in-build-css.ts`,
+run with `bun run check:classes` after `bun run build:web`, confirms every token `classes.ts` can
+produce has a matching rule in the real output CSS, catching the scanner-blind-spot case those
+checks exist to prevent;
+
+`text-on-background.test.ts` statically resolves each text composite's nearest enclosing
+background composite in its own file and asserts that pairing is registered, since a component
+can compose a text role onto a background role its own registration never checked;
+`styles-css-pin.test.ts` asserts the hand-written hex/`rgb()` literals in `styles.css` (the
+pre-hydration `:root` fallback and Proof editor variables, both outside the `dark:` className
+mechanism) equal the exact OKLCH-computed value of the palette swatch their trailing
+`/* swatch-name */` comment names. Adding a new color pairing means adding a registered
+composite to `classes.ts`, not inventing a shade inline. The document editor
+(`@legion/proof-editor`) themes itself through CSS variables scoped to `.proof-editor`;
+`styles.css` maps them to palette swatches under `.dispatch-doc .proof-editor` for both schemes,
+and those literals are what `styles-css-pin.test.ts` pins.
+
+## Document editor
+
+`features/doc/` adapts `@legion/proof-editor` to Dispatch: it owns the Hocuspocus/Yjs
+connection, accessible editor attributes, selected-version presentation, CSS Custom Highlight API
+search highlights, and the bridge between Proof marks and margin cards. `@hocuspocus/provider`,
+`yjs`, and the editor library all sit behind `import()` — `loadDocumentTransport` and `createDoc`
+load the first two, `createEditor` the third — so the issue route ships none of them until a
+document tab mounts. `loadDocumentTransport` resolves to a synchronous `connect`, so
+`ProofDocument` has one place that reacts to the connection and mounts the editor from its
+`onSynced` callback (which fires once per connection). Every one of those imports goes through
+`importWhenOnline`, which lives beside `installChunkFailureRecovery` in
+`shell/DeploymentResilience.tsx` because the two are one policy: a chunk that fails while the
+browser is offline is retried once the network returns (Chromium caches a failed module fetch,
+so the retry can reject too); a failure while online, or a retry that rejects, reaches
+`DeploymentResilience`, which treats it as a replaced deployment and reloads the page while fewer
+than three of the tab's recovery reloads fall in the last five minutes. A reload is spent from
+that budget when the page actually goes, at `pagehide`, not before `reload()` is called: a reload
+the reader cancels at a leave prompt spends nothing, and the next failure still has it.
+`pending-edits.ts` keeps each local Yjs update in IndexedDB until its own Hocuspocus `SyncStatus`
+acknowledgement arrives: `pending-sync.ts` pairs acknowledgements with frames by update payload
+rather than a provider counter, so reconnect queues cannot clear an earlier unconfirmed edit, and
+reads every frame field through `sync-frame.ts`'s bounds-checked `readField`. A local update that
+changes only attributes the editor derives (a heading's `id`, an ordered list item's `label` and
+`listType`; the server settles these without a version) is never counted or stored, whatever the
+admission or the order of reconnect, close and reopen: it is held in memory until the server
+acknowledges it, and the next local update a person makes stores the held ones first, in order,
+because its row continues their client's clock and would park on a reload without them. The first
+synced admission judges each saved row on a scratch copy of the live document before applying it: the
+copy takes every row the live document takes and is copied afresh after a row it refuses, so a
+row a rebuild leaves parked is dropped and reported alone while the others apply, and the rows it
+handled are deleted in one IndexedDB write once their re-recorded rows are stored. A read-only
+admission keeps them all, and an `ARTIFACT_NOT_FOUND` admission removes rows for the document that
+is gone. The connection indicator names saved edits while disconnected and warns when IndexedDB
+cannot retain them across a reload.
+
+The one exception is a page being left: from `beforeunload` no failure reloads it, because WebKit
+and Firefox cancel the chunk downloads in flight when a navigation starts (WebKit also refuses new
+ones), and a reload then would replace the reader's navigation with a reload of the page they are
+leaving (`deep-links.e2e.ts`, which the `webkit` and `firefox` projects run for that
+reason). `beforeunload` covers desktop Safari, not iOS Safari, which never fires it; there the
+Navigation API's `navigate` event to another document marks the page as left instead (iOS Safari
+26.2 and later, for a link followed or a form submitted, not an address typed), and older iOS
+Safari still reloads the page being left. Playwright drives no iOS Safari, so no e2e row covers it.
+A link with `download` (the Download version links) fires that `navigate` to another document too,
+with `downloadRequest` set, and then leaves the reader on the page, so it does not count: in
+Chromium, `shell.e2e.ts` follows one and then fails a chunk, and the page reloads. Playwright's
+Firefox follows it with a second `navigate` to the same URL and no `downloadRequest`, so the first
+navigation to another document after a download does not count either when it goes to the
+download's URL (`DeploymentResilience.test.tsx` has the sequence; no e2e row runs it in Firefox).
+The page counts as staying again once it is shown (`pageshow`, or the tab turning
+visible) or pressed (a pointer or a key), since a navigation cancelled at a leave prompt, stopped,
+or answered by the server with a download fires no event of its own.
+It never default-prevents Vite's `vite:preloadError` (`installChunkFailureRecovery` says why), so
+every importer sees the load failure itself: a route's error box names the failed download, and
+the first editor a page mounts after its stylesheet failed shows the document's failed state. A
+load that still rejects (the tab's reloads already spent) sets the document's connection state
+to `failed` — a rose dot — and renders the error under the toolbar rather than staying
+"connecting". `DocumentRuntime` supplies the transport and editor creation seams
+(`loadTransport`, `createEditor`); happy-dom tests use its doubles from
+`web/src/__tests__/document-runtime.ts`, while `e2e/editor.ts` drives the real editor in
+Playwright. The editor entry, typed blocks and block ids are legion's own, in
+`packages/proof-editor` (its AGENTS.md has the boundary); a gap there is fixed there. Only the
+editor modules that package imports — marks, the mark popover, the schema plugins — still belong
+to `sjawhar/proof-sdk`, pinned at its cleaned `library` source commit, and a gap in one of those
+is fixed there, not worked around here. That source itself keeps decoration paint out of inline
+attributes, so a Dark Reader rewrite cannot trigger an editor redraw loop.
+Live document block links use `#b-<blockId>`, the id written by `blockFragment` (`features/refs/block-reference.ts`, `encodeBlockId`): once Proof is ready, Dispatch focuses and pulses that stable block. Copying a document block link uses the selected block's `blockId`; historical versions stay read-only markdown views.
+
+A browser editor normalizes a tree it cannot represent and writes the result back, so a stored
+tree outside the Proof schema must never reach one. Each admission - a mount, a socket the server
+refuses, and a blocked admission's retry - opens the connection only after a fresh `GET /text` read
+succeeds (`queryClient.fetchQuery` with `staleTime: 0`): a cached result can predate the tree.
+`fetchQuery` joins a read already in flight, which can have started before a refusal; the server
+checks every socket itself, so such a read admits at most a socket the server refuses again. The
+admission's own read alone decides, and only an admission opens anything: a `409 DOC_SCHEMA` read
+shows the repair message and a markdown upload under the document's own name (whatever the picked
+file is called) that repairs it, `409 DOCUMENT_UNLOADABLE` offers the rebuild from the latest
+version, and any other failure says the document could not load. A blocked admission is admitted
+again by the next successful read of the text - the refetch a repair upload's or a rebuild's
+invalidation makes - so a repair reconnects the editor. After admission the provider owns
+reconnects: the first connect opens at once, and once a socket has opened, the reconnect after it
+closes waits a fresh draw of `reconnectDelayMs(0)`'s two-second spread (`connection.ts` sets the
+provider's `initialDelay` on every open), so the tabs one restart closed come back spread; a try
+that fails inside one connect keeps the provider's own jittered backoff. The server is what stops
+a reconnect into an unreadable room: it closes the socket with
+code `4409` (`DOCUMENT_SCHEMA_CLOSE_CODE` in `packages/contracts`) before any sync, and
+`connection.ts` stops the provider and calls `onOutsideSchema`, where `ProofDocument` tears the
+editor down and admits again after 0, 1, 2, 4 and 8 seconds for successive refusals; the sixth in a
+row stops reconnecting and asks for a reload, and a socket that syncs ends the run. Later refetches
+of the text - every `artifact.version` event, and the whole-cache refresh the event feed runs after
+a gap its replay does not cover - leave a connected editor alone whether they succeed or fail, so an
+outage that answers
+them 500 or 503 keeps the editor and the edits it holds.
+
+Before constructing Proof, Dispatch fetches `/api/v1/schema/blocks` once and keeps the schema by
+version for the session. It passes that schema to the live editor, historical-version editor, and
+the one headless Markdown engine cached per schema version; the connection carries it as
+`schema_version`. A server version mismatch admits the tab read-only and the surface shows
+`Reload to edit`. A closed issue's document is admitted read-only too, and names no reload, which
+cannot make it editable: `ProofDocument` shows the line while the admission is read-only, the
+issue the page holds now is open, and the socket is connected. It reads the issue as the page
+holds it rather than as the cache held it when the admission arrived, because a reconnect whose
+admission lands before the issue query refreshes would otherwise leave the reader of a reopened
+issue in front of a read-only editor with no way out named. The admission and the connection
+decide the line, not the close or the reopen. A close drops the socket on every server process
+that holds a room of the document. Migration `20261101181500`'s trigger announces the change, and
+each process closes its rooms of the issue (`issueOpenChanged`). The reconnect's admission
+decides again. Typed blocks use
+`:::name{#block-id key="value"}` container directives. The server owns their schema and version,
+while Dispatch owns host rendering for `render: "host"` types; the SPA must not invent node schemas
+or parse a second directive grammar.
+After the first paint, Dispatch warms that schema and headless Markdown engine so a long-lived tab
+holds the lazy chunk through an SPA replacement. A stale Vite chunk reloads the page, at most
+three times in any five minutes (never while the browser is offline — that is an outage, not a
+deployment); if rendering still fails, `MarkdownBody` exposes its literal-text fallback with
+`data-markdown-fallback`. The budget renews, so a tab open across many deployments recovers from
+each, and a page whose assets fail on every load stops after three reloads. A stale entry chunk or
+stylesheet reloads the page too, from that same budget. During a rolling deploy the load balancer
+can send a page's HTML to one server and its hashed assets to another, which never built them.
+Every server answers another build's assets from the database (`packages/envoy/cmd/dispatch/AGENTS.md`,
+"Routes"), but a server of a release older than that store, a build pruned from it, or a read
+that failed still answers an error before any bundle code has run, so `web/index.html` holds an
+inline script that reloads the page when a script, module
+preload or stylesheet of this origin under `/assets/` (the entry chunk, one it imports
+statically, the main stylesheet, or a lazy chunk's preload) fails to load. A file of another
+origin is never this build's, whatever its path: an extension's `chrome-extension://<id>/assets/…`
+that fails leaves the page alone. It keeps `installChunkFailureRecovery`'s rule on the same
+sessionStorage key (`CHUNK_RELOADS_STORAGE_KEY`, `dispatch.chunk-reloads`: a JSON array of the
+times of the tab's recovery reloads, a value that does not parse read as none), so the two share
+the three reloads in five minutes whichever failed first; storage it cannot read or write reloads
+nothing. The once-only key of earlier builds, `dispatch.reloaded-for-chunk`, is neither read nor
+written. It keeps the offline rule, and skips a page being left from `beforeunload`, `pagehide`, or
+a Navigation API `navigate` to another document that is not a download, until `pageshow`; it never
+clears that before `pageshow`, since a failure of a preload or stylesheet Vite inserted also
+reaches the bundle's own handler, which judges it. `pagehide` fires as a navigation commits,
+after Firefox has already cancelled the entry's download, so in a browser that fires no
+`beforeunload` it does not stop that reload; Chromium and WebKit fire no error for a download a
+navigation cancels. `shell.e2e.ts` misses the entry once (the page reloads and renders), on every
+load (it reloads three times and stays blank), after a page chunk spent the tab's reloads (it
+stays), with an entry's reloads and a page chunk's sharing the three, fails the main stylesheet
+once (it reloads and renders styled), renews the budget once the three reloads are older than
+five minutes and keeps it spent while they are not, and checks offline (it stays), each leaving
+event (it stays until `pageshow`, then recovers), and another origin's `/assets/` script failing on
+a rendered page (it stays, budget unspent). Dispatch
+sends no Content-Security-Policy; one would have to allow that script by its hash. The server
+makes the browser revalidate every page and keep every hashed asset
+(`packages/envoy/cmd/dispatch/AGENTS.md`, "Routes"), so no cached page from an older build asks
+for assets that are gone.
+On focus no more than once a minute, the SPA asks `GET /api/v1/dashboard/builds` once; a `200`
+whose `live` names exactly one entry chunk, other than the page's own, offers a dismissible
+**Reload** notice. Two live builds (a rolling update or a rollback in progress), a `404` from a
+process older than the route, a `401`, a `5xx` or a network failure offer nothing.
+
+A paste whose clipboard holds only `text/plain` goes through Milkdown's clipboard plugin, which
+parses the text as markdown and pastes the result as an open slice.
+`patches/@milkdown%2Fplugin-clipboard@7.22.1.patch` opens that slice only as far as the first
+isolating node (`Slice.maxOpen(content, false)` in place of `parseSlice`'s default), and a typed
+block is isolating. It keeps that closed slice unless pasting it would split the caret's innermost
+isolating ancestor (`splitsIsolatingAncestor`). The patch pastes the slice into a copy of the
+document first, and the paste splits the ancestor when the ancestor's type then occurs more often
+than before plus the pasted ones. That happens when the ancestor can't hold what is pasted, because
+ProseMirror closes the ancestor and opens a copy after the pasted block: a callout, a table or a
+second options list pasted into an ask's question (`paragraph+ bullet_list?`). There the paste is
+flattened instead: the textblocks' inline content in order, joined by a space, with each line break
+a space too. The flattened text takes the caret's marks, or those of the text it replaces, only when
+the paste is one unmarked line, as a paste that isn't flattened does (`pasteFlattened`). A lone ask
+or a list pasted into a question adds its text to that question. HTML pasted outside a table follows
+the same rule. So a lone typed block pasted beside a paragraph's text stays a block, while the first
+and last paragraphs or list items of other pasted text still join the text on either side of the
+caret. The patch also makes each soft line break the markdown parse produces a hard break
+(`withHardBreaks`). Milkdown keeps a soft break as `hardbreak{isInline: true}` and draws it as a
+space, although the stored markdown has a line break there. So a pasted "alpha\nbeta" keeps its line
+break, as the editor shows, and only markdown import turns soft breaks into spaces
+(`packages/proof-editor/src/lib.ts`).
+
+Tables are handled before any plugin sees the paste, by a `handlePaste` the patch adds to the
+editor's own view props (`pasteIntoTable`), since prosemirror-tables' plugin handler would otherwise
+overwrite the caret's cell and spread the pasted lines into new cells of the row. A paste with the
+caret in a cell's text, plain text or HTML, is flattened the same way, marks and links kept, since a
+GFM cell holds one line, unless everything in the clipboard HTML sits in a table (as in a copy of
+cells, the editor's own included; a spreadsheet's `<style>` block and head elements such as `<meta>`
+don't count). Those, and any paste onto a selection of whole cells (a `CellSelection`), are
+prosemirror-tables' grid paste (`__pastedCells`, `__clipCells`, `__insertCells`): from the caret's
+cell on, growing the table as needed, or clipped to the selection. That grid paste differs from
+prosemirror-tables' own paste handler in three ways. Copied cells are read from the clipboard HTML's
+own rows and cells (`htmlTableCells`), because ProseMirror's parse at the caret gives body rows an
+empty leading header row, which Milkdown's table requires; a table nested in a copied cell is that
+cell's content. Tab-separated text pasted onto selected cells fills them one value each, and other
+HTML one line each (`htmlLineCells`), so a list fills them item by item, as paragraphs do, and
+repeats from its first item across a wider selection. Every cell is retyped for the row it lands in
+and kept to one line (`fitCells`). The retyping is because Milkdown's header row holds only
+`table_header` cells and a body row only `table_cell` ones, and prosemirror-tables' own insert throws
+on a paste that puts header cells in a body row or reaches the header row. A cell holding more than
+one block or a line break (a `<br>`, a code block's newline) is flattened as the caret path
+flattens, because a hard break stored in a table ends its row. A line, in both, is a textblock or a
+run of inline content that parsed HTML leaves beside blocks (`textLines`), such as a Gmail copy's
+first line before its `<div>`s or text before a list in a cell, so that text is kept. Two other
+patches keep a pasted table's rows.
+`patches/prosemirror-tables@1.8.5.patch` makes `fixTables` fill a row with no cells with the cell
+type that row holds, since the default body cell doesn't fit Milkdown's header row and the fix
+would repeat forever. A hunk in `patches/@milkdown%2Fpreset-gfm@7.22.1.patch` makes preset-gfm's
+table paste rule count a pasted table's columns in its widest row, where upstream counts the last
+row and drops a table whose last row is empty. Each patch applies to one
+installed version, and bun ignores a `patchedDependencies` entry for a version that isn't installed
+without a word. So raising `@milkdown/plugin-clipboard` or `@milkdown/preset-gfm` means carrying its
+patch to the new version, and so does a lockfile change that moves prosemirror-tables, a transitive
+dependency that `@milkdown/prose` asks for as `^1.8.1`. The rows catch each one: the paste rows in
+`ask-blocks.e2e.ts` and `editor-paste.e2e.ts` fail without the clipboard patch, the four
+`editor-paste.e2e.ts` rows for a table whose first row is empty time out without the
+prosemirror-tables patch, and the four for an empty last row fail without the preset-gfm hunk.
+
+`e2e/read-back.ts` reads a stored document back through Go and through the headless engine
+(`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs` answers what a reader sees of each
+paragraph, which is `readDocument`'s own field: whitespace collapsed to one space and trimmed. What
+a `<br>` and a `hardbreak` each contribute to that text is
+`packages/proof-editor/src/document-reading.ts:15-16`; what that does to a reading is the stored
+reading of `pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces
+end the line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
+spelling of a body against the engine's, where the whitespace between its words is the point, reads
+the stored bytes or `engineTables` instead.
+
+`ask` is the host-rendered decision type. A live document's open block decisions appear in one compact, cycling `#b-<blockId>` navigation link beneath the tab row. There is one ask component on every surface: a decision block *hosts* the Inbox's `AskCard` (compact variant, `frame="block"`) for its indexed ask row, so answering, **Ask back** (a clarification posted as a reply on the ask — `createComment` on an issue document's ask, `createArtifactComment` on a project document's — which leaves the decision open), the newest-first two-reply preview and **Show N more replies** control over the exchange, the question-shaped-answer prompt, the `ASK_EDITED` reload, the answered and resolved records (`AskCompletionCard`), and the retryable save error all behave exactly as they do in the Inbox, and a reply or answer made in either place shows in the other. An ask block marked `invalid`, or one with a missing question or option label, renders its raw content as a malformed decision without a card until the block text is repaired. The editor library supplies its schema-aware Insert and Turn into block-menu entries; Dispatch passes the server schema rather than duplicating those commands.
+
+A decision block is a card whose chrome is React and whose question text stays the editor's. `features/doc/ask-block.ts` mounts a ProseMirror `NodeView` for `ask` (`installTypedBlocks`, merged into the library's node views right after the editor is created, in both `ProofDocument` and `VersionView`, which also mounts `renderTypedBlock`'s node view for every other typed type, so the header it draws is never in the document's HTML, and a paste of a rendered block reads its `[data-proof-block-content]` hole rather than that header): it owns only the shell — the urgency accent and tint (`askUrgencyAccent`, `askBlockTint`, `askBlockPill` in `theme/classes.ts`), a `contenteditable="false"` header slot, the content hole, and a `contenteditable="false"` footer slot — and registers each mounted block as an `AskBlockHost` (slots + node) in React state; `update()` swaps the node and re-registers without remounting the content hole. `ignoreMutation` excludes the slots so ProseMirror never re-parses the card as an edit, and `stopEvent` keeps keystrokes in the answer controls away from the editor's keymaps. `features/doc/AskBlockCard.tsx` is the host: it portals into the two slots (the same `createPortal` pattern `MarkdownBody` uses for reference anchors) and renders nothing the card already has. The header names the block type — the urgency pill (`URGENCY_LABELS` from `features/inbox/ask-urgency.ts`) and "Decision" — and the footer is `<AskCard frame="block" variant="compact" thread="collapsed">` once the server has indexed the block into an ask row and the surface is live; this compact thread mode shows the two newest replies and keeps an answered ask's Reply composer behind its **Write a reply** control. `frame="block"` drops the card's own frame, urgency accent and notch, question, and block link, since the block shell draws the frame, the editor shows the question, and the block is the link's target (the card's metadata line still says who asked and when, with the `dispatch://` reference; `AskCompletionCard` takes the same `frame` and skips the question). Until the row exists, and on a read-only surface (closed issue, version view), the block reads its own attributes instead: the header adds who asked and when (from the row, if any), "Answered by … · when", and a Resolved / Closed pill, and the footer shows the options with the chosen ones ticked (`AskOptionList`) and the note — no composer, no Ask back. The one exception is a closed issue's current document (`rowResolution`, which `ProofDocument` sets from `isClosed`): there a block whose attribute and ask row both read resolved shows the row's resolution record, with no composer, so an ask the close withdrew reads the badge `Withdrawn` and `Withdrawn when <closer> closed the issue` (`AskResolutionLine` in `features/refs/AgentName.tsx`, whose wording the activity feed's `ask.resolved` line shares). A saved version (`VersionView`, `rowResolution={false}`) reads its own attributes only, so a later withdrawal never appears on an older version. `ProofDocument` passes the card an `onAnswered` that invalidates `["artifact", id]`, since the server writes the outcome into the block. `@sjawhar/proof-editor`'s stylesheet is unlayered, so its element typography (`.milkdown h1-h3`, `p`, `ul`/`ol`, `li`, `code`, `pre`, `blockquote`, `a`, `hr`) reaches the slots and outranks the card's layered utilities — `space-y-*` is a `margin-block-end` that `.milkdown li { margin-bottom }` would beat. Inside the slots, `styles.css` rolls those declarations back with `revert-layer` (the cascade falls through to preflight, the card's utilities, and `prose`, as in the Inbox), so the card's own spacing and type are intact and it needs no `gap` workaround. The slots themselves are `not-prose` (`AskBlockView` sets it on both, so everything React renders into them — the open card, the answered or resolved record, and the thread beside it — is kept off the editor root's `prose`), and Typography cannot re-enter `prose` inside `not-prose`, so a `MarkdownBody` in the footer (a reply, an answer note) gets its `prose-sm` essentials — paragraph and list spacing, markers and indent, link, inline code, the fenced-code box, quote styling, and the surrounding text colour — from scoped rules in `styles.css` instead. Importing the library into a cascade layer below utilities would remove both workarounds but would also let the root's `prose` restyle every document; that doc-theme decision is open. The rows render the options, so the source `- Option: description` list is folded by default (`styles.css`, under `[data-dispatch-ask-options="rows"]`); it is the only place a human edits or adds options, so `askBlockEditingPlugin` (a view plugin `installTypedBlocks` adds) marks the block whose range holds `selection.$from` with `data-dispatch-ask-editing="true"` on every state update, and the list shows on that block alone — click into the question to reveal it, click elsewhere to fold it — and never where nothing can be edited (a read-only render) or once the decision is no longer open.
+
+The pure drawing those node views use lives in `features/doc/typed-block-drawing.ts`: `renderTypedBlock`, `askBlockFacts` (what an `ask` node says about itself), `askBlockShell` (the decision shell's frame and content classes, the attributes its frame stamps — urgency, state, and `data-dispatch-ask-malformed` only while malformed — and whether a mounted card folds the source option list, the one place each rule lives), `renderAskBlockShell` (the decision shell as a static spec, which `AskBlockView` and the read-only text engine both draw, so the two cannot drift), `askShellSlots` and its `AskShellSlots` (a shell's own header, content hole and footer, never a nested decision's: the one slot lookup both use), `applyAskBlockShell` (writes the shell's classes, stamps and fold over a drawn shell where a card mounts: `AskBlockView` on every update, after it adds the editor-only `data-dispatch-ask-block` and `data-block-id`, and the text path once per paired shell), and the `AskBlockHost` type `AskBlockCard` takes. It imports only types from `prosemirror-model` and small value modules (`theme/classes.ts`, `features/inbox/ask-urgency.ts`) — no editor library, no `picture-view`, no React — so the entry chunk's text engine can draw typed blocks without pulling the editor in. The editors never put the header in a document's HTML; the text engine does put it, and the decision shell, in a body's HTML, through the headless engine's `renderBlock`. A paste of a body still reads only the `[data-proof-block-content]` hole and the `data-proof-block-attr-*` copy attributes, which the schema's `toDOM` wrapper keeps on a host drawing.
+
+`installTypedBlocks` also mounts `pictureView` (`features/doc/picture-view.ts`) for every `image` node, in both editors, because the browser cannot fetch `dispatch://`. A source naming an artifact at a version (`![shot.png](dispatch://KEY/artifact/shot-png@v1)`, the line `useDraftUpload` writes for a pasted picture) is a `<span data-dispatch-doc-picture="<reference>">` holding an `<img>` loaded lazily from the version's bytes route (`artifactVersionPath` in `api/client.ts`), with `pictureClassName` from `features/refs/DispatchPicture.tsx` and the caption `pictureReference` (`features/refs/routes.ts`, the one reading of an `image` node's `src` and `alt` it shares with `pictureSerializer`) gives it — the trimmed `alt`, or the artifact's slug when that is empty. A source naming an artifact without a version (`![shot.png](dispatch://KEY/artifact/shot-png)`) draws its latest version: `installTypedBlocks` takes a `watchPicture` (`ProofDocument` and `VersionView` pass `watchPicturePath` from `features/refs/reference-target.ts`, bound to the page's query client: a `QueryObserver` on the same issue, project-document or agent-artifact summary a reference link reads, so every picture of one issue shares one summary read, and the picture follows that summary as an event refreshes it or a failed read recovers), which reports the latest version's bytes route at once when the summary is already read and on every change after; the wrapper holds the fallback link while it reports undefined (unread, unreadable, or a target that is a document or another file) and the `<img>` otherwise, and the view's `destroy` unsubscribes. A load error falls back to the link only from the `<img>` the wrapper still holds (a version a newer report replaced errs into nothing), and a report after a failed load draws again. The `<img>` is at its own size, scaled down to the column and never capped in height (`pictureClassName`), and a plain primary click on it (`isPlainClick` in `features/refs/picture-lightbox.ts`) opens it at full size: `openPictureLightbox` appends a modal `<dialog data-testid="picture-lightbox" aria-label="<caption>">` to the body holding the same bytes route's picture, as large as its pixels and never larger than the screen, which a click anywhere or Escape closes and removes (the bytes route serves a picture as an attachment, so its URL in a tab would download it). One layer is open at a time: a call while one is open opens nothing and answers undefined, so only the picture that opened the layer holds it, and its view's `destroy` (or `DispatchPicture`'s unmount) closes it. ProseMirror selects the node on mousedown and mouseup as before; the click after them opens the picture. A version the browser cannot draw (a markdown document, whose version route answers JSON; another file; a missing version — the `<img>`'s `error`, whose listener is attached before `src` is set so an error raised at once is caught), or a source that names something other than an artifact, is a plain-DOM `<a href="<SPA path>" data-dispatch-href="<reference>">` whose text is the reference's short form (`shortForm` in `features/refs/routes.ts`, e.g. `CORE-1 notes-md`): in the live editor a click on it reaches the article's click handler and navigates in the app (`stopEvent` returns true inside the link — for every event but a `dragstart`, which is left to ProseMirror so a drag begun over the link's words moves the picture node instead of dropping the browser's own link HTML, while `copy` and `cut` stay stopped so a native copy of those words works — so the click is a click on a link rather than ProseMirror's node-selection gesture; events on the `<img>` are the editor's, so clicking a picture selects it); in the read-only version view the click is taken by proof-editor's `markdownLinkClickPlugin` (its `handleDOMEvents.click`, which `stopEvent` never gates), which opens the artifact's page in a new tab (`window.open` with `noopener,noreferrer`); a Ctrl/Cmd-click in the live editor goes the same way; a middle click uses the real `href`; and in the live editor hovering the link shows two cards — `RefPreviewHost`'s reference card, which triggers on `data-dispatch-href`, and the library's `Open link` card, which the plugin shows for any `a[href]` in an editable view outside `[data-mark-id]` — the one element in the editor that shows both, since a link mark has `href=""` and a web link no `data-dispatch-href`. A primary-button mousedown on the link first puts the editor's caret just after the picture node (`pictureNodeView`, in `picture-view.ts`, hands `pictureView` a `placeCaretAfter` that dispatches a collapsed `TextSelection` at `getPos() + node.nodeSize`): Firefox does not focus a link on mousedown, the editing host takes the focus instead, and ProseMirror then restores the editor's own selection to the DOM, wherever it last was — the document's start for a reader who has not clicked into the text — which scrolls a long document away from the link before the mouseup and the click land; with the caret beside the picture nothing scrolls, and the click reaches the handler with a collapsed selection (`e2e/picture-link-click.e2e.ts`, which runs in Firefox for this). The listener does not `preventDefault`, since Firefox would then start no drag from the link. Any other source — a picture on another website, a relative path, a `dispatch://` string `parseDispatchReference` refuses — is the schema's own `toDOM`, as before. The view has no `contentDOM` and no `update`, so a node whose attributes change is recreated and one whose attributes are unchanged keeps its DOM across a collaborator's edits, the picture not fetched again; it sets no `ignoreMutation`: prosemirror-view's default for a view without a `contentDOM` already ignores the swaps between `<img>` and `<a>`, the only DOM changes the view makes itself, and still reports the selection records the editor needs.
+
+
+## Commands
+
+Run these from this package:
+
+```bash
+bun run dev
+bun run build:web
+bun run check:classes
+bun run typecheck
+bun run lint
+bun run test
+bun run dispatch:local
+```
+
+`bun run test` runs the suite in two halves, because only the web half wants a DOM:
+`bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
+`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
+as the node processes those harness tests are.
+The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
+DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
+global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds
+`screen` from `document`, `@mswjs/interceptors` builds its requests with `Request`.
+An import written first inside one file does not hold that order; Bun evaluated a package import
+ahead of a relative one written above it.
+To run one file, `bun run test:web web/src/path/to/file.test.tsx`: a bare `bun test <file>` loads
+no preload and fails with no DOM.
+
+Every request a unit test makes is answered by something the test set up or it fails that test,
+reads included.
+`web/src/__tests__/network.ts` is MSW (`defineNetwork` over the `fetch/web` and
+`XMLHttpRequest/web` interceptors, which are the ones that reach this runtime), and both
+transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
+through — has a `Fetch` of its own rather than `globalThis.fetch`.
+A request no handler answers is errored and recorded with its method and path, and the preload's
+`afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
+a `catch`, and a write still retrying after a file's last test, are reported all the same.
+The module answers six routes with the API's empty shape: the five the application shell reads on
+every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
+`/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
+The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
+with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
+are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
+page carrying that header, none of them about projects.
+The sidebar's other reads, the Inbox and the pinned issues, are not answered here: a test that
+draws the sidebar answers them itself.
+Every other route is the test's own to answer, and there are four seams for it, from the top
+down: the api-client method a test spies (`spyOn(api, "issue")`), which most of the suite uses
+and which never reaches MSW; the request identity `__tests__/send-answers.ts` (`answerRoute`)
+and `__tests__/keyed-attempt.ts` carry, which answers a write by the request object it was sent
+with and hands its answer the bounds — neither of which crosses the wire;
+`spyOn(globalThis, "fetch")`, or a `globalThis.fetch` replaced, that a test installs and restores
+for its own run, which takes the request before MSW sees it
+(`features/shell/DeploymentResilience.test.tsx`, `features/writes/write-store.test.ts`,
+`__tests__/client.test.ts`); and `answerRequests(http.get(…))` from `__tests__/network.ts`, which
+answers at HTTP and is forgotten after each test.
+After every test the preload also stops every write store made since the last, which
+`watchWriteStores` in `features/writes/write-store.ts` tells it of as each is made (the app holds
+none but its own), and drops what the page kept (`resetWriteStorage`): a store outlives the test
+that made it, and a write it left out would go on retrying, once that test's spies are restored,
+into the tests and files after it, which one process running every file reports as failures of
+whichever test is running then.
+
+An interaction is performed with `@testing-library/user-event`, never dispatched with
+`fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
+disabled control, as a person's press does.
+The root `biome.json` refuses a new `fireEvent` import under `packages/dispatch/web/src`: the name
+`fireEvent` imported from `@testing-library/react` or from `@testing-library/dom`, which are the
+two packages that export it.
+What it does not see is a namespace import — `import * as dom from "@testing-library/react"` and
+then `dom.fireEvent` passes, because the rule reads the names an import binds and a namespace
+binds one name for the whole module — so that shape is a thing to catch in review rather than at
+the linter.
+Where user-event has no form for what a row proves — a form's own `submit`, a `blur`, a `scroll`,
+a picture's `error`, a `drop` or a paste of files, a pointer gesture that carries a
+`pointerType`, a held button or a `relatedTarget`, two presses inside one task, or a press on a
+control that is already disabled — the site keeps `fireEvent` behind a one-line
+`biome-ignore lint/style/noRestrictedImports` comment on the import stating the file's reasons,
+with a one-line reason at the site itself.
+That reason is required of each site, and `.github/scripts/check-fireevent-reasons.sh` is what
+requires it: Biome's rule reads imports, so a file that already carries the ignore line absorbs any
+number of new `fireEvent` calls with nothing to report, which is what a forward merge of the default
+branch brings — no conflict, no lint error, no type error.
+That check reads every `fireEvent` call under `packages/dispatch/web/src`, both the
+`fireEvent.click(node)` form and the direct `fireEvent(node, event)` one, and refuses a call with no
+comment line in the five lines above it; `ci.yaml`'s lint job runs it and its test job runs
+`check-fireevent-reasons.test.sh`.
+A comment is a line whose trimmed text begins `//`, `/*`, `*` or `{/*`, and nothing else is: a `*`
+or a `//` elsewhere on a line is code, whether that line is the call's own (a URL before the call on
+it) or one of the five above it (the same URL, or an arithmetic `*`).
+It buys one thing, that no call is added silently, and it does not judge the reason: any comment
+satisfies it, so whether user-event really has no form for that interaction is a reviewer's to say.
+Its window is five lines rather than the line above, because a site's reason often sits above the
+`act(` or `await` wrapper the call needs.
+Under a held clock (`jest.useFakeTimers()`) the user comes from `__tests__/user.ts`'s
+`userOnFakeClock()`, created after the clock is installed: user-event waits through `setTimeout`,
+and a plain `userEvent.setup()` never finishes an interaction there.
+The DOM is asserted with `@testing-library/jest-dom`'s matchers, which the preload registers and
+`__tests__/jest-dom.d.ts` declares for `bun:test`: `toBeInTheDocument`, `toHaveAttribute`,
+`toHaveClass`, `toHaveFocus`, `toHaveTextContent` and their kin, in place of a hand-written read
+of an attribute compared with `toBe`.
+The preload registers them through `__tests__/jest-dom-matchers.ts` rather than directly:
+`expect.extend` hands a matcher a `utils` whose methods read the object they live on, jest-dom
+destructures them, and the first one it calls while building a failure message throws
+`Expected this to be instanceof ExpectMatcherUtils` — so a failing assertion would name neither
+what it asked for nor what it found.
+The wrapper binds that context, and `__tests__/jest-dom-messages.test.ts` holds it in place by
+reading the message a failing `toHaveAttribute` throws.
+It cures the six matchers this suite uses — `toBeInTheDocument` and its negation,
+`toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toHaveClass` and `toBeEnabled` — and not
+every matcher jest-dom ships: `toHaveStyle` and `toHaveFormValues` want a `this.utils.diff` that
+Bun's context does not carry at all, and still throw when they fail.
+No row calls either; the first row that wants one supplies that `diff` in
+`__tests__/jest-dom-matchers.ts`.
+An exact `textContent` comparison stays `toBe`, since `toHaveTextContent` matches a substring and
+normalises whitespace.
+
+No module in the SPA may import, directly or through a chain, a module that imports it back: a
+cycle resolves to `undefined` at whichever edge the bundler evaluates first, so it is a runtime
+fault that compiles, type-checks and usually runs. The root `biome.json` enforces it with
+`suspicious.noImportCycles` at `error`, so the `bun run lint` above is the whole guard — no
+extra command and no `--error-on-warnings`. It catches a dynamic `await import()` edge as well
+as a static one.
+
+Two details of that configuration are load-bearing, and they are independent. **Severity must
+be `error`**, because it decides the exit code and nothing else: with a planted cycle, `warn`
+prints both diagnostics and still exits 0, which is a guard that cannot fail a build. And
+**do not add `linter.domains.project`** — `biome explain noImportCycles` names `project` as the
+rule's domain, which reads like a requirement, but the rule works without it and switching it
+on turns up hundreds of errors and warnings from every other project-domain rule, whose volume
+pushes the cycle past Biome's 20-diagnostic cap: with `domains` on, a planted cycle is reported 0
+times at either severity, while `domains` off reports it twice at both.
+
+`packages/claude-envoy/biome.json` carries `"root": false` for this: it is a nested
+config under the root one, and without that line any invocation that starts Biome's project
+scanner aborts with `Found a nested root configuration` before linting anything. The rule is
+**unscoped** — no `overrides` glob, because a glob gives the guard an edge and SPA code that
+later lands outside it is unguarded by a diff nobody connects to a lint override. Every
+package is covered, and it takes two entries rather than one: the root rule covers the seven
+packages that have no config of their own, and `claude-envoy` repeats
+`"noImportCycles": "error"` in its own `biome.json`, because a nested config replaces the
+root's rules for its subtree instead of adding to them. Its planted-cycle proof is its own
+recipe (`bunx biome check --max-diagnostics=none src/ hooks/ scripts/` → 2 errors, exit 1;
+clean tree exit 0). If a package ever needs a real exemption, scope it with an `overrides`
+entry to the widest path that is still clean, not the narrowest that suffices, and say here
+where the guard stops.
+
+By convention — enforced by review, since nothing fails when it is omitted — **a new nested
+`biome.json` declares `"extends": "//"`** (claude-envoy's predates this and repeats the one
+rule instead, to avoid inheriting the root formatter over its ten files). Without it the file replaces the
+root's rule set for its subtree rather than adding to it, cycle detection included, and does
+so quietly: a `web/biome.json` that is a faithful copy of the root minus its `suspicious` block
+reports 0 cycle diagnostics and exits 0 over a planted `web/src` cycle the root config reports 2
+errors for; adding `"extends": "//"` to that same file brings both
+back. `extends` works with or without `"root": false`.
+
+Proven on Biome **2.4.11**, the version `bun.lock` resolves (`package.json`'s `^2.3.14` is only
+the range). This rule's known failure mode is silence — the key is accepted and nothing is
+reported — so a lockfile bump is worth re-running the proof against: plant two modules that
+import each other under `web/src`, confirm `bun run lint` fails naming both, and delete them.
+
+## End-to-end tests
+
+`bun run e2e` drives Playwright against the real Go Dispatch server and
+Postgres. It runs Playwright through `e2e/run.ts`, which builds
+`packages/contracts` and starts the harness
+(`e2e/run-server.sh` and its fakes) unless `PLAYWRIGHT_BASE_URL` selects an
+already deployed server. That build is what Playwright's own runner reads: it
+loads the specs under Node, which takes the package's `default` export
+condition, its gitignored `dist/`, where a `bun` run takes the source, so a
+workspace that never built it would fail at the first spec that imports
+`@legion/contracts`. Every harness server serves on a port the OS chooses
+unless its variable sets one (below), so the temporary server never meets the
+production listener on port 8766. A run of one lane takes `DATABASE_URL`, unless
+it names a Postgres provider instead (below): the
+database must be isolated because `e2e/seed.ts` empties it before every
+scenario and never falls back to `dispatch_c`. A run of more than one lane
+starts a Postgres per lane instead and refuses a `DATABASE_URL` the caller set
+(the lanes, below). It runs the server in cookie
+identity, the production mode, and signs `alice` and `bob` in through the
+server's dev sign-in route (`DISPATCH_DEV_SIGNIN=1`, fenced to a loopback
+origin, listener and database, with a per-process signing key, or one key per run
+in two-process mode, below):
+`e2e/users.ts`'s `signIn`/`asUser` for a browser context, `e2e/api.ts`'s
+`userHeaders` for a plain fetch, which also sends the dashboard origin the CSRF
+guard requires on writes. A cookie names its login's generation in
+`user_sessions`, which `resetDatabase` empties and then puts back at generation
+0 for `alice` and `bob`, so their cookie still authenticates and a worker mints
+one for them once rather than once per row; every other login's row goes, so a
+context signing in as anyone else signs in after the reset, never before it.
+Address the harness as `127.0.0.1:<port>`, never
+`localhost`: the router refuses any other `Host`. Do not replace the server with
+a fixture server. `bun run dispatch:local` runs the same harness by hand,
+seeded and signed in, and leaves it running (below, after the port rules).
+
+`DISPATCH_E2E_WORKERS` is how many Playwright workers the run has — unset or
+empty is one — and `e2e/run.ts` starts one lane per worker, all at once, before
+Playwright starts. A lane is one whole harness as `e2e/harness-start.ts` starts
+it (a Dispatch server, the fake Envoy, the fake GitHub, the fake broker, the
+plain-HTTP proxy, a file-store bucket of its own and ports the OS chose for it)
+and a Postgres server of its own. A lane owns every piece of state a row
+writes, because `e2e/seed.ts` empties its lane's database before every row and
+clears that lane's fakes with it: two workers on one harness would empty each
+other's state mid-row. The run exports `DISPATCH_E2E_LANES=<n>` and every
+harness variable of every lane under `DISPATCH_E2E_LANE_<i>_<V>`, that lane's
+`DATABASE_URL` and file-store bucket included, and keeps the plain names
+pointing at lane 0, so every one-lane consumer reads what it read before lanes
+existed.
+
+A worker finds its lane by `TEST_PARALLEL_INDEX`, which Playwright sets in each
+worker process and a restarted worker keeps, so a worker Playwright restarts
+comes back on the lane it had. `e2e/harness-ports.ts` resolves it, the one
+place: `laneValue` reads a variable under the lane's name and falls back to the
+plain one, which is how the harness ports resolve and how `e2e/psql.ts` finds
+the database every `sql()` statement runs against. A process that is no worker
+has no `TEST_PARALLEL_INDEX` and so reads lane 0 — the config itself,
+`e2e/preflight.ts` (which checks every lane in turn, resolving each through
+`asLane`) and each harness listener `e2e/run.ts` started, which was handed its
+own lane's values under the plain names.
+
+A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
+and a run of more than one lane that names neither is refused naming both.
+`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names,
+which is CI's path: a runner has Docker and no Postgres binaries, and the shard
+and alone jobs of `.github/workflows/dispatch-browser.yaml` pass the pgvector
+digest on their browser step's own command line.
+`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`,
+which is a developer's and an issue pod's path, where there is a Postgres
+installation and no Docker; that provider runs `initdb` once per run and copies
+the data directory it made per lane, since `initdb` is the cost that grows with
+the lanes. Both keep the lane's data under the run's own temporary directory,
+which `e2e/run.ts` removes when it ends, and both answer on 127.0.0.1, which
+the server's dev sign-in requires of its database. With one worker and
+`DATABASE_URL` set, the run uses that database as lane 0 and starts no
+Postgres, exactly as it always has.
+
+With more than one worker the run refuses, before a directory is made or a
+server starts and naming the variable, a caller-set `DATABASE_URL`,
+`PLAYWRIGHT_BASE_URL`, `DISPATCH_E2E_PROCESSES=2`, `DISPATCH_E2E_REUSE_SERVERS`
+or any harness port variable (`refuseLaneConflicts`, `e2e/harness-ports.ts`).
+Each names one database, one set of servers or one port that every lane would
+share, and a shared one is one lane emptying another's rows. The Playwright
+config refuses a `--workers` or `-j` on the command line that differs from the
+lane count, naming `DISPATCH_E2E_WORKERS` as the way to ask for that many: the
+lanes were started before Playwright, so another worker count would leave a
+lane unused or put two workers on one. Its `workers` is the lane count and
+`fullyParallel` is on, since a row empties its own lane before it runs: rows of
+one file may run in different lanes, and a file whose rows must run in order
+says so itself, with `test.describe.configure({ mode: "serial" })` and the
+reason.
+
+Every other mode is one lane and one worker, none of them setting
+`DISPATCH_E2E_WORKERS`: the deployed run (`bun run e2e:deployed`,
+`PLAYWRIGHT_BASE_URL`), two-process mode (`bun run e2e:multiprocess`), a run
+against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
+`e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
+`docs/site/media/broker/seed.ts`,
+`packages/pi-legion/scripts/skill-scenarios/seed.ts` and
+`scripts/e2e/dispatch-claimant-delivery.sh`.
+
+Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`, which
+`.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
+A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`
+and `iphone`, split over four
+shard machines, each leg running `--shard=N/4` with four workers.
+A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
+(`.github/workflows/dispatch-browser-nightly.yaml`)
+run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
+projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
+Each shard leg exports the worker count and the pgvector digest on the browser step's own command
+line rather than in an `env:`, for the reason that step's comment gives: a name outside
+`.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
+steps', drops `e2e/run-server.sh`'s `go build` out of `.github/scripts/check-ci-filters.sh`'s
+reduction.
+The `merge` job of that workflow joins every leg's blob report into one report, publishes the
+run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
+that reports ci-ok, so a run gets one verdict and not seven.
+The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
+tests and build, beside the proof editor's, and runs no browser row.
+A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
+it is working on.
+
+One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
+samplers, run from `packages/dispatch` with a Postgres provider the lanes above name:
+`DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4`.
+The `full` lane's leg names all eight parallel projects in place of those two.
+A local run retries nothing; CI retries a failed row once
+(`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
+projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
+wall-clock time has nothing to gain from a second attempt, and the two-process job writes no blob
+report, so a retried row there would be published nowhere.
+That retry is what makes a flaky row reportable: a row that fails and then passes is `flaky` in
+the merged report rather than failed, and the rate the `merge` job publishes counts those rows.
+The rate is of the sharded and `-alone` legs' rows; the two-process rows are in no rate, and one
+that fails fails its job, as before.
+The trace is one value for both runs, `trace: "retain-on-first-failure"`, which records the first
+attempt and keeps it when that attempt failed, so a flaky row carries the trace of the attempt
+that failed, which is the one that explains it.
+`on-first-retry` would not: it records on the retry alone, and a row is flaky exactly when its
+retry passed, so it would keep a trace of a green run and leave the failure none.
+
+A row of this suite takes under two seconds, or says above its `test(` why it
+cannot. The reason goes in a `// SLOW(>=2s): <what it spends the time on>`
+comment, and `bun e2e/tools/check-slow-rows.ts <playwright report.json> --dir e2e`
+holds the two together: it exits 1 on a row at or above 2,000 ms that no such
+comment covers, and on a comment whose every row came in well under that. Run it
+over a one-worker report of the files you changed, since four workers inflate a
+row by the contention of its neighbours rather than by its own work. A marker is
+earned by a row that reached three quarters of the threshold, not only by one
+that crossed it: rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and
+`verification.e2e.ts` sit between 1.5 and 2.7 seconds, where the machine
+decides which side of the bar they land, and without that band such a row fails
+the check bare on a slow run and marked on a fast one. A row's own cost is what
+it proves: most of a short row is the floor every row pays, measured in an issue
+pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
+that context cannot cache (0.40 s) and the dashboard's boot reads before its
+first draw (0.80 s).
+
+A row that drives no browser does not belong in this suite: it takes no page
+fixture, it runs in one project because every other would repeat it, and it
+makes the browser run wait for work no browser does. Its home is the layer that
+owns the claim — a bun test under `e2e/__tests__/` for a harness module of this
+directory (`e2e/__tests__/round-robin-proxy.test.ts` is the shape to follow: it
+spawns the module with `Bun.spawn`, waits for its listening line, drives it
+against stub upstreams and kills it in `afterAll`), that package's own tests for
+a command, and a Go test for a claim about the server (INFRA-1404). Every row
+of this suite binds `page`, `browser` or `context`, and
+`cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
+check that decides it: it reads every call of `e2e/**/*.e2e.ts` whose callee
+TypeScript types as @playwright/test's `TestType`, or types as one of the
+title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of one — so
+a `test` extended by `test.extend`, renamed on import, reached through a
+namespace or bound to another name declares its rows like `test` itself, and a
+member bound to another name, by `const only = test.only` or
+`const { skip } = test`, declares its row like `test.only` and `test.skip`,
+since each is decided by the type the callee carries and not by the name it is
+written under — for the fixtures its callback binds, and refuses a row that
+binds none of the three. A callback written in the call is read there, and one
+passed by name is read where TypeScript's own checker says that name is bound:
+in its own scope, and in the module an import leads to, so a `for`-of `const`,
+a parameter or an import is never read as a same-named function declared
+elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
+the program cannot resolve — leaves its row refused with no fixtures, since
+fixtures the check did not read are not fixtures it saw. It reads the three
+Playwright listings first, to prove it scanned the files the suite runs. A row
+may stand all the same as a named exemption with its reason, written in
+`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
+exemption too — one naming a row the suite no longer holds, or one that drives
+a browser now — so the rule cannot come to lie in the other direction either.
+INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
+agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
+two-build rollout row.
+
+The markdown shapes the parity rows read live in
+`packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
+read them from there rather than copying one: the Go reader's tests through
+`testdata/fixtures.json`, the web unit tests and the surviving browser rows of
+the seven families whose shapes it holds through
+`web/src/__tests__/pmdoc-fixtures.ts`. A new shape is a corpus file and
+`bun run gen` in `pmdoc/gen`, never a markdown string in a spec. Each family
+keeps one browser row. Where the family's markdown is stored as a document it
+is the row that reads that document back in a browser, because the spec editor
+draws Go's reading (already pinned by `fixtures.json`) and a comment parses
+through the headless engine (which a web unit test runs); for the seven
+families whose shapes the corpus holds that row reads through the live editor,
+five of them from a past version. `e2e/unknown-directive.e2e.ts` is the eighth:
+no document holds its bodies, so its one row reads the Conversation instead.
+
+Two files keep markdown of their own, each for a reason the table cannot meet.
+`packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` spells its rows
+itself - corpus blocks among them, and the bodies two deleted browser rows wrote -
+because what it asserts is the bytes Go stores for a shape, which the table does
+not carry: `fixtures.json`'s `rendered_by_milkdown` is the browser engine's
+re-serialization of its own parse (a backslash escape) where Go stores a
+character reference, and `pmdoc/render_test.go`'s
+`TestRenderMatchesMilkdownForFixtures` compares the two only through `plain()`,
+which strips both. `e2e/unknown-directive.e2e.ts` keeps bodies of its own
+because each carries a container the block schema does not know, and the
+generator's writing parse refuses such a document outright, as the document
+service does; a Conversation body is drawn by the read-only engine instead, so
+no corpus file can hold them.
+
+One more rule keeps an Inbox assertion from measuring the wrong mechanism: a test that expects a row to leave the Inbox list releases focus AND the pointer from it first, because `ViewportAnchor` and `heldRow` keep the row the reader's hand is on rendered wherever the list has moved it. Blurring alone is not enough - `.check()` and `.click()` leave the mouse over the row.
+
+Two rules keep an assertion honest. First, name the state the fixture puts the system in and ask whether the
+assertion would still pass with the change reverted; if it would, the fixture satisfies it for another reason
+(an empty message box, every session advertising `btw`, a sibling route unmounting the page before a
+clear-on-send check). Second, when something other than the assertion decides what it covers - fixture seeding,
+a login's casing - make that selector an assertion too, then lapse the property once and confirm the assertion
+fires, since a selector check that cannot fire only looks like a guard. The one exception is a Playwright
+project's `grep`: `webkit-iphone`'s title `grep` falls back on the one-time manual check beside that project
+below, and the `@phone`, `@webkit` and `@firefox` tag `grep`s of `iphone`, `webkit` and `firefox` on the
+`--list` check under "Phone acceptance", on the comment beside each tagged row naming the behaviour it
+exercises, and on `e2e/__tests__/row-configurations.test.ts`, which refuses a row that runs twice in one
+engine, viewport, origin and server-process count.
+
+`run-server.sh` builds the server with the caller's `go`, in the caller's
+environment, and execs the binary with every server
+setting pinned. It pins no time zone: the server writes every JSON timestamp in UTC whatever its
+process's zone (`packages/envoy/AGENTS.md`), so the specs that compare timestamps as strings, with
+their `Z`, pass on a host in any zone - run one under `TZ=America/Los_Angeles` to see it. It execs
+the binary rather than `go run`: the go command ignores
+only SIGINT and SIGQUIT, so a SIGTERM to `go run` ends the go command and leaves
+its server listening. The harness stops each process group it started and the
+skill-scenarios rig the whole process tree, so neither noticed, but a caller
+that signals the one pid it started (`kill $!`) needs it to be the server. With
+`DISPATCH_E2E_PORT` unset the script execs the server through
+`scripts/e2e/lib/held-port.py exec --fd-env DISPATCH_LISTEN_FD`, which holds a
+socket on `127.0.0.1:0` from the moment the kernel chooses its port, sets
+`DISPATCH_PORT` and `DISPATCH_SERVER_URL` from it and execs in place, so the pid
+is still the server's; the server serves on that socket and reports it on
+stderr as `msg="dispatch: listening" addr=127.0.0.1:<port>`, the line a caller
+reads the port from (`e2e/harness-start.ts` does). Set, the server binds that
+port, and an occupied one fails with `address already in use`. The binary is one per
+checkout, `packages/envoy/dispatch-e2e` (gitignored), built under
+`flock packages/envoy/.dispatch-e2e.lock` so two harnesses starting at once in
+one checkout serialise their builds; Go rewrites it only when the source
+changed, and a running server keeps the inode it started from. The script
+unsets inherited `DISPATCH_*`/`ENVOY_*`/`NATS_*` variables, supplies a fresh App
+key, passes no cookie signing key (the server generates one for its process, as
+`DISPATCH_DEV_SIGNIN` requires, or in two-process mode derives one from the
+`DISPATCH_DEV_SIGNIN_SHARED_KEY` the script passes on), and gives the server no caller Home or XDG
+directory. A caller's environment or `~/.config/legion/envoy.json` /
+`~/.local/share/dispatch/{app.json,signing-key}` therefore cannot point the
+test server at a live Envoy, dashboard origin or GitHub App (every Legion pane
+exports `ENVOY_URL`). `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are required inputs, the fakes'
+reported ports; on the TypeScript side `e2e/harness-ports.ts` is the one place the harness ports
+are resolved. The secrets broker
+the server relays credential requests to is one switch, `DISPATCH_E2E_AGENT_SECRETS_URL`, which
+`run-server.sh` and `e2e/harness-broker.ts` read alike (`${VAR-default}`, so empty and unset
+differ): unset, the default, is `e2e/fake-broker.ts` on `FAKE_BROKER_PORT` (then required), which
+verifies no caller, so the server presents the throwaway token in
+`e2e/fake-broker-account-token` and the credential-request feature is on; empty is no broker, the
+feature off as in a deployment that configures none (`DISPATCH_E2E_AGENT_SECRETS_URL= bun run
+e2e`, which is how the no-broker path is run locally); a URL is a broker the caller runs, which
+lists the ServiceAccount whose token `run-server.sh` hands the server by
+`DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, a path it makes absolute against the caller's
+directory before it changes into `packages/envoy`. The broker's docs rig
+(`docs/site/media/broker/rig.sh`) sets a URL, and keeps that token with
+`packages/envoy/cmd/dev-oidc-issuer`, the local issuer its broker trusts. The harness starts the
+fake broker only for the default, and the skill-scenarios rig sets the switch empty.
+
+`run-server.sh` also sets `DISPATCH_TEST_SETTLE_DELAY=250ms`, under the
+`DISPATCH_TEST_HOOKS=1` the server requires with it, so a document room settles
+250 ms after its last live update rather than at the document service's own 2 s
+default. A settlement is when an `:::ask` block becomes an ask row and when
+live typing is written as a version, so it is what every row that waits for one
+waits for; the one class of row the shorter delay changes is a row that proves
+a settlement did not happen inside a window, whose window must now be shorter
+than 250 ms. A caller that set the variable itself keeps its own value.
+
+`run-server.sh` sets four more test-only settings under that same
+`DISPATCH_TEST_HOOKS=1`, and every server it starts gets them, the one behind
+`bun run dispatch:local` included. Each is read as `${VAR:-default}`, so a
+caller that set the variable itself keeps its own value; the value named at the
+end of each paragraph below is the server's own behaviour back. Three of the
+four defaults are the same in every run; the embedder's follows what the run
+builds, as its own paragraph says.
+
+`DISPATCH_TEST_MARK_WAIT=250ms` is how long a Send that names a provisional
+comment, ask or suggestion mark waits for the room to receive that mark before
+the server answers that the document does not hold it (`VerifyMark`,
+`internal/dispatch/docs/marks.go`), in place of the document service's own 1 s.
+The whole wait is paid by every Send whose mark really is gone, so locally such
+a Send is refused a quarter second after it was made rather than a second
+after. `DISPATCH_TEST_MARK_WAIT=1s` is the service's own wait.
+
+`DISPATCH_TEST_UNRECORDED_MARK_TTL=4s` is how long a comment, ask or suggestion
+mark that no row records survives before a sweep removes it, counted from the
+first settlement that saw it (`sweepUnrecordedMarks`, same file), in place of
+the service's own minute. Locally the highlight a composer somebody abandoned
+left behind therefore goes four seconds after that settlement rather than a
+minute after; a mark whose author still has a browser on the room is kept
+whatever its age, as it is on any server.
+`DISPATCH_TEST_UNRECORDED_MARK_TTL=1m` is the service's own TTL.
+
+`DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW=500ms` is how long, from its first try,
+a sender keeps trying a session whose listener is being replaced before the
+send settles failed (`listenerTakeoverWindow`,
+`internal/dispatch/api/envoy_resolve.go`), in place of the server's own 12 s.
+Locally a message to a session that has really gone fails in half a second
+rather than twelve, and a message made while a listener really is handing over
+can settle failed where a deployment would have waited and delivered it.
+`DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW=12s` is the server's own window.
+
+`DISPATCH_TEST_EMBEDDER_OFF=1` builds no embedder, whatever `DISPATCH_EMBEDDER`
+and the AWS variables the file-store block exports name: the embedding queue's
+`Run` returns at once, no text and no query is embedded, and search answers
+keyword-only and says so. Locally that is a search that never ranks by meaning,
+and a server that makes no call to Bedrock - which it would otherwise make for
+every indexed text and every query, on the file store's static keys, and be
+refused 403. `DISPATCH_TEST_EMBEDDER_OFF=0` builds the embedder again, for a
+run that means to prove that path. Its default is the one default of the four
+that is not fixed: `0` where this harness builds the dev embedder for the run
+(`DISPATCH_DEV_EMBEDDER`, which the server reads beside dev sign-in alone, so
+`DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc` builds none), `1`
+everywhere else, so the runs that read a vector the queue wrote need say it
+once and no other run reaches Bedrock.
+
+Proof uses collaborative cursor decorations at the desktop `xl` breakpoint and above. Compact
+layouts intentionally omit the remote cursor plugin because its edge widget disrupts mobile
+post-update text selection; Yjs document transport and local editing remain active.
+
+`e2e/failed-room.e2e.ts` is opt-in and skipped without `DISPATCH_FAILED_ROOM_PROBE=1`: it holds
+the room's next durable append for 20 s with a `doc_updates` trigger and cancels that backend, so
+it costs about 40 s and does not belong in the suite CI runs. Run it as
+`DISPATCH_FAILED_ROOM_PROBE=1 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts`,
+which starts a harness of its own on ports the OS chooses.
+It is the end-to-end check for a failed document room: the writer inside the docs layer when the
+room fails is answered `503 DOC_SERVICE_UNAVAILABLE` rather than waiting for a recovery that
+cannot finish, the writer behind it is answered the same way or admitted once the room has
+reloaded, and the room then reloads with the browser's own paragraph in the document the server
+serves. The trigger it installs makes every `doc_updates` insert on that database sleep, so it is
+dropped in a `finally` and again in `test.afterEach` - a timeout or a Ctrl-C leaves nothing
+behind. Run it on a change and on its base whenever the docs layer's locking, recovery or publish
+paths move; the two runs' `FAILED-ROOM` lines are the comparison.
+
+`e2e/fake-envoy.ts` is a stub Envoy listener the harness starts on
+`FAKE_ENVOY_PORT` (unset, a port the OS chooses, which it reports) and the only Envoy a local
+harness server talks to: `run-server.sh` builds `ENVOY_URL` from that port alone. The harness
+starts the same listener for a deployed run; `deploy/compose/dispatch.acceptance.compose.yml`
+requires `FAKE_ENVOY_PORT` and derives the target's Envoy URL from it, so a deployed run sets it.
+Before any row runs, `e2e/preflight.ts` (the config's `globalSetup`) puts a session in this run's
+fake and
+requires the target's `GET /api/v1/agents` to list it, then clears the fake: a target that reads
+another Envoy listener refuses the run naming the fake's port, rather than answering every row
+from sessions none of them seeded. Tests seed live sessions and their capabilities with
+`setLiveSessions`, change their scripted 200/404 send response with `setSessionSendStatus`, hold
+every send to a session before it is answered with `setSessionSendDelay` (a listener slow to take
+it; Dispatch's listener client gives up on an answer at 5 s, so a hold meant to end in a delivery
+stays under that), and inspect targeted sends with `getSentMessages`, which records each send as it
+arrives, held or not; persisted subscriptions use `setInterests`, and `setListsState`
+(`PUT /__fixture/lists` `{state}`) sets how the fake answers its two list reads, `GET /v1/sessions`
+and `GET /v1/interests/`: `ok` from the fixture; `refilling` with the real listener's refilling
+answer (`503`, `Retry-After: 5`, code `refilling`), which Dispatch reports as `ENVOY_REFILLING`;
+`down` with a plain `503` carrying no code, which it reports as `ENVOY_UNAVAILABLE`. Every other
+route answers as in `ok`, and a session reseed keeps the state.
+`e2e/agent-list-refilling.e2e.ts` drives every view that reads the list through those answers.
+A page honours that `Retry-After: 5` before each of its two retries, plus a random share of it
+again (`queryRetryDelay`, `web/src/api/query-client.ts`), so a view's first refilling read says so
+up to 20 s after the page made it: a row that waits for the refilling notice gives it that budget
+(`REFILL_TIMEOUT` in both refilling specs), which is why those rows take minutes rather than
+seconds. `setLegionRegistryState` (`PUT /__fixture/legion-registry` `{state}`) answers the same
+question for the three Legion agent registry reads, which the real listener loses on their own
+rather than with the lists: `ok` answers from the seeded entries (`setLegionAgents`), `unopened` is
+the bucket that never opened (`503`, no `Retry-After`) and `unreadable` a read the open bucket did
+not answer (`503`, `Retry-After: 1`), and Dispatch reports either one as
+`legion_registry: "unavailable"` while it still names the issue's people and the sessions its
+events carry. Every
+other route answers as in `ok` here too, and a session reseed keeps the state. All
+of these come from `e2e/agents.ts`. `resetDatabase()` clears every fake Envoy fixture as well as
+the database, so a
+subscription from an earlier row cannot match a recycled issue key; the fake holds all of its
+fixture state in one object that the reset replaces whole, so a field added to it is reset with the
+rest. These Envoy fixture helpers run
+for local and deployed targets. The fake GitHub's `seedFakeGithub` remains unavailable to a deployed
+target and skips the test that calls it; locally, `resetDatabase()` clears its repositories with the
+other fake fixtures. A fixture call follows `resetDatabase()` rather than running
+beside it in a `Promise.all`: the reset empties whatever lands before it finishes, and a reset left
+running would overlap the next test's. It also holds the Agents page the keyboard specs share: `seedAgents`
+(the Planner and Reviewer sessions, both listed, and two open issues for the picker) and
+`openAgents`, which waits for the page's heading before a key is pressed, since the keymap binds
+only once sign-in resolves. A session a shared helper seeds, as these two are, carries no
+`last_seen`, so the fake answers every read of it with the current time and it never ages into
+`Inactive`, however long the harness runs. A
+Playwright worker evaluates a helper module once, at the first spec that imports it, so a time
+computed at the helper's module scope ages with every spec the worker runs after that, until the
+Agents page folds the session under `Inactive` at 10 minutes. A spec's own module scope is evaluated
+when the worker reaches that spec, which is why `agents.e2e.ts` can pin literal ages for its
+`Inactive` fold and its state marks' `seen` times.
+The Agents page keeps rows mounted where a reader cannot see them: a closed fold's rows, and the
+rows the filters exclude, stay in its one keyed list with the `hidden` attribute, and a row opened
+once keeps its conversation and composer inside it, hidden, while it is collapsed. Role queries
+(Playwright's and Testing Library's `getByRole`) skip hidden elements; CSS locators, `getByText`,
+`nth`, counts and `toHaveText`/`toContainText` do not. So a query over rows says which it means:
+`shownAgentRows(page)` (`e2e/agents.ts`) for the rows a reader sees, `agentRow(page, id)` for one
+row shown or hidden with `toBeVisible`/`toBeHidden` saying which is expected, `includeHidden: true`
+or `hidden: true` where a hidden element is the point, and `filter({ visible: true })` on text. A
+count of 0 does not mean a folded, filtered or collapsed row's content is gone, only that the
+query did not look for hidden elements. `toBeHidden()` also passes when nothing matches at all, so
+wherever it means "mounted but hidden" it needs `toHaveCount(1)` beside it. A hidden row is off
+screen for every purpose: its list marks nothing read (`open` is expanded and not hidden).
+`e2e/sends.ts` holds what a send needs from the network and the clipboard: `holdPosts` and
+`refusePosts` hold a route's `POST`s until released or refused, as a slow or failing server
+would, and `holdPosts`' `settled()` resolves once every POST it held has been answered or cut off
+by the page, so a row counts what Dispatch made only after every attempt that could reach it has.
+`refusePosts` takes the refusal it answers (`Refusal`: status, code and reason;
+`WRITE_REFUSED`, a `400 INPUT_REFUSED`, by default), and throws before it routes anything when
+that is a 5xx or a 429, on any route: every write the page makes tries those again under its key
+rather than taking them as a refusal, so only a 4xx of Dispatch's own refuses one (a send to one
+session passes `MESSAGE_REFUSED`, its route's `400 MESSAGE_INPUT`). `e2e/keyed-writes.ts` holds
+what a keyed row reads off the network: `watchWrites` (each attempt's body and key, the body
+checked against a `BodyShape` guard when a row reads its fields), `watchAnswers` (each answer's
+status, code, `Retry-After` and `Idempotency-Replayed`), `replayed` (the first replayed answer)
+and `dropFirstAnswer` (the first request reaches Dispatch through `route.fetch()` and its answer
+is dropped, at once or once a reload has cancelled it). `keyed-send.e2e.ts` runs the keyed send
+against the real server: the first `POST` to a session reaches Dispatch and its answer is dropped,
+or a server that is down answers it 503; either way the page tries again under the same key, the
+fake Envoy records one send, and the composer clears with no refusal.
+`pasteFile` pastes a file into a field as the clipboard does (`pastePicture` a PNG).
+`pictures.e2e.ts` pastes a picture into an issue message, an ask's answer and a direct message
+and checks each `<img>` loads from its version's bytes route, and that a click on the direct
+message's picture opens it at full size and a click closes it; it also writes a picture line, and
+the same picture without a version, into a spec and checks the live editor and a past version
+draw both from that route, that a click in the editor opens the full-size layer, that a markdown
+document's line, at a version or not, shows a link in its place (and that the link navigates), that
+a web picture stays the schema's `<img>`, and that the stored markdown (`getIssueArtifactText`,
+`GET /api/v1/issues/<KEY>/artifacts/<slug>/text`) keeps the lines. Every
+margin ask card, open or decided, is one keyed list in the Comments tab, with `Needs you` a heading
+item in it (the Inbox's pattern), so an answered ask moves out of the group in place, and a reply
+the reader started typing in its thread stays; the group is each card's `data-margin-section`,
+and `needsYouCards(page)` (`e2e/editor.ts`) finds the open ones.
+`e2e/fake-broker.ts` answers the broker's two UI-bearer reads, `GET /v1/pending?approver=<login>`
+(the requests seeded for that login, in the broker's row shape) and `GET /v1/grants` (always
+empty), and 404 to every other broker route. A row seeds pending requests with
+`setPendingCredentialRequests` (`e2e/fake-broker-helpers.ts`), each naming the login it waits on,
+and `resetDatabase()` clears them with the rest. Only a run whose server reads the fake has one
+(`usesFakeBroker`, `e2e/harness-broker.ts`): a deployed target, or a server the switch points at no
+broker or another, gets no fake broker from Playwright, the reset skips it, and a row that seeds one
+is skipped. A script that calls `resetDatabase()` beside a broker of its own exports the switch to
+itself as well as to `run-server.sh`, since the reset reads it from its own process.
+`e2e/clipboard.ts`'s `recordClipboard(page)` swaps the page's async clipboard for a recorder before
+navigation, so a copy-button test asserts the written value rather than only the `Copied` label.
+`e2e/touch.ts` drives real touch gestures through Chromium's `Input.dispatchTouchEvent`
+(`pressFinger` returns a finger to move and lift; `touchDrag`, `touchHold` and `centerOf` are the
+common shapes): `page.mouse` on a touch context still emits mouse events, which never reach
+dnd-kit's TouchSensor, so the board's long-press, tap and swipe rows on the `iphone` project use it.
+
+`e2e/workspace.ts` seeds one realistic workspace through the API — projects, issues across
+statuses, open, answered, snoozed and retracted asks, a spec decision block, a project document
+with an ask, a BTW mention answered by its session, a direct message and a broadcast whose
+recipient order is not alphabetical, from five sessions of which one has no Dispatch activity and
+one is twenty minutes stale — and `e2e/workspace.e2e.ts` asserts every surface the `person` scope opens that it fills
+(the Inbox's default list with its Later band and the document ask its `Unassigned` filter
+reaches, `/agents` with both folds, the broadcast page, an issue's Conversation).
+`seedWorkspace()` expects an empty database and returns the ids it made;
+it waits for the spec's decision block to be indexed, so `inboxRows` is exact when it resolves.
+
+`e2e/seed.ts` empties the test database before each scenario. It first quiesces the server
+(`POST /api/v1/artifacts/_test/quiesce`, mounted by `DISPATCH_TEST_HOOKS=1`), which closes every
+live document and waits for the settlements in flight, so the documents the previous scenario had
+open finish writing before the delete rather than failing against the emptied tables after it.
+It then empties, in one statement, only the tables that hold rows among the ones it names and
+every table whose foreign keys reach them, and restarts the identity sequences of the tables it
+emptied, which is what `TRUNCATE ... RESTART IDENTITY CASCADE` did for all of
+them; emptying the tables that held nothing was most of the old reset's 441 ms,
+against 49 ms for the reset as it stands. It also puts `alice`'s and `bob`'s
+`user_sessions` rows back at generation 0, so a worker mints their sign-in
+cookie once rather than once per row. The delete locks its tables one at a
+time, in its own order, so a transaction that reads two of them in another order can close a cycle
+with it, and PostgreSQL aborts one side: a settlement (which locks its document's owner row and
+then reads `artifact_versions`), a request from a page an earlier scenario left open, or one of
+the server's own sweeps. So the reset first takes `ACCESS EXCLUSIVE` on every table it can empty,
+and never waits while it holds one (the comment above `resetDatabaseOnce` says how), so the delete
+cannot deadlock and the reset does not retry. A table still held after 5 s fails the reset, naming
+each holder's query. For a deployed server, set `PLAYWRIGHT_DATABASE_URL` for the same database
+and `E2E_AGENT_TOKEN` for bearer-seeded API calls. Every SQL statement the harness runs,
+`seed.ts`'s and `failed-room.e2e.ts`'s, goes through `sql()` in `e2e/psql.ts`, which resolves that
+database (`PLAYWRIGHT_DATABASE_URL` for a deployed server, else this process's
+lane's `DATABASE_URL`, never a default)
+and runs psql without `~/.psqlrc` and without `PGHOSTADDR`: libpq reads it and connects there in
+place of the URL's host, and the server's pgx does not read it, so with it set in a shell psql
+would empty a database the server's own loopback check never saw. `PGHOST` and `PGSERVICE` stay,
+since pgx and libpq read both; a service entry's `hostaddr`, the one key they part on, pgx sends
+to Postgres as a setting, which refuses the connection, so the harness server never boots on one.
+`e2e/psql.ts` imports nothing from `e2e/`, so a module can import it statically before the harness
+is up, without evaluating `e2e/api.ts`. `sql()` runs its statements on one psql the process keeps
+open, started at the first call and asked for one statement at a time with a sentinel after each
+(`\echo` on stdout, `\warn` on stderr), since a session cannot use `ON_ERROR_STOP` without psql
+exiting on the first error; a statement psql wrote to stderr for is the call's failure, nothing
+after it runs, and a `ROLLBACK` leaves the session usable for the next caller. A call that arrives
+while another holds that session runs as a psql of its own, so two calls still reach the database
+at once. `sqlAt` runs one psql against a URL it is given, and kills it when an `AbortSignal` it is
+passed fires, which `e2e/local-instance.ts` uses to create its database through the server's
+`postgres` one.
+
+That reset is also the one rig failure that presents as a code failure. A transaction that holds
+one of the emptied tables for 5 s, such as a session left idle in a transaction, a long query, or
+a Dispatch server from an earlier run still listening on `DISPATCH_E2E_PORT`, makes
+`resetDatabase` throw in `beforeEach`. Because it throws in the hook, **every** spec in the file
+reports failed, each carrying the `DO $$` lock step's own error and the holders it names in its
+message, which reads as a catastrophic regression in the change under test. Recognise that shape
+as the rig: stop whatever holds those tables and run again. A run through `e2e/run.ts` cannot reach
+that shape through a port at all, since its servers serve on ports the OS chose for it alone, and
+this paragraph is where the harness-port rule lives — `README.md` and the `docs/solutions`
+learnings point here rather than restating it.
+
+`e2e/harness-ports.ts` resolves `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`,
+`PLAIN_HTTP_PORT`, `FAKE_BROKER_PORT`, two-process mode's `DISPATCH_E2E_PORT_A` and
+`DISPATCH_E2E_PORT_B`, and the sign-in issuer's `DISPATCH_E2E_SIGNIN_ISSUER_PORT` (below), for
+every reader in `e2e/`, the Playwright config and the Bun listeners
+included. `harnessPorts()` reads the environment when it is called, not when the
+module is imported, because the starters import it before the listeners have reported. Unset or
+empty is port `0`: the listener serves on a port the OS chooses and holds until it serves (the
+server on a socket `scripts/e2e/lib/held-port.py` hands it, each Bun listener by binding port 0)
+and prints it on its listening line. A set value is used as given: its listener binds exactly
+that port, and an occupied one fails with `address already in use`, never replaced by another.
+A set value that is not a port in canonical decimal is
+refused naming its variable (so `0`, `1e4`, `8777.0`, `0x2249`, `+8777`, `" 8777"` and a
+leading-zero `08777` are all refused, rather than binding one port while every URL built from the
+raw string points somewhere else, or writing one port two ways). Two set variables naming one port
+are refused together, naming both: each port passes a per-port check on its own, and every
+consumer would otherwise fail in its own words — the second Bun listener dying on `EADDRINUSE`.
+Because the check lives with the resolution, those listeners refuse it too, not only the
+Playwright config. A's and B's ports take part in it only in two-process mode, the one mode that
+listens on them, and the issuer's only under `DISPATCH_E2E_SIGNIN=oidc`.
+It resolves the lane too: `workerCount` reads `DISPATCH_E2E_WORKERS`,
+`laneCount` the `DISPATCH_E2E_LANES` the run exported, `laneIndex` the
+`TEST_PARALLEL_INDEX` of this process, and `laneValue` a variable under that
+lane's name with the plain name as its fallback, which is how `harnessPorts()`
+reads a port and `e2e/psql.ts` its database. `refuseLaneConflicts` holds the
+refusals a run of more than one lane makes, so the message names the variable
+and says which thing one lane owns. `withoutHarnessPort` is the other side of
+that lookup: a spec that starts a second listener of its own and wants the OS to
+choose its port (`e2e/__tests__/fake-envoy.test.ts`,
+`e2e/__tests__/plain-http-proxy.test.ts`, `e2e/plain-http-proxy.e2e.ts`) must
+clear the port under both names, since dropping the plain one alone still leaves
+the lane's own, and the child would die on `EADDRINUSE` before it printed its
+listening line.
+
+`e2e/harness-start.ts` is the harness's one starter. It starts the rows of
+`e2e/harness-listeners.ts` a run needs, in the table's order — the fakes, then the server (its
+environment names the fakes' ports), then the plain-HTTP proxy (it forwards to the server's
+origin) — each as the leader of a process group of its own, reads each row's report line for its
+port, waits for the server's `/healthz`, and returns the ports by variable with a stop function.
+A row that exits before it reports fails the start with its last lines, naming the variable when
+its set port was taken. A deployed run (`PLAYWRIGHT_BASE_URL`) starts only the rows marked
+`deployed`, the fake Envoy and the plain-HTTP proxy. `e2e/run.ts`
+(`bun e2e/run.ts -- <command>`) starts it, exports the ports and
+`DISPATCH_E2E_REUSE_SERVERS=1`, runs the command, stops the harness when the command exits (a
+Ctrl-C reaches the command, a SIGTERM to the wrapper is passed on), and exits with the command's
+status; `bun run e2e`, `bun run e2e:multiprocess`, `bun run e2e:deployed` and CI's browser steps
+run Playwright through it, so the config, every worker that re-imports it and every helper that
+reads a port at import (`e2e/api.ts`'s `baseUrl`, `e2e/plain-http-origin.ts`'s
+`plainHttpOrigin`) see the real ports. Before any of that, a command that runs Playwright's test
+runner is refused when Playwright has not downloaded a browser the run's projects launch, naming
+`bun run e2e:install` and how large that download is: Playwright's own message comes at the first
+browser launch, with every lane's harness and Postgres already up. A `--project` on the command
+line narrows which browsers the check requires; `--list` and a command that is no Playwright run
+are exempt.
+
+`e2e/playwright.config.ts` starts no server. It refuses, before a single spec runs, a run whose
+targeted ports are not all set — all five for a local run (with `DISPATCH_E2E_PORT_A` and
+`DISPATCH_E2E_PORT_B` in two-process mode), `FAKE_ENVOY_PORT` and
+`PLAIN_HTTP_PORT` for a deployed run — naming the unset variables and `e2e/run.ts`, and a run
+without `DISPATCH_E2E_REUSE_SERVERS=1`, whose only accepted value is `1` (any other is refused
+naming the variable and the value). Every port set by hand plus that flag runs against a harness
+a person started and left listening; pair it with that harness's own `DATABASE_URL`, since
+`e2e/seed.ts` empties the database the server holds. `CI` takes no part in that decision. A
+deployed run passes `FAKE_ENVOY_PORT` to the acceptance Compose file, which derives the target's
+`ENVOY_URL` from that same value; the README's acceptance recipe wires the pair. A listing
+(`--list`, with no `--ui`) with every harness port unset is the one exception: it targets nothing,
+so the config lets it evaluate with no harness. The argv test is loose, and Playwright reads the
+`--list` of `--grep --list` as `--grep`'s value, a real run; with no port set that run fails at
+`e2e/preflight.ts`, and with any port set a listing meets the reuse refusal like any other run, so
+it asks for `DISPATCH_E2E_REUSE_SERVERS=1` or the ports unset.
+It also refuses a `--workers` or `-j` that differs from the lane count, as the lanes above say.
+
+A spec writes every file it makes under its own row's `testInfo.outputPath()`,
+the per-row directory beneath `e2e/test-results` the workflow uploads on a
+failure — the fixture a row uploads as much as a debugging screenshot. Two
+workers run two rows at once, so a path shared between rows is a file one row
+reads while another writes it, and a fixed absolute path is somebody else's
+file on a shared box. `e2e/artifacts.e2e.ts` writes the note and the diagram it
+uploads that way; the tree holds no `e2e/fixtures/` directory.
+
+`e2e/tools/` holds two tools, and no third.
+`check-slow-rows.ts` is the row-length check the `SLOW(>=2s)` paragraph above describes.
+A per-row inventory is no longer a tool's: it comes from the merged JSON report of the
+`dispatch-browser` lane, which the `merge` job of `.github/workflows/dispatch-browser.yaml` writes
+with `playwright merge-reports --reporter=html,json,list` over every leg's blob report and uploads
+as the run's `dispatch-browser-report-<attempt>` artifact, each row in it carrying its project,
+file, line, title, status and duration.
+`measure-summary.ts` summarises the records
+of the timing fixture (`e2e/measure.ts` and `e2e/measure-reporter.ts`, which do
+nothing unless `E2E_MEASURE_FILE` names a file for the run to write): one
+markdown table per input file, so a base run and a head run read side by side,
+counting a part only for the rows that run it and dividing a part paid once per
+worker over that worker's rows.
+
+`DISPATCH_E2E_PROCESSES` picks how many Dispatch servers the harness runs
+(`e2e/harness-processes.ts`): unset or `1` is the one server above, `2` is two-process mode, and
+any other value is refused by every importer and by `run-server.sh`, naming the allowed values. In
+two-process mode the listener table starts `e2e/round-robin-proxy.ts` on `DISPATCH_E2E_PORT`, so
+`baseUrl` and every helper address one origin as before, then Dispatch A on `DISPATCH_E2E_PORT_A`
+and B on `DISPATCH_E2E_PORT_B`, each a `run-server.sh` against the one `DATABASE_URL` and each with
+`DISPATCH_NATS_DISABLED=1`. Both serve the proxy's origin, so the proxy starts first, and it must
+name their ports: an unset `DISPATCH_E2E_PORT_A` or `_B` is held before any row starts, by a
+`scripts/e2e/lib/held-port.py keep` that `e2e/harness-start.ts` runs for that server until the
+harness stops (the row's `heldAhead`), and the port is in every row's environment. `run-server.sh`
+takes each server's own inputs: its port as `DISPATCH_E2E_SERVER_PORT` when A's or B's variable is
+set, or else `DISPATCH_E2E_LISTEN_FROM`, the keeper's socket, which it serves on; then
+`DISPATCH_E2E_SERVER_WEB_DIST` (default `../dispatch/web/dist`, a path from `packages/envoy`, as
+`DISPATCH_WEB_DIST` is), and `DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY`, which it passes on as the
+server's `DISPATCH_DEV_SIGNIN_SHARED_KEY`. It requires the key and `DISPATCH_E2E_PORT` in
+two-process mode, and sets both servers' `DISPATCH_SERVER_URL` to the proxy's origin. The harness
+generates that key once per run and hands it to both, so a person signed in through one process
+is signed in on the other, and points B at `DISPATCH_E2E_WEB_DIST_B` when it is set (default: A's
+dist). `DISPATCH_E2E_SERVER_BIN` names a prebuilt `envoy-dispatch` that `run-server.sh` runs
+instead of building one from this checkout, read before its environment sweep as
+`scripts/e2e/dispatch-claimant-delivery.sh` reads `DISPATCH_BIN`, and refused when it is not an
+executable file; the harness gives B its own as `DISPATCH_E2E_SERVER_BIN_B`, so a run puts two
+builds of the server against one database the way `DISPATCH_E2E_WEB_DIST_B` puts two builds of
+the dashboard there (`scripts/e2e/dispatch-two-builds.sh`). The proxy alternates each HTTP
+request and each websocket upgrade between A and B (two turns, each starting at A), streams each
+response back as it arrives, and forwards `Host` and `Origin` unchanged. `X-Dispatch-E2E-Process: a|b` on any request
+pins it, over a `dispatch-e2e-process=a|b` cookie, which pins a whole browser context, websocket
+upgrades included; a pinned request takes no turn, and any other value is refused (400). A path
+containing `/_test/` goes to both processes, answering A's response or the first non-2xx of the
+two. A path containing `/_proxy/` is the proxy's own and never forwarded: `GET /_proxy/requests`
+(`[{path, method, upstream}]`), `GET /_proxy/sockets` (`[{id, path, upstream, open, openedAt}]` in
+open order, `openedAt` in epoch milliseconds) and `POST /_proxy/reset`, which empties both lists
+and starts both turns over at A. `e2e/api.ts`'s calls take `process: "a" | "b"` to pin, and
+`pinnedTo` in `e2e/harness-processes.ts` builds the header for a plain fetch. `e2e/preflight.ts`
+asks each process, pinned, for this run's fake Envoy session, then signs a person in on A and
+requires B to know them. The proxy shares its relay with the plain-HTTP proxy
+(`e2e/http-relay.ts`, which passes a websocket close code on wherever the other side may send it),
+and `e2e/__tests__/round-robin-proxy.test.ts` (`bun run test`) runs it against two Bun servers.
+Specs named `*.multiprocess.e2e.ts` run only there: the default run ignores them, and two-process
+mode runs them alone (the sign-in spec only under `DISPATCH_E2E_SIGNIN=oidc`, below), in the
+`chromium` project. `bun run e2e:multiprocess` builds the dashboard
+twice (`web/dist`, then `web/dist-b` with `DISPATCH_BUILD=e2e-b`, so its entry chunk differs from
+A's even where CI sets `GITHUB_SHA`; `web/vite.config.ts` takes `DISPATCH_BUILD` first) and runs
+Playwright through `e2e/run.ts` in two-process mode with B on `dist-b`, passing on extra arguments
+(`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
+The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs it, on the full lane
+alone.
+Two-process mode starts its own servers, so the Playwright config refuses it with
+`PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
+
+`DISPATCH_E2E_SIGNIN` picks how the harness's servers sign a person in (`e2e/harness-signin.ts`):
+unset or empty is dev sign-in, above, and `oidc` is the production sign-in, through
+`packages/envoy/cmd/dev-oidc-issuer`; any other value is refused by every importer and by
+`run-server.sh`, naming the allowed ones, and every importer refuses `oidc` without
+`DISPATCH_E2E_PROCESSES=2`. Under `oidc` the listener table starts `e2e/run-signin-issuer.sh`
+after the fakes and before the proxy: it builds the issuer as `run-server.sh` builds the server
+(`packages/envoy/dev-oidc-issuer-e2e`, gitignored, under its own lock), serves the code flow for
+the client `dispatch-e2e` with the secret the harness generates per run, which the script hands
+the issuer through a pipe, never a file or an argv, and signs in `alice@example.com`, a member of
+the group `dispatch-e2e-people`, at every authorization. It
+reports `issuer listening url=http://127.0.0.1:<port>` and the harness reads
+`DISPATCH_E2E_SIGNIN_ISSUER_PORT` from it; the issuer cannot bind a given port, so that variable set
+is refused. Each `run-server.sh` then takes `DISPATCH_E2E_SIGNIN_ISSUER_PORT`,
+`DISPATCH_E2E_SIGNIN_CLIENT_ID`, `DISPATCH_E2E_SIGNIN_CLIENT_SECRET`, `DISPATCH_E2E_SIGNIN_GROUP`
+and `DISPATCH_E2E_SIGNING_KEY` (one per run, in place of the dev shared key) as the server's
+`DISPATCH_SIGNIN_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_GROUP` and `DISPATCH_SIGNING_KEY`,
+requires them all, and sets no `DISPATCH_DEV_SIGNIN`. The Playwright config runs
+`e2e/signin.multiprocess.e2e.ts` alone under `oidc` and leaves it out otherwise, and
+`e2e/preflight.ts` skips its dev sign-in check there. The spec pins `/auth/start` to A and
+`/auth/callback` to B with two `dispatch-e2e-process` cookies, each with that path, since a route's
+header reaches only a navigation's first request and the callback is the issuer's redirect, and
+checks that the browser lands on the page `next` named, signed in on both processes, and that
+`/_proxy/requests` saw each served where it was pinned; against a server that kept the sign-in in
+the memory of the process that started it, B answers the callback 400 `invalid or expired state`.
+`e2e/__tests__/harness-signin.test.ts` (`bun run test`) holds the refusals and the listener
+table's wiring.
+Run it as `DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess`; the `multiprocess` job of
+`.github/workflows/dispatch-browser.yaml` runs it after the dev sign-in specs, on the dashboard
+the step before built.
+
+`bun run dispatch:local` (`e2e/local-instance.ts`) is that harness, left running and seeded: it
+starts the harness through `e2e/harness-start.ts`, then imports the e2e modules that read a port
+(they read it once, at import) with the reported ports in its environment, empties the database with
+`resetDatabase`, seeds `e2e/workspace.ts`, and prints the signed-in URL; `README.md`'s "Local
+instance" section is its user's guide. Its database is `DATABASE_URL` or the `dispatch_local`
+database on `packages/envoy/scripts/dev-postgres.sh`'s container. Before it hands out the URL its
+startup smoke checks, over HTTP with a dev sign-in cookie, that `/auth/whoami` names `alice`, the
+Inbox holds the seed's rows, the seeded broadcast is listed and every seeded session is an agent,
+and then subscribes the Planner's agent view on the live socket as the page does
+(`agentViewRefusal`), refusing to hand out the URL with Dispatch's own refusal when that view
+would read `This session's conversation is unavailable`. Every seeded session id is a UUID, from
+the one table `e2e/session-ids.ts` (`workspace.ts` and `e2e/agents.ts` both seed from it):
+Dispatch's agent routes take a session id in no other shape (`400 SESSION_ID_INPUT`), so a
+session seeded under a name passed every HTTP check, listed on the Agents page, and had a live
+view that could never load.
+It deliberately does not check a broadcast's recipient order: `e2e/broadcast.e2e.ts` owns that
+assertion, so the command has to start on a server without that fix for the spec to go red
+against it. What it runs on lives in `e2e/local-instance-support.ts`, which runs nothing on
+import: `Supervisor`, which starts each process and stops them all (Ctrl-C, a SIGTERM, a failure
+at any step), signalling every process group, SIGKILLing whatever still runs after 10 s, aborting
+the signal its psql calls carry, and returning once every leader has exited, and which
+`e2e/harness-start.ts` starts the harness's processes on, their output piped to it;
+`databaseUrlRefusal`, its own `DATABASE_URL` check; and `shellQuote`, for the commands it prints.
+`e2e/__tests__/local-instance-support.test.ts` (`bun run test`) drives them with real processes
+and no server. That check reads the URL with `new URL`, as libpq would only in part; the order
+closes the gap, since the reset runs only after the server's `/healthz` answered, and the server
+refuses to boot on a non-loopback database under `DISPATCH_DEV_SIGNIN`. Keep the health wait ahead
+of the reset.
+
+`e2e/delivery-live-probe.ts` is an agent's client for a delivery subscription on `GET /ws/live`,
+run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--view <json>`,
+`--minutes`): it writes one JSON line per frame, applies each with the page's own `applyDelta` and
+`applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
+/api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
+/api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
+routes for the last window it applied and writes whether the pull request ids, run ids and every
+measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
+("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
+runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
+and holds the body it applies to `after.json`. It also checks that the probe reopens at once
+after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
+attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
+
+The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
+`e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,
+`e2e/heavy-streamed-turn.e2e.ts`, `e2e/keyboard-agents-picker.e2e.ts`,
+`e2e/keyboard-session-pickers.e2e.ts`, `e2e/keyed-send.e2e.ts`, `e2e/keyed-writes.e2e.ts`,
+`e2e/doc-reload-line.e2e.ts`, `e2e/live-socket.e2e.ts`, `e2e/mermaid.e2e.ts` and
+`e2e/offline-edits.e2e.ts`, 40 rows; the comment
+above the project names each engine behaviour and the rows that exercise it, and a comment above
+each tagged row names which. Every row of the live-socket spec runs in `chromium`, and its one-socket
+row also runs in `firefox`, `webkit` and `webkit-iphone`: a tab holds one live socket in every
+engine, which is the one live-socket behaviour the config documents per engine. The APIs its rows
+need (`routeWebSocket`, the request events it counts navigations with, `page.clock`) exist in all
+three engines. A reload is counted as a navigation request of the main frame, not a `load` event,
+since Playwright's Firefox fires one for the page's initial `about:blank` and Chromium none. The
+`webkit-iphone` project takes the one-socket row alone, by title. Where a caret lands beside
+a collaborator's cursor differs by engine: Chromium drops typing there and WebKit misplaces it,
+while Firefox is unaffected, so that spec is the one that needs a second engine. The picker spec guards the Agents
+issue picker's keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`), which holds only because every engine
+dispatches a closed select's `change` inside the key's own task where the HTML spec queues it as a task of its own:
+its arrows and type-ahead rows, each committed by Enter and driven through `page.keyboard`, would see a
+step commit at once in an engine that moved to the queued task, so it runs here and in `firefox` as well as in
+Chromium. Its rows that step and then leave the select by Tab, Shift+Tab or a click run in the same engines,
+since each engine takes focus out of a select its own way, and they assert that the select, the toggle and the
+send still name one issue. Its row back after the reader left mid-send carries `@webkit` alone
+under the second of the config's two reasons for an engine tag (`e2e/playwright.config.ts`, the
+comment above `tagged`): the send it holds across two in-app navigations is the same in every
+engine, so the row exercises no WebKit behaviour, but each of its six measured failures - one run
+on each of six branches - was in WebKit, so the row is kept where its cause lives. `e2e/keyed-writes.e2e.ts`'s
+ask answer whose answer is lost carries it for the same reason, its two timeouts in 213 CI runs
+both having been in WebKit. Those two are the whole of that class today; every other engine tag in
+this directory names a behaviour. Its
+other rows on a message in flight (the picker and Reply held, no sent text back in the
+composer, and a refusal shown beside the draft that was sent) and on an issue closed after its pick (still named,
+marked closed) carry no engine tag and run in Chromium alone: the config's clause names only the rows that step a
+select from the keyboard or leave one without Enter. All five rows of `e2e/keyboard-session-pickers.e2e.ts` run
+here and in `firefox` for the same
+reason: the live view's header model and thinking pickers keep the same rule (`useKeySteps` in
+`SessionSettings.tsx`), and its arrows, type-ahead, Tab, click and held-picker rows would see a step
+switch the session at once in an engine that moved `change` to the queued task. The project selects
+by the tag in the title, so a row that loses the tag drops out with no failure: after writing or
+renaming one, run `bunx playwright test --config e2e/playwright.config.ts --project=webkit --list`
+and check that it is listed. The three tagged offline-edits rows exercise browser-held IndexedDB updates and the
+WebSocket acknowledgement flow in WebKit as they do in Firefox and Chromium. The keyed write path
+(nine rows of `e2e/keyed-writes.e2e.ts` here and eight in `firefox`, the lost-answer row being
+WebKit's alone, and two of `e2e/keyed-send.e2e.ts` in both) runs here and in `firefox`
+as well: each engine fails a request whose network is down, aborts one the page gives up on, reads an
+upload's answer (an answer Dispatch wrote with the body still coming, then closed on, reached WebKit
+as `Error sending data: Broken pipe` and Firefox as `NS_ERROR_NET_RESET` until Dispatch drained the
+body first, which the 20 MB in-flight upload row holds), keeps a tab's `sessionStorage` across a
+reload and asks before it unloads in its own way, and a write has to land once through every one of
+them. Its throttled-upload row carries no engine tag and skips outside Chromium, the one engine
+whose DevTools protocol paces a page's own upload; the in-flight upload row runs in all three
+engines and is throttled only in Chromium.
+Its retried-upload row carries the kept-file question with it in every one of those engines: an
+upload the page keeps across a reload is resumed only where the engine gives the kept row back
+from IndexedDB (`web/src/features/writes/kept-files.ts`, which keeps the file's bytes with its
+name and type and makes the `File` again on the way out, since WebKit's IndexedDB stores no
+`File` at all). The page writes no record of an upload until that row is committed, and none at
+all where the browser kept nothing, so no record names a file that is not there; what
+`Writes.#resume` still drops without a word is a record whose row IndexedDB evicted after it was
+committed, or that `keepOnly` swept a day later. The row delays the engine's own open of that
+database a second (`page.addInitScript` on `dispatch-kept-files` alone) so that both windows the
+product closes - the one at the press and the one at the Retry - are held open in every run,
+rather than a 3.3 ms race the suite meets at random - once in the five `merge_group` runs of the
+afternoon the row arrived. The row counts only the opens whose `success` handler the hook caught
+and called a second late, and asserts that count at its end, after every step whose timing it
+depends on, since a hook that silently stopped delaying - another database name, or a page that
+listens for `success` another way - would leave the row passing with the product reverted.
+CI installs WebKit beside Chromium for them (`bun run e2e:install` does the same locally).
+
+The `webkit` and `firefox` projects run seven rows of `e2e/deep-links.e2e.ts`, tagged for two
+reasons. Both engines cancel the chunk downloads in flight when a navigation starts: a deep link followed while the page
+before it is still loading its document has to open the link rather than reload that page
+(`installChunkFailureRecovery`); the row that holds the first page's `yjs` chunk makes that case deterministic in
+WebKit and Firefox alike. And
+the margin's hold on a linked card (`features/margin/useCardHold.ts`) meets each engine's own order of frames, scroll
+events and Suspense reveals. It reads a press in the document as the reader only once the document whose cards the
+margin shows has reported a visible layout: the previous route's editor stays mounted, hidden behind the next page's
+loading view, with its own layout reported, until that page's code arrives; and an issue's Spec editor or live editor
+stays registered while Conversation or a historical version hides it, but withdraws its report until it is shown
+again. The cross-document row, which runs in Chromium alone, runs once with `IssuePage`'s chunk held and once with the
+issue page shown while the document transport is held, so each state is pinned rather than raced. The hold tells a
+relayout's own scroll from the
+reader's by counting rendering frames, not milliseconds, since a busy page can deliver a clamp's scroll after a long
+task (CI's WebKit did), and a text change in the margin opens that window too: a `dispatch://` reference resolving to
+its title can resize an ask card and make Firefox or WebKit anchor the margin's scroll.
+
+The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, four rows of `e2e/agent-view.e2e.ts` (the live view's phone layout, its Jump to latest, a capped model name, and a document-scrolling route the keyboard cap leaves alone), `e2e/agent-view-settings.e2e.ts`'s `the header shows the session's reported model` row, the rows of `e2e/phone-conversation.e2e.ts` titled `covers none of`, which check what the Conversation's floating pills cover on a phone (the stuck live-updates pill's Reload among them), `e2e/delivery-live.e2e.ts`'s `on a phone the delivery page` row, and `e2e/live-socket.e2e.ts`'s one-socket row: iOS Safari is the engine the keyboard cap and those layouts exist for, and the `iphone` project is Chromium. Its project `grep` selects those rows by title, so renaming any of them silently drops its WebKit run with no failure; rename the `grep` with it. WebKit delivers a scroll container's `scroll` event a frame later than Chromium, and the thread follows its bottom only once that event has arrived, so the live view's rows scroll the thread through `scrollThreadTo`, which waits for the event, before they raise a keyboard.
+
+No Playwright hook asserts what a project's title `grep` selected, so that guard is a one-time manual check: rename one selected test in a scratch copy and confirm `bunx playwright test --config e2e/playwright.config.ts --project=webkit-iphone --list` drops it (the count falls by one, with no error), then restore it. Repeat it whenever the `grep` or the titles change.
+
+The `firefox` Playwright project runs the rows tagged `@firefox` (`firefoxTagged` in
+`e2e/playwright.config.ts`), 39 rows: the same rows of the same specs as `webkit` but
+`e2e/collab-cursor.e2e.ts`'s and the two `webkit` alone carries, and the rows of `e2e/code-line-replace.e2e.ts` and
+`e2e/picture-link-click.e2e.ts`. Firefox's native editing puts text
+typed over a code block's last line before that line's newline, and deletes a paragraph's hard break
+along with the text after it, which Chromium and WebKit never do, so that spec is the one that needs
+a second engine; the picker, deep-link, keyed, live-socket, offline-edits, mermaid and streamed-turn
+rows run for the reasons given under `webkit` above and in the comment above the project; and a
+click on a link inside the editor meets the engine's focus rule — Firefox focuses the editing host,
+not the link — so the picture view's fallback link is clicked there too. CI installs Firefox beside
+Chromium for them (`bun run e2e:install` does the same locally).
+
+The `chromium-plain-http` project runs `e2e/plain-http-origin.e2e.ts` and
+`e2e/plain-http-proxy.e2e.ts`, selected by file name: Chromium maps `dispatch-e2e.test` to
+loopback with `--host-resolver-rules`, and its `baseURL` is
+`http://dispatch-e2e.test:<PLAIN_HTTP_PORT>`. `e2e/plain-http-proxy.ts` listens there and forwards
+HTTP and WebSocket requests to the server under test at that server's own loopback origin, which
+the dev sign-in host fence requires. So the page's origin is a plain-HTTP host name that is not
+loopback - what a LAN address, a tailnet name or the phone of the manual check gets - where
+`isSecureContext` is false and `crypto.randomUUID` is undefined. The proxy keeps the server's fence
+for itself: a request whose `Host` is not `dispatch-e2e.test:<PLAIN_HTTP_PORT>` is answered
+`421 HOST_MISMATCH` before anything is forwarded, since the proxy sends the target's own `Host`
+upstream and would otherwise sign in a page that reached loopback by any name. It sets no idle
+timeout (`idleTimeout: 0`): a request the server under test is slow to answer sends nothing while
+it waits, and Bun's default 10 s idle timeout would cut it, while the browser and the server keep
+deadlines of their own. A closed page leaves the server nothing: each upstream request carries its
+browser request's `signal`, so it ends when that request does, and the proxy's websocket `close`
+handler closes the upstream socket when the page's live socket closes.
+The origin spec's two tests sign in by opening the dev sign-in route through the proxy
+(`asPlainHttpUser` in `e2e/users.ts`), then open a document and type a paragraph into it, and
+check a comment body renders formatted - block ids and Markdown bodies both mint through
+`@legion/proof-editor`'s `uuidV4` (LEGION-461). Each first asserts that insecure context, so a
+fixture that drifted to a secure origin fails in any run, one test or both, rather than passing for
+another reason. The proxy spec checks the `Host` fence both ways through the harness's proxy, and
+runs a second proxy in front of a stand-in upstream to show that a closed page's live socket ends
+upstream. `chromium` and `iphone` ignore both specs by file name. Both skip when
+`PLAYWRIGHT_BASE_URL` is `https:`, where there is no plain-HTTP origin to proxy.
+
+The `chromium-plain-http-sign-out` project runs the rows of `e2e/keyed-writes.e2e.ts` whose
+titles name a sign-out (`grep: /a sign-out/`) on the same plain-HTTP origin, signed in through
+`asPlainHttpUser`. A page that is not a secure context has no `navigator.locks`, so there a tab
+holds the person's writes for another tab's sign-out on the lease that tab renews
+(`SIGN_OUT_RENEW_MS`, `SIGN_OUT_LEASE_MS`), which no secure-context project reaches: the
+confirmed sign-out sends nothing queued behind a held write, and a signing-out tab that closes
+before its answer leaves the other tab to ask Dispatch who is signed in. Those rows send the
+page's `POST /auth/logout` to a server that never answers (`route.continue` to a local socket)
+rather than leaving the route unanswered, because Chromium sends a paused request on to the
+server once its page closes. They skip on an `https:` `PLAYWRIGHT_BASE_URL` as the two specs
+above do.
+
+The `chromium-alone`, `firefox-alone` and `webkit-alone` projects run the rows whose claim is a
+wall-clock time, with the machine to themselves. `chromium-alone` runs
+`e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
+holding the main thread for a second, both through `e2e/main-thread-hold.ts`); `firefox-alone`
+and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines before, for the
+reasons given under `webkit` and `firefox` above. No project above them runs those two files,
+so each row runs once. Each of the three names every project before it in `dependencies`, so
+Playwright starts them only once the rest of the run has finished and runs them one after
+another, and each sets `workers: 1`, which caps that project's own workers while the run's own
+`workers` stays at the lane count: `dependencies` orders a project but does not stop its own
+rows running four at a time. Four lanes put four browsers, four Dispatch servers and four
+Postgres servers on one machine, and a second of wall clock there holds what the other three
+lanes took as surely as the work the row measured, so these rows are given the machine rather
+than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that proves an absence
+over real time - that no request happens within a second - needs no such project: contention
+cannot make that claim false. A project whose dependency has a failing row does not run at all,
+so a red run leaves these rows unrun rather than measured beside a retry.
+
+## Accessibility and visual review
+
+Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
+every pull request and a containerised visual review that runs on the full lane. Each entry of
+that table carries the router path it stands for, the URL to open against `e2e/review-seed.ts`'s
+corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
+count of pages each covers is a program's answer rather than a sentence here.
+
+`e2e/accessibility.e2e.ts` opens every page of that table's scan set, in light and in dark, and
+scans each with `@axe-core/playwright` at `wcag2a`, `wcag2aa`, `wcag21a` and `wcag21aa` - WCAG
+2.0 and 2.1 at levels A and AA, and no best-practice rule, since a best practice is not a
+conformance failure and this gate refuses a pull request. One row per page reads both schemes,
+a reset, a seed and a sign-in paid once rather than twice, and each (route, scheme) prints an
+`A11Y …` line with its counts by impact and attaches the whole axe result to the report. A row
+fails on any serious or critical finding no exclusion entry covers. The rows are untagged, so
+`chromium` runs them and the pass reaches every pull request. What axe decides is the part of
+WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
+somewhere sensible, a reading order a person judges, a label that is present and wrong rather
+than missing, a focus order that is legal and useless - none of those are findings, and all of
+them stay the work of the browser rows that drive the page. A green accessibility pass says no
+machine-decidable conformance failure, never that the page is usable without a mouse.
+
+One bound on that is worth knowing before you reason about what this gate would have caught, and
+it was found by driving the check's own negative control rather than by reading the rules. A
+control's accessible name has more than one source, and axe takes `title` when nothing better is
+there. `components/PinButton.tsx` is icon-only and sets both `aria-label` and `title`: with the
+`aria-label` deleted the scan stayed at `critical=0 serious=0` and the row passed, because the
+name had not gone, it had fallen back. Only with both gone did the page report `button-name`
+(critical). So on a control that carries a `title`, a missing label is invisible here - and a
+negative control that deletes one and reads a green pass has measured nothing.
+
+The visual layer has the same trap in its own shape. A control of it does not go in
+`web/src/theme/palette.ts`: a `Swatch` there feeds contrast arithmetic alone - `pair()` builds
+the `{light, dark}` objects `CONTRAST_CHECKS` reads - while every colour a page actually draws
+is a static Tailwind literal such as `bg-slate-200`, whose value is Tailwind's own. So moving a
+swatch's OKLCH numbers changes no pixel, and a run that compares baselines after one passes
+with nothing different. A control that moves a rendered colour edits a class literal in
+`web/src/theme/classes.ts` together with its paired swatch, or a hex in `web/src/styles.css`.
+Keep the other layers green while you do it: `sky-700` in place of `slate-700` drops the
+offline pill below AA and reddens the unit step, and a control whose earlier step is red hides
+the reading it exists to take.
+
+Four rules follow from what controls of this layer have measured. The figures are in
+`e2e/visual.e2e.ts`'s comment on the bound, which owns them; they are not repeated here.
+
+**What bounds this layer is a count, not a per-pixel distance.** `threshold` is `0` and
+`maxDiffPixels` is `20`. A per-pixel threshold cannot be the bound, because the renderer's own
+drift moves a pixel further than the smallest real re-colour does, so any threshold that
+absorbs the drift blinds the layer. Read the count, and read what the layer therefore cannot
+see - a colour change confined to fewer than about 20 pixels - rather than a margin quoted from
+the widest token, which overstates it by three orders of magnitude.
+
+**A swatch and a class literal are many-to-one, so a control must move the literal the page
+actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
+`card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
+mappings table: a control on `surfaceBg` left both `settings` shots untouched where the `card`
+control reddened them. It is the `palette.ts` trap above in a second shape - a clean comparison
+told you nothing about the token, only about the string you edited. So never read a clean
+comparison as proof that a token is absent from a baseline.
+
+**A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
+gives twice the failures a hard assertion inside the `SCHEMES` loop gives, and nothing in the
+suite pins that behaviour, so a both-scheme control is the only check of it there is.
+
+**The host cannot read these baselines at all.** They are the pinned container's rendering,
+which is what the spec's `SKIP_REASON` says, and the skip is defeated by setting
+`DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
+every row at thousands of pixels. Every figure a control of this layer reports comes from a
+container run, and the way to know the rig is honest is to run it once with nothing changed.
+
+A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
+disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
+entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
+can judge, and the `dispatch://KEY` that owns the fix; the gate matches a finding to an entry on
+the first three. It also fails on an entry that matched nothing in the rows that ran, judged per
+worker over the routes that worker scanned (`test.afterAll`), so an entry left behind by a fix
+cannot sit there hiding the regression it once accepted. An entry is written only where the fix
+would change what another row of the suite claims - where the accessible page and the behaviour
+the product was asked for disagree - and that is a product judgement, so it goes to the
+architect with the rule, the DOM and the rows it would move, and is written once the architect
+has answered. Every other finding is fixed in `web/src`, in the change that found it.
+
+`e2e/visual.e2e.ts` compares the same table's shot set against committed baselines, in light
+and in dark, at the 1280x800 desktop width and, for the pages a phone width rearranges
+(`"shoot-phone"`), again on an iPhone 13. One spec, two projects: the phone rows carry the
+` @phone` tag, `visual-phone` greps it and `visual` inverts it, so each row runs once and
+reads its own project's baseline directory. Which pages are shot and which are excluded is
+`e2e/review-routes.ts` and nowhere else. An entry's `layers` says which layers read it: a page
+whose pixels cannot be held still is scanned and not shot,
+which is where `/machines`, `/machines/:machine` and `/credentials/machine` are - a registry's
+freshness, a tmux layout the seed carries none of and a capability probe that blinks each make
+a comparison flake and none of them touches a scan, which reads the DOM. An excluded entry is
+read by neither and carries the reason, a redirect, a live socket, a page another entry draws -
+and `e2e/__tests__/review-routes.test.ts` is what keeps that list honest: it holds every entry
+to a route of the router through `e2e/two-builds-routes.ts` and refuses a router route that no
+entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or
+written off, never silently unreviewed. `toHaveScreenshot` detects a change against a file
+somebody committed; it binds no element to the swatch `web/src/theme/classes.ts` names for it,
+which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-request lane.
+
+Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
+person takes and a baseline CI compares must be the same rendering, and a host's browser build,
+fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it seeds on the
+host, where `psql` is, starts the container and runs those two projects in it. Run it through
+the harness from this package, and give it `--update-snapshots` to take the baselines again:
+
+```sh
+bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
+```
+
+Outside that container the rows reach the runner and every one of them skips itself, since
+`DISPATCH_E2E_VISUAL_SEED` is unset.
+
+**That command needs a container runtime, and this package's pods have none, so from a pod the
+baselines come out of CI's own run.** The `visual` job is on the full lane alone, so a change
+that moves any shot page passes the pull-request lane and is caught by the merge queue or the
+nightly instead; the recovery from either is the same four steps.
+
+1. Read the full-lane run that refused the change: the merge queue's, or the nightly's. To
+   check the new baselines before the queue reads them again, add the `full-ci` label and push:
+   checking a fix for a failure that took the pull request out of the queue is the case the
+   root `AGENTS.md` gives the label. It takes effect at the next push, not when it is added,
+   and it is taken off again once that run has passed.
+2. Download what the job uploaded: `gh run download <run id> --repo <owner>/<repo> --name
+   dispatch-browser-visual-<attempt>`. The attempt is the run attempt, so a re-run's artifact
+   is `-2`.
+3. The archive holds the repository path, so every shot the comparison wrote is under
+   `<download>/…/packages/dispatch/e2e/test-results/`, one directory per failing row, named by
+   Playwright from the spec, the row's title and the project (`…-baseline-in-light-and-dark-
+   visual/`), with the file inside it called `<route>-<scheme>-actual.png`. `find <download>
+   -name '*-actual.png'` is the way to list them. Playwright writes an `-actual.png` for a
+   FAILING row only; a row that passed wrote nothing and its baseline is already right.
+4. Read the difference before you take it. Open the `-actual.png` beside the committed
+   `e2e/__screenshots__/<project>/<route>-<scheme>.png` and satisfy yourself that every pixel
+   that moved is one this change meant to move - a run of the same tree twice, byte for byte
+   identical, is what tells a real change from a page that has not settled. Then copy the
+   `-actual.png` over the baseline and commit it with the reason in the message.
+
+A baseline lives at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and is committed. It is
+the one file a spec of this suite reads that is not under `testInfo.outputPath()`, and the
+reason is what it is for: an output of a row is a debugging artefact the workflow uploads when
+the row fails, while a baseline is an input a person reads in a review and a reviewer approves
+as part of the diff. The path template drops the `{platform}` segment Playwright's default adds,
+since every shot is taken in that one pinned Linux image and the segment would say the same
+thing on every file. A route this layer gains has no baseline at all until a run writes one,
+which is the same four steps above with every row of the new route failing rather than one.
+
+## Phone acceptance
+
+The `iphone` Playwright project uses Chromium with the iPhone 13 viewport,
+touch input, and user agent, and runs only the tests tagged `@phone`
+(`grep: phoneTagged` in `e2e/playwright.config.ts`). Those tests cover the
+navigation drawer, the margin's bottom sheet and the phone Thread dialog,
+touch gestures and touch-sized controls, the compact Inbox and top bar, and
+the live view's phone layout. It does not replace the manual phone check: run
+the server on a tailnet-reachable address, open it from a phone, open the
+review panel, and answer an open ask in Waiting on you.
+
+A phone width here is one under 768 px, where `PHONE_VIEWPORT_QUERY`
+(`(max-width: 767px)`, `web/src/features/shell/useDialog.ts`) matches; a desktop
+width is 768 px or wider, the compact layout below 1280 px included.
+
+**The tag follows the assertion, not the branch.** A test takes `@phone` when
+the phone viewport can change what the test asserts. A test that only reaches
+the same control by another route under `iphone` — opening the drawer to click
+a link the desktop layout shows outright — asserts the same thing in both
+projects, so the second run proves nothing and the tag goes. The tag costs a
+whole second execution of the row: 291 of the suite's 1,609 executions were
+`iphone` repeats, 932 of its 5,362 row-seconds, measured in run 42109191535.
+An untagged row that should carry the tag costs the one claim the phone
+viewport would have broken. So where the two readings differ, write the row
+that asserts the phone claim rather than tagging the row that does not.
+
+A test takes the tag when it:
+
+- **R1** asserts a layout, overflow or wrap claim the viewport decides:
+  `assertPageFits`, a `scrollWidth`/`clientWidth` overflow check,
+  `viewportSize()`, `innerWidth`/`innerHeight`, a width or a count of lines it
+  reads off the page — unless it first sets a fixed viewport for every project,
+  where `iphone` would only repeat that same width.
+- **R2** asserts a touch claim: `tap()`, `page.touchscreen`, `e2e/touch.ts`,
+  `hasTouch`, `isMobile`, or a 44 px touch target.
+- **R3** asserts a phone-only surface as the thing it checks — the navigation
+  drawer, the margin's bottom sheet, the phone Thread dialog — rather than
+  passing through it to reach a control.
+- **R4** runs only on the phone (it skips every project but `iphone`), or is in
+  a file named for the phone (`phone*.e2e.ts`).
+- **R5** counts the requests a page made, or did not make, and `iphone` is
+  where that count was wrong: a row that proves an absence is kept in the
+  project that failed it, so the occurrence it fixes cannot come back unseen,
+  even though the claim itself reads the same in every project
+  (`live-socket.e2e.ts`'s rotation row, which carries `@phone` for `iphone`
+  and `@firefox` for the other project it was seen failing in).
+
+A test stays untagged, whatever its title says, when it:
+
+- skips every project but `chromium`
+  (`test.skip(project.name !== "chromium", …)`) or every project but
+  `webkit-iphone`;
+- sets a desktop width, or any fixed width, for every project before it checks
+  anything, so `iphone` would only repeat that run;
+- starts at the project's own width expecting a desktop one and then narrows
+  the window itself, so under `iphone` it would start from the wrong layout; or
+- branches on the project only to reach a control — `setSheet`,
+  `openedThreadCard` (`e2e/editor.ts`), a drawer opened on the way to a link —
+  and then asserts what both layouts assert.
+
+Such a test passes `"chromium"` rather than the project name to a helper that
+branches on it.
+
+When a row walks a data table and makes one narrow-screen claim at the end,
+split that claim into a row of its own and tag that row, rather than tagging
+the walk: the walk is the same work in both projects.
+
+When unsure, do not tag: read what the row asserts, and write the phone claim
+as its own row where the phone can break it. Write the tag at the end of the
+title, `test("a reply opens the Thread dialog @phone", …)`, or at the end of a
+`test.describe` title when every test inside it qualifies. Playwright reads an
+`@word` in a title as a tag; the title form keeps the call at two arguments, so
+Biome does not re-indent the body as it does for a `{ tag }` details argument.
+
+A user-agent path is not a phone path. The Mac keymap that the iPhone user
+agent also takes is one: `web/src/features/shell/keymap.ts` reads
+`navigator.userAgent`, so such a row runs in `chromium` with
+`test.use({ userAgent: devices["iPhone 13"].userAgent })` and carries neither
+the tag nor a project skip (`e2e/keyboard-document.e2e.ts`).
+
+An untagged test needs no `test.skip(project.name === "iphone", …)`, since
+`iphone` no longer runs it: drop the skip. Dropping a tag while leaving a
+`test.skip(project.name !== "iphone", …)` leaves a row that runs in no project
+at all — green, and proving nothing — so when a tag goes, every `iphone` branch
+of that row goes with it: the project tests, `PHONE_PROJECTS` and
+`READING_PROJECTS` membership, project-dependent values (`1280 : 390`,
+`44 : 32`), `setSheet` and `openedThreadCard`, and both skips. A `!== "chromium"`
+skip stays: it marks a test that one project covers.
+
+Nothing fails when a phone test lacks the tag: it silently drops out of
+`iphone` and runs only on `chromium`. So after writing or renaming one, run
+`bunx playwright test --config e2e/playwright.config.ts --project=iphone --list`
+and check that it is listed. `e2e/__tests__/row-configurations.test.ts` is the
+other half: it refuses a row that runs twice in one engine, viewport, origin
+and server-process count.
+
+A retracted ask is withdrawn history: the Inbox and the open-ask badges drop it, and the margin folds it into the `Resolved (N)` toggle beside resolved comment threads. The Conversation lists it like every other conversation, under `All` and under `Closed`; the tab has no `Show retracted` or `Show activity` control of its own. Ask event payloads carry `options` as an array (the server never emits `null`), so the Activity tab and the margin's Pinned tab render `event.payload` as the `Ask` it is.
+
+`features/refs/ReferencedBy.tsx` is the one backlink surface: it reads `GET /api/v1/references?to=<dispatch ref>` (`referencesQuery`), groups the edges by the record that cites the node — a block that cites it by its document (`node.document`), and a block of a comment or message by that item (`blockItem`, the node's `parent`), so the blocks of one document, comment or message citing the node are that record's rows, each keyed by its own node, kind and direction — and shows each group's source as a link with its excerpts and times; an excerpt long enough to clamp carries `Show more`. A source of one node links to that node: a citing block at its own `#b-` fragment, a document at the block its excerpt names. A document, comment or message whose blocks are its rows links to itself, and each row's time links to its own block. A citing block of a document is labelled `Artifact`, as its document's row was before blocks were graph nodes, and a citing block of a comment or message `Comment` or `Message`. An unavailable graph stays a quiet line with `Retry`, never an alert — an alert on every card is the reader's own failed action, not a degraded list. No surface reads the graph to render a number: `referenced_by_count` arrives batched on the read that already carries the row — every ask read for `AskCard`, `GET /api/v1/issues/{key}` for the issue header — so a page of cards and an issue page both cost zero reference requests, and the edges are fetched the first time a reader opens a panel. Disclosure belongs to the host, never to the panel: `ReferencedByToggle` is the one control (the count comes from the row the page already read, and it names its panel through `aria-controls`), and a host renders `ReferencedBy` only while it is open, passing `toggle` so the panel does not repeat the label the control already carries. The issue header's `Referenced by (N)` control stays in `issue-metadata-rail` with its panel below that line (a count of zero renders as plain text, since opening it would say nothing); an `AskCard` shows nothing at zero and a collapsed control otherwise; artifact and project-document pages render the panel open, which is where the eager read belongs. An ask's own clarification replies are inbound edges of that ask but never its backlinks: the card renders that thread inline, so the server drops `replies_to` from an ask's count and panel (`?kind=replies_to` still returns them for a caller that means the graph).
+
+Every artifact upload goes through `useArtifactUpload` in `features/artifacts/ArtifactUpload.tsx` (one mutation, one `ArtifactDropZone` that renders both the drop target and the one hidden `Upload artifact` file input the host's picker button opens, and the owner's list invalidation): the issue Artifacts tab stages the pick behind its row's `Summary (optional)` field and confirming `Upload` button, while the project Documents list passes `immediate` and uploads the moment a file is picked or dropped. On a closed issue the Artifacts tab and a document's repair upload pass `CLOSED_ISSUE_UPLOAD_REFUSAL` (`useArtifactUpload({refusal})`): Upload is a `RefusableButton`, `aria-disabled` with `This issue is closed. Reopen it to upload.` as its title and on a visible line, the picker never opens, the hidden file input is `disabled` so no key opens a chooser whose file would be ignored, and a drop is ignored, since Dispatch refuses a fresh upload to a closed issue `409 ISSUE_CLOSED` before it spools the body. A repeat under a key Dispatch answers itself is answered as its first was whatever the issue's state now: an upload that landed before the close is replayed its `201`, and one still running is told `KEY_IN_FLIGHT`.
+
+A file pasted or dropped into a draft - `MentionComposer` (not an edit), an ask's answer and the reply under an answered ask - goes through `useDraftUpload` in the same file: it uploads to the owner the paste named (an issue, a project for a project document, or `{ session }` for a direct message on the Agents page, `POST /api/v1/agents/{session_id}/artifacts`) and appends `uploadedFileText`: a picture (`image/*`) as `![<file name>](dispatch://<owner>/artifact/<slug>@v<N>)`, any other file as its plain reference. Send, Answer and Reply wait while an upload is out. The engine's serializer (`pictureSerializer` in `features/refs/markdown-engine.ts`) writes an `image` node whose address is a Dispatch artifact, at a version or not, as a placeholder link to the artifact's page, and `useRenderedMarkdown` portals a `features/refs/DispatchPicture.tsx` into each one, in `MarkdownBody` and `MarkdownPreview` alike: an `<img>` loaded lazily from the slug-form bytes route (`artifactVersionPath` in `api/client.ts`) of the version the source pins, else of the artifact's latest version (`useReferenceTarget`'s `picture`, the summary read the reference's link reads, so it follows a new version as the summary does); in `MarkdownBody`'s block variant at its own size, scaled down to the column and never capped in height, a plain primary click opening it at full size (`openPictureLightbox`, `features/refs/picture-lightbox.ts`, the same layer the editors open; the listener is the `<img>`'s own and stops the click, so the placeholder link does not navigate, while a modified or middle click still opens the artifact's page); or a 40 px thumbnail beside its caption in its `inline` variant and in every preview (where an inert preview's placeholder is link-styled text, as its links are). A version-less source reads as its `RefLink` until its summary is read, and keeps it when the target is no picture; so does a version the browser cannot draw (its `error`). A `RefLink` to an image artifact (of an issue, a project or an agent's conversation: `useReferenceTarget`'s `picture` in `features/refs/reference-target.ts`) shows the same thumbnail beside its title. `dispatch://agent/<session id>/artifact/<slug>[@vN]` (the session as written) is `AgentArtifactRoute` in `features/refs/routes.ts`, whose page is `/agents/<session id>/artifacts/<slug>[?v=N]` (`features/artifacts/AgentArtifactPage.tsx`). The Agents page's direct messages and the broadcast page's broadcast and replies render in the block variant, so their pictures show at full width.
+
+The document editors draw the same picture without the engine: `features/doc/picture-view.ts` is the `image` node view `installTypedBlocks` mounts in `ProofDocument` and `VersionView` (above, under the decision block), with the same `pictureClassName` (exported from `DispatchPicture.tsx`, so a picture in a spec and one in a comment are one class string), the same caption rule, the same bytes route, the same latest-version reading (`watchPicturePath`, the non-React twin of `useReferenceTarget`'s `picture`, which follows the summary as the hook does) and the same full-size layer. Where the engine shows a `RefLink` - a version the browser cannot draw, a version-less source not yet read or naming no picture - the editor shows a plain-DOM `<a>` to the same page whose text is the reference's short form (`shortForm` in `features/refs/routes.ts`): `RefLink` resolves the target's title through `useReferenceTarget`, which a node view without React cannot, so its words are the reference's own, never an author's caption.

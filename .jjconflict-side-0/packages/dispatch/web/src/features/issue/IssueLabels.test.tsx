@@ -1,0 +1,106 @@
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import { api } from "../../api/client";
+import type { IssueSummary } from "../../api/types";
+import { IssueLabels } from "./IssueLabels";
+
+function summary(key: string, labels: string[]): IssueSummary {
+  return {
+    route: null,
+    repo: null,
+    resolved_repo: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    key,
+    labels,
+    last_seq: 1,
+    open_asks: 0,
+    progress: { tasks: null, children: null },
+    parent: null,
+    blocked_by: [],
+    primary_artifact_id: "artifact-1",
+    assignee: null,
+    claim: null,
+    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+    priority: null,
+    rank: "U",
+    status: "todo",
+    title: key,
+    updated_at: "2026-09-09T00:00:00Z",
+  };
+}
+
+test("the label cloud reads the project's loaded issue list instead of fetching its own copy", async () => {
+  const user = userEvent.setup();
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  queryClient.setQueryData(
+    ["issues", "project", "CORE"],
+    [summary("CORE-1", ["bug"]), summary("CORE-2", ["frontend", "docs"])]
+  );
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <IssueLabels
+        disabled={false}
+        labels={["bug"]}
+        onSave={() => Promise.resolve()}
+        project="CORE"
+        saving={false}
+      />
+    </QueryClientProvider>
+  );
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Edit labels" }));
+    await screen.findByRole("combobox", { name: "Search or create label" });
+
+    expect(await screen.findByRole("option", { name: "frontend" })).toBeDefined();
+    expect(screen.getByRole("option", { name: "docs" })).toBeDefined();
+    expect(listIssues).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+  }
+});
+
+test("a rejected create shows its error until the next keystroke clears it", async () => {
+  const user = userEvent.setup();
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <IssueLabels
+        disabled={false}
+        labels={[]}
+        onSave={() => Promise.resolve()}
+        project="CORE"
+        saving={false}
+      />
+    </QueryClientProvider>
+  );
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Edit labels" }));
+    const search = await screen.findByRole("combobox", { name: "Search or create label" });
+    const tooLong = "x".repeat(41);
+    await user.click(search);
+    await user.paste(tooLong);
+    await user.click(screen.getByRole("option", { name: `Create "${tooLong}"` }));
+    expect(screen.getByText("Labels must be 1–40 characters.")).toBeTruthy();
+    expect(screen.queryByRole("option", { name: tooLong })).not.toBeInTheDocument();
+
+    await user.clear(search);
+    await user.click(search);
+    await user.paste("x");
+    expect(screen.queryByText("Labels must be 1–40 characters.")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+  }
+});

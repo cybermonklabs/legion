@@ -1,0 +1,5 @@
+{
+  "name": "claude-envoy",
+  "description": "Put Envoy events into the Claude Code session's own conversation and expose Envoy MCP tools.",
+  "mcpServers": "./.mcp.json"
+}

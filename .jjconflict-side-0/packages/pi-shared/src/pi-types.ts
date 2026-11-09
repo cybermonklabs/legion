@@ -1,0 +1,739 @@
+import type { Model } from "@oh-my-pi/pi-ai";
+import type { ExtensionAgentsApi } from "@oh-my-pi/pi-coding-agent";
+import type { Component } from "@oh-my-pi/pi-tui";
+
+/**
+ * Oh My Pi host surface shared by both extension entries.
+ *
+ * This is the single declaration of the injected `pi` API and its contexts.
+ * Both extensions/envoy.ts and extensions/legion.ts receive the same host
+ * object; keep this contract complete instead of re-declaring partial copies
+ * per extension — partial copies drift.
+ */
+
+/** A model as the host names it: the provider and the id a model selector resolves to
+ * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:541-560` in
+ * Oh My Pi at the pinned tag `v18.16.0-sami.20261104-021732`). */
+export interface HostModel {
+  readonly provider: string;
+  readonly id: string;
+}
+
+/** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
+ * chain's resolution needs as its `RetryFallbackModelLookup`
+ * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
+ * suppression the host's own turn recovery reads before it picks a fallback
+ * (`session/turn-recovery.ts:2026`), so an extension stepping down the same chain skips what the
+ * host already skips. Each is a method of the live registry, which reads private state of its
+ * own, so a caller calls it on the registry rather than handing it over detached. */
+export interface HostModelRegistry {
+  /** The model one provider and id name, or undefined when this deployment disables the provider
+   * or holds no such model. */
+  readonly find?: (provider: string, modelId: string) => Model | undefined;
+  /** Whether the host holds any model of this provider, discovery included. */
+  readonly hasProvider?: (provider: string) => boolean;
+  readonly isSelectorSuppressed?: (selector: string) => boolean;
+}
+
+export interface SessionContext {
+  readonly cwd: string;
+  /**
+   * Whether the host gave this run a UI context. Measured on the pinned build: false for
+   * `omp -p` and any other headless launch, true for a terminal and for an RPC host (every
+   * Legion pane). A run with no UI is disposed when its one run ends, so nothing can act on a
+   * message an extension sends at the stop. ACP supplies one too; there, a client that defers
+   * agent-initiated turns has the host queue such a message as hidden next-turn context rather
+   * than run a turn for it.
+   */
+  readonly hasUI: boolean;
+  readonly taskDepth?: number;
+  /** Which runner the event belongs to: the top-level session's is `main`, a `task` subagent's
+   * `sub`. `id` is the host's agent registry id for that runner (`ExtensionAgentIdentity`,
+   * `extensibility/extensions/types.ts:585-600` at the pinned tag). */
+  readonly agent?: { readonly kind: "main" | "sub"; readonly id?: string };
+  readonly sessionManager: {
+    readonly getSessionId: () => string;
+    /**
+     * Live display title: what `pi.setSessionName`, a rename, or OMP's title model last stored.
+     * OMP titles a session (`auto`) from the first message typed at its terminal or given on its
+     * command line; a Legion session sets its own at session_start
+     * (`packages/pi-legion/src/session-title.ts`).
+     */
+    readonly getSessionName?: () => string | undefined;
+    /**
+     * The session header (`ReadonlySessionManager.getHeader`); `titleSource` says who set the
+     * title: `auto` for OMP's title model, `user` for a rename or an extension's `setSessionName`.
+     */
+    readonly getHeader?: () => {
+      readonly title?: string;
+      readonly titleSource?: "auto" | "user";
+    } | null;
+    readonly getSessionFile: () => string | undefined;
+    /**
+     * Force the session's transcript onto disk even before it has an
+     * assistant message. OMP allocates the session file path eagerly but
+     * writes it lazily; a boot handshake that hands the path to the daemon
+     * (for later resume/liveness probing) must call this first.
+     */
+    readonly ensureOnDisk: () => Promise<void>;
+    /** Entries of the active branch; non-empty at session_start on resume. */
+    readonly getBranch?: () => readonly unknown[];
+    /**
+     * Every entry the session holds, on every branch of its tree, in the order they were written
+     * (the header excluded; `ReadonlySessionManager.getEntries`). An entry `pi.appendEntry` wrote
+     * is in it at once, before the transcript reaches disk.
+     */
+    readonly getEntries: () => readonly unknown[];
+  };
+  readonly setInterval: (callback: () => void, intervalMs: number) => void;
+  /** The host's managed one-shot timer: a throw or rejection is contained, cleared on shutdown. */
+  readonly setTimeout: (callback: () => void | Promise<void>, delayMs: number) => void;
+  /**
+   * The host's `ctx.mode` (`ExtensionMode`): how the process was launched, an RPC host (every
+   * Legion pane), a terminal, or a one-shot `-p` run printing text or JSON. Absent on a host that
+   * predates it.
+   */
+  readonly mode?: "tui" | "rpc" | "json" | "print";
+  /**
+   * Oh My Pi 18.3 on: one side turn on the session's model over a snapshot of its conversation,
+   * never added to the transcript. The host sends `promptText` as given. A context kept from
+   * `session_start` may call it from later callbacks (upstream `docs/extensions.md`, "Ephemeral
+   * side turns").
+   */
+  readonly runEphemeralTurn?: (options: {
+    readonly promptText: string;
+    readonly signal?: AbortSignal;
+  }) => Promise<{ readonly replyText: string }>;
+  /**
+   * The host's `ctx.isIdle()`: whether it runs no turn now (`!session.isStreaming`), false while a
+   * turn runs and while a prompt is set up or recovered, read live from a context kept since
+   * `session_start`. Measured on Oh My Pi 18.8.9: true already in the `agent_end` of an aborted
+   * run; `pi.sendMessage` returns while it still reads true for an idle card, before the host
+   * starts the card's run.
+   */
+  readonly isIdle?: () => boolean;
+  /**
+   * The host's `ctx.abort()`: it ends the turn that runs now, keeps the process and the session,
+   * and ends the running call's own child processes. Measured on omp/18.16.0 in `--mode rpc` on
+   * 2026-11-07, from an extension that aborted a never-returning `bash` call: it returns a
+   * Promise, the call's result comes back in the same millisecond as `Command aborted` with
+   * `isError: true`, the turn ends at once, the command's children are gone 30 s later while the
+   * agent is still alive, and the same process answered an RPC `get_state` and ran a fresh turn
+   * 34 s after the abort.
+   *
+   * `abort`, `isIdle` and `setInterval` are present on the handler context but are not own
+   * enumerable properties — `Object.keys(ctx)` lists `ui` alone (measured the same day) — so a
+   * reader probes each by `typeof`, never by a key list.
+   */
+  readonly abort?: () => void | Promise<void>;
+  /**
+   * Whether the host holds a queued message for its turn to take (`queuedMessageCount > 0`): a
+   * steered or follow-up card or user message. Measured on Oh My Pi 18.8.9: false once an
+   * interrupt (`clearQueue({ forInterrupt: true })`) withdrew the queue, true at the `agent_end` of
+   * a plain abort, whose queue the next run takes.
+   */
+  readonly hasPendingMessages?: () => boolean;
+  /** The models the host holds, the one the session runs now, and what one selector such as
+   * `anthropic/claude-opus-4-5` resolves to (`ExtensionModelQuery`,
+   * `extensibility/extensions/types.ts:541-560` at the pinned tag). */
+  readonly models?: {
+    readonly list: () => readonly HostModel[];
+    readonly current: () => HostModel | undefined;
+    readonly resolve: (spec: string) => HostModel | undefined;
+  };
+  /** The host's own `ModelRegistry` (`packages/coding-agent/src/config/model-registry.ts` at the
+   * pinned tag), as far as this package reads it. Every member is optional, as the neighbouring
+   * host declarations are: a host build that exposes none still satisfies the type, and the
+   * caller decides what it can do without. */
+  readonly modelRegistry?: HostModelRegistry;
+  /**
+   * The host's `ctx.getAsyncJobSnapshot()`: this session's async-job manager as it stands now, or
+   * null when no session owns the context (upstream `docs/extensions.md`, "Handler context"). Read
+   * live from a context kept since `session_start`. Absent on a host that predates it.
+   */
+  readonly getAsyncJobSnapshot?: () => AsyncJobSnapshot | null;
+  readonly ui: {
+    readonly notify: (message: string, level: "info" | "warning") => void;
+    /**
+     * The host's extension widget (`ExtensionUIContext.setWidget`): `lines` shown above the editor
+     * under `key`, in place of what that key showed, until set again; `undefined` removes it.
+     * Oh My Pi keeps it across `/new`'s transcript reset. Absent where the host has none.
+     */
+    readonly setWidget?: (key: string, lines: string[] | undefined) => void;
+  };
+}
+
+/** The branch entry a model change leaves, as `sessionManager.getBranch()` hands it
+ * (`packages/coding-agent/src/session/session-entries.ts:132-152` at the pinned tag).
+ * `resolvedModelIsFallback` marks a change the host's own fallback walk made. */
+export interface ModelChangeEntry {
+  readonly type: "model_change";
+  readonly id: string;
+  readonly timestamp?: string;
+  readonly model?: string;
+  readonly role?: string;
+  readonly resolvedModelIsFallback?: boolean;
+}
+
+/** The branch entry a thinking-level change leaves (`session/session-entries.ts:132-152` at the
+ * pinned tag). */
+export interface ThinkingLevelChangeEntry {
+  readonly type: "thinking_level_change";
+  readonly id: string;
+  readonly timestamp?: string;
+  readonly thinkingLevel?: string | null;
+  readonly configured?: string | null;
+}
+
+/**
+ * `ctx.getAsyncJobSnapshot()`'s answer: the session's own async jobs, the running ones and the
+ * ones that have just ended, with the manager's delivery queue for the results it still owes the
+ * conversation.
+ *
+ * Measured on Oh My Pi 18.12.2, the pin this repository runs (`.omp-pin`), by reading the
+ * snapshot from an extension while a backgrounded `bash` job ran. Running:
+ * `{"running":[{"id":"bg_1","type":"bash","status":"running","label":"sleep 8",
+ * "command":"sleep 8","startTime":1793568518094,"ownerId":"Main"}],"recent":[],
+ * "delivery":{"queued":0,"delivering":false,"pendingJobIds":[]}}`; once it had ended, the same
+ * job moved to `recent` with an `endTime` beside its `startTime`.
+ */
+export interface AsyncJobSnapshot {
+  readonly running: readonly AsyncJob[];
+  /** The jobs that have ended, newest first; five of them unless the caller asked for more. */
+  readonly recent: readonly AsyncJob[];
+  readonly delivery: AsyncJobDelivery;
+}
+
+/** One async job of the session. Measured on Oh My Pi 18.12.2: `command`, `endTime`, `agentId`
+ * and `ownerId` are absent from the JSON when the host has none for the job. */
+export interface AsyncJob {
+  readonly id: string;
+  /**
+   * What registered the job with the manager. Measured on Oh My Pi 18.12.2: `bash` for a
+   * backgrounded shell command, `task` for a subagent, `eval` for an eval run. Any extension or
+   * tool may register another, so it stays a string.
+   */
+  readonly type: string;
+  /** Every status the manager writes on Oh My Pi 18.12.2. */
+  readonly status: "running" | "completed" | "failed" | "cancelled";
+  readonly label: string;
+  readonly command?: string;
+  /** Epoch milliseconds. */
+  readonly startTime: number;
+  readonly endTime?: number;
+  /** The subagent the job belongs to, and the session or agent that owns it. */
+  readonly agentId?: string;
+  readonly ownerId?: string;
+}
+
+/** The results the manager still owes the conversation: how many jobs wait, whether one is being
+ * delivered now, when the next retry is due (epoch milliseconds, absent when none is), and the
+ * jobs waiting. */
+export interface AsyncJobDelivery {
+  readonly queued: number;
+  readonly delivering: boolean;
+  readonly nextRetryAt?: number;
+  readonly pendingJobIds: readonly string[];
+}
+
+/** A side turn: one question to the session's model, answered without touching the transcript. */
+export type SideTurn = (input: {
+  readonly prompt: string;
+  readonly signal?: AbortSignal;
+}) => Promise<{ readonly replyText: string }>;
+
+/**
+ * Why OMP swapped the session under a running extension. `/new` and `/resume`
+ * install a transcript that already matches its own id; `/fork` and `/handoff`
+ * carry the current conversation into a freshly minted id.
+ */
+export type SessionSwitchReason = "new" | "resume" | "fork" | "handoff";
+
+export interface SessionSwitchEvent {
+  readonly reason: SessionSwitchReason;
+}
+
+export interface BeforeAgentStartEvent {
+  readonly prompt: string;
+}
+
+export interface ExtensionMessage {
+  readonly customType: string;
+  readonly content: string;
+  readonly display: boolean;
+  readonly attribution?: "user" | "agent";
+  /** Saved with the message and never sent to the model. */
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+export interface BeforeAgentStartResult {
+  readonly message?: ExtensionMessage;
+  readonly systemPrompt?: readonly string[];
+}
+
+export interface ToolCallEvent {
+  readonly toolName: string;
+  readonly toolCallId: string;
+  readonly input: Record<string, unknown>;
+}
+
+export interface ToolResultEvent {
+  readonly toolName: string;
+  readonly toolCallId: string;
+  readonly input: Record<string, unknown>;
+  readonly details: unknown;
+  readonly isError: boolean;
+}
+
+/** One of a run's messages, as far as an `agent_end` handler reads it. */
+export interface AgentEndMessage {
+  readonly role?: string;
+  /** How an assistant reply ended: `stop` settled normally, `aborted` was an interrupt, `error` a
+   * provider failure, `length` a truncation. */
+  readonly stopReason?: string;
+  /** What the provider said about an `error` stop, when it said anything: Oh My Pi carries
+   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1463-1471`,
+   * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:472-478`, at the pinned tag). */
+  readonly stopDetails?: {
+    readonly type?: string | null;
+    readonly category?: string | null;
+    readonly explanation?: string | null;
+  } | null;
+  /** The error text of an `error` stop, which each provider writes its own way (`AssistantMessage`,
+   * `packages/ai/src/types.ts:1463-1471` at the pinned tag). `classifyProviderTurn`
+   * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
+  readonly errorMessage?: string;
+}
+
+/**
+ * The agent loop ended. Measured on omp/18.16.0 in `--mode rpc` on 2026-11-07, over an aborted
+ * run: the whole field set is `isTerminal`, `messages`, `type` and `yielded` — **there is no
+ * `stopReason` on `agent_end`**. An aborted turn is read from the last assistant message's
+ * `stopReason` (`"aborted"`, with `errorMessage: "Interrupted by user"`, carried on
+ * `message_start`, `message_end` and `turn_end` alike) or from `prompt_result.status`.
+ */
+export interface AgentEndEvent {
+  /** Set when OMP has already scheduled a continuation, so the turn is not settling: a
+   * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
+   * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
+  readonly willContinue?: boolean;
+  /** The run's messages; the last assistant entry says how the run ended. */
+  readonly messages?: readonly AgentEndMessage[];
+}
+
+/** A retry moved the session to the next model of its fallback chain (`shared-events.ts` in the
+ * host). Each model is `provider/id`; `role` is the model role the chain serves. */
+export interface RetryFallbackAppliedEvent {
+  readonly from: string;
+  readonly to: string;
+  readonly role: string;
+  readonly reason?: string;
+}
+
+/** Post-run auto-compaction ended (`shared-events.ts` in the host); `aborted` is an interrupt
+ * during it, which leaves no aborted assistant message behind. Only the field read is typed. */
+export interface AutoCompactionEndEvent {
+  readonly aborted: boolean;
+}
+
+/** A retry saga ended (`shared-events.ts` in the host); an abort during its backoff or credential
+ * wait ends it with `success: false` and `finalError` "Retry cancelled". Only the fields read are
+ * typed. */
+export interface AutoRetryEndEvent {
+  readonly success: boolean;
+  readonly finalError?: string;
+}
+
+/** A message entering the session: a user prompt (the daemon's RPC `prompt` among them), a custom
+ * message, an assistant reply, or a tool result. `message_update` carries the same shape for a
+ * message still being produced — one per streamed delta, with the partial message — and
+ * `message_end` for one that has settled. Measured on omp 18.3.2, the three are emitted
+ * concurrently: a message's `message_end` can reach a handler before its `message_start`, so a
+ * handler must not depend on their order. */
+export interface MessageStartEvent {
+  readonly message: unknown;
+}
+
+/** Fired when a top-level run — never a `task` subagent's — is about to settle at a final stop that
+ * is not a tool call, after the host's own continuations (todo, plan, rewind) and never while an
+ * async job's wake is pending. Only the members this package reads are typed. */
+export interface SessionStopEvent {
+  readonly last_assistant_message?: unknown;
+  /** Aborted when the settle pass is (a user interrupt, a shutdown). */
+  readonly signal: AbortSignal;
+}
+
+/** `continue` with `additionalContext` makes the host queue that text as one hidden message that
+ * starts the next turn, instead of settling. */
+export interface SessionStopEventResult {
+  readonly continue: true;
+  readonly additionalContext: string;
+}
+
+export interface ToolCallEventResult {
+  readonly block?: boolean;
+  readonly reason?: string;
+  readonly input?: Record<string, unknown>;
+  /** Text the host hands the agent as context once the call runs (AskGate's warn mode). */
+  readonly additionalContext?: string;
+}
+
+/**
+ * A tool's execution began: the moment the host hands the call to the tool, after the queue and
+ * after the approval gate, which is where the stall watch starts a call's clock
+ * (`src/stall-watchdog.ts`). Measured on omp/18.16.0 in `--mode rpc` on 2026-11-07: the handler's
+ * payload names the call and its tool, and the stdout frame beside it carries the arguments under
+ * `args` where this in-process event, like `tool_call` and `tool_result`, carries them under
+ * `input`. The watch reads a call's arguments from `tool_call` rather than from here, because
+ * that is the one event the host fires before the call can run at all.
+ *
+ * A call the host fails closed — a `tool_call` handler that throws, and one that outruns the
+ * host's 30 s `extensionHandlers.toolCallTimeoutMs`, both measured that day — still gets this
+ * event with its arguments, and then an error `tool_execution_end` one millisecond later.
+ */
+export interface ToolExecutionStartEvent {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly input: Record<string, unknown>;
+}
+
+/** A tool's execution ended, whatever its result; AskGate abandons a gate still waiting on it. */
+export interface ToolExecutionEndEvent {
+  readonly toolCallId: string;
+}
+
+/**
+ * One turn of a run ended: the provider request and the tool round it drove are over, so every
+ * call the stall watch still holds open for that turn is closed by it. Only the member this
+ * package reads is typed. Measured on omp/18.16.0 in `--mode rpc` on 2026-11-07: the turn the
+ * host's `abort()` ended wrote `turn_end` with the assistant message that carries
+ * `stopReason: "aborted"` and `errorMessage: "Interrupted by user"`, 3 ms before `agent_end`,
+ * which carries no `stopReason` of its own.
+ */
+export interface TurnEndEvent {
+  /** The assistant message this turn settled on; how it ended is its `stopReason`. */
+  readonly message?: AgentEndMessage;
+}
+
+export interface ResourcesDiscoverResult {
+  readonly skillPaths?: readonly string[];
+}
+
+/** The messages one provider request is about to carry: a copy made for that request alone. */
+export interface ContextEvent {
+  readonly messages: readonly unknown[];
+}
+
+/** Replacement messages for that one request; Oh My Pi stores none of them in the session. */
+export interface ContextEventResult {
+  readonly messages?: readonly unknown[];
+}
+
+/** Text about to run as typed input: typed at the terminal, an RPC prompt, or `sendUserInput`. */
+export interface InputEvent {
+  readonly text: string;
+  readonly images?: readonly ImageContent[];
+  readonly source: "interactive" | "rpc" | "extension";
+}
+
+/** A handler may consume the text, or replace its text or images for every later step. */
+export interface InputEventResult {
+  readonly handled?: boolean;
+  readonly text?: string;
+  readonly images?: readonly ImageContent[];
+}
+
+/**
+ * Payload and result type of every host event these extensions subscribe to.
+ * OMP declares `on` as one overload per event name; mirroring that here keeps a
+ * handler from reading a field its event does not carry, or from returning a
+ * result shape the host discards. Payloads no handler reads stay `unknown`.
+ */
+export interface PiEventContract {
+  readonly resources_discover: {
+    readonly event: unknown;
+    readonly result: ResourcesDiscoverResult;
+  };
+  /** A switch the host is about to make, emitted before it moves its session manager; a handler
+   *  that answers nothing never cancels it. */
+  readonly session_before_switch: {
+    readonly event: SessionSwitchEvent;
+    readonly result: undefined;
+  };
+  /** A branch the host is about to make, emitted before it moves its session manager. */
+  readonly session_before_branch: { readonly event: unknown; readonly result: undefined };
+  readonly session_start: { readonly event: unknown; readonly result: undefined };
+  readonly session_switch: { readonly event: SessionSwitchEvent; readonly result: undefined };
+  readonly session_branch: { readonly event: unknown; readonly result: undefined };
+  readonly session_tree: { readonly event: unknown; readonly result: undefined };
+  readonly session_shutdown: { readonly event: unknown; readonly result: undefined };
+  readonly before_agent_start: {
+    readonly event: BeforeAgentStartEvent;
+    readonly result: BeforeAgentStartResult;
+  };
+  /** Every run the host starts, the user's prompt or not; it carries nothing an extension reads. */
+  readonly agent_start: { readonly event: unknown; readonly result: undefined };
+  readonly agent_end: { readonly event: AgentEndEvent; readonly result: undefined };
+  readonly message_start: { readonly event: MessageStartEvent; readonly result: undefined };
+  readonly message_update: { readonly event: MessageStartEvent; readonly result: undefined };
+  readonly message_end: { readonly event: MessageStartEvent; readonly result: undefined };
+  /** Every turn of a run, each provider request and each tool round; it carries nothing an
+   *  extension reads here. */
+  readonly turn_start: { readonly event: unknown; readonly result: undefined };
+  /** The end of one such turn, which closes every tool call the stall watch holds open for it. */
+  readonly turn_end: { readonly event: TurnEndEvent; readonly result: undefined };
+  /** A retry moved the session onto another model; the host fires no event for any other model or
+   *  thinking-level change. */
+  readonly retry_fallback_applied: {
+    readonly event: RetryFallbackAppliedEvent;
+    readonly result: undefined;
+  };
+  /** A compaction committed, automatic, manual or an extension's; it carries nothing an extension
+   *  reads here. */
+  readonly session_compact: { readonly event: unknown; readonly result: undefined };
+  /** Post-run auto-compaction ended, finished, skipped or interrupted. */
+  readonly auto_compaction_end: {
+    readonly event: AutoCompactionEndEvent;
+    readonly result: undefined;
+  };
+  /** A retry saga ended, succeeded, exhausted or cancelled. */
+  readonly auto_retry_end: { readonly event: AutoRetryEndEvent; readonly result: undefined };
+  /** Every provider request the session's agent loop sends, each turn and each tool round. */
+  readonly context: { readonly event: ContextEvent; readonly result: ContextEventResult };
+  /** Every input before it runs: the host's typed-input ingress, `sendUserInput` included. */
+  readonly input: { readonly event: InputEvent; readonly result: InputEventResult };
+  readonly session_stop: {
+    readonly event: SessionStopEvent;
+    readonly result: SessionStopEventResult;
+  };
+  readonly tool_call: { readonly event: ToolCallEvent; readonly result: ToolCallEventResult };
+  readonly tool_result: { readonly event: ToolResultEvent; readonly result: undefined };
+  /** A call handed to its tool, which is where the stall watch starts that call's clock. */
+  readonly tool_execution_start: {
+    readonly event: ToolExecutionStartEvent;
+    readonly result: undefined;
+  };
+  readonly tool_execution_end: {
+    readonly event: ToolExecutionEndEvent;
+    readonly result: undefined;
+  };
+}
+
+/** The context OMP hands a registered slash-command handler. Its `sessionManager` is the same
+ * live object a `SessionContext` carries; only the members a command reads are typed. */
+export interface CommandContext {
+  readonly cwd: string;
+  readonly sessionManager: Pick<
+    SessionContext["sessionManager"],
+    "getSessionId" | "getSessionFile" | "ensureOnDisk" | "getBranch"
+  >;
+  readonly ui: {
+    readonly notify: (message: string, level: "info" | "warning") => void;
+  };
+  /** The host's `ctx.isIdle()`: false while a turn runs. */
+  readonly isIdle: () => boolean;
+}
+
+/** The host's text block (`TextContent` in `@oh-my-pi/pi-ai`), as far as this package writes it. */
+export interface TextContent {
+  readonly type: "text";
+  readonly text: string;
+}
+
+/** The host's image block (`ImageContent` in `@oh-my-pi/pi-ai`): base64 bytes and their type. */
+export interface ImageContent {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+}
+
+/** What a tool result, a custom message and a user prompt may carry (`AgentToolResult.content`,
+ *  `CustomMessageContent`, `sendUserMessage`'s array form). */
+export type ContentBlock = TextContent | ImageContent;
+
+export interface ToolResult {
+  readonly content: readonly ContentBlock[];
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly isError?: boolean;
+}
+
+export interface RegisteredTool {
+  readonly name: string;
+  readonly label: string;
+  readonly description: string;
+  readonly defaultInactive?: boolean;
+  /**
+   * Hand the raw arguments to `execute` when the host's own schema validation fails, so
+   * the tool refuses a bad call once with every problem in its own words.
+   */
+  readonly lenientArgValidation?: boolean;
+  readonly parameters: unknown;
+  readonly execute: (
+    id: string,
+    parameters: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    onUpdate: unknown,
+    context: SessionContext
+  ) => Promise<ToolResult>;
+}
+
+export interface ZodProperty {
+  readonly optional: () => ZodProperty;
+  readonly nullable: () => ZodProperty;
+  readonly describe: (description: string) => ZodProperty;
+  readonly min?: (value: number) => ZodProperty;
+  readonly max?: (value: number) => ZodProperty;
+}
+
+export interface ZodNumberProperty extends ZodProperty {
+  readonly int: () => ZodProperty;
+}
+
+export interface PiZod {
+  readonly object: (shape: Readonly<Record<string, unknown>>) => unknown;
+  readonly string: () => ZodProperty;
+  readonly number: () => ZodNumberProperty;
+  readonly boolean: () => ZodProperty;
+  readonly array: (item: unknown) => ZodProperty;
+  readonly enum: (values: readonly string[]) => ZodProperty;
+  readonly unknown: () => ZodProperty;
+}
+
+export interface MessageRenderOptions {
+  readonly expanded: boolean;
+}
+
+/**
+ * The slice of the host `Theme` a message renderer needs to paint a bordered
+ * card: color/style helpers for exactly the tokens this package renders
+ * with, and the rounded box-drawing glyphs.
+ */
+export interface MessageRendererTheme {
+  readonly fg: (
+    color: "borderMuted" | "customMessageLabel" | "customMessageText",
+    text: string
+  ) => string;
+  readonly bold: (text: string) => string;
+  readonly boxRound: {
+    readonly topLeft: string;
+    readonly topRight: string;
+    readonly bottomLeft: string;
+    readonly bottomRight: string;
+    readonly horizontal: string;
+    readonly vertical: string;
+  };
+}
+
+/**
+ * Extension-injected message entry handed to a registered {@link
+ * MessageRenderer}: the host's `string | (TextContent | ImageContent)[]`.
+ */
+export interface RenderableMessage {
+  readonly customType: string;
+  readonly content: string | readonly ContentBlock[];
+}
+
+export type MessageRenderer = (
+  message: RenderableMessage,
+  options: MessageRenderOptions,
+  theme: MessageRendererTheme
+) => Component | undefined;
+
+export type { ExtensionAgentsApi };
+
+/**
+ * What `sendUserInput` did with its text: `prompt` and `skill` submitted a message carrying the
+ * caller's tag; `command` ran something locally (`agentInvoked` says it started a turn without a
+ * message, as `/retry` does); `terminal-only` is a built-in only the interactive terminal runs
+ * (`/new`, `/resume`), and nothing ran; `unavailable` is a host mode that does not wire the method,
+ * or a guest in a shared session, and nothing ran. `output` is what a built-in printed, on a
+ * `command` or on the `prompt` it then submitted (`/force:<tool> <prompt>`).
+ */
+export interface UserInputResult {
+  readonly handled: "prompt" | "command" | "skill" | "terminal-only" | "unavailable";
+  readonly output?: string;
+  readonly agentInvoked?: boolean;
+}
+
+export interface HostSlashCommand {
+  readonly name: string;
+  readonly description?: string;
+  readonly source: "extension" | "prompt" | "skill";
+}
+export interface PiApi {
+  readonly zod: PiZod;
+  readonly agents?: ExtensionAgentsApi;
+  readonly sendMessage: (
+    message:
+      | {
+          readonly customType: string;
+          readonly content: string | readonly ContentBlock[];
+          readonly display: boolean;
+          readonly details?: Readonly<Record<string, unknown>>;
+        }
+      | { readonly type: string },
+    options?: {
+      readonly deliverAs: "steer" | "aside" | "nextTurn" | "followUp";
+      readonly triggerTurn: boolean;
+    }
+  ) => void;
+  /**
+   * Sends a user prompt, exactly as Enter at the terminal does: idle, it starts a turn; streaming,
+   * it steers. `deliverAs: "aside"` lands it at the next step without interrupting the running
+   * tool batch; `deliverAs: "followUp"` queues it behind the running turn without starting one.
+   * The host queues the send, so the prompt's `message_start` comes after this returns.
+   */
+  readonly sendUserMessage: (
+    content: string | readonly ContentBlock[],
+    options?: { readonly deliverAs: "aside" | "followUp" }
+  ) => void;
+  /**
+   * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
+   * extension or custom command, a file command or prompt template, and `/skill:<name>`; any other
+   * text goes to the model as a prompt. `tag` is recorded on the message the input submits and
+   * seen again on its `message_start`. Our Oh My Pi fork carries it (can1357/oh-my-pi#14323); a host
+   * without it has no such member. On an idle session it resolves only once the run it started
+   * ends, so a caller that must keep taking messages never awaits it in line.
+   */
+  readonly sendUserInput?: (
+    text: string,
+    options?: { readonly deliverAs?: "aside"; readonly tag?: string }
+  ) => Promise<UserInputResult>;
+  /** The session's extension, custom and skill slash commands (`skill:<name>`), never its
+   *  built-ins. Every Oh My Pi build has it; Legion's own test hosts leave it out. */
+  readonly getCommands?: () => readonly HostSlashCommand[];
+  /** Persist extension state in the session transcript; never sent to the model. */
+  readonly appendEntry: <T = unknown>(customType: string, data?: T) => void;
+  /**
+   * Sets the session's display title and persists it in the transcript, so a `--resume` keeps it.
+   * The host stores it with `titleSource: "user"`, which OMP's own title model never overwrites.
+   */
+  readonly setSessionName: (name: string) => Promise<void>;
+  readonly getActiveTools: () => readonly string[];
+  readonly setActiveTools: (tools: string[]) => Promise<void>;
+  /**
+   * Switches the session's model, as `/model` does; false when no API key for that model is
+   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2168-2177` at the pinned tag).
+   */
+  readonly setModel?: (model: HostModel) => Promise<boolean>;
+  /** The session's thinking level, and a setter for it (same `ExtensionAPI` block at the pinned
+   * tag): a model switch that leaves a level the new model refuses needs both. */
+  readonly getThinkingLevel?: () => string | undefined;
+  readonly setThinkingLevel?: (level: string) => void;
+  readonly on: <Event extends keyof PiEventContract>(
+    event: Event,
+    handler: (
+      event: PiEventContract[Event]["event"],
+      context: SessionContext
+    ) => Promise<PiEventContract[Event]["result"] | undefined> | Promise<void>
+  ) => void;
+  readonly registerTool: (tool: RegisteredTool) => void;
+  readonly registerCommand: (
+    name: string,
+    command: {
+      readonly description: string;
+      readonly handler: (args: string, context: CommandContext) => Promise<void>;
+    }
+  ) => void;
+  readonly registerMessageRenderer: (customType: string, renderer: MessageRenderer) => void;
+}

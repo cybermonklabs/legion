@@ -1,0 +1,145 @@
+// packages/envoy/cmd/agent-secrets/register.go
+//
+// cmdRegister implements "agent-secrets register [--wait SECONDS] [--exec -- COMMAND
+// [ARGS...]]": the one command a machine session (not an agent box) runs at launch to become a
+// registered session root with agent-secrets-helper. The helper pins THIS process by pidfd, so
+// with --exec the command execs as the very pid that was registered — shims/omp wraps omp this
+// way, and omp becomes the session root every later `agent-secrets` invocation in its process
+// tree signs through.
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"syscall"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/helper"
+)
+
+// helperConnectPatience is how long cmdRegister retries connecting to a still-starting helper
+// before giving up (or, under --exec, warning and launching anyway) — the launch-ordering case
+// tmux-resurrect hits at boot.
+const helperConnectPatience = 10 * time.Second
+
+func cmdRegister(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("register", stderr)
+	wait := flags.Int("wait", 0, "wait up to this many seconds for the helper to enroll the session (0 returns at once, as does a helper holding no launcher credential)")
+	doExec := flags.Bool("exec", false, "after registering, exec the command that follows as this same process")
+	// --session-id is what makes a broker identity outlive the process. Without it the helper
+	// names the session <hostname>:<pid>:<start ticks since boot>, which is a different string
+	// after a restart and necessarily a different one after a reboot, so the session enrols
+	// afresh and the requests it had pending and the grants it had been given — all bound to the
+	// enrollment id it no longer has — are cancelled with the old enrollment. With it the helper
+	// names the session `session-<id>`, keeps its key, and hands the same identity back to the
+	// same session id when it comes back, within DormantGrace (dispatch://INFRA-1167).
+	//
+	// A launcher that knows the id only once the agent has started (omp opens its transcript
+	// seconds in, so only a resumed session's id is in the launch argv) registers without one and
+	// runs `agent-secrets register --session-id <id>` again from inside the session; the helper
+	// takes the name then, at a point where no grant exists to lose.
+	//
+	// The helper hands back an identity it kept on this box; the broker carries the rest. A
+	// session's enrolment states this id (helper.Broker.EnrollIdentity), and the broker gives a
+	// new enrolment of the same name under the same principal the grants and the pending
+	// requests of the one before it, so the session keeps them even where its key and its
+	// runtime id are new: another box, a container, a machine rebuilt from nothing.
+	sessionID := flags.String("session-id", "", "the omp session id this session keeps its broker identity under, across a restart of the helper or the machine")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage(err)
+	}
+	command := flags.Args()
+	if *doExec && len(command) == 0 {
+		fmt.Fprintln(stderr, "agent-secrets register --exec needs -- COMMAND [ARGS...]")
+		return exitUsageError
+	}
+	if !*doExec && len(command) > 0 {
+		fmt.Fprintf(stderr, "agent-secrets register: unexpected argument %q\n", command[0])
+		return exitUsageError
+	}
+
+	// The helper's socket as every other helper-mode form finds it (identity.go): the variable when
+	// set, else the default socket when it is there. An agent box has neither: its key dir sits
+	// where the default socket's directory would be, and no helper listens in it.
+	sock, named := helperSocket()
+	if !named && !exists(sock) {
+		fmt.Fprintf(stderr, "agent-secrets register: AGENT_SECRETS_HELPER_SOCK is unset and no helper socket is at %s (machine sessions only; an agent box has a key dir instead)\n", sock)
+		return exitUsageError
+	}
+
+	resp, err := registerWithPatience(sock, *wait, *sessionID, helperConnectPatience)
+	if !*doExec {
+		if err != nil {
+			fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%s\n", resp.RuntimeID, resp.EnrollmentID, resp.State)
+		if *wait > 0 && resp.State != "enrolled" {
+			fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet: %s\n", resp.Error)
+			return 1
+		}
+		return 0
+	}
+	// --exec never blocks a launch on the broker, but never launches silently either: the agent
+	// starts with no secrets access (helper unreachable), with broker calls that fail NOT_ENROLLED
+	// until the helper's enroll loop succeeds, or, while the helper holds no launcher credential,
+	// with no broker identity at all: its agent-secrets calls fail NO_CREDENTIAL, and identity
+	// exits 1, until the machine is logged in.
+	switch {
+	case err != nil:
+		fmt.Fprintf(stderr, "agent-secrets: helper at %s unreachable (%v); this session has no secrets access until it is relaunched with the helper running\n", sock, err)
+	case *wait > 0 && resp.State != "enrolled" && resp.Code == helper.CodeNoCredential && resp.EnrollmentID != "":
+		// A session that came back to an identity its record kept holds that enrollment and
+		// can sign with it, and the renew that confirms it is signed by that same key, so a
+		// login is not what stands between this session and its own enrollment. What the
+		// helper cannot do without one is make a REPLACEMENT if the broker has ended it.
+		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway with the enrollment this session had, which the helper cannot replace if the broker has ended it until it is (run: agent-secrets machine login)")
+	case *wait > 0 && resp.State != "enrolled" && resp.Code == helper.CodeNoCredential:
+		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway, and until it is (run: agent-secrets machine login) this session's agent-secrets calls fail")
+	case *wait > 0 && resp.State != "enrolled":
+		fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet (%s); launching anyway, and this session's secrets calls fail until the helper enrolls it\n", resp.Error)
+	}
+	path, err := exec.LookPath(command[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
+		return exitNotFound
+	}
+	if err := syscall.Exec(path, command, os.Environ()); err != nil {
+		fmt.Fprintf(stderr, "agent-secrets register: exec: %v\n", err)
+		return exitCannotRun
+	}
+	return 0 // unreachable: syscall.Exec replaces this process image on success
+}
+
+// registerWithPatience retries the connection while the helper is absent (it may be starting
+// with the user manager at boot), for patience at most, and retries a DRAINING answer (a helper
+// install is about to restart) until the larger of patience and the --wait seconds has passed, so
+// the session registers with the restarted helper rather than launching with no broker identity.
+func registerWithPatience(sock string, wait int, sessionID string, patience time.Duration) (helper.Response, error) {
+	start := time.Now()
+	deadline := start.Add(patience)
+	drainDeadline := start.Add(max(patience, time.Duration(wait)*time.Second))
+	for {
+		req := helper.Request{Op: "register", WaitSeconds: wait}
+		if sessionID != "" {
+			req.SessionID = &sessionID
+		}
+		resp, err := helper.Call(sock, req, time.Duration(wait+10)*time.Second)
+		if err == nil {
+			if !resp.OK {
+				if resp.Code == helper.CodeDraining && time.Now().Before(drainDeadline) {
+					time.Sleep(250 * time.Millisecond)
+					continue
+				}
+				return resp, fmt.Errorf("%s: %s", resp.Code, resp.Error)
+			}
+			return resp, nil
+		}
+		if time.Now().After(deadline) {
+			return helper.Response{}, err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}

@@ -1,0 +1,712 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
+
+import { primarySpec } from "../../api/issue-cache";
+import { issueQuery } from "../../api/queries";
+import { AttentionBadge } from "../../components/Badge";
+import { LabelPill, StatusPill } from "../../components/Pill";
+import {
+  card,
+  linkText,
+  priorityBadge,
+  textMutedOnSurface,
+  textPrimaryOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
+import { type IssueStatus, statusLabel } from "../project/board-model";
+import { AgentName } from "./AgentName";
+import { type BlockItemKind, itemOfBlock } from "./block-reference";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
+import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import {
+  artifactTextQuery,
+  blockText,
+  prefetchReference,
+  useBlockDocument,
+  useReferenceData,
+  useReferencePath,
+} from "./reference-target";
+import {
+  buildDispatchReference,
+  type DispatchReferenceRoute,
+  isProjectRoute,
+  parseNodeReference,
+  shortForm,
+} from "./routes";
+import { referenceTargetKind } from "./target-id";
+import { type TextSource, textSourceOf } from "./text-references";
+
+/** Every hover-card trigger: a Markdown anchor `collectReferenceAnchors` tagged, a Proof link
+ * mark (`data-dispatch-href`, the sanitized mark's real target), or a React link that set
+ * `data-dispatch-ref` — see `referenceTriggerProps`. */
+const TRIGGER_SELECTOR = "[data-dispatch-ref],[data-dispatch-href]";
+
+interface PreviewTarget {
+  readonly anchor: HTMLElement;
+  readonly route: DispatchReferenceRoute;
+}
+
+interface PreviewState {
+  readonly phase: "pending" | "open";
+  readonly target: PreviewTarget;
+}
+
+let state: PreviewState | undefined;
+let openTimer = 0;
+let closeTimer = 0;
+const subscribers = new Set<() => void>();
+
+/** A new target, or none, cancels both timers, so a timer's callback always acts on the target
+ * that armed it and no transition has to clear them for a target change. The comparison is by
+ * object identity, and `hoverStart` and `focus` mint a fresh `PreviewTarget` on every call, so
+ * keyboard focus landing on the very anchor the pointer just left still cancels that anchor's
+ * close. A transition that re-arms a timer on the target already shown clears it itself, which
+ * is `leave` alone. */
+function setState(next: PreviewState | undefined): void {
+  if (next?.target !== state?.target) {
+    window.clearTimeout(openTimer);
+    window.clearTimeout(closeTimer);
+  }
+  state = next;
+  for (const notify of subscribers) {
+    notify();
+  }
+}
+
+/** The one hover card's controller. Module-level on purpose: "one card at a time" is a single
+ * piece of state, and `RefPreviewHost` drives it from document-level listeners. Each transition
+ * has a precondition its one caller checks - `hoverStart`, `leave` and `reenter` the hover zone
+ * (`attachTriggers` alone judges that), `focus` `:focus-visible`, `blur` that focus is not moving
+ * into the card, and the scroll handler's `reposition` that the card's anchor holds focus - so
+ * all of them are private and `closeRefPreview` below is the whole outside surface. */
+const refPreview = {
+  /** Hover began on an anchor outside the hover zone: open its card after the delay unless the
+   * pointer leaves first. */
+  hoverStart(anchor: HTMLElement, route: DispatchReferenceRoute): void {
+    const target: PreviewTarget = { anchor, route };
+    setState({ phase: "pending", target });
+    openTimer = window.setTimeout(
+      () => setState({ phase: "open", target }),
+      REF_PREVIEW_OPEN_DELAY_MS
+    );
+  },
+  /** The pointer left the hover zone: a card that has not opened yet is abandoned, and an open
+   * one closes after the bridge delay unless the pointer comes back. */
+  leave(): void {
+    if (state === undefined) {
+      return;
+    }
+    if (state.phase === "pending") {
+      setState(undefined);
+      return;
+    }
+    // Re-arming on the target already shown, which `setState` does not clear for: two pointers
+    // leaving the zone within the delay must leave one close timer, not two, or the first one
+    // closes the card under the pointer that came back.
+    window.clearTimeout(closeTimer);
+    closeTimer = window.setTimeout(() => setState(undefined), REF_PREVIEW_CLOSE_DELAY_MS);
+  },
+  /** The pointer came back into the hover zone before the bridge delay ran out. */
+  reenter(): void {
+    window.clearTimeout(closeTimer);
+  },
+  /** Keyboard focus opens the card at once. */
+  focus(anchor: HTMLElement, route: DispatchReferenceRoute): void {
+    setState({ phase: "open", target: { anchor, route } });
+  },
+  blur(anchor: HTMLElement): void {
+    if (state?.target.anchor === anchor) {
+      setState(undefined);
+    }
+  },
+  /** The anchor moved (the page scrolled under a keyboard-opened card): measure it again. */
+  reposition(): void {
+    if (state !== undefined) {
+      setState({ ...state });
+    }
+  },
+};
+
+/** Close the hover card. The one operation with no precondition, so it is the one this module
+ * exports: a surface that takes the pointer over (the board's drag lift) closes the card rather
+ * than driving the hover transitions itself. */
+export function closeRefPreview(): void {
+  setState(undefined);
+}
+
+function subscribe(notify: () => void): () => void {
+  subscribers.add(notify);
+  return () => {
+    subscribers.delete(notify);
+  };
+}
+
+/** The attribute a React-rendered link spreads to become a hover-card trigger; the Markdown and
+ * Proof surfaces carry the same attributes on the anchors they render themselves. */
+export function referenceTriggerProps(route: DispatchReferenceRoute): {
+  "data-dispatch-ref": string;
+} {
+  return { "data-dispatch-ref": buildDispatchReference(route) };
+}
+
+function triggerOf(node: EventTarget | null): HTMLElement | null {
+  return node instanceof Element ? node.closest<HTMLElement>(TRIGGER_SELECTOR) : null;
+}
+
+/** The one region the pointer may roam without closing the card: the current target's anchor -
+ * the open card's, or the one a pending hover is waiting on - and the card itself. Every pointer
+ * transition is judged against this predicate, in the document listeners alone, so no close
+ * depends on the order in which two event systems see one `pointerout`. */
+function inHoverZone(node: EventTarget | null): boolean {
+  return (
+    state !== undefined && (triggerOf(node) === state.target.anchor || refPreviewCardContains(node))
+  );
+}
+
+/** The route a trigger names, read as a node's reference whatever the length of its target id: a
+ *  `data-dispatch-ref`, which the dashboard writes for a route it already holds, or a Proof link
+ *  mark's `data-dispatch-href`, the target its author named for the link (or the reference a
+ *  picture's fallback link writes), which the card reads as the server reads a request. */
+function routeOf(trigger: HTMLElement): DispatchReferenceRoute | undefined {
+  const reference =
+    trigger.getAttribute("data-dispatch-ref") ?? trigger.getAttribute("data-dispatch-href");
+  return reference === null ? undefined : parseNodeReference(reference);
+}
+
+/** How long after the reader's last input a boundary event or a scroll still counts as theirs.
+ *  A page that moves under a still pointer - a card above the reference settling its height, a
+ *  picture landing, a long body formatting - slides the anchor out from under the pointer and
+ *  scrolls the page under it, and the browser reports each with no input behind it. */
+const READER_INPUT_GRACE_MS = 100;
+
+/** `event.timeStamp` of the reader's last input that moves the pointer or the page: a pointer
+ *  they moved, a wheel they turned, a key they pressed, a button they put down. Module-level
+ *  beside the card's own state because two document listeners judge an event by it - the one
+ *  that judges a boundary event (`attachTriggers`) and the one that judges a scroll
+ *  (`RefPreviewHost`) - and the two must read the same answer. */
+let lastInputAt = Number.NEGATIVE_INFINITY;
+
+/** Where `element` sits in the viewport, rounded, for telling an anchor that moved from a
+ *  pointer that did. */
+function placeOf(element: HTMLElement): { left: number; top: number } {
+  const box = element.getBoundingClientRect();
+  return { left: Math.round(box.left), top: Math.round(box.top) };
+}
+
+/** Delegated hover/focus triggers for every reference trigger in the document, present or
+ * future — React-rendered links and the anchors inside Markdown bodies and the Proof editor
+ * alike, which come and go outside React's knowledge. Returns the detach function. */
+function attachTriggers(): () => void {
+  /** Where the hovered anchor sat when the pointer came to rest on it, so a boundary event can
+   *  say which of the two moved. A card the keyboard opened has none: nothing rested on it. */
+  let anchorWas: { anchor: HTMLElement; left: number; top: number } | undefined;
+  /** The page slid an open card's zone out from under a still pointer, and the card was kept.
+   *  The reader's next movement decides it: back in the zone it stays, anywhere else it goes. */
+  let keptUnderAStillPointer = false;
+  /** Where the pointer last was, so a `pointermove` the reader made can be told from the one the
+   *  engine makes itself: WebKit and Firefox both dispatch a move at the pointer's own place
+   *  after the page scrolls under it, to settle `:hover` on whatever is under it now
+   *  (sjawhar/legion#2519). The reader moving is the position changing. */
+  let pointerWas: { x: number; y: number } | undefined;
+  /** Anything the reader did that moves the pointer or the page, so neither a boundary event nor
+   *  a scroll after it is read as the page moving by itself: a wheel they turned, a key they
+   *  pressed (a space or an arrow scrolls), a button they put down (a drag of the scrollbar). */
+  const onReaderInput = (event: Event) => {
+    lastInputAt = event.timeStamp;
+  };
+  const onPointerMove = (event: PointerEvent) => {
+    const moved =
+      pointerWas === undefined || event.clientX !== pointerWas.x || event.clientY !== pointerWas.y;
+    pointerWas = { x: event.clientX, y: event.clientY };
+    if (!moved) {
+      // The engine's own move, at the place the reader left the pointer: it says only that the
+      // page moved under it, which is what the card is being kept for.
+      return;
+    }
+    lastInputAt = event.timeStamp;
+    if (!keptUnderAStillPointer) {
+      return;
+    }
+    keptUnderAStillPointer = false;
+    if (!inHoverZone(event.target)) {
+      refPreview.leave();
+    }
+  };
+  const onPointerOver = (event: PointerEvent) => {
+    // Inside the zone there is nothing to open: a pointer arriving from outside it only cancels
+    // the close its leaving armed, whatever kind of pointer it is.
+    if (inHoverZone(event.target)) {
+      if (!inHoverZone(event.relatedTarget)) {
+        keptUnderAStillPointer = false;
+        refPreview.reenter();
+      }
+      return;
+    }
+    // No card on touch (a tap follows the link), and none while a button is held (a
+    // drag-selection passing over a link is not a hover).
+    if (event.pointerType === "touch" || event.buttons !== 0) {
+      return;
+    }
+    const trigger = triggerOf(event.target);
+    if (trigger === null || trigger === triggerOf(event.relatedTarget)) {
+      return;
+    }
+    const route = routeOf(trigger);
+    if (route !== undefined) {
+      keptUnderAStillPointer = false;
+      anchorWas = { anchor: trigger, ...placeOf(trigger) };
+      refPreview.hoverStart(trigger, route);
+    }
+  };
+  const onPointerOut = (event: PointerEvent) => {
+    if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
+      return;
+    }
+    // A card the reader is reading is not taken away because the page moved: where the anchor
+    // has slid out from under a pointer that never moved - a card above it settling its height,
+    // a picture landing, a long body formatting - the card stays, measured where the anchor is
+    // now, until the reader themselves moves away. The reader leaving is the reader doing
+    // something, and that is what tells the two apart. A hover that has not opened yet is
+    // abandoned as before: there is nothing on screen to protect.
+    const anchor = state?.phase === "open" ? state.target.anchor : undefined;
+    if (
+      anchor !== undefined &&
+      anchorWas?.anchor === anchor &&
+      event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
+    ) {
+      const place = placeOf(anchor);
+      if (place.left !== anchorWas.left || place.top !== anchorWas.top) {
+        anchorWas = { anchor, ...place };
+        keptUnderAStillPointer = true;
+        refPreview.reposition();
+        return;
+      }
+    }
+    refPreview.leave();
+  };
+  const onFocusIn = (event: FocusEvent) => {
+    const trigger = triggerOf(event.target);
+    // `:focus-visible` is the browser's own keyboard-versus-pointer verdict: a mouse click or a
+    // tap focuses a link without matching it, so only keyboard navigation opens the card.
+    if (trigger === null || !trigger.matches(":focus-visible")) {
+      return;
+    }
+    const route = routeOf(trigger);
+    if (route !== undefined) {
+      refPreview.focus(trigger, route);
+    }
+  };
+  const onFocusOut = (event: FocusEvent) => {
+    const trigger = triggerOf(event.target);
+    // Focus moving from the anchor into its own card is not leaving: a press on the card's link
+    // while the anchor holds focus (dnd-kit hands focus back to a board card's link after a
+    // drop) must reach the link as a click, not unmount it under the pointer.
+    if (trigger !== null && !refPreviewCardContains(event.relatedTarget)) {
+      refPreview.blur(trigger);
+    }
+  };
+  document.addEventListener("pointermove", onPointerMove, { passive: true });
+  document.addEventListener("pointerover", onPointerOver);
+  document.addEventListener("pointerout", onPointerOut);
+  document.addEventListener("focusin", onFocusIn);
+  document.addEventListener("focusout", onFocusOut);
+  document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
+  document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
+  document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
+  return () => {
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerover", onPointerOver);
+    document.removeEventListener("pointerout", onPointerOut);
+    document.removeEventListener("focusin", onFocusIn);
+    document.removeEventListener("focusout", onFocusOut);
+    document.removeEventListener("wheel", onReaderInput, { capture: true });
+    document.removeEventListener("keydown", onReaderInput, { capture: true });
+    document.removeEventListener("pointerdown", onReaderInput, { capture: true });
+  };
+}
+
+function Heading({ children }: { children: ReactNode }): ReactNode {
+  return <span className={`block font-semibold ${linkText}`}>{children}</span>;
+}
+
+/** The card's body: three rendered lines of what the target says, formatted, then cut. A `#id`
+ *  in it names a question block of `source`, the document the target's own text belongs to. */
+function Body({ markdown, source }: { markdown: string; source?: TextSource }): ReactNode {
+  return (
+    <MarkdownPreview
+      className={`mt-1 ${textSecondaryOnSurface}`}
+      lines={3}
+      markdown={markdown}
+      source={source}
+    />
+  );
+}
+
+/** The issue's full read, not the summary its links share: the card shows priority, labels, open
+ *  asks and the spec, and holds that read only while it is shown. */
+function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  const key = "key" in route ? route.key : undefined;
+  const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });
+  const spec = primarySpec(issue);
+  const specText = useQuery({
+    ...artifactTextQuery(spec?.id, undefined),
+    enabled: spec?.kind === "doc",
+  });
+  if (issue === undefined) {
+    return <Heading>{shortForm(route)}</Heading>;
+  }
+  const specMarkdown =
+    specText.data !== undefined && "markdown" in specText.data ? specText.data.markdown : undefined;
+  return (
+    <>
+      <Heading>
+        {issue.key}
+        <span className={`ml-2 font-normal ${textPrimaryOnSurface}`}>{issue.title}</span>
+      </Heading>
+      <span className="mt-2 flex flex-wrap items-center gap-2">
+        <StatusPill>{statusLabel(issue.status as IssueStatus)}</StatusPill>
+        {issue.priority === null ? null : (
+          // Read-only on purpose: the card is a tooltip whose body is one link, so the editable
+          // `PriorityControl` every other surface uses cannot live inside it.
+          <span
+            className={`inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold ${priorityBadge[issue.priority].bg} ${priorityBadge[issue.priority].text}`}
+          >
+            P{issue.priority}
+          </span>
+        )}
+        {(issue.labels ?? []).map((label) => (
+          <LabelPill key={label}>{label}</LabelPill>
+        ))}
+        {(issue.open_asks ?? []).length === 0 ? null : (
+          <span className={`inline-flex items-center gap-1 text-xs ${textMutedOnSurface}`}>
+            <AttentionBadge count={(issue.open_asks ?? []).length} />
+            open {(issue.open_asks ?? []).length === 1 ? "ask" : "asks"}
+          </span>
+        )}
+      </span>
+      {specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
+        <Body markdown={specMarkdown} source={textSourceOf("artifact", spec?.id)} />
+      )}
+    </>
+  );
+}
+
+/** Who a document belongs to, as a card names it: an agent's conversation, a project, an issue.
+ *  The card is a tooltip inside one link to the reference (never interactive), so an agent in it
+ *  is named and marked by `AgentName` without a link of its own. */
+function documentOwner(route: DispatchReferenceRoute): ReactNode {
+  return route.kind === "agent-artifact" ? (
+    <>
+      agent <AgentName kind="static" sessionId={route.session} storedTitle={undefined} />
+    </>
+  ) : isProjectRoute(route) ? (
+    route.project
+  ) : (
+    route.key
+  );
+}
+
+function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  const { artifact, markdown } = useReferenceData(route, { text: true });
+  if (artifact === undefined) {
+    return <Heading>{shortForm(route)}</Heading>;
+  }
+  const owner = documentOwner(route);
+  const latest = artifact.latest_version;
+  return (
+    <>
+      <Heading>
+        <span className={`font-normal ${textMutedOnSurface}`}>{owner} · </span>
+        {artifact.name}
+      </Heading>
+      {latest === null ? null : (
+        <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>v{latest}</span>
+      )}
+      {markdown === undefined || markdown.trim() === "" ? null : (
+        <Body markdown={markdown} source={textSourceOf("artifact", artifact.id)} />
+      )}
+    </>
+  );
+}
+
+/** The holder a block's card heads with, one label for each kind of item `itemOfBlock` names
+ *  (`BLOCK_ITEM_KINDS`). */
+const BLOCK_HOLDER_LABELS: Record<BlockItemKind, string> = {
+  ask: "Ask",
+  comment: "Comment",
+  message: "Message",
+};
+
+/** A block of a document: its document, then for a pinned reference the version it pins and how
+ *  the block stands since (`BlockPin.state`), then its text - the pinned version's for a pinned
+ *  reference, its current text otherwise. The document's name is the card's own read of its
+ *  summary, which no link to the block reads. A part of an ask, or a block of a comment or
+ *  message, heads with its item and author in place of the document, and reads no summary
+ *  (`useBlockDocument`), a comment's pin naming a revision of the comment and an ask part's a
+ *  revision of the ask's parts; its text is the one its graph node carries, as a document
+ *  block's is. */
+function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  const { block } = useReferenceData(route, { text: false });
+  const artifact = useBlockDocument(route);
+  const item = itemOfBlock(route);
+  const holder = item === undefined ? artifact?.name : BLOCK_HOLDER_LABELS[item.kind];
+  if (holder === undefined || block === undefined) {
+    return <Heading>{shortForm(route)}</Heading>;
+  }
+  const { node } = block;
+  const pin = node.pin;
+  const text = blockText(node);
+  const author = item === undefined ? undefined : node.made_by?.[0];
+  const unit = item === undefined ? "version" : "revision";
+  return (
+    <>
+      <Heading>
+        <span className={`font-normal ${textMutedOnSurface}`}>{documentOwner(route)} · </span>
+        {holder}
+        {author === undefined ? null : (
+          <>
+            <span className={`font-normal ${textMutedOnSurface}`}> · </span>
+            <AgentName actor={author} kind="static" />
+          </>
+        )}
+      </Heading>
+      {pin === undefined ? null : (
+        <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
+          <span className="block">
+            {item === undefined ? "Version" : "Revision"} {pin.version}
+          </span>
+          <span className="block">
+            {pin.state === "changed"
+              ? `Changed in ${unit} ${node.changed_version}`
+              : pin.state === "removed"
+                ? `Removed in ${unit} ${pin.removed_version}`
+                : `Unchanged since ${unit} ${pin.version}`}
+          </span>
+        </span>
+      )}
+      {text === undefined || text.trim() === "" ? null : (
+        <Body markdown={text} source={textSourceOf("artifact", artifact?.id)} />
+      )}
+    </>
+  );
+}
+
+function AskPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  const { ask } = useReferenceData(route, { text: false });
+  if (ask === undefined) {
+    return <Heading>{shortForm(route)}</Heading>;
+  }
+  const options = (ask.ask.options ?? []).length;
+  return (
+    <>
+      <Heading>
+        <MarkdownPreview
+          lines={2}
+          markdown={ask.ask.question}
+          source={textSourceOf("ask", ask.ask.id)}
+        />
+      </Heading>
+      <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
+        {ask.ask.state}
+        {options === 0 ? null : ` · ${options} ${options === 1 ? "option" : "options"}`}
+      </span>
+    </>
+  );
+}
+
+function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  const { comment } = useReferenceData(route, { text: false });
+  if (comment === undefined) {
+    return <Heading>{shortForm(route)}</Heading>;
+  }
+  return (
+    <>
+      <Heading>
+        <AgentName actor={comment.comment.author} kind="static" />
+      </Heading>
+      <Body markdown={comment.comment.body} source={textSourceOf("comment", comment.comment.id)} />
+    </>
+  );
+}
+
+function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  const { message } = useReferenceData(route, { text: false });
+  if (message === undefined) {
+    return <Heading>{shortForm(route)}</Heading>;
+  }
+  return (
+    <>
+      <Heading>
+        <AgentName actor={message.message.author} kind="static" />
+      </Heading>
+      <Body markdown={message.message.body} source={textSourceOf("message", message.message.id)} />
+    </>
+  );
+}
+
+function PreviewContent({ route }: { route: DispatchReferenceRoute }): ReactNode {
+  switch (referenceTargetKind(route)) {
+    case "ask":
+      return <AskPreview route={route} />;
+    case "comment":
+      return <CommentPreview route={route} />;
+    case "message":
+      return <MessagePreview route={route} />;
+    case "document":
+      return <DocumentPreview route={route} />;
+    case "block":
+      return <BlockPreview route={route} />;
+    case "issue":
+      return <IssuePreview route={route} />;
+  }
+}
+
+const VIEWPORT_MARGIN_PX = 8;
+const ANCHOR_GAP_PX = 6;
+
+function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
+  const element = useRef<HTMLDivElement>(null);
+  const path = useReferencePath(target.route);
+  // Re-measured on every render: the card grows when its data arrives, and its size decides
+  // whether it fits below the anchor. Fixed positioning against the anchor's viewport rect is
+  // the boring choice that works in Chromium and iPhone Safari alike — the native Popover API
+  // would still need this same arithmetic (CSS anchor positioning is not yet in every engine
+  // the e2e projects cover), and the card has no need for the top layer.
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (node === null) {
+      return;
+    }
+    const rect = target.anchor.getBoundingClientRect();
+    const height = node.offsetHeight;
+    const width = node.offsetWidth;
+    const below = rect.bottom + ANCHOR_GAP_PX;
+    const above = rect.top - ANCHOR_GAP_PX - height;
+    const top =
+      below + height <= window.innerHeight - VIEWPORT_MARGIN_PX || above < VIEWPORT_MARGIN_PX
+        ? below
+        : above;
+    const left = Math.max(
+      VIEWPORT_MARGIN_PX,
+      Math.min(rect.left, window.innerWidth - width - VIEWPORT_MARGIN_PX)
+    );
+    node.style.top = `${top}px`;
+    node.style.left = `${left}px`;
+  });
+  return (
+    <div
+      className={`fixed top-0 left-0 z-[60] w-80 max-w-[calc(100vw-1rem)] rounded-xl border p-3 text-sm shadow-lg ${card}`}
+      id={REF_PREVIEW_CARD_ID}
+      ref={element}
+      role="tooltip"
+    >
+      <Link className="block" tabIndex={-1} to={path}>
+        <PreviewContent route={target.route} />
+      </Link>
+    </div>
+  );
+}
+
+/** Mount once in the shell. Owns the document-level trigger listeners, renders the open card
+ * into `document.body`, prefetches the target the moment a hover begins (so the card opens
+ * populated), links the card to its anchor with `aria-describedby`, and closes it on Escape, on
+ * any click (the click follows a link), when the anchor leaves the DOM, or on scroll — unless
+ * the anchor holds keyboard focus (focusing it may itself scroll it into view), in which case
+ * the card follows the anchor instead. */
+export function RefPreviewHost(): ReactNode {
+  const current = useSyncExternalStore(subscribe, () => state);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const detachTriggers = attachTriggers();
+    // Capture phase, ahead of `useDialog`'s Escape: while a card is open it is the topmost
+    // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
+    // open. With no open card the key passes through untouched.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && state?.phase === "open") {
+        event.stopPropagation();
+        closeRefPreview();
+      }
+    };
+    // Only an open card reacts to scroll. A pending hover is left alone — the pointer often
+    // comes to rest on a link while the page is still settling (smooth scrolling, a
+    // scrollIntoView), and the card is measured fresh when it opens anyway.
+    const onScroll = (event: Event) => {
+      if (state?.phase !== "open") {
+        return;
+      }
+      // The card follows its anchor rather than closing where the reader did nothing to move the
+      // page: a long body above the reference formatting, a picture landing, the reader's place
+      // being kept after a late paint all scroll the page under a resting pointer, and a card
+      // the reader is reading must not be taken away by that. It is the same page movement the
+      // `pointerout` rule above protects it from, reported as a scroll rather than as a boundary
+      // event, and in WebKit and Firefox the scroll is the one that arrives first
+      // (sjawhar/legion#2519). The reader's own scroll - a wheel, a key, a drag of the scrollbar
+      // - still closes it, and so does any scroll once they have moved the pointer away, since
+      // leaving the zone closes the card itself. An anchor that holds keyboard focus keeps its
+      // card either way: focusing it may itself scroll it into view.
+      if (
+        document.activeElement === state.target.anchor ||
+        event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
+      ) {
+        refPreview.reposition();
+      } else {
+        closeRefPreview();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    // Bubble phase, after React's own delegated handlers (the card is portaled into `body`,
+    // where React listens): a click on the card must still reach its link and navigate.
+    window.addEventListener("click", closeRefPreview);
+    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => {
+      detachTriggers();
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("click", closeRefPreview);
+      document.removeEventListener("scroll", onScroll, { capture: true });
+      closeRefPreview();
+    };
+  }, []);
+
+  const target = current?.target;
+  useEffect(() => {
+    if (target === undefined) {
+      return;
+    }
+    prefetchReference(queryClient, target.route);
+    // No pointerout or focusout fires for an anchor that leaves the DOM (a Markdown body
+    // re-rendering, a route change), so the card would outlive its anchor; watch for removal
+    // for as long as this target is live.
+    const observer = new MutationObserver(() => {
+      if (!target.anchor.isConnected) {
+        closeRefPreview();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [queryClient, target]);
+
+  const openAnchor = current?.phase === "open" ? current.target.anchor : undefined;
+  useEffect(() => {
+    if (openAnchor === undefined) {
+      return;
+    }
+    const previous = openAnchor.getAttribute("aria-describedby");
+    openAnchor.setAttribute("aria-describedby", REF_PREVIEW_CARD_ID);
+    return () => {
+      if (previous === null) {
+        openAnchor.removeAttribute("aria-describedby");
+      } else {
+        openAnchor.setAttribute("aria-describedby", previous);
+      }
+    };
+  }, [openAnchor]);
+
+  if (current?.phase !== "open") {
+    return null;
+  }
+  return createPortal(<PreviewCard target={current.target} />, document.body);
+}

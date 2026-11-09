@@ -1,0 +1,528 @@
+// Package fake is the runtime boundary as a test double: it records every call, answers from a
+// script, and plays observations into the sweep on demand.
+//
+// It exists because the things the supervisor does are mostly invisible in their return values —
+// a suspend, a release, an orphan reconciliation all return only an error — and because the
+// interesting orderings (an observation that arrives during a resume, a stale incarnation, a
+// duplicated verdict) are not reachable by driving a real tmux server.
+//
+// A fake ignores its context except where the contract is about the context: only the sweep,
+// whose channel closes when the context ends, reads one.
+package fake
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+var _ runtime.Runtime = (*Runtime)(nil)
+
+// Call is one method the caller called, with the arguments it called it with. A method that does
+// not take a given argument leaves it zero.
+type Call struct {
+	Method  string
+	Spec    runtime.SpawnSpec
+	Locator runtime.Locator
+	// Previous is Resume's previous incarnation; nil when the caller recorded none.
+	Previous *runtime.Locator
+	// Released is Release's claim; its Locator is nil for a claim released with no process.
+	Released runtime.Known
+	// Pod is the claim PodDrift and ReplacePod were called about; its Locator is nil for a claim
+	// with no process.
+	Pod      runtime.Known
+	Known    []runtime.Known
+	Grace    time.Duration
+	Identity runtime.GitIdentity
+	// Tree is CleanupTree's tree.
+	Tree string
+	// Rescue is RescueUnpushed's request.
+	Rescue runtime.RescueRequest
+}
+
+// SpawnResult is one scripted answer to Spawn or Resume.
+type SpawnResult struct {
+	Locator runtime.Locator
+	Err     error
+}
+
+// ProbeResult is one scripted answer to Probe: a verdict about the locator probed, or the
+// runtime failing to answer at all. The fake fills the observation's locator and time in.
+type ProbeResult struct {
+	Kind   runtime.ObservationKind
+	Detail string
+	Err    error
+}
+
+// Runtime is the fake. The zero value is not usable; call NewRuntime.
+type Runtime struct {
+	// InPod is what ProvisionsWorkspaces answers: false, the tmux answer, unless a test sets it.
+	InPod bool
+	// ProvisionGrace is what ProvisionBound answers: zero, the tmux answer, unless a test sets it.
+	ProvisionGrace time.Duration
+	// TryBound is what LaunchBound answers: zero, no bound stated, the tmux answer, unless a test
+	// sets it. The fake itself never ends a Spawn or Resume at it: a test that wants a try to run
+	// out scripts the error.
+	TryBound time.Duration
+	// Now stamps the observations the fake mints. NewRuntime sets it to time.Now; a test with a
+	// clock of its own replaces it before use.
+	Now func() time.Time
+
+	mu          sync.Mutex
+	pending     *sync.Cond
+	calls       []Call
+	spawns      []SpawnResult
+	resumes     []SpawnResult
+	probes      []ProbeResult
+	failures    map[string]error
+	drift       map[claim.Token][]string
+	gone        map[claim.Token]bool
+	holdReplace func()
+	holdResume  func()
+	rescuer     func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)
+	queue       []runtime.Observation
+	minted      int
+}
+
+// NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
+func NewRuntime() *Runtime {
+	fake := &Runtime{
+		Now:      time.Now,
+		failures: map[string]error{},
+		drift:    map[claim.Token][]string{},
+		gone:     map[claim.Token]bool{},
+	}
+	fake.pending = sync.NewCond(&fake.mu)
+	return fake
+}
+
+// ScriptSpawn queues answers to Spawn, one per call, in order. Spawn mints its own locator once
+// the script runs out.
+func (r *Runtime) ScriptSpawn(results ...SpawnResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.spawns = append(r.spawns, results...)
+}
+
+// ScriptResume queues answers to Resume, one per call, in order.
+func (r *Runtime) ScriptResume(results ...SpawnResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resumes = append(r.resumes, results...)
+}
+
+// ScriptProbe queues answers to Probe, one per call, in order. An unscripted probe answers
+// `Alive`: the uninteresting case stays out of the test.
+func (r *Runtime) ScriptProbe(results ...ProbeResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probes = append(r.probes, results...)
+}
+
+// Emit hands the sweep observations. They are queued, so a test may emit before `Observe` is
+// ever called; one sweep consumes them, in the order they were emitted.
+func (r *Runtime) Emit(observations ...runtime.Observation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, observation := range observations {
+		if observation.At.IsZero() {
+			observation.At = r.Now()
+		}
+		r.queue = append(r.queue, observation)
+	}
+	r.pending.Broadcast()
+}
+
+// FailSuspend makes every later Suspend return err.
+func (r *Runtime) FailSuspend(err error) { r.fail("Suspend", err) }
+
+// FailRelease makes every later Release return err.
+func (r *Runtime) FailRelease(err error) { r.fail("Release", err) }
+
+// FailReleaseOf makes every later Release of token's claim return err. nil clears this claim's
+// failure; a FailRelease still applies to it.
+func (r *Runtime) FailReleaseOf(token claim.Token, err error) { r.fail("Release:"+string(token), err) }
+
+// FailObserve makes every later Observe return err instead of a sweep.
+func (r *Runtime) FailObserve(err error) { r.fail("Observe", err) }
+
+// FailReconcileOrphans makes every later ReconcileOrphans return err.
+func (r *Runtime) FailReconcileOrphans(err error) { r.fail("ReconcileOrphans", err) }
+
+// FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
+func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", err) }
+
+// FailCleanupTree makes every later CleanupTree return err; nil clears it.
+func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
+
+// ScriptPodDrift makes every later PodDrift of token's claim answer reasons, as the Sandbox
+// runtime answers a pod built from a configuration the runtime has since moved on from. A claim no
+// call named has drifted from nothing, which is the uninteresting case; nil clears this claim's
+// answer.
+func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reasons == nil {
+		delete(r.drift, token)
+		return
+	}
+	r.drift[token] = reasons
+}
+
+// ScriptPodGone makes every later PodDrift of token's claim answer runtime.ErrPodGone, as a
+// runtime answers a claim whose recorded pod is not there at all: the pod was replaced where it
+// stood for a failure of its own and its disk went with it, or the round's own replacement has
+// already ended it. gone false puts the claim back to the drift it was scripted, which is what a
+// claim running in a pod the runtime can read again answers.
+func (r *Runtime) ScriptPodGone(token claim.Token, gone bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !gone {
+		delete(r.gone, token)
+		return
+	}
+	r.gone[token] = true
+}
+
+// FailPodDrift makes every later PodDrift return err; nil clears it.
+func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
+
+// FailReplacePod makes every later ReplacePod return err; nil clears it.
+func (r *Runtime) FailReplacePod(err error) { r.fail("ReplacePod", err) }
+
+// HoldReplacePod makes every later ReplacePod run hold before it asks whether the replacement is
+// still due, which is where the Sandbox runtime waits out the pod's launch turn. A test holds
+// there to do what that wait lets happen — a worker of the round starting a turn, a claim of the
+// issue being launched into the kept pod — and then lets the call go on. nil clears it; the hook
+// runs with none of the fake's own locks held, so it may drive the fake again.
+func (r *Runtime) HoldReplacePod(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdReplace = hold
+}
+
+// HoldResume makes every later Resume run hold before it answers, which is where the Sandbox
+// runtime waits out a pod it is building: the claim's machine holds its own lock for the whole
+// call, so a reader that waits on Machine.Claim waits with it. A test holds there to read what
+// another part of the daemon sees of a claim mid-relaunch, and then lets the call go on. nil
+// clears it; the hook runs with none of the fake's own locks held, so it may drive the fake
+// again.
+func (r *Runtime) HoldResume(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdResume = hold
+}
+
+// RescueWith makes every later RescueUnpushed answer what rescuer answers, which a test points at
+// the real push check (internal/rescue) over repositories of its own, or at a scripted answer. nil
+// clears it: a RescueUnpushed then answers a disk with no workspace on it, which is nothing to lose.
+// The hook runs with none of the fake's own locks held.
+func (r *Runtime) RescueWith(rescuer func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rescuer = rescuer
+}
+
+func (r *Runtime) fail(method string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures[method] = err
+}
+
+// Calls is every call made so far, in order.
+func (r *Runtime) Calls() []Call {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Call(nil), r.calls...)
+}
+
+// CallsOf is every call of one method, in order.
+func (r *Runtime) CallsOf(method string) []Call {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var of []Call
+	for _, call := range r.calls {
+		if call.Method == method {
+			of = append(of, call)
+		}
+	}
+	return of
+}
+
+// Methods is the order the calls came in, which is usually the whole assertion.
+func (r *Runtime) Methods() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	methods := make([]string, 0, len(r.calls))
+	for _, call := range r.calls {
+		methods = append(methods, call.Method)
+	}
+	return methods
+}
+
+func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "Spawn", Spec: spec})
+	if len(r.spawns) > 0 {
+		next := r.spawns[0]
+		r.spawns = r.spawns[1:]
+		return next.Locator, next.Err
+	}
+	return r.mint(spec.Claim), nil
+}
+
+// Resume records its call, then refuses a previous incarnation of another claim, as every runtime
+// does.
+func (r *Runtime) Resume(_ context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	r.mu.Lock()
+	hold := r.holdResume
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	call := Call{Method: "Resume", Spec: spec}
+	if prev != nil {
+		recorded := *prev
+		call.Previous = &recorded
+	}
+	r.calls = append(r.calls, call)
+	if err := (runtime.Known{Claim: spec.Claim, Locator: prev}).Validate(); err != nil {
+		return runtime.Locator{}, err
+	}
+	if len(r.resumes) > 0 {
+		next := r.resumes[0]
+		r.resumes = r.resumes[1:]
+		return next.Locator, next.Err
+	}
+	return r.mint(spec.Claim), nil
+}
+
+func (r *Runtime) Suspend(_ context.Context, loc runtime.Locator) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "Suspend", Locator: loc})
+	return r.failures["Suspend"]
+}
+
+// Release records its claim, then refuses one whose locator disagrees with it, as every runtime
+// does.
+func (r *Runtime) Release(_ context.Context, k runtime.Known) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "Release", Released: copyKnown(k)})
+	if err := k.Validate(); err != nil {
+		return err
+	}
+	if err := r.failures["Release:"+string(k.Claim)]; err != nil {
+		return err
+	}
+	return r.failures["Release"]
+}
+
+func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
+	kind, detail := runtime.Alive, ""
+	if len(r.probes) > 0 {
+		next := r.probes[0]
+		r.probes = r.probes[1:]
+		if next.Err != nil {
+			return runtime.Observation{}, next.Err
+		}
+		kind, detail = next.Kind, next.Detail
+	}
+	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail}, nil
+}
+
+// Observe is the sweep. Every observation emitted, before or after this call, reaches the
+// channel in order; the channel closes when ctx ends. One sweep at a time: two live sweeps would
+// split the emissions between them, which no test wants.
+func (r *Runtime) Observe(ctx context.Context) (<-chan runtime.Observation, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, Call{Method: "Observe"})
+	failure := r.failures["Observe"]
+	r.mu.Unlock()
+	if failure != nil {
+		return nil, failure
+	}
+
+	sweep := make(chan runtime.Observation)
+	// The pump waits on the condition; the context ending has to wake it, or a sweep with
+	// nothing queued would never notice that it is over.
+	go func() {
+		<-ctx.Done()
+		r.mu.Lock()
+		r.pending.Broadcast()
+		r.mu.Unlock()
+	}()
+	go func() {
+		defer close(sweep)
+		for {
+			r.mu.Lock()
+			for len(r.queue) == 0 && ctx.Err() == nil {
+				r.pending.Wait()
+			}
+			if ctx.Err() != nil {
+				r.mu.Unlock()
+				return
+			}
+			observation := r.queue[0]
+			r.queue = r.queue[1:]
+			r.mu.Unlock()
+			select {
+			case sweep <- observation:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return sweep, nil
+}
+
+// ReconcileOrphans records the known set, then refuses an entry whose locator disagrees with its
+// claim, as every runtime does.
+func (r *Runtime) ReconcileOrphans(_ context.Context, known []runtime.Known, grace time.Duration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	recorded := make([]runtime.Known, len(known))
+	for i, entry := range known {
+		recorded[i] = copyKnown(entry)
+	}
+	r.calls = append(r.calls, Call{Method: "ReconcileOrphans", Known: recorded, Grace: grace})
+	for _, entry := range known {
+		if err := entry.Validate(); err != nil {
+			return err
+		}
+	}
+	return r.failures["ReconcileOrphans"]
+}
+
+// copyKnown is k with a locator of its own, so a caller that reuses its locator later does not
+// rewrite what was recorded.
+func copyKnown(k runtime.Known) runtime.Known {
+	if k.Locator != nil {
+		loc := *k.Locator
+		k.Locator = &loc
+	}
+	return k
+}
+
+func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id})
+	return r.failures["AdoptWorkingCopy"]
+}
+
+func (r *Runtime) ProvisionsWorkspaces() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.InPod
+}
+
+func (r *Runtime) ProvisionBound() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ProvisionGrace
+}
+
+func (r *Runtime) LaunchBound() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.TryBound
+}
+
+// PodDrift records its call and answers what ScriptPodDrift set for the claim, nil for a claim no
+// call named and for one with no process, as a runtime answers a claim that runs nowhere, and
+// runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
+// recorded pod is not there.
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "PodDrift", Pod: copyKnown(k)})
+	if err := r.failures["PodDrift"]; err != nil {
+		return nil, err
+	}
+	if k.Locator == nil {
+		return nil, nil
+	}
+	if r.gone[k.Claim] {
+		return nil, runtime.ErrPodGone
+	}
+	return append([]string(nil), r.drift[k.Claim]...), nil
+}
+
+// ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
+// pod's launch turn (HoldReplacePod), asks due whether the replacement is still due, and only
+// then replaces anything. A due that refuses records a ReplacePodNotDue call and changes nothing
+// — no replacement was made, so no ReplacePod call stands for one — and its error is returned as
+// the runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the
+// place it named is gone, and the one built in its stead is built from the configuration the
+// runtime has now — and what FailReplacePod set is answered, nil by default.
+func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
+	r.mu.Lock()
+	hold := r.holdReplace
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
+	if err := due(ctx); err != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.calls = append(r.calls, Call{Method: "ReplacePodNotDue", Pod: copyKnown(k)})
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "ReplacePod", Pod: copyKnown(k)})
+	if err := r.failures["ReplacePod"]; err != nil {
+		return err
+	}
+	delete(r.drift, k.Claim)
+	return nil
+}
+
+// RescueUnpushed records its call, with the claim it asked through and the request in Rescue, and
+// answers what RescueWith set; with none, a disk with no workspace on it.
+func (r *Runtime) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, Call{Method: "RescueUnpushed", Pod: copyKnown(k), Rescue: request})
+	rescuer := r.rescuer
+	r.mu.Unlock()
+	if rescuer == nil {
+		return nil, nil
+	}
+	return rescuer(ctx, k, request)
+}
+
+// CleanupTree records its call and answers what FailCleanupTree set, nil by default.
+func (r *Runtime) CleanupTree(_ context.Context, tree string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "CleanupTree", Tree: tree})
+	return r.failures["CleanupTree"]
+}
+
+// mint is the locator an unscripted spawn or resume hands back: tmux-shaped, because that is a
+// shape the store round-trips and `Validate` accepts, and a fresh incarnation every time,
+// because that is what starting a process gives you. Called with the lock held.
+func (r *Runtime) mint(token claim.Token) runtime.Locator {
+	r.minted++
+	return runtime.Locator{
+		Runtime:     runtime.RuntimeTmux,
+		Claim:       token,
+		Incarnation: fmt.Sprintf("%d:%d", 31000+r.minted, 900000+r.minted),
+		Tmux: &runtime.TmuxLocator{
+			Window: fmt.Sprintf("@%d", r.minted),
+			Pane:   fmt.Sprintf("%%%d", r.minted),
+		},
+	}
+}

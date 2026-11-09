@@ -1,0 +1,520 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// newStaleHarness is a harness with its log captured so a test can read the Warn line a
+// stale-caller or an undecodable-body refusal writes (LEGION-164). Its supervise deps can
+// relaunch a stale-plugin process (newHarness's default).
+func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
+	t.Helper()
+	h := newHarness(t)
+	logs := &bytes.Buffer{}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
+		PromptAgents: testPromptAgents, PluginRelaunchable: true,
+		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
+		Log: slog.New(slog.NewJSONHandler(logs, nil)),
+	}).Handler
+	return h, logs
+}
+
+// newNoInstallHarness is a harness whose daemon knows which claims a launch installs no plugin
+// for (Options.NoPluginInstall, the daemon's noPluginInstall over its configured backends),
+// relaunchable like newStaleHarness's so the rest of the stale-caller rule still applies.
+func newNoInstallHarness(t *testing.T, noInstall func(supervise.Claim) bool) *harness {
+	t.Helper()
+	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
+		PromptAgents: testPromptAgents, PluginRelaunchable: true, NoPluginInstall: noInstall,
+		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
+		Log: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+	}).Handler
+	return h
+}
+
+// A claim whose launch installs no plugin is served on the contract it speaks, with no update
+// round open: a Claude Code role's plugin is its pod image's own claude-envoy, so no relaunch of
+// this daemon moves its contract — the stale-plugin lane posts it nothing and its registration
+// stands — and the refusal's own sentence, that the daemon is relaunching this process onto the
+// current plugin, would never come true. Refused instead, such a worker would lose its ready,
+// its grants and everything a grant bears from the daemon's boot until a round over its pod,
+// which a release that changes no image never opens.
+//
+// The claim a launch does install a plugin for is the control: the same contract, the same
+// window, and the 409 the stale-caller rule has always answered.
+func TestAClaimWhoseLaunchInstallsNoPluginIsServedOnItsOldContract(t *testing.T) {
+	claudeRole := claim.RoleImplementer
+	h := newNoInstallHarness(t, func(c supervise.Claim) bool { return c.Role == claudeRole })
+	stale := DaemonAPIVersion - 1
+
+	for _, tc := range []struct {
+		role   claim.Role
+		issue  string
+		served bool
+	}{
+		{role: claudeRole, issue: "LEGION-208", served: true},
+		{role: claim.RoleTester, issue: "LEGION-209"},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			token, boot := h.launch(tc.issue, tc.role)
+			session := "ses_" + string(tc.role)
+			current := h.registerContract(boot, session, DaemonAPIVersion, true)
+			h.makeStale(t, token, session, current.Secret, stale)
+			if c := h.stored(token); c.UpdateRound != "" {
+				t.Fatalf("%s is in round %q: this case proves nothing, since an open round serves a stale claim already", tc.role, c.UpdateRound)
+			}
+
+			ready := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+				ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
+			}, nil)
+			grants := h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
+				SessionID: session, Secret: current.Secret, Tree: tc.issue, Issue: tc.issue,
+			}, nil)
+
+			if !tc.served {
+				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+				wantFailure(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+				return
+			}
+			if ready.Code != http.StatusNoContent {
+				t.Fatalf("ready from a claim no install can carry = %d, want 204; body %s", ready.Code, ready.Body)
+			}
+			if grants.Code != http.StatusOK {
+				t.Fatalf("grants for a claim no install can carry = %d, want 200; body %s", grants.Code, grants.Body)
+			}
+			var grant GrantResponse
+			decodeInto(t, grants, &grant)
+			if grant.GrantID == "" {
+				t.Fatalf("the grant %+v carries no handle", grant)
+			}
+		})
+	}
+}
+
+// A claim whose last registration the daemon relaunched for this contract — the stale-registration
+// 409 pi-legion exits on — is refused on ready and on the grants route's claim form, naming both
+// contracts, once the route has decoded its caller; each refusal logs a Warn naming the route,
+// the claim, and both contracts.
+func TestStaleClaimIsRefusedOnReadyAndGrantsAndLogsAWarn(t *testing.T) {
+	h, logs := newStaleHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	session := "ses_implementer"
+	current := h.registerContract(boot, session, DaemonAPIVersion, true)
+	stale := DaemonAPIVersion - 1
+	h.makeStale(t, token, session, current.Secret, stale)
+	sentence := claim.StalePluginContract(stale, DaemonAPIVersion).Message
+
+	wantRefusal(t,
+		h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+			ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
+		}, nil),
+		http.StatusConflict, sentence)
+
+	grantsRecorder := h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
+		SessionID: session, Secret: current.Secret, Tree: "LEGION-208", Issue: "LEGION-208",
+	}, nil)
+	if grantsRecorder.Code != http.StatusConflict {
+		t.Fatalf("stale grants status = %d, want 409; body %s", grantsRecorder.Code, grantsRecorder.Body)
+	}
+	var failure Failure
+	decodeInto(t, grantsRecorder, &failure)
+	if failure.Code != "STALE_PLUGIN_CONTRACT" {
+		t.Fatalf("stale grants code = %q, want STALE_PLUGIN_CONTRACT", failure.Code)
+	}
+	if failure.Error != sentence {
+		t.Fatalf("grants refusal sentence = %q, want %q", failure.Error, sentence)
+	}
+
+	logged := logs.String()
+	if !strings.Contains(logged, `"msg":"api: refused a call from a process on another plugin contract"`) {
+		t.Fatalf("logs %s do not carry the refusal's Warn line", logged)
+	}
+	if !strings.Contains(logged, fmt.Sprintf(`"pluginContract":%d`, stale)) ||
+		!strings.Contains(logged, fmt.Sprintf(`"daemonApiVersion":%d`, DaemonAPIVersion)) {
+		t.Fatalf("logs %s do not name both contracts", logged)
+	}
+	if strings.Contains(logged, current.Secret) {
+		t.Fatalf("logs %s carry the claim's secret", logged)
+	}
+}
+
+// A claim's grant, minted while it was current, is refused on handoff/complete once the claim has
+// gone stale — a daemon restart that recorded no relaunch for it in this harness (see
+// harness.makeStale) — with the same sentence and code the grants route answers with. Its worker
+// is out of its turn, which is where this refusal belongs: a stale claim whose worker is in a
+// turn is served until the relaunch the lane holds for that turn can start
+// (TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld).
+func TestStaleClaimIsRefusedOnHandoffComplete(t *testing.T) {
+	github := newHandoffGitHub(t)
+	h, _ := newHandoffHarness(t, github, nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	grantID := implementer.grant(t)
+	stale := DaemonAPIVersion - 1
+	endTurn(t, h, implementer.token)
+	h.makeStale(t, implementer.token, implementer.session, implementer.secret, stale)
+
+	recorder := h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "implemented", Commit: "aabbcc"})
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("handoff/complete status = %d, want 409; body %s", recorder.Code, recorder.Body)
+	}
+	var failure Failure
+	decodeInto(t, recorder, &failure)
+	if failure.Code != "STALE_PLUGIN_CONTRACT" {
+		t.Fatalf("handoff/complete code = %q, want STALE_PLUGIN_CONTRACT", failure.Code)
+	}
+	if want := claim.StalePluginContract(stale, DaemonAPIVersion).Message; failure.Error != want {
+		t.Fatalf("handoff/complete refusal sentence = %q, want %q", failure.Error, want)
+	}
+}
+
+// endTurn ends the turn of token's worker, through the stream event the agent's turn ending posts
+// (supervise.StreamTurnEnd), leaving the claim idle: a claim no held relaunch covers.
+func endTurn(t *testing.T, h *harness, token claim.Token) {
+	t.Helper()
+	machine, ok := h.supervisor.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: token}); err != nil {
+		t.Fatalf("end the turn of %s: %v", token, err)
+	}
+}
+
+// A stale, relaunchable claim in no update round — the shape every other stale refusal here has —
+// whose worker is in a turn is served on ready, on grants and on handoff/complete: the
+// stale-plugin lane holds that claim's relaunch until the turn ends (supervise's
+// holdStaleRelaunch) so the turn can push what it has rather than lose it to a process ended
+// where it stood, and grants are what mint the GitHub App token it pushes and hands off with.
+// Refused, the turn would run on unable to push and unable to hand off, and its work would go
+// with the relaunch the hold was waiting to start.
+//
+// The same claim out of its turn is the control: nothing holds its relaunch then, and all three
+// calls are refused 409 STALE_PLUGIN_CONTRACT exactly as they always were.
+func TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld(t *testing.T) {
+	stale := DaemonAPIVersion - 1
+	for _, tc := range []struct {
+		name   string
+		inTurn bool
+	}{
+		{name: "in a turn", inTurn: true},
+		{name: "out of its turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := newHandoffGitHub(t)
+			h, _ := newHandoffHarness(t, github, nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			// newLiveClaim delivers the run's task and starts its turn through the machine, which
+			// is the turn the stale-plugin lane holds the relaunch for.
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			// Minted while the claim was current, so the control has a grant to complete with:
+			// the grants route refuses it once it has gone stale out of its turn.
+			grantID := tester.grant(t)
+			written := tester.writeHandoff("test", 1)
+			if !tc.inTurn {
+				endTurn(t, h, tester.token)
+			}
+			h.makeStale(t, tester.token, tester.session, tester.secret, stale)
+			c := h.stored(tester.token)
+			if c.UpdateRound != "" {
+				t.Fatalf("the claim is in round %q: this case proves nothing, since an open round serves a stale claim already", c.UpdateRound)
+			}
+			if working := c.State == supervise.StateWorking; working != tc.inTurn {
+				t.Fatalf("the claim is %s, want working = %v", c.State, tc.inTurn)
+			}
+
+			ready := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+				ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret, Generation: c.Generation,
+			}, nil)
+			grants := h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
+				SessionID: tester.session, Secret: tester.secret, Tree: tester.tree, Issue: tester.issue,
+			}, nil)
+			completed := h.complete(HandoffCompleteRequest{
+				GrantID: grantID, Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1,
+			})
+
+			if !tc.inTurn {
+				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+				wantFailure(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+				wantFailure(t, completed, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+				return
+			}
+			if ready.Code != http.StatusNoContent {
+				t.Fatalf("ready from a claim whose relaunch is held = %d, want 204; body %s", ready.Code, ready.Body)
+			}
+			if grants.Code != http.StatusOK {
+				t.Fatalf("grants for a claim whose relaunch is held = %d, want 200; body %s", grants.Code, grants.Body)
+			}
+			var grant GrantResponse
+			decodeInto(t, grants, &grant)
+			if grant.GrantID == "" {
+				t.Fatalf("the grant %+v carries no handle, so the turn has nothing to push with", grant)
+			}
+			if completed.Code != http.StatusOK {
+				t.Fatalf("handoff/complete from a claim whose relaunch is held = %d, want 200; body %s", completed.Code, completed.Body)
+			}
+		})
+	}
+}
+
+// An undecodable grants body (an unknown field, as 2026-10-12's "push" was) from a stale claim is
+// refused the stale-caller 409; the identical body from a current claim gets today's 400 naming
+// the field, logged with the route and the decoder's error.
+func TestUndecodableGrantsBodyRefusesAStaleClaimButNamesTheFieldForACurrentOne(t *testing.T) {
+	h, logs := newStaleHarness(t)
+	body := func(session, secret string) string {
+		return fmt.Sprintf(`{"sessionId":%q,"secret":%q,"tree":"LEGION-208","issue":"LEGION-208","push":true}`, session, secret)
+	}
+
+	staleToken, staleBoot := h.launch("LEGION-208", claim.RoleImplementer)
+	staleSession := "ses_stale"
+	staleCurrent := h.registerContract(staleBoot, staleSession, DaemonAPIVersion, true)
+	stale := DaemonAPIVersion - 1
+	h.makeStale(t, staleToken, staleSession, staleCurrent.Secret, stale)
+	staleRecorder := h.request(http.MethodPost, "/legion/v1/grants", body(staleSession, staleCurrent.Secret), nil)
+	wantFailure(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+
+	_, currentBoot := h.launch("LEGION-209", claim.RoleImplementer)
+	currentSession := "ses_current"
+	currentRegistered := h.registerContract(currentBoot, currentSession, DaemonAPIVersion, true)
+	currentBody := fmt.Sprintf(`{"sessionId":%q,"secret":%q,"tree":"LEGION-209","issue":"LEGION-209","push":true}`, currentSession, currentRegistered.Secret)
+	currentRecorder := h.request(http.MethodPost, "/legion/v1/grants", currentBody, nil)
+	if currentRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("a current claim's unknown-field body = %d, want 400; body %s", currentRecorder.Code, currentRecorder.Body)
+	}
+	if !strings.Contains(currentRecorder.Body.String(), "push") {
+		t.Fatalf("400 body %s does not name the unknown field", currentRecorder.Body)
+	}
+
+	logged := logs.String()
+	if !strings.Contains(logged, `"msg":"api: refused an undecodable request body"`) ||
+		!strings.Contains(logged, `"route":"/legion/v1/grants"`) || !strings.Contains(logged, `push`) {
+		t.Fatalf("logs %s do not name the route and the decoder's error for the undecodable body", logged)
+	}
+}
+
+// An undecodable claims/ready body (an unknown field) from a stale claim is refused the
+// stale-caller 409, in the claim-route shape (claim.StalePluginContract, {"error": …}) rather than
+// the grants route's Failure{Code}; the identical body from a current claim gets today's 400
+// naming the field, exactly as the grants family's own undecodable body does
+// (claimSecretCheck, the identity check ready and exit share).
+func TestUndecodableReadyBodyRefusesAStaleClaimButNamesTheFieldForACurrentOne(t *testing.T) {
+	h, _ := newStaleHarness(t)
+	withClaim := func(token claim.Token, session, secret string) string {
+		return fmt.Sprintf(`{"claimToken":%q,"sessionId":%q,"secret":%q,"generation":1,"push":true}`, token, session, secret)
+	}
+
+	staleToken, staleBoot := h.launch("LEGION-208", claim.RoleImplementer)
+	staleSession := "ses_stale_ready"
+	staleCurrent := h.registerContract(staleBoot, staleSession, DaemonAPIVersion, true)
+	stale := DaemonAPIVersion - 1
+	h.makeStale(t, staleToken, staleSession, staleCurrent.Secret, stale)
+	staleRecorder := h.request(http.MethodPost, "/legion/v1/claims/ready", withClaim(staleToken, staleSession, staleCurrent.Secret), nil)
+	wantRefusal(t, staleRecorder, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+
+	currentToken, currentBoot := h.launch("LEGION-209", claim.RoleImplementer)
+	currentSession := "ses_current_ready"
+	currentRegistered := h.registerContract(currentBoot, currentSession, DaemonAPIVersion, true)
+	currentRecorder := h.request(http.MethodPost, "/legion/v1/claims/ready", withClaim(currentToken, currentSession, currentRegistered.Secret), nil)
+	if currentRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("a current claim's unknown-field ready body = %d, want 400; body %s", currentRecorder.Code, currentRecorder.Body)
+	}
+	if !strings.Contains(currentRecorder.Body.String(), "push") {
+		t.Fatalf("400 body %s does not name the unknown field", currentRecorder.Body)
+	}
+}
+
+// An undecodable handoff/complete body (an unknown field), naming a grant minted while the claim
+// was current and still valid now that it has gone stale, is refused the stale-caller 409 in the
+// grant-bearing shape (Failure{Code: "STALE_PLUGIN_CONTRACT"}); the identical body naming a
+// current claim's grant gets today's 400 naming the field — redeemIdentityCheck, the identity
+// check every grant-bearing route shares with the grants route's own claim form. The stale
+// caller is out of its turn, since a stale claim in one is served while its relaunch is held
+// (TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld).
+func TestUndecodableHandoffCompleteBodyRefusesAStaleClaimButNamesTheFieldForACurrentOne(t *testing.T) {
+	github := newHandoffGitHub(t)
+	h, _ := newHandoffHarness(t, github, nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+	stale := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	staleGrant := stale.grant(t)
+	endTurn(t, h, stale.token)
+	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion-1)
+	staleBody := fmt.Sprintf(`{"grantId":%q,"summary":"implemented","commit":"aabbcc","push":true}`, staleGrant)
+
+	staleRecorder := h.request(http.MethodPost, "/legion/v1/handoff/complete", staleBody, nil)
+	wantFailure(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+
+	seedIssueAt(t, h, "LEGION-209", phase.Implementing)
+	current := newLiveClaim(t, h, "LEGION-209", claim.RoleImplementer)
+	currentGrant := current.grant(t)
+	currentBody := fmt.Sprintf(`{"grantId":%q,"summary":"implemented","commit":"aabbcc","push":true}`, currentGrant)
+
+	currentRecorder := h.request(http.MethodPost, "/legion/v1/handoff/complete", currentBody, nil)
+	if currentRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("a current claim's unknown-field handoff/complete body = %d, want 400; body %s", currentRecorder.Code, currentRecorder.Body)
+	}
+	if !strings.Contains(currentRecorder.Body.String(), "push") {
+		t.Fatalf("400 body %s does not name the unknown field", currentRecorder.Body)
+	}
+}
+
+// The register route decodes leniently from the start: its body carries the contract the
+// record-and-relaunch path needs, so an unknown field reaches registration rather than a 400.
+func TestUndecodableRegisterBodyReachesRegistration(t *testing.T) {
+	h := newHarnessUnrelaunchable(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	body := fmt.Sprintf(`{"bootToken":%q,"sessionId":"ses_architect","ompSessionFile":"/sessions/ses_architect.jsonl","agentId":"agent-ses_architect","pluginContract":23,"workerSecret":"x"}`, boot)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/claims/register", body, nil)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("register with an unknown field = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	if stored := h.stored(token); stored.PluginContract != 23 {
+		t.Fatalf("stored pluginContract = %d, want 23 recorded despite the unknown field", stored.PluginContract)
+	}
+}
+
+// GET /legion/v1/state authenticates nobody, so a stale claim's presence never refuses it.
+func TestStateRouteUntouchedForAStaleClaim(t *testing.T) {
+	h, _ := newStaleHarness(t)
+	_, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	h.registerContract(boot, "ses_implementer", DaemonAPIVersion-1, true)
+
+	recorder := h.request(http.MethodGet, "/legion/v1/state", nil, nil)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("state = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+}
+
+// A daemon that can relaunch nothing (PluginRelaunchable false, LEGION-164's degraded Kubernetes
+// mode) refuses no call on account of a claim's stale contract: the same stale seed that gets a
+// relaunchable daemon's ready refused (TestStaleClaimIsRefusedOnReadyAndGrantsAndLogsAWarn)
+// succeeds here, since nothing relaunches the process and refusing it would stall an agent that
+// works today.
+func TestUnrelaunchableDaemonRefusesNoCallForAStaleClaim(t *testing.T) {
+	h := newHarnessUnrelaunchable(t)
+	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	session := "ses_implementer"
+	current := h.registerContract(boot, session, DaemonAPIVersion, false)
+	h.makeStale(t, token, session, current.Secret, DaemonAPIVersion-1)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
+	}, nil)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("ready from a stale claim on an unrelaunchable daemon = %d, want 204; body %s", recorder.Code, recorder.Body)
+	}
+}
+
+// The operator's controller becomes stale only across a daemon restart (it cannot itself start on
+// the wrong contract): a grant after the restart is refused 409 naming `legion controller start`,
+// since the daemon is not the operator's controller's to relaunch.
+func TestOperatorControllersStaleGrantIsRefused(t *testing.T) {
+	h := newControllerHarness(t, false)
+	capability := h.mintedSecret()
+	registration := h.registeredController(capability, "ses_operator")
+	stale := DaemonAPIVersion - 1
+	controllerRecord, found, err := h.store.Controller(context.Background(), testProject)
+	if err != nil || !found {
+		t.Fatalf("read the controller record: found=%v err=%v", found, err)
+	}
+	if ok, err := h.store.RegisterController(context.Background(), testProject, controllerRecord.Generation,
+		"ses_operator", secretHash(registration.Secret), time.Now().UTC(), stale); err != nil || !ok {
+		t.Fatalf("seed the controller's stale contract: ok=%v err=%v", ok, err)
+	}
+
+	recorder := h.controllerSessionGrant("ses_operator", registration.Secret)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("stale controller grant status = %d, want 409; body %s", recorder.Code, recorder.Body)
+	}
+	var failure Failure
+	decodeInto(t, recorder, &failure)
+	if failure.Code != "STALE_PLUGIN_CONTRACT" {
+		t.Fatalf("stale controller grant code = %q, want STALE_PLUGIN_CONTRACT", failure.Code)
+	}
+	if want := claim.StaleControllerContract(stale, DaemonAPIVersion).Message; failure.Error != want {
+		t.Fatalf("controller grant refusal sentence = %q, want %q", failure.Error, want)
+	}
+}
+
+// An operator-bearer grant (the Controller: true grant `legion status` redeems on
+// POST /legion/v1/issues/status with --operator-token-file) is returned by redeem without
+// consulting the controller record at all (LEGION-164): a mint for it checks nothing about the
+// record either (mintControllerGrant, the grant route's operator form), so its own staleness is
+// never the record's to answer for — only the controller session's own grant mint is
+// (controllerSessionGrant). The record's stale contract that refuses the session's own mint
+// (TestOperatorControllersStaleGrantIsRefused) leaves the operator-bearer grant's redeem
+// untouched.
+func TestOperatorBearerGrantRedeemsDespiteTheControllerRecordsStaleContract(t *testing.T) {
+	h := newControllerHarness(t, false)
+	capability := h.mintedSecret()
+	registration := h.registeredController(capability, "ses_operator")
+	stale := DaemonAPIVersion - 1
+	controllerRecord, found, err := h.store.Controller(context.Background(), testProject)
+	if err != nil || !found {
+		t.Fatalf("read the controller record: found=%v err=%v", found, err)
+	}
+	if ok, err := h.store.RegisterController(context.Background(), testProject, controllerRecord.Generation,
+		"ses_operator", secretHash(registration.Secret), time.Now().UTC(), stale); err != nil || !ok {
+		t.Fatalf("seed the controller's stale contract: ok=%v err=%v", ok, err)
+	}
+
+	grant := controllerGrant(t, h)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{
+		GrantID: grant.GrantID, Issue: "LEGION-208", Status: "todo",
+	}, nil)
+	if recorder.Code == http.StatusConflict {
+		t.Fatalf("operator-bearer grant redeem = 409, want no stale refusal; body %s", recorder.Body)
+	}
+
+	sessionRecorder := h.controllerSessionGrant("ses_operator", registration.Secret)
+	if sessionRecorder.Code != http.StatusConflict {
+		t.Fatalf("controller session's own grant mint = %d, want 409; body %s", sessionRecorder.Code, sessionRecorder.Body)
+	}
+	var sessionFailure Failure
+	decodeInto(t, sessionRecorder, &sessionFailure)
+	if want := claim.StaleControllerContract(stale, DaemonAPIVersion).Message; sessionFailure.Error != want {
+		t.Fatalf("controller session grant refusal sentence = %q, want %q", sessionFailure.Error, want)
+	}
+}
+
+// Wrong secret is still refused 403, exactly as today, regardless of the claim's recorded
+// contract: the stale-caller refusal only ever replaces a 400 or runs after authentication, never
+// before it.
+func TestWrongSecretStillRefusedBeforeAnyStaleCheck(t *testing.T) {
+	h, _ := newStaleHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	h.registerContract(boot, "ses_implementer", DaemonAPIVersion-1, true)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: token, SessionID: "ses_implementer", Secret: "the wrong secret", Generation: 1,
+	}, nil)
+
+	wantRefusal(t, recorder, http.StatusForbidden, "Invalid session secret")
+}

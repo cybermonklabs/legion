@@ -1,0 +1,487 @@
+package docs
+
+import (
+	"errors"
+	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"weak"
+
+	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+)
+
+const fragmentName = "prosemirror"
+const marksMapName = "marks"
+
+var (
+	ErrInvalidMarkdown = errors.New("markdown is not a Proof document")
+	ErrDocSchema       = errors.New("document is outside the Proof schema")
+	// ErrDocOutsideSchema is the tree a document holds - not one an operation just produced -
+	// refused by the Proof schema's reader or renderer. A replacement from markdown repairs it, so
+	// every route answers it alike (OutsideSchemaError).
+	ErrDocOutsideSchema = errors.New("document is outside the Proof schema; replace the document from markdown to repair it")
+	// ErrDocumentUnloadable is a document whose stored history does not decode, so nothing can read
+	// or open it. A rebuild from its latest saved version restores it (RebuildDocument).
+	ErrDocumentUnloadable = errors.New("the document's stored history cannot load; rebuild it from its latest saved version")
+	ErrDocumentLive       = errors.New("document is live")
+	ErrDocumentLoads      = errors.New("this document loads; nothing to rebuild — if it is outside the schema, replace it from markdown to repair it")
+)
+
+// OutsideSchemaError is ErrDocOutsideSchema with the refusal that names what is wrong. treeOf and
+// documentMarkdown classify a document's tree by it where they read or render it, so an operation
+// that starts from that tree - a read, an edit, a version - fails with it whatever route called
+// the operation and whatever the route wrapped it in, and its message is the same on every route.
+type OutsideSchemaError struct{ Cause error }
+
+func (e *OutsideSchemaError) Error() string {
+	return ErrDocOutsideSchema.Error() + ": " + e.Cause.Error()
+}
+
+// Is makes it ErrDocOutsideSchema and ErrDocSchema both: a check that a tree is outside the
+// schema holds whoever classified it.
+func (e *OutsideSchemaError) Is(target error) bool {
+	return target == ErrDocOutsideSchema || target == ErrDocSchema
+}
+
+func (e *OutsideSchemaError) Unwrap() error { return e.Cause }
+
+// documentSchemaError classifies err from reading, rendering or walking the tree a document holds -
+// a walk inside a write's transaction included, since a peer can have deepened that tree past the
+// schema's depth bound after the write read it: a schema refusal is an OutsideSchemaError, and any
+// other error is returned as it is.
+func documentSchemaError(err error) error {
+	if err == nil || errors.Is(err, ErrDocOutsideSchema) {
+		return err
+	}
+	if errors.Is(err, ErrDocSchema) || errors.Is(err, pmdoc.ErrSchema) {
+		return &OutsideSchemaError{Cause: err}
+	}
+	return err
+}
+
+// producedSchemaError is err from reading or rendering a tree an operation has just written: a
+// schema refusal there is the operation's fault, not the stored document's, so it is a plain
+// ErrDocSchema that no route answers as a repair.
+func producedSchemaError(err error) error {
+	var outside *OutsideSchemaError
+	if errors.As(err, &outside) {
+		return fmt.Errorf("%w: the write left it outside: %v", ErrDocSchema, outside.Cause)
+	}
+	return err
+}
+
+// ErrDocumentTooLarge is the refusal of a write that would leave a document larger than the server
+// stores: past what one upload of it may hold (refuseGrowth), with a live state ygo could not decode
+// (refuseUndecodable), or holding more items than one document update can store (ygo's cap of
+// 1,048,576, maxUpdateItems). It is served as 413 CAP_EXCEEDED, as markdown making more elements
+// than one write may (pmdoc.ErrTooManyElements) is.
+var ErrDocumentTooLarge = errors.New("document too large to store")
+
+// IsTooLarge reports a refusal of a write too large to store: markdown making more elements than
+// one write may (pmdoc.ErrTooManyElements), or a document larger than the server stores
+// (ErrDocumentTooLarge). Every route serves it as 413 CAP_EXCEEDED in its own words, which say
+// what to shorten.
+func IsTooLarge(err error) bool {
+	return errors.Is(err, ErrDocumentTooLarge) || errors.Is(err, pmdoc.ErrTooManyElements)
+}
+
+// wrapUnlessTooLarge is err behind context, which names the write that failed, unless err refuses a
+// write too large to store (IsTooLarge), which reaches its route in the bound's own words.
+func wrapUnlessTooLarge(err error, context string) error {
+	if IsTooLarge(err) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+// parseInput parses markdown a caller writes that replaces no live document: a new document's
+// first text, or the empty text a delete splices. Text an insert or an accept writes into a
+// document is parseFragmentInput's.
+func parseInput(markdown string) (*pmdoc.Node, error) {
+	return parseReplacing(nil, markdown)
+}
+
+// parseFragmentInput parses text written into a document - an insert's, or an accepted
+// suggestion's - where a leading `---` is a rule rather than front matter, except that a closed
+// front-matter block is front matter where the text lands at the document's start
+// (pmdoc.ParseFragment). A block id the text repeats is refused, as parseInput refuses it. Its
+// tables' short rows are padded on budget, which the write's other markdown shares.
+func parseFragmentInput(markdown string, opensDocument bool, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
+	return uploadedInput(pmdoc.ParseFragment(markdown, opensDocument, budget))
+}
+
+// opensDocument reports whether text written at position lands where the document begins: before
+// its first block, or at the start of the text of a first block that is a top-level textblock.
+func opensDocument(tree *pmdoc.Node, position int) bool {
+	if position == 0 {
+		return true
+	}
+	at, ok := pmdoc.ContainingTextblock(tree, position)
+	return ok && position == 1 && len(at.Ancestors) == 1
+}
+
+// parseReplacing parses markdown a caller writes over live, the document it replaces whole (nil
+// for none), refusing a block id the markdown repeats that live does not already repeat
+// (pmdoc.ParseForWrite).
+func parseReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, error) {
+	tree, _, err := parseWrittenReplacing(live, markdown)
+	return tree, err
+}
+
+// parseWrittenReplacing is parseReplacing with the read-back of the markdown the parse already
+// made (pmdoc.ParseWritten), which a write that stores that markdown and reads it again shares
+// rather than parsing it a second time (Ledger.ReadBackOf). The tree it returns is the parse's
+// as an upload is taken (asUploaded), so the read-back stands for what this write stores only
+// where the two render alike, which its caller compares markdown for.
+func parseWrittenReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, pmdoc.WrittenReadBack, error) {
+	parsed, read, err := pmdoc.ParseWritten(markdown, live)
+	// The ask rule reads the parse's own refusal, before uploadedInput names it the caller's
+	// (ErrInvalidMarkdown), since that naming does not carry the refusal it wraps.
+	if ask := askRefusalInstead(markdown, err); ask != err {
+		return nil, pmdoc.WrittenReadBack{}, ask
+	}
+	tree, err := uploadedInput(parsed, err)
+	if err != nil {
+		return nil, pmdoc.WrittenReadBack{}, err
+	}
+	return tree, read, nil
+}
+
+// askRefusalInstead is err, or the refusal of an ask written with its options and no question
+// where err is the refusal of the rendering this document would be stored as: one that reads back
+// as another document (pmdoc.ErrMisreadRendering) or that no reader reads at all
+// (pmdoc.ErrRenderingRefused). The renderer writes such an ask's empty paragraphs as nothing
+// (both parsers read one back), so markdown writing two of them renders to one the read-back
+// cannot match, and the write is refused for the rendering rather than for the ask. The author's
+// fault is the ask, so it is named: this reads the markdown again without the read-back check and
+// returns the ask rule's own refusal when it has one.
+func askRefusalInstead(markdown string, err error) error {
+	if !errors.Is(err, pmdoc.ErrMisreadRendering) && !errors.Is(err, pmdoc.ErrRenderingRefused) {
+		return err
+	}
+	tree, parseErr := pmdoc.Parse(markdown)
+	if parseErr != nil {
+		return err
+	}
+	if ask := pmdoc.AskWrittenContentError(tree); ask != nil {
+		return &ErrInvalidAskBlock{Reason: ask}
+	}
+	return err
+}
+
+// uploadedInput is a tree parsed from caller markdown as an upload is taken (asUploaded). A
+// refusal the schema makes of the markdown is ErrInvalidMarkdown, the caller's to fix.
+func uploadedInput(tree *pmdoc.Node, err error) (*pmdoc.Node, error) {
+	if err != nil {
+		if errors.Is(err, pmdoc.ErrSchema) {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidMarkdown, err)
+		}
+		return nil, err
+	}
+	return asUploaded(tree), nil
+}
+
+// asUploaded is a copy of tree as an upload is taken: without anchor marks, and with every
+// server-owned typed-block attribute at its default, since the server owns those.
+func asUploaded(tree *pmdoc.Node) *pmdoc.Node {
+	out := pmdoc.StripAnchorMarks(tree)
+	pmdoc.StripServerOwnedAttrs(out)
+	return out
+}
+
+// encodeDocumentTree writes tree into a fresh document and returns the first durable update for
+// callers that create or rebuild a document outside a live room.
+func encodeDocumentTree(tree *pmdoc.Node) ([]byte, error) {
+	doc := crdt.New()
+	fragment := doc.GetXmlFragment(fragmentName)
+	doc.GetMap(marksMapName)
+	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		return pmdoc.Update(transaction, fragment, tree)
+	}); err != nil {
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
+}
+
+// errDocUnloaded is returned for a room whose live document is not resident (evicted, or never
+// warmed). Callers that can reload do so; nothing dereferences a nil document.
+var errDocUnloaded = errors.New("document is not loaded")
+
+// treeOf reads the tree doc holds. A tree outside the Proof schema is an OutsideSchemaError: an
+// operation that reads a tree it has just written takes that back with producedSchemaError.
+func treeOf(doc *crdt.Doc) (*pmdoc.Node, error) {
+	if doc == nil {
+		return nil, errDocUnloaded
+	}
+	tree, err := pmdoc.Read(doc.GetXmlFragment(fragmentName))
+	if err != nil {
+		return nil, documentSchemaError(err)
+	}
+	return tree, nil
+}
+
+// treeOfUnshared is treeOf for a document nothing else reads or writes while the call runs - a
+// write transaction's fork, read on the request goroutine that holds it (readForkTree, startTree),
+// and a room's replica, read by a holder of its mu, the only holders of which read or write it
+// (Service.treePoint) - which it reads through pmdoc.ReadUnshared, without ygo's ToDelta, and hands
+// back validated once (pmdoc.ValidDocument), so the renders and reads that follow do not validate
+// it again.
+func treeOfUnshared(doc *crdt.Doc) (pmdoc.ValidDocument, error) {
+	if doc == nil {
+		return pmdoc.ValidDocument{}, errDocUnloaded
+	}
+	valid, err := pmdoc.ReadUnshared(doc.GetXmlFragment(fragmentName))
+	if err != nil {
+		return pmdoc.ValidDocument{}, documentSchemaError(err)
+	}
+	return valid, nil
+}
+
+func treeOfTransaction(txn *crdt.Transaction, fragment *crdt.YXmlFragment) (*pmdoc.Node, error) {
+	if fragment == nil {
+		return nil, errDocUnloaded
+	}
+	tree, err := pmdoc.ReadInTransaction(txn, fragment)
+	if err != nil {
+		return nil, documentSchemaError(err)
+	}
+	return tree, nil
+}
+
+// rewriteLive rewrites doc's tree in one transaction tagged with origin. edit is handed the tree as
+// it stands, read inside that transaction, which holds the document's lock, and reports whether it
+// changed the tree; only a changed tree is written. A repair computed on a tree read before the
+// transaction and written back would revert whatever another writer wrote after that read
+// (LEGION-479). It returns the tree as the transaction left it; whether the transaction changed the
+// document is the update ygo emits for it, or its absence.
+func rewriteLive(doc *crdt.Doc, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) {
+	fragment := doc.GetXmlFragment(fragmentName)
+	var live *pmdoc.Node
+	err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		var readErr error
+		if live, readErr = treeOfTransaction(transaction, fragment); readErr != nil {
+			return readErr
+		}
+		if !edit(live) {
+			return nil
+		}
+		return pmdoc.Update(transaction, fragment, live)
+	}, origin)
+	if err != nil {
+		return nil, err
+	}
+	return live, nil
+}
+
+func renderTree(tree *pmdoc.Node) (string, error) {
+	markdown, _, err := renderTreeWithOffsets(tree)
+	return markdown, err
+}
+
+// renderTreeWithOffsets is renderTree with each identified block's byte range in the markdown,
+// which the same render records, so a write that stores the rendering indexes its blocks and cuts
+// its mentions' excerpts (indexDocument) from it rather than rendering the tree again for them.
+func renderTreeWithOffsets(tree *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
+	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		if errors.Is(err, pmdoc.ErrSchema) {
+			return "", nil, fmt.Errorf("%w: %v", ErrDocSchema, err)
+		}
+		return "", nil, err
+	}
+	return markdown, offsets, nil
+}
+
+// documentMarkdown renders a tree treeOf read from a document, so a tree only the renderer refuses
+// is that document's OutsideSchemaError, as treeOf makes one the reader refuses.
+func documentMarkdown(tree *pmdoc.Node) (string, error) {
+	markdown, _, err := documentMarkdownWithOffsets(tree)
+	return markdown, err
+}
+
+// documentMarkdownWithOffsets is documentMarkdown with each identified block's byte range, from the
+// same render.
+func documentMarkdownWithOffsets(tree *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
+	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	return markdown, offsets, documentSchemaError(err)
+}
+
+// documentRenderingWithLayout is documentMarkdownWithOffsets that records the rendering's
+// pmdoc.Layout as well, from the same render, for a rendering the room's replica may keep and
+// splice a changed block into later (renderedReplica.updateChangesMarkdown).
+func documentRenderingWithLayout(tree *pmdoc.Node) (string, []pmdoc.BlockOffset, *pmdoc.Layout, error) {
+	markdown, offsets, layout, err := pmdoc.RenderWithLayout(tree)
+	return markdown, offsets, layout, documentSchemaError(err)
+}
+
+// replicaRenderingOf is tree's rendering as a room's replica keeps one (replicaRendering): the
+// markdown and the layout recorded with it, rendered once (documentRenderingWithLayout). A tree
+// that does not render has none, and the rendering's error, a document outside the schema among
+// them.
+func replicaRenderingOf(tree *pmdoc.Node) (*replicaRendering, error) {
+	markdown, _, layout, err := documentRenderingWithLayout(tree)
+	if err != nil {
+		return nil, err
+	}
+	return &replicaRendering{markdown: markdown, layout: layout}, nil
+}
+
+// documentRenderingValidWithLayout is documentRenderingWithLayout of a tree readForkTree already
+// validated, which the render then does not validate again (pmdoc.ValidDocument.RenderWithLayout).
+func documentRenderingValidWithLayout(tree pmdoc.ValidDocument) (string, []pmdoc.BlockOffset, *pmdoc.Layout, error) {
+	markdown, offsets, layout, err := tree.RenderWithLayout()
+	return markdown, offsets, layout, documentSchemaError(err)
+}
+
+// documentMarkdownValid is documentMarkdown of a tree readForkTree already validated, which the
+// render then does not validate again (pmdoc.ValidDocument.RenderWithBlockOffsets).
+func documentMarkdownValid(tree pmdoc.ValidDocument) (string, error) {
+	markdown, _, err := documentMarkdownValidWithOffsets(tree)
+	return markdown, err
+}
+
+// documentMarkdownValidWithOffsets is documentMarkdownWithOffsets of a validated tree.
+func documentMarkdownValidWithOffsets(tree pmdoc.ValidDocument) (string, []pmdoc.BlockOffset, error) {
+	markdown, offsets, err := tree.RenderWithBlockOffsets()
+	return markdown, offsets, documentSchemaError(err)
+}
+
+// renderDocument is what doc renders now, or the error that stopped it being read or rendered.
+func renderDocument(doc *crdt.Doc) (string, error) {
+	tree, err := treeOf(doc)
+	if err != nil {
+		return "", err
+	}
+	return documentMarkdown(tree)
+}
+
+// readFragmentForRendering is the tree fragment holds, read without pmdoc.Read's deep copy
+// (pmdoc.ReadForRendering), for the two renders that read a room's live fragment:
+// renderDocumentForUpdate and renderFragmentMarkdown. A nil fragment is a document that is not
+// loaded, and a tree the reader refuses is that document's schema error (documentSchemaError).
+func readFragmentForRendering(fragment *crdt.YXmlFragment) (*pmdoc.Node, error) {
+	if fragment == nil {
+		return nil, errDocUnloaded
+	}
+	tree, err := pmdoc.ReadForRendering(fragment)
+	if err != nil {
+		return nil, documentSchemaError(err)
+	}
+	return tree, nil
+}
+
+// renderDocumentForUpdate is renderDocument of the document whose fragment is fragment, read
+// without pmdoc.Read's deep copy (readFragmentForRendering), recording the rendering's layout from
+// the same render: for the update observer's render, which runs the render and discards the tree
+// before releasing the replica's lock (renderedReplica.updateChangesMarkdown), so nothing retains
+// the tree past this call to alias a later reader - a caller that reads tree past the call (the
+// ask blocks updateChangesMarkdown hands classify, walked before the lock is released) aliases
+// none of it by doing so, since tree itself, not a copy of it, is what the caller walks.
+func renderDocumentForUpdate(fragment *crdt.YXmlFragment) (string, *pmdoc.Node, *pmdoc.Layout, error) {
+	tree, err := readFragmentForRendering(fragment)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	markdown, _, layout, err := documentRenderingWithLayout(tree)
+	return markdown, tree, layout, err
+}
+
+// renderFragmentMarkdown is renderDocumentForUpdate's read and render without its layout and
+// without its tree: what fragment renders now, for the measures that compare one rendering with
+// another and keep neither's blocks - a live write's shadow (roomShadow.renderLocked) and the
+// fold of a document's stored updates (renderStoredFold) - which pmdoc.RenderWithLayout would
+// hand a pmdoc.Layout each has nothing to do with.
+func renderFragmentMarkdown(fragment *crdt.YXmlFragment) (string, error) {
+	tree, err := readFragmentForRendering(fragment)
+	if err != nil {
+		return "", err
+	}
+	return documentMarkdown(tree)
+}
+
+// snapshotDocument copies doc's state as of one moment. Encoding it takes the document's lock, which
+// every peer update and service write holds while it applies, so the copy is never a tree half
+// way through a write - which a direct walk of a resident room's live tree can read, since the
+// walk takes no lock (sjawhar/ygo v1.55.1-sami.2, crdt/yxml.go:351-367) - and nothing writes the
+// copy.
+func snapshotDocument(doc *crdt.Doc) (*crdt.Doc, error) {
+	snapshot := newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(snapshot, crdt.EncodeStateAsUpdateV1(doc, nil), nil); err != nil {
+		return nil, fmt.Errorf("copy live document: %w", err)
+	}
+	return snapshot, nil
+}
+
+// newDocumentCopy is newCappedDocumentCopy at maxUpdateItems, for a decode that runs for no
+// instance with a cap of its own below it.
+func newDocumentCopy(options ...crdt.DocOption) *crdt.Doc {
+	return newCappedDocumentCopy(maxUpdateItems, options...)
+}
+
+// newCappedDocumentCopy builds a fresh document for replay at the instance's pending-queue cap:
+// a copy of its room decodes what that instance decodes and refuses what it would refuse. The
+// cap follows the instance (newRoomServer, loadTree, replica); other callers use newDocumentCopy.
+// See maxUpdateItems for the production and protocol caps.
+//
+// Every copy replays without ygo's format cleanup (crdt.WithFormatCleanup), which follows each
+// remote apply that changes formatted text with a commit of its own: every update a copy applies
+// is one the room committed, and every cleanup the room made is already among them (the room's own
+// repairs and sweeps are local commits, which never clean up; a write's publish and a browser's
+// update reach the room as remote applies, and the cleanup either makes is stored), so a copy that
+// cleaned up would hold a state the room never held - and a compaction that folded such a copy
+// would store it. A write's fork commits its own writes locally, which never clean up.
+func newCappedDocumentCopy(maxPending int, options ...crdt.DocOption) *crdt.Doc {
+	return crdt.New(documentCopyOptions(maxPending, options...)...)
+}
+
+// documentCopyOptions is what newCappedDocumentCopy builds a copy with, for a caller that needs
+// the options rather than a document built from them: a write's fork, which is built from them
+// both by decoding a state into a new document (buildFork) and by cloning the room's replica
+// (Service.forkPoint), and the two must be the same document (forkOptions).
+func documentCopyOptions(maxPending int, options ...crdt.DocOption) []crdt.DocOption {
+	return append(options, crdt.WithMaxPendingItems(maxPending), crdt.WithFormatCleanup(false))
+}
+
+// emptyUpdateV1 is the V1 encoding of no structs and no delete ranges. ygo logs it beside Parked
+// for a commit that kept only parked bytes, and calls no OnUpdate for that commit
+// (crdt.LoggedUpdate).
+var emptyUpdateV1 = crdt.EncodeStateAsUpdateV1(crdt.New(), nil)
+
+// forkTreeCounts counts the trees read off a write transaction's fork, and the reads that taking
+// the write's rendering in place of one avoided, so a test can assert that a write reads its fork
+// no more often than it means to, and a measurement build can report how often the read is
+// avoided. The service keeps one (Service.forkTrees). Nothing in the service reads them.
+type forkTreeCounts struct {
+	// read counts the trees read off a write transaction's fork (readForkTree): an operation's
+	// reads before and after its write (applyLive), a margin write's read when the write holds no
+	// rendering of its fork (applyMargin), and the reads joined to the transaction (docTree,
+	// heldTree, captureWrite).
+	read atomic.Uint64
+	// renderingReused counts the margin writes (applyMargin) and the joined reads that took the
+	// write's rendering in place of reading the fork (reuseRendering), each a fork read avoided.
+	renderingReused atomic.Uint64
+}
+
+// listResident lists value under live, a room's resident document, in listing until live is
+// collected: the key holds live weakly, so the listing never keeps an evicted room's document
+// alive, and the entry goes once that document is collected, unless the listing went first.
+func listResident(listing *sync.Map, live *crdt.Doc, value any) {
+	key := weak.Make(live)
+	listing.Store(key, value)
+	// The cleanup holds the listing weakly because runtime.AddCleanup keeps a cleanup's closure
+	// alive for as long as the object it is attached to, and every listing here is a field of the
+	// service (Service.instances, Service.replicas), which reaches every resident room document
+	// through ygo's room table: a closure holding the listing strongly would be a cycle through
+	// live, which would then never be collected, and nor would anything it holds. The nil check
+	// skips the delete only where the listing went first, and a listing that is gone has no entry
+	// left to drop (dispatch://INFRA-1085).
+	owner := weak.Make(listing)
+	runtime.AddCleanup(live, func(key weak.Pointer[crdt.Doc]) {
+		if listing := owner.Value(); listing != nil {
+			listing.Delete(key)
+		}
+	}, key)
+}

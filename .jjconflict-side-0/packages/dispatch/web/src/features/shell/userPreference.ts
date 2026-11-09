@@ -1,0 +1,88 @@
+import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { whoAmIQuery } from "../../api/queries";
+
+/** Every browser-kept choice, one per signed-in identity. The Inbox's three are the ones that
+ *  are the person's rather than the list's: how a thread's replies are ordered, how wide the
+ *  reading pane is, and which bands they folded shut (`inbox.folded-groups`, one set per
+ *  grouping). Its filters, sort, grouping and the switch between the Inbox and what they have
+ *  dismissed out of it are in the address instead, so a link carries them. */
+export type UserPreference =
+  | "agents.pinned"
+  | "inbox.folded-groups"
+  | "inbox.pane-width"
+  | "inbox.thread-order"
+  | "project.board-edges"
+  | "project.board-lanes"
+  | "project.issue-filters"
+  | "project.issue-view"
+  | "shell.margin"
+  | "shell.margin-width"
+  | "shell.sidebar";
+
+/** Browser-only preferences are private to the signed-in Dispatch identity. */
+export function userPreferenceStorageKey(login: string, preference: UserPreference): string {
+  return `dispatch.${preference}:${login}`;
+}
+
+type UserPreferenceIdentity = "failed" | "pending" | "resolved";
+
+interface UserPreferenceOptions<T> {
+  failed?: T;
+  pending?: T;
+}
+
+function preferenceValue<T>(
+  identity: UserPreferenceIdentity,
+  login: string | undefined,
+  preference: UserPreference,
+  read: (stored: string | null) => T,
+  options: UserPreferenceOptions<T> | undefined
+): T {
+  const fallback = read(
+    identity === "resolved" && login !== undefined
+      ? window.localStorage.getItem(userPreferenceStorageKey(login, preference))
+      : null
+  );
+  if (identity === "resolved") return fallback;
+  return identity === "pending" ? (options?.pending ?? fallback) : (options?.failed ?? fallback);
+}
+
+/**
+ * Reads a browser preference for a resolved signed-in identity. Pending and failed identity use
+ * the caller's explicit fallback when one differs from `read(null)`; neither state persists.
+ * `read` runs when the hook mounts and when the signed-in identity or `preference` changes, and
+ * at no other time: a `read` that consults other state sees that state as it was then.
+ */
+export function useUserPreference<T>(
+  preference: UserPreference,
+  read: (stored: string | null) => T,
+  write: (value: T) => string,
+  options?: UserPreferenceOptions<T>
+): [T, (next: T) => void] {
+  const whoAmI = useQuery(whoAmIQuery());
+  const login = whoAmI.data?.login;
+  const identity: UserPreferenceIdentity =
+    login !== undefined ? "resolved" : whoAmI.isPending ? "pending" : "failed";
+  const readRef = useRef(read);
+  readRef.current = read;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const [value, setValue] = useState(() =>
+    preferenceValue(identity, login, preference, readRef.current, optionsRef.current)
+  );
+  useEffect(() => {
+    setValue(preferenceValue(identity, login, preference, readRef.current, optionsRef.current));
+  }, [identity, login, preference]);
+  const setAndPersist = useCallback(
+    (next: T) => {
+      setValue(next);
+      if (login !== undefined) {
+        window.localStorage.setItem(userPreferenceStorageKey(login, preference), write(next));
+      }
+    },
+    [login, preference, write]
+  );
+  return [value, setAndPersist];
+}

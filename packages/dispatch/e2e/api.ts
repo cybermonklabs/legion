@@ -990,7 +990,7 @@ export function getMyState(login = "alice") {
 /**
  * Forces every open live socket on the server closed, as if it had restarted.
  * Test-only endpoint (mounted when DISPATCH_TEST_HOOKS=1, see run-server.sh) that
- * proves the page resumes every subscription after an unplanned gap.
+ * proves the page resumes every subscription after an unplanned gap, on demand.
  */
 export function disconnectLiveSockets(options: ApiOptions = {}) {
   return post("/api/v1/live/_test/disconnect", {}, { as: "agent", ...options });

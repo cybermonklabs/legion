@@ -1,0 +1,23 @@
+name: Install changie
+description: >-
+  Installs changie, the changelog-fragment tool the packages' .changie.yaml files are written for,
+  and puts it on PATH for the job's later steps.
+
+  The `changie` row of .github/ci-tools.yaml names the version, the one sha256 of the whole release
+  tarball that both sources are checked against, and the second source this install reads when
+  GitHub's release assets do not serve the bytes: the copy of that tarball in
+  ghcr.io/cybermonklabs/legion/ci.
+runs:
+  using: composite
+  steps:
+    - name: Install changie
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field changie primary)")"
+        ci_tools_fetch changie "$tarball"
+        mkdir -p "$RUNNER_TEMP/changie"
+        tar -xzf "$tarball" -C "$RUNNER_TEMP/changie"
+        echo "$RUNNER_TEMP/changie" >> "$GITHUB_PATH"

@@ -1,0 +1,495 @@
+package delivery
+
+// The delivery package's test harness: its NATS server, its Postgres pool, and the helpers the
+// intake's tests (intake_route_test.go, intake_consumer_test.go) and the reconcile's share.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// TestMain removes the NATS server the package's tests share (testnats.Main).
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+
+// deliveryTestPool opens a real Postgres pool from DISPATCH_TEST_DATABASE_URL, migrates it, and
+// returns it; a test that needs it skips (not fails) when the variable is unset, matching every
+// other Postgres-backed test in this module's convention. The database is the server's own and
+// outlives the run, so it is repaired before it is migrated (repairDroppedTables) and truncated
+// rather than created afresh.
+func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
+	t.Helper()
+	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres-backed delivery tests")
+	}
+	ctx := t.Context()
+	pgxPool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pgxPool.Close)
+	pool := store.NewPool(pgxPool)
+	repairDroppedTables(t, ctx, pool)
+	st := &store.Store{Pool: pool}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	// Every delivery table is truncated before the test, not after: a failed previous run's rows
+	// (useful to inspect) are cleared by the next run that needs a clean slate, not hidden by one
+	// that crashes before its own cleanup runs. duty_passes is cleared with them: this database
+	// is the server's own and outlives the run, where storetest's clones do not, so a reconcile
+	// pass an earlier run recorded inside ReconcileInterval would make this run's pass skip for
+	// a period it did not serve (duty.Exclusive).
+	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests", "pull_request_heads", "default_branch_commits", "branch_commits", "delivery_reconcile_progress", "delivery_settings", "duty_passes"} {
+		if _, err := pool.Exec(ctx, "delete from "+table); err != nil {
+			t.Fatalf("truncate %s: %v", table, err)
+		}
+	}
+	return pool, ctx
+}
+
+// branchCommitsMigration is the migration that creates branch_commits, the one table a test of
+// this package drops to make a write of it fail the way a write fails (withoutBranchCommits).
+// The repair below and that test's own cleanup both replay it to put the table back, rather
+// than keeping a second copy of its `create table` here and in step with it by hand: Migrate
+// skips every version schema_migrations already records, so forgetting the version makes the
+// table exactly as the migration does.
+const branchCommitsMigration = 20261107234701
+
+// repairDroppedTables forgets the recorded version of branch_commits when the database is
+// missing the table, so the Migrate that follows creates it again.
+//
+// A test that drops the table puts it back itself (withoutBranchCommits), which is the fast
+// path and the ordinary one, and which runs this same repair. What this one is for is the run
+// that never got to its cleanup: `go test -timeout` kills the binary outright, and the table
+// is then missing from a database that is the server's own and outlives the run, while
+// schema_migrations still records the migration that creates it. Nothing would make it again
+// — Migrate applies the versions the database does not record — so every later run of this
+// package would fail at the truncate above, until someone repaired the database by hand.
+//
+// It reads the table from the catalogue (to_regclass answers null for a name that is no
+// relation) rather than trying a read of it and reading the failure, since a failed statement
+// of this kind aborts nothing here but would have to be told apart from a database that is
+// unreachable. A database that has no schema_migrations at all is a fresh one with no version
+// recorded and nothing dropped, and there is nothing to forget.
+func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	var migrated bool
+	if err := pool.QueryRow(ctx, "select to_regclass('schema_migrations') is not null").Scan(&migrated); err != nil {
+		t.Fatalf("look for schema_migrations: %v", err)
+	}
+	if !migrated {
+		return
+	}
+	var present bool
+	if err := pool.QueryRow(ctx, "select to_regclass('branch_commits') is not null").Scan(&present); err != nil {
+		t.Fatalf("look for branch_commits: %v", err)
+	}
+	if present {
+		return
+	}
+	if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
+		t.Fatalf("forget the migration of branch_commits, which a run that died left dropped: %v", err)
+	}
+}
+
+// A table a test dropped and never put back is made again by the next deliveryTestPool, so the
+// run after the one `-timeout` killed mid-test runs against the schema its migrations describe.
+// Without that repair the table stays missing while schema_migrations records its version, and
+// every later run of this package fails at the truncate of it.
+//
+// The drop here has no cleanup of its own on purpose: what is under test is that the harness
+// repairs a database nobody put back, and the second deliveryTestPool is what leaves the
+// database as the next test finds it.
+func TestTheHarnessMakesAgainATableADeadRunLeftDropped(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
+		t.Fatalf("drop branch_commits as a run killed mid-test leaves it: %v", err)
+	}
+
+	next, nextCtx := deliveryTestPool(t)
+	var rows int
+	if err := next.QueryRow(nextCtx, "select count(*) from branch_commits").Scan(&rows); err != nil {
+		t.Fatalf("read branch_commits from the harness that should have made it again: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("branch_commits holds %d rows after being made again, want the empty table its migration makes", rows)
+	}
+	var recorded bool
+	if err := next.QueryRow(nextCtx,
+		"select exists(select 1 from schema_migrations where version = $1::bigint)", branchCommitsMigration).Scan(&recorded); err != nil {
+		t.Fatalf("read whether the branch_commits migration is recorded again: %v", err)
+	}
+	if !recorded {
+		t.Fatalf("schema_migrations does not record %d after the repair, so the next Migrate would make the table a second time", branchCommitsMigration)
+	}
+}
+
+// deliveryTestLeases is the lease pool an intake reconciles its durable under (duty.Exclusive on
+// consumerLease(durable)), taken from the test's own pool. Each lease is held on a connection of
+// its own, so a test can hold the lease from one caller while an intake tries for it from
+// another.
+func deliveryTestLeases(t *testing.T, pool *store.Pool) duty.Leases {
+	t.Helper()
+	leases, err := pool.Leases()
+	if err != nil {
+		t.Fatalf("open the leases pool: %v", err)
+	}
+	return leases
+}
+
+// seedDeliverySettings writes a delivery_settings row with acme/widgets-shaped placeholders.
+func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) DeliverySettings {
+	t.Helper()
+	settings, err := PutSettings(ctx, pool, DeliverySettings{
+		DeployRepo:           "acme/widgets",
+		DeployWorkflowPath:   ".github/workflows/deploy.yml",
+		ProductionJobNames:   []string{"widgets-release / widgets-release"},
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+		PopulationAuthors:    []string{"octocat"},
+		ExcludedRepos:        []string{"acme/playground"},
+	}, model.Actor{Kind: "system", ID: "delivery-test"})
+	if err != nil {
+		t.Fatalf("seed delivery_settings: %v", err)
+	}
+	return settings
+}
+
+// deliveryProject is the project this package's issue fixtures write their issues in, and
+// deliveryRepo the repository it owns by default. One project owns it because repo_projects'
+// primary key is the repository (migration 0005_repo_projects), so only one project can map
+// acme/widgets, and the attribution now holds a pull request's issue to the repository the pull
+// request is in (delivery's attributionHeld): an issue of a project that maps nothing resolves
+// to no repository and would attribute nobody. The key is a neutral one, since the head, the
+// attribution and the deployed fixtures all seed into it.
+const (
+	deliveryProject = "DLVY"
+	deliveryRepo    = "acme/widgets"
+)
+
+// Each fixture numbers its issues in a band of its own: they share deliveryProject and an issue
+// is unique on (project_key, number) (migration 0001_init), while the keys a failure names —
+// HEAD-<n>, ATTR-<n>, DEPL-<n> — stay each fixture's own.
+const (
+	headIssueBand        = 0
+	attributionIssueBand = 1000
+	deployedIssueBand    = 2000
+)
+
+// seedProjectRepository writes project key, named name, and maps repo to it as that project's
+// default, which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
+// Idempotent: the fixtures that call it run per test, and the tests of this package share one
+// database.
+func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, key, name, repo string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name) values ($1, $2) on conflict do nothing
+	`, key, name); err != nil {
+		t.Fatalf("seed the project: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into repo_projects (repo, project, created_by, is_default)
+		values ($1, $2, '{"kind":"system","id":"delivery-test"}'::jsonb, true)
+		on conflict do nothing
+	`, repo, key); err != nil {
+		t.Fatalf("map the repository to the project: %v", err)
+	}
+}
+
+// seedDeliveryProject writes deliveryProject and maps deliveryRepo to it as its default, so
+// every issue the fixtures seed resolves to the repository their pull requests are in.
+// Idempotent: each fixture calls it, and the tests of this package share one database.
+func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	seedProjectRepository(t, ctx, pool, deliveryProject, "Delivery", deliveryRepo)
+}
+
+// publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
+// envelope (the shape intake.go's handlePullRequestEnvelope reads) and waits for the publish to
+// be acknowledged by JetStream before returning.
+func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) {
+	t.Helper()
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+	envelope := contracts.Envelope{
+		EventID:       fmt.Sprintf("test-%s-%s-%d-%d", owner, repo, number, time.Now().UnixNano()),
+		Source:        "github",
+		SourceEventID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		Topic:         contracts.GithubResourceSubject(owner, repo, "pr", fmt.Sprintf("%d", number)),
+		Payload:       string(payload),
+		TraceID:       "test-trace",
+		IssuedAt:      time.Now().Unix(),
+	}
+	if err := natsClient.Publish(envelope); err != nil {
+		t.Fatalf("publish envelope: %v", err)
+	}
+}
+
+// publishGitHubEnvelope publishes one envelope on topic carrying payload as it stands, for a payload
+// no string map can hold (publishPullRequestEnvelope encodes one).
+func publishGitHubEnvelope(t *testing.T, natsClient *bus.Client, topic, payload string) {
+	t.Helper()
+	id := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
+	if err := natsClient.Publish(contracts.Envelope{
+		EventID: id, Source: "github", SourceEventID: id, Topic: topic, Payload: payload,
+		TraceID: "test-trace", IssuedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("publish %s: %v", topic, err)
+	}
+}
+
+// awaitAcknowledged waits for the intake to have acknowledged every message the test's stream
+// holds: the durable's ack floor at the stream's last sequence and nothing outstanding. deliver
+// logs and writes before it acknowledges, so what a message caused is in place by then.
+func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
+	t.Helper()
+	stream, err := natsClient.JS().StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	last := stream.State.LastSeq
+	var info *natsgo.ConsumerInfo
+	waitFor(t, 20*time.Second, func() bool {
+		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
+	}, func() string {
+		return fmt.Sprintf("intake has not acknowledged through stream sequence %d: %+v, %v", last, info, err)
+	})
+}
+
+// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
+// answers the records written so far. Intake logs from NATS's delivery goroutine, so the buffer is
+// locked. Call it before startIntake, so the default logger is restored only once intake stops.
+func captureLogs(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var buffer lockedBuffer
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
+	return func() []map[string]any {
+		var records []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
+			var record map[string]any
+			if line != "" && json.Unmarshal([]byte(line), &record) == nil {
+				records = append(records, record)
+			}
+		}
+		return records
+	}
+}
+
+// lockedBuffer is a buffer safe to write from one goroutine while another reads it.
+type lockedBuffer = logtest.Buffer
+
+// pathBaseForTest is the workflow file name a workflow subject carries, as intake derives it from
+// the configured workflow path.
+func pathBaseForTest(workflowPath string) string {
+	if i := strings.LastIndex(workflowPath, "/"); i >= 0 {
+		return workflowPath[i+1:]
+	}
+	return workflowPath
+}
+
+// shrinkIntakeFlowControl shrinks the intake's own timing so a test exercises its real flow
+// control in test time. intakeMaxAckPending is deliberately left alone: it is the bound under
+// test.
+func shrinkIntakeFlowControl(t *testing.T) {
+	t.Helper()
+	messageTimeout := intakeMessageTimeout
+	intakeMessageTimeout = 5 * time.Second
+	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+}
+
+// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
+// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
+// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
+// cap measures is that there is one at all, which two deliveries show as well as thirty.
+func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
+	t.Helper()
+	was := headWriteMaxDeliveries
+	headWriteMaxDeliveries = deliveries
+	t.Cleanup(func() { headWriteMaxDeliveries = was })
+}
+
+// loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
+// never again: what an intake under test routes by when nothing changes its settings meanwhile.
+// With no row it holds nothing, as a server's cache does before the settings are first written.
+func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
+	t.Helper()
+	settings := newSettingsCache(pool, nil)
+	if !settings.reload(ctx) {
+		t.Fatal("read delivery_settings into the cache")
+	}
+	return settings
+}
+
+// publishWorkflowEnvelope publishes one workflow-run envelope built as Envoy's own GitHub
+// normalizer builds it -- source "github", the delivery GUID as SourceEventID, and the dedupe
+// key that pairs with it ("github.<guid>"), which is what earns the publish a JetStream MsgId
+// (contracts.DedupeKeyNamesTheUpstreamEvent). Publishing through production's own path rather
+// than an ad-hoc envelope is what makes a burst test say anything about production: an envelope
+// carrying another dedupe key is stored under different rules. Reports JetStream's own duplicate
+// verdict, so a caller can tell a message the stream already held from a new one.
+func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, workflowPath string, runID int64) bool {
+	t.Helper()
+	payload, err := json.Marshal(map[string]string{
+		"kind": "workflow", "action": "in_progress", "repo": owner + "/" + repo,
+		"path": workflowPath, "run_id": strconv.FormatInt(runID, 10),
+	})
+	if err != nil {
+		t.Fatalf("encode workflow payload: %v", err)
+	}
+	deliveryID := fmt.Sprintf("%s-%d", t.Name(), runID)
+	envelope := contracts.Envelope{
+		EventID:       deliveryID,
+		Source:        "github",
+		SourceEventID: deliveryID,
+		DedupeKey:     "github." + deliveryID,
+		Topic:         contracts.GithubWorkflowSubject(owner, repo, pathBaseForTest(workflowPath), "in_progress"),
+		Payload:       string(payload),
+		TraceID:       deliveryID,
+		IssuedAt:      time.Now().Unix(),
+	}
+	if !contracts.DedupeKeyNamesTheUpstreamEvent(envelope) {
+		t.Fatalf("the test envelope's dedupe key does not name its event, so it is not published the way production publishes")
+	}
+	duplicate, err := natsClient.PublishReportingDuplicate(envelope)
+	if err != nil {
+		t.Fatalf("publish workflow envelope: %v", err)
+	}
+	return duplicate
+}
+
+// startIntake runs intake until the test ends, and waits for Run to return before the test's own
+// cleanups go on. Cancelling alone does not: Run reads the intake flow-control vars, and the next
+// test's shrinkIntakeFlowControl writes them, so a Run still unwinding from the previous test is a
+// data race on them.
+func startIntake(t *testing.T, intake *Intake) {
+	t.Helper()
+	runCtx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		intake.Run(runCtx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+// intakeTestClient connects one NATS client for an intake test and closes it with the test.
+func intakeTestClient(t *testing.T) *bus.Client {
+	t.Helper()
+	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect NATS: %v", err)
+	}
+	t.Cleanup(natsClient.Close)
+	return natsClient
+}
+
+// awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
+// test that means to publish into a bound consumer does not race the bind.
+func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
+	t.Helper()
+	var err error
+	waitFor(t, 20*time.Second, func() bool {
+		var info *natsgo.ConsumerInfo
+		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+	}, func() string {
+		return fmt.Sprintf("intake never bound its durable: %v", err)
+	})
+}
+
+// awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
+// stream's message count and the consumer's whole state when it does not -- the numbers that say
+// whether a shortfall is a consumer that stopped being given messages or messages that never
+// reached the stream.
+func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int, within time.Duration) {
+	t.Helper()
+	stored := 0
+	waitFor(t, within, func() bool {
+		stored = countRuns(t, ctx, pool)
+		return stored >= want
+	}, func() string {
+		return fmt.Sprintf("delivery_runs rows = %d, want %d after %s\n%s", stored, want, within, intakeStateReport(t, natsClient))
+	})
+}
+
+// waitFor polls done until it reports true, and fails the test once within has passed with the
+// message failure builds at that moment -- so the message carries the state the wait gave up on,
+// not the state it started from.
+func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
+	t.Helper()
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatal(failure())
+	}
+}
+
+// intakeStateReport is the stream's message count per subject and the consumer's delivery state,
+// one line each.
+func intakeStateReport(t *testing.T, natsClient *bus.Client) string {
+	t.Helper()
+	report := ""
+	if stream, err := natsClient.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: ">"}); err != nil {
+		report += fmt.Sprintf("stream: %v\n", err)
+	} else {
+		report += fmt.Sprintf("stream: %d messages, by subject %v\n", stream.State.Msgs, stream.State.Subjects)
+	}
+	if info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable); err != nil {
+		report += fmt.Sprintf("consumer: %v", err)
+	} else {
+		report += fmt.Sprintf("consumer: delivered=%d ack_floor=%d ack_pending=%d pending=%d redelivered=%d filter_subjects=%q",
+			info.Delivered.Consumer, info.AckFloor.Consumer, info.NumAckPending, info.NumPending, info.NumRedelivered, info.Config.FilterSubjects)
+	}
+	report += "\n" + singleFilterProbe(t, natsClient)
+	return report
+}
+
+// singleFilterProbe reports what a consumer carrying one filter subject sees of the same stream.
+// Read beside the intake consumer's own numbers it separates the two explanations of a shortfall:
+// a stream that does not hold the messages, or a consumer that holds them pending and does not
+// hand them over.
+func singleFilterProbe(t *testing.T, natsClient *bus.Client) string {
+	t.Helper()
+	subject := contracts.GithubWorkflowSubject("acme", "widgets", "deploy.yml", "in_progress")
+	probe, err := natsClient.JS().AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+		FilterSubject: subject,
+		AckPolicy:     natsgo.AckExplicitPolicy,
+	})
+	if err != nil {
+		return fmt.Sprintf("single-filter probe on %q: %v", subject, err)
+	}
+	defer deleteProbeConsumer(t, natsClient, probe.Name)
+	return fmt.Sprintf("single-filter probe on %q: pending=%d", subject, probe.NumPending)
+}
+
+// deleteProbeConsumer removes a consumer a test created only to probe the stream, and logs a
+// delete that fails rather than failing the test over its own cleanup.
+func deleteProbeConsumer(t *testing.T, natsClient *bus.Client, name string) {
+	t.Helper()
+	if err := natsClient.JS().DeleteConsumer(bus.Stream, name); err != nil {
+		t.Logf("delete probe consumer %s: %v", name, err)
+	}
+}

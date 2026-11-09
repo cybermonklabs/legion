@@ -1,0 +1,1267 @@
+import { type AddressInfo, createServer, type Socket } from "node:net";
+
+import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { expect, type Locator, type Page, test } from "@playwright/test";
+
+import { expiredRetryNote } from "../web/src/features/writes/keyed-write";
+import {
+  baseUrl,
+  createAsk,
+  createIssue,
+  createMessage,
+  createProject,
+  devSignInPath,
+  getAsk,
+  getIssue,
+  getIssueEvents,
+  getMyState,
+  slowWrites,
+  userHeaders,
+} from "./api";
+import {
+  cutFirstAnswerBody,
+  dropFirstAnswer,
+  keptWrites,
+  recordUploadAttempts,
+  replayed,
+  runClockUntil,
+  watchAnswers,
+  watchWrites,
+} from "./keyed-writes";
+import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
+import { sql } from "./psql";
+import { resetDatabase } from "./seed";
+import { asPlainHttpUser, asUser } from "./users";
+
+// Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
+// and the page tries it again under that key until Dispatch answers it (`ApiClient.send`). These
+// rows drive the general path against the real server, for three surfaces that are not a send to
+// an agent: a comment, a status change and an ask's answer. In each the first attempt reaches
+// Dispatch and its answer is lost on the way back (`route.fetch()`, then `route.abort`), so
+// Dispatch did the write and the page does not know it; the page asks again under the same key,
+// and Dispatch answers the repeat with the answer it stored (`Idempotency-Replayed: ?1`) rather
+// than writing a second time.
+
+const agent = {
+  actor: { kind: "session" as const, id: "e2e-keyed-writes" },
+  as: "agent" as const,
+};
+
+test.beforeEach(async () => {
+  await resetDatabase();
+});
+
+/** The shell's one account of the writes Dispatch has not confirmed yet that no composer shows
+ *  (`PendingWritesIndicator`); gone while none is pending. */
+function pendingWrites(page: Page): Locator {
+  return page.getByRole("region", { name: "Pending changes" });
+}
+
+/** How much of an upload's body the shell says has gone up (`Uploading… N%`,
+ *  `PendingWritesIndicator`), 0 while it names no upload: the page's own account of the progress
+ *  that keeps an attempt's deadline from running out. */
+async function uploadedPercent(page: Page): Promise<number> {
+  const shown = /Uploading… (\d+)%/u.exec((await pendingWrites(page).textContent()) ?? "");
+  return shown === null ? 0 : Number(shown[1]);
+}
+
+/** The events of `type` on `issue`. */
+async function eventsOf(issue: string, type: DispatchEvent["type"]): Promise<DispatchEvent[]> {
+  return (await getIssueEvents(issue)).filter((event) => event.type === type);
+}
+
+/** The `issue.updated` events on `issue` that set its status to `status`, read with the agent
+ *  token, which a person's sign-out leaves working. */
+async function statusEvents(issue: string, status: string): Promise<DispatchEvent[]> {
+  return (await getIssueEvents(issue, {}, agent)).filter(
+    (event) => event.type === "issue.updated" && event.payload.status === status
+  );
+}
+
+/** Fails every `method` request matching `pattern` at the connection until `end`, as a network
+ *  that is down fails it: none of them reaches Dispatch. The route stays through a reload. */
+async function outage(page: Page, pattern: string, method: string): Promise<{ end: () => void }> {
+  let down = true;
+  await page.route(pattern, (route) =>
+    down && route.request().method() === method
+      ? route.abort("internetdisconnected")
+      : route.fallback()
+  );
+  return {
+    end: () => {
+      down = false;
+    },
+  };
+}
+
+/** Holds `page`'s status changes to `issue` at the network - each goes out and is never answered -
+ *  and lets every other request through; then picks `backlog` and adds `label` behind it, which
+ *  waits its turn on the issue's line, never sent. */
+async function queueBehindAHeldStatus(page: Page, issue: string, label: string): Promise<void> {
+  await page.route(`**/api/v1/issues/${issue}`, (route) => {
+    const request = route.request();
+    if (request.method() === "PATCH" && request.postData()?.includes('"status"')) return;
+    return route.fallback();
+  });
+  await page.bringToFront();
+  await page.getByLabel("Status").selectOption("backlog");
+  await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+  const editLabels = page.getByRole("button", { name: "Edit labels" });
+  await editLabels.click();
+  const labelSearch = page.getByRole("combobox", { name: "Search or create label" });
+  await labelSearch.fill(label);
+  await expect(page.getByRole("option", { name: `Create "${label}"` })).toBeVisible();
+  await labelSearch.press("Enter");
+  await editLabels.click();
+  await expect(pendingWrites(page)).toContainText(`Labels of ${issue} — Waiting to send`);
+}
+
+// @webkit @firefox: the keyed write path's request failure, which each engine hands the page its
+// own way.
+test("a comment whose answer is lost lands once, under one key @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A comment once" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = watchWrites(page, "POST", path);
+    const first = dropFirstAnswer(page, `**${path}`, "POST");
+    const landed = replayed(page, "POST", path);
+    // The replay waits `FIRST_BACKOFF_MS` after the lost answer; the page's own clock runs that
+    // wait out, so nothing here is spent on it.
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Said once");
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+
+    expect(await first).toBe(201);
+    const answer = await runClockUntil(page, landed);
+    expect(answer.status()).toBe(201);
+    expect(posts).toHaveLength(2);
+    expect(posts[0]).toEqual({
+      input: expect.objectContaining({ body: "Said once" }),
+      key: expect.any(String),
+    });
+    expect(posts[1]).toEqual(posts[0]);
+    await expect(composer.getByLabel("Comment")).toHaveValue("");
+    await expect(page.getByText(/^Couldn't send/)).toHaveCount(0);
+    await expect(page.locator(`[data-turn="comment:${(await answer.json()).id}"]`)).toHaveCount(1);
+    expect(await eventsOf(issue.key, "comment.created")).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
+});
+
+// An answer whose body stops part way down says nothing of what Dispatch did, as a connection
+// that never answered says nothing, so it is a transport failure and not a refusal: the write
+// asks again under its own key. Here the first attempt reaches Dispatch for real and the comment
+// is made; the page is handed that answer's own status and headers over a body that errors as it
+// is read (`cutFirstAnswerBody`, which says why no `page.route` can do this). The page tries
+// again under the same key, Dispatch replays the answer it kept, and the issue holds one comment
+// with nothing refused. A page that let that read's failure out of `send` refused the write
+// instead, and its Retry, under a key of its own, would have made the comment a second time.
+// SLOW(>=2s): a Conversation page load and two real round trips to Dispatch - the attempt whose
+// answer is cut under the page, which Dispatch makes the comment on, and the repeat it replays -
+// are what is left; the backoff between them is the page's own clock and costs none.
+// @webkit @firefox: the keyed write path's request failure, which each engine hands the page its
+// own way - here a body read that fails after a 2xx's headers have arrived, where the browser,
+// not Dispatch, decides what the page sees.
+test("a comment whose answer the browser cannot read is written once @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A comment the browser cannot read" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = watchWrites(page, "POST", path);
+    const made = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === path
+    );
+    const landed = replayed(page, "POST", path);
+    await cutFirstAnswerBody(page, "POST", path);
+    // The repeat waits `FIRST_BACKOFF_MS` after the failed read; the page's own clock runs that
+    // wait out, so nothing here is spent on it.
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Read once");
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+
+    expect((await made).status()).toBe(201);
+    // The failed read ends the attempt without a verdict, so the write is made again under its
+    // own key rather than refused; a page that refused it sends no second attempt at all.
+    await runClockUntil(page, expect.poll(() => posts.length, { timeout: 15_000 }).toBe(2));
+    const answer = await runClockUntil(page, landed);
+    expect(answer.status()).toBe(201);
+    expect(posts[0]).toEqual({
+      input: expect.objectContaining({ body: "Read once" }),
+      key: expect.any(String),
+    });
+    expect(posts[1]).toEqual(posts[0]);
+    await expect(composer.getByLabel("Comment")).toHaveValue("");
+    await expect(page.getByText(/^Couldn't send/)).toHaveCount(0);
+    await expect(composer.getByRole("button", { exact: true, name: "Retry" })).toHaveCount(0);
+    await expect(page.locator(`[data-turn="comment:${(await answer.json()).id}"]`)).toHaveCount(1);
+    expect(await eventsOf(issue.key, "comment.created")).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A key names the person's action only for as long as Dispatch keeps it - `IDEMPOTENCY_KEY_TTL_MS`
+// from the first request - and a send key carries the millisecond it was minted, so the page can
+// tell. Two writes are held at the network and never answered: a status change the shell's
+// indicator names, and a comment the composer holds. The tab's own clock then passes that
+// lifetime, which costs this row no real time. Neither write goes out again - an attempt under a
+// key Dispatch has forgotten would be a second write of the person's action - and each surface
+// says so in the reader's words and offers Retry and Discard, the Retry being a new write.
+// SLOW(>=2s): a Conversation page load with its header and composer, and the attempts two
+// writes make at the network before their keys run out, are what is left: the jump past the key
+// lifetime and the straggler window after it are the page's own clock and cost no real time.
+// @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
+// read back beside a key the server has forgotten, which each engine times and stores its own way.
+test("a write whose key has expired stops and offers a new write @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A key that runs out" });
+  const before = (await getIssue(issue.key)).status;
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // Every attempt of either write, whether or not the route let it reach Dispatch: the request
+    // event fires before the route answers.
+    const attempts: string[] = [];
+    page.on("request", (request) => {
+      const { pathname } = new URL(request.url());
+      const write = request.method() === "PATCH" || request.method() === "POST";
+      if (write && pathname.startsWith(path)) attempts.push(pathname);
+    });
+    // Neither write ever reaches Dispatch, so neither has a verdict and both keep trying - until
+    // their keys run out. The outages are never ended: this row is about what the page does with
+    // a key it can no longer use, not about a network that comes back.
+    await outage(page, `**${path}`, "PATCH");
+    await outage(page, `**${path}/comments`, "POST");
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await page.getByLabel("Status").selectOption("todo");
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Older than its key");
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+    const indicator = pendingWrites(page);
+    await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
+    await expect.poll(() => attempts.length).toBeGreaterThanOrEqual(2);
+
+    await page.clock.fastForward(IDEMPOTENCY_KEY_TTL_MS + 1_000);
+    // Every attempt the route saw by the time the keys ran out. Each write is between attempts,
+    // waiting out a backoff on a page timer the jump fires; the one that follows it is refused
+    // before it goes out, so this count is the last.
+    const spent = attempts.length;
+    await runClockUntil(
+      page,
+      expect(indicator).toContainText(`Not saved: ${issue.key} set to todo`)
+    );
+
+    await expect(indicator).toContainText(expiredRetryNote("saved"));
+    await expect(indicator.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    await expect(indicator.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
+    await expect(composer).toContainText(expiredRetryNote("delivered"));
+    await expect(composer.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    await expect(composer.getByRole("button", { name: "Discard draft" })).toBeVisible();
+    // Nothing more went out under either key, and nothing of either write was made. Running the
+    // page's clock past `MAX_BACKOFF_MS` shows every straggler a timer of its own could still
+    // have scheduled, which a few seconds of real time would not, and costs none.
+    await page.clock.runFor(60_000);
+    expect(attempts).toHaveLength(spent);
+    expect((await getIssue(issue.key)).status).toBe(before);
+    expect(await statusEvents(issue.key, "todo")).toEqual([]);
+    expect(await eventsOf(issue.key, "comment.created")).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The status change is the one kept through a reload: the page keeps an unconfirmed write in the
+// tab's storage, asks before the tab is left, and the reloaded page sends it again under the same
+// key. The shell's pending-writes indicator names it while it is out and clears once Dispatch
+// answers it.
+// @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
+// and the ask before the tab unloads.
+test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A status once" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const patches = watchWrites(page, "PATCH", path);
+    const prompts: string[] = [];
+    page.on("dialog", (dialog) => {
+      prompts.push(dialog.type());
+      void dialog.accept();
+    });
+    // The first PATCH reaches Dispatch, which writes the status; its answer is held until the
+    // page that asked is gone.
+    const reloaded = Promise.withResolvers<void>();
+    const reached = dropFirstAnswer(page, `**${path}`, "PATCH", reloaded.promise);
+    const resumed = replayed(page, "PATCH", path);
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByLabel("Status").selectOption("todo");
+    expect(await reached).toBe(200);
+    const indicator = pendingWrites(page);
+    await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
+
+    await page.reload();
+    reloaded.resolve();
+    expect((await resumed).status()).toBe(200);
+    expect(prompts).toEqual(["beforeunload"]);
+    expect(patches).toHaveLength(2);
+    expect(patches[0]).toEqual({ input: { status: "todo" }, key: expect.any(String) });
+    expect(patches[1]).toEqual(patches[0]);
+    await expect(indicator).toHaveCount(0);
+    await expect(page.getByLabel("Status")).toHaveValue("todo");
+    expect(await getIssue(issue.key)).toMatchObject({ status: "todo" });
+    expect(await statusEvents(issue.key, "todo")).toHaveLength(1);
+    // A landed write leaves the tab's queue, so the next load resumes nothing.
+    await expect.poll(() => keptWrites(page)).toBe(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// @webkit under the second of the two reasons for an engine tag (`e2e/playwright.config.ts`, the
+// comment above `tagged`): not a WebKit behaviour of its own - the keyed write path's request
+// failure is the one the tagged rows above exercise in every engine - but the engine this row's
+// own failures were in, both of them, two timeouts in 213 CI runs. The tag is what keeps the row
+// there now that the projects select rows by tag rather than by file (`webkitTagged`); without it
+// the row would run only where its defect was never seen.
+test("an ask answer whose answer is lost lands once, under one key @webkit", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "An answer once" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
+    agent
+  );
+  const path = `/api/v1/asks/${ask.id}/answer`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = watchWrites(page, "POST", path);
+    const first = dropFirstAnswer(page, `**${path}`, "POST");
+    const landed = replayed(page, "POST", path);
+    // The replay waits `FIRST_BACKOFF_MS` after the lost answer; the page's own clock runs that
+    // wait out, so nothing here is spent on it.
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const card = page.getByRole("region", { name: "Conversation" }).getByTestId(`ask-${ask.id}`);
+    await card.getByRole("radio", { name: "Ship" }).check();
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+
+    expect(await first).toBe(200);
+    expect((await runClockUntil(page, landed)).status()).toBe(200);
+    expect(posts).toHaveLength(2);
+    expect(posts[0]).toEqual({
+      input: expect.objectContaining({ selected: ["Ship"] }),
+      key: expect.any(String),
+    });
+    expect(posts[1]).toEqual(posts[0]);
+    await expect(card).toContainText(/Answered by alice/);
+    expect(await getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
+    expect(await eventsOf(issue.key, "ask.answered")).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A repeat that reaches Dispatch while the first attempt under its key is still running is
+// `409 KEY_IN_FLIGHT` with `Retry-After: 1`, and the page asks again under the same key. The
+// first attempt is held in Dispatch by a transaction that holds the issue's row, so the 409 is
+// the real server's.
+// SLOW(>=2s): The first attempt waits inside Dispatch on a Postgres row lock, which is real time
+// no page clock can move. 3 s is the shortest hold that still has the key in flight when the
+// page's repeat arrives a second after the abort (`FIRST_BACKOFF_MS`), with room for the press
+// and the attempt's flight: 2 s left Firefox's press on the wrong side of it.
+test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "In flight" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = watchWrites(page, "POST", path);
+    const answers = watchAnswers(page, "POST", path);
+    await page.goto(`/issues/${issue.key}/conversation`);
+
+    // Everything the press needs is ready before the row is held, so the hold is spent on the
+    // attempt rather than on getting to it.
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Through a busy key");
+    // Hold the issue's row for three seconds, so the comment's first attempt waits in Dispatch.
+    const holding = sql(
+      "begin",
+      `select 1 from issues where key = '${issue.key}' for update`,
+      "select pg_sleep(3)",
+      "commit"
+    );
+    await expect
+      .poll(() =>
+        sql(
+          "select count(*) from pg_stat_activity where state = 'active' and query like 'select pg_sleep(3)%'"
+        )
+      )
+      .toBe("1");
+    // The first attempt goes to Dispatch and waits there; the page is told it failed at once,
+    // so it asks again under the key while the first still runs.
+    let first = true;
+    const firstAnswer = Promise.withResolvers<number>();
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "POST" || !first) return route.fallback();
+      first = false;
+      void route.fetch().then((response) => firstAnswer.resolve(response.status()));
+      return route.abort("failed");
+    });
+    const landed = replayed(page, "POST", path);
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+
+    await holding;
+    expect(await firstAnswer.promise).toBe(201);
+    expect((await landed).status()).toBe(201);
+    await expect
+      .poll(() => answers)
+      .toContainEqual({
+        code: "KEY_IN_FLIGHT",
+        key: posts[0]?.key,
+        replayed: undefined,
+        retryAfter: "1",
+        status: 409,
+      });
+    const key = posts[0]?.key;
+    expect(key).toEqual(expect.any(String));
+    expect(posts.every((post) => post.key === key)).toBe(true);
+    await expect(composer.getByLabel("Comment")).toHaveValue("");
+    expect(await eventsOf(issue.key, "comment.created")).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A write Dispatch takes longer to finish than the page waits on a silent attempt. Dispatch is
+// slow on its own side here (the slow-write hook holds every run of the route once its key is
+// claimed), not held in the browser: the page's attempt goes silent, it gives up on it at 15 s
+// and asks again under the same key, and the first run, which the page's leaving does not cancel,
+// still finishes. Every repeat while it runs is `409 KEY_IN_FLIGHT`; the one after is its answer.
+// A run that the leaving cancelled would never finish, since every run is held as long. The two
+// waits are kept apart: the hold is 4 s of the server's own time, which no page clock can move,
+// and the 15 s the page waits on one silent attempt is its own clock's, driven here.
+// SLOW(>=2s): Dispatch's own delay is real time on the server (`writes/_test/slow`); only the
+// page's 15 s give-up is driven by `page.clock`. 4 s is the shortest hold that still has the key
+// claimed when the repeat arrives.
+// @webkit @firefox: the keyed write path's abort of an attempt gone silent, which the engine must
+// not take for the server's answer.
+test("a comment Dispatch takes 20 s to make lands once from the page, every repeat waiting on the first @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A slow comment" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  await slowWrites("POST", path, 4_000);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = watchWrites(page, "POST", path);
+    const answers = watchAnswers(page, "POST", path);
+    const landed = replayed(page, "POST", path);
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Slow on the server");
+    const pressed = Date.now();
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+
+    // The give-up is fired only once the first attempt has gone out: the repeat that follows it
+    // is a second run rather than a wait on the first until Dispatch has claimed the key, and the
+    // repeat comes a real second later (`FIRST_BACKOFF_MS`, on a clock that runs at real speed
+    // once it has been jumped), which is far more than the attempt needs to reach Dispatch.
+    await expect.poll(() => posts.length).toBe(1);
+    await page.clock.fastForward(15_500);
+    const answer = await landed;
+    expect(answer.status()).toBe(201);
+    // Every repeat waits its `Retry-After: 1` in real time, since what it waits on - the first
+    // run's hold - is the server's own.
+    expect(Date.now() - pressed).toBeGreaterThanOrEqual(3_500);
+    await expect
+      .poll(() => answers)
+      .toContainEqual({
+        code: "KEY_IN_FLIGHT",
+        key: posts[0]?.key,
+        replayed: undefined,
+        retryAfter: "1",
+        status: 409,
+      });
+    // Every answer is the first run's verdict or a wait on it: nothing else ran.
+    expect(answers.every(({ code, status }) => status === 201 || code === "KEY_IN_FLIGHT")).toBe(
+      true
+    );
+    expect(posts.length).toBeGreaterThanOrEqual(2);
+    const key = posts[0]?.key;
+    expect(key).toEqual(expect.any(String));
+    expect(posts.every((post) => post.key === key)).toBe(true);
+    await expect(composer.getByLabel("Comment")).toHaveValue("");
+    await expect(page.getByText(/^Couldn't send/)).toHaveCount(0);
+    await expect(page.locator(`[data-turn="comment:${(await answer.json()).id}"]`)).toHaveCount(1);
+    expect(await eventsOf(issue.key, "comment.created")).toHaveLength(1);
+  } finally {
+    await slowWrites("POST", path, 0);
+    await alice.close();
+  }
+});
+
+// An attempt is cut off only after 15 s with no progress, and a body still going up is progress:
+// an upload the page sees take twice that long is one attempt, and lands once. Chromium's
+// DevTools protocol paces the page's own upload (`Network.emulateNetworkConditions`), so the body
+// goes up at the throttle's rate and the page sees its progress as it goes; no other engine the
+// suite runs can be throttled that way, so the row runs on Chromium's projects. The transfer is
+// real and the deadline is the page's own: the body is sized to four throttled seconds, and the
+// page's clock is jumped over the 15 s between two pieces of it, so the row proves the reset
+// without spending thirty seconds on it.
+// SLOW(>=2s): The upload must really keep moving while the page's clock crosses
+// `KEYED_SEND_ATTEMPT_MS`; a throttled 4 s transfer is the shortest one that still emits progress
+// across the fast-forwards.
+test("an upload throttled to take 30 s is one attempt and lands once", async ({
+  browser,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "only Chromium's DevTools protocol paces a page's upload");
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A slow upload" });
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
+  const bytes = 1024 * 1024;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // A multipart body is no JSON, so the row keeps each attempt's key alone.
+    const keys: (string | undefined)[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === path) {
+        keys.push(request.headers()["idempotency-key"]);
+      }
+    });
+    const answers = watchAnswers(page, "POST", path);
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await page.getByLabel("Upload artifact").setInputFiles({
+      buffer: Buffer.alloc(bytes, 7),
+      mimeType: "application/octet-stream",
+      name: "slow-link.bin",
+    });
+    const throttle = await alice.newCDPSession(page);
+    await throttle.send("Network.emulateNetworkConditions", {
+      downloadThroughput: -1,
+      latency: 0,
+      offline: false,
+      uploadThroughput: Math.floor(bytes / 4),
+    });
+    const created = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === path &&
+        response.status() === 201
+    );
+    const pressed = Date.now();
+    const pageStarted = await page.evaluate(() => Date.now());
+    await page.getByRole("button", { exact: true, name: "Upload" }).click();
+    await expect(pendingWrites(page)).toContainText("Uploading…");
+    // Each jump is taken between two pieces of the body, which is why it is safe: every piece
+    // resets the attempt's deadline (`arrived`, `web/src/api/client.ts`), so the page's clock
+    // passes 15 s twice over while the attempt is never silent for 15 s of it. A page that
+    // stopped resetting the deadline cuts the attempt off at the first jump.
+    for (const gone of [25, 60]) {
+      await expect.poll(() => uploadedPercent(page)).toBeGreaterThanOrEqual(gone);
+      await page.clock.fastForward(14_000);
+    }
+    await created;
+    expect(Date.now() - pressed).toBeGreaterThanOrEqual(3_500);
+    // The page's own clock crossed the deadline twice while the body kept moving.
+    expect((await page.evaluate(() => Date.now())) - pageStarted).toBeGreaterThanOrEqual(28_000);
+    await throttle.send("Network.emulateNetworkConditions", {
+      downloadThroughput: -1,
+      latency: 0,
+      offline: false,
+      uploadThroughput: -1,
+    });
+
+    expect(keys).toEqual([expect.any(String)]);
+    await expect.poll(() => answers).toEqual([expect.objectContaining({ status: 201 })]);
+    await expect(page.getByTestId("artifact-slow-link-bin")).toContainText("1 version");
+  } finally {
+    await alice.close();
+  }
+});
+
+// A repeat of an upload whose first request still runs is answered `409 KEY_IN_FLIGHT`, and each
+// engine must hand the page that answer rather than a failed connection, which the page would take
+// for a transport failure and back off from. WebKit and Firefox send the whole of
+// an upload before they read its answer: an answer Dispatch wrote with the body still coming reached
+// them as a reset connection, so Dispatch reads and discards the rest of the body first
+// (`drainBeforeAnswer`). The slow-write hook holds the first run 5 s once its key is claimed, and
+// the page's clock is jumped past the 15 s it waits on a silent attempt once the whole body is
+// up, so it asks again under its key, with the whole 20 MB body each time, while that run still
+// holds the key. On Chromium's projects the upload is throttled to take 2 s; no other engine can
+// be throttled from Playwright. The page's own `XMLHttpRequest` is the witness of how each
+// attempt ended.
+// SLOW(>=2s): The 20 MB body is the point - a smaller one fits in the socket buffers and
+// Dispatch's 409 would no longer be written while the body is still arriving, which is the drain
+// this row proves. Three real uploads of it, plus a 5 s server hold the page's give-up must
+// outlast, are the real time left.
+// @webkit @firefox: the keyed write path's abort, where the engine sends a whole upload before it
+// reads the answer and would otherwise hand the page a reset connection.
+test("a 20 MB upload repeated while its first request runs is answered 409 KEY_IN_FLIGHT, never a failed connection, and lands once @webkit @firefox", async ({
+  browser,
+  browserName,
+}) => {
+  test.setTimeout(60_000);
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A repeated upload" });
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
+  const bytes = 20 * 1024 * 1024;
+  await slowWrites("POST", path, 5_000);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const attempts = await recordUploadAttempts(page, path);
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await page.getByLabel("Upload artifact").setInputFiles({
+      buffer: Buffer.alloc(bytes, 7),
+      mimeType: "application/octet-stream",
+      name: "in-flight.bin",
+    });
+    if (browserName === "chromium") {
+      const throttle = await alice.newCDPSession(page);
+      await throttle.send("Network.emulateNetworkConditions", {
+        downloadThroughput: -1,
+        latency: 0,
+        offline: false,
+        uploadThroughput: Math.floor(bytes / 2),
+      });
+    }
+    await page.getByRole("button", { exact: true, name: "Upload" }).click();
+    // The whole body is up and nothing is moving either way, so the page's clock can run the
+    // attempt's silence out at once; a jump taken while the body still moved would cross a
+    // deadline the next piece of it was about to reset.
+    await expect(pendingWrites(page)).toContainText("Uploading… 100%");
+    await page.clock.fastForward(15_500);
+    // Between two attempts the write waits on a page timer - the 409's `Retry-After: 1`, or the
+    // backoff after the give-up - and the page's own clock runs that out, so the uploads are the
+    // only real time left. The clock is driven only once the attempt before it has ended, never
+    // while a body is moving.
+    await expect
+      .poll(
+        async () => {
+          const sofar = await attempts();
+          if (sofar.at(-1)?.ended !== undefined) await page.clock.runFor(1_200);
+          return sofar.at(-1);
+        },
+        { intervals: [100, 100, 200, 500], timeout: 40_000 }
+      )
+      .toMatchObject({ ended: "load", status: 201 });
+
+    const [first, ...repeats] = await attempts();
+    // The first attempt got no answer while Dispatch held its run: the page gave it up after 15 s
+    // of silence (`abort`), or the browser dropped the quiet connection first (`error`) - Firefox
+    // closes an HTTP connection that carries no traffic about 6 s after the host's network changes,
+    // which a host that adds and removes an interface while the row runs does. Either way it is a
+    // transport failure the page asks again after, under the same key.
+    expect(["abort", "error"]).toContain(first?.ended);
+    expect(first?.status).toBeUndefined();
+    // Every repeat was handed Dispatch's answer: none ended as a failed connection.
+    expect(repeats.map(({ ended }) => ended)).toEqual(repeats.map(() => "load"));
+    const waits = repeats.slice(0, -1);
+    expect(waits.length).toBeGreaterThanOrEqual(1);
+    for (const wait of waits) {
+      expect(wait).toMatchObject({ code: "KEY_IN_FLIGHT", status: 409 });
+    }
+    const key = first?.key;
+    expect(key).toEqual(expect.any(String));
+    expect(repeats.every((repeat) => repeat.key === key)).toBe(true);
+    await expect(page.getByTestId("artifact-in-flight-bin")).toContainText("1 version");
+    expect(
+      await sql(
+        `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'in-flight.bin'`
+      )
+    ).toBe("1");
+  } finally {
+    await slowWrites("POST", path, 0);
+    await alice.close();
+  }
+});
+
+// A Retry Dispatch's own verdict sends goes under a new key - Dispatch would replay that verdict
+// to the old one - and the file the tab kept for the write moves to that key with it, so a
+// reload before the new attempt lands makes the upload again from it. The refusal has to reach
+// the shell's indicator for the reader to retry the write rather than press Upload afresh, and
+// that is what a resumed write does: the Artifacts tab's own control shows its refusal beside
+// the file and lets the write go, while a write a reload brought back belongs to the indicator.
+// So the first attempt is held at the network and the page reloaded; the attempt the resumed
+// write makes is answered as Dispatch answers a multipart body that arrived cut short, which is
+// its verdict on that key; and the Retry's attempt is held in turn, so the second reload comes
+// before it lands. A page that forgot the file at the Retry resumes nothing after that reload,
+// and the issue is left with no file at all.
+// SLOW(>=2s): the kept file is only observable across real reloads, so the row pays three loads
+// of the issue page - the press, the resume that brings the refusal to the indicator, and the
+// resume that makes the upload - with the browser's own "leave this page?" prompt between them.
+// @webkit @firefox: whether the engine's IndexedDB gives a kept upload its `File` back across a
+// reload - WebKit's stores no `File` at all, which is why this row keeps the bytes with the name
+// and type and rebuilds the `File` on the way out (`web/src/features/writes/kept-files.ts`).
+test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A retried upload" });
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    page.on("dialog", (dialog) => void dialog.accept());
+    // The defect this row guards was a 3.3 ms race - the page named a kept file IndexedDB had
+    // not committed yet - and no load this suite can put on a runner reproduces a window that
+    // narrow. So the row holds the window open itself: the page's own IndexedDB open of the
+    // kept-files database answers its caller a second late, which is longer than every step
+    // between the press and the reload. Only the kept-files database is delayed, so the
+    // editor's store (`dispatch-pending-edits`) and every other page read are untouched, and
+    // both windows the product closes are held open at once: the one at the press
+    // (`Writes.run`) and the one at the Retry (`Writes.retry`). The delay is paid by each of
+    // the three loads, and by the resumed read after the last of them, which the 10 s bound
+    // below absorbs; the row runs in about 19 s against Playwright's 30 s default.
+    //
+    // What the hook needs to be true is not in this file: that `kept-files.ts` opens the
+    // database by that name and sets its handler by assignment (`request.onsuccess = …`).
+    // Either could change and the hook would then delay nothing, the window would be 3.3 ms
+    // again, and this row would pass with the product reverted. So the page counts the opens
+    // whose success it actually held back - an open it matched by name but whose handler it
+    // never caught counts for nothing - and the row asserts that count at its end, where no
+    // wait of its own can close a window: a selector that cannot fail is no guard
+    // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
+    await page.addInitScript(() => {
+      let held = 0;
+      Object.defineProperty(window, "keptFilesOpensHeld", { get: () => held });
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function delayed(name: string, version?: number) {
+        const request = open.call(this, name, version);
+        if (name !== "dispatch-kept-files") return request;
+        // The page's handler is taken off the request and called a second after the browser
+        // opened the database, so the page waits where it would have gone on. A page that
+        // listened for `success` another way would set no handler here, and then this open is
+        // not held and is not counted.
+        // `Event` here is this file's Dispatch event, so the handler's type is read off
+        // `IDBRequest` itself rather than written out.
+        let onsuccess: IDBRequest["onsuccess"] = null;
+        Object.defineProperty(request, "onsuccess", {
+          configurable: true,
+          get: () => onsuccess,
+          set: (handler: IDBRequest["onsuccess"]) => {
+            onsuccess = handler;
+          },
+        });
+        request.addEventListener("success", (event) => {
+          setTimeout(() => {
+            if (onsuccess === null) return;
+            held += 1;
+            onsuccess.call(request, event);
+          }, 1_000);
+        });
+        return request;
+      };
+    });
+    /** How many opens of the kept-files database this load has held back a second. */
+    const opensHeld = async (): Promise<number> =>
+      await page.evaluate(() => Number(Reflect.get(window, "keptFilesOpensHeld") ?? -1));
+    // A multipart body is no JSON, so the row keeps each attempt's key alone. The listener is the
+    // page's, so it keeps counting across the reloads.
+    const keys: (string | undefined)[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === path) {
+        keys.push(request.headers()["idempotency-key"]);
+      }
+    });
+    // What the route does with the upload's next attempt: hold it, so the reload after it finds
+    // the write still out and kept; refuse it as Dispatch refuses a body that arrived cut short,
+    // which is its verdict on that key; or let it through to Dispatch.
+    let answers: "hold" | "refuse" | "through" = "hold";
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "POST" || answers === "through") return route.fallback();
+      if (answers === "hold") return;
+      await route.fulfill({
+        json: { code: "ARTIFACT_INPUT", error: "invalid multipart body: unexpected EOF" },
+        status: 400,
+      });
+    });
+    const openArtifacts = async () => {
+      await page.getByRole("tab", { name: "Artifacts" }).click();
+    };
+    await page.goto(`/issues/${issue.key}`);
+    await openArtifacts();
+    await page.getByLabel("Upload artifact").setInputFiles({
+      buffer: Buffer.from("kept through a retry\n"),
+      mimeType: "application/octet-stream",
+      name: "once.bin",
+    });
+    await page.getByRole("button", { exact: true, name: "Upload" }).click();
+    const indicator = pendingWrites(page);
+    await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
+    await expect.poll(() => keys.length).toBe(1);
+
+    // The held attempt leaves the write out and kept, so the reloaded page makes it again on its
+    // own - and this time Dispatch's verdict refuses it, in the indicator, with Retry.
+    answers = "refuse";
+    await page.reload();
+    await expect(indicator).toContainText("Not saved: Upload of once.bin");
+    await expect.poll(() => keys.length).toBe(2);
+    const refused = keys[1];
+    expect(refused).toEqual(expect.any(String));
+
+    // The Retry is the person's new write under a key of its own, and the kept file moves to it.
+    answers = "hold";
+    await indicator.getByRole("button", { exact: true, name: "Retry" }).click();
+    await expect.poll(() => keys.length).toBe(3);
+    expect(keys[2]).toEqual(expect.any(String));
+    expect(keys[2]).not.toBe(refused);
+
+    // The reload comes before that attempt lands: what goes out after it is the resumed write,
+    // made from the file the Retry moved.
+    answers = "through";
+    await page.reload();
+    await openArtifacts();
+    await expect(page.getByTestId("artifact-once-bin")).toContainText("1 version", {
+      timeout: 10_000,
+    });
+    await expect(indicator).toHaveCount(0);
+    await expect.poll(() => keptWrites(page)).toBe(0);
+    expect(keys.length).toBeGreaterThanOrEqual(4);
+    expect(keys.slice(3).every((key) => key === keys[2])).toBe(true);
+    expect(
+      await sql(
+        `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'once.bin'`
+      )
+    ).toBe("1");
+    // Everything above rests on the hook at the head of this row still delaying the page's own
+    // opens of the kept-files database, which in turn rests on two facts of `kept-files.ts`
+    // this file cannot see: the database's name, and its setting the open handler by
+    // assignment. Either could change and the hook would delay nothing, the windows would be
+    // 3.3 ms again, and this row would pass with the product reverted. So the last load's
+    // count of the opens the hook actually held back - an open matched by name whose handler
+    // it never caught counts for nothing - is asserted here, after every step whose timing
+    // the row depends on, where reading it costs the row nothing and no wait of its own can
+    // close a window the row is meant to reload inside.
+    expect(await opensHeld()).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// Signing out discards the person's unsent writes and starts none of them. In each of two tabs of
+// alice's, a status change is held at the network, out and never answered, and a label added
+// behind it on the same issue waits its turn. Tab 1 signs out and the person confirms the discard:
+// tab 1 drops its writes, and tab 2, told over the sign-in channel, drops alice's. Dropping the
+// held write must not start the one queued behind it - a page that advanced the line as it
+// dropped sent the label at the confirm, and it landed: neither tab makes another write after the
+// confirm, and neither issue changes. Both tabs are loaded before either write is pressed, so the
+// sign-out comes seconds after the held attempts, well inside the 15 s the page waits on a silent
+// one before asking again. The `chromium-plain-http-sign-out` project runs it on a page that is no
+// secure context, whose browser has no `navigator.locks`: there the other tab's hold is the lease
+// the signing-out tab renews, not its lock.
+// SLOW(>=2s): Two tabs are the property - the discard has to reach the tab that did not sign out
+// - and each is a real page load with a status change held at the network and a label queued
+// behind it. That setup is what is left; the straggler window costs no real time.
+test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab", async ({
+  browser,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name.startsWith("chromium-plain-http") && httpsTarget,
+    plainHttpSkipReason
+  );
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issues = [
+    await createIssue({ project: "KW", title: "Tab one's change" }),
+    await createIssue({ project: "KW", title: "Tab two's change" }),
+  ];
+  const before = await Promise.all(issues.map((issue) => getIssue(issue.key)));
+  const alice = testInfo.project.name.startsWith("chromium-plain-http")
+    ? await asPlainHttpUser(browser, "alice")
+    : await asUser(browser, "alice");
+  try {
+    let confirmedAt: number | undefined;
+    const writes: { at: number; body: string }[] = [];
+    const tabs: Page[] = [];
+    for (const issue of issues) {
+      const page = await alice.newPage();
+      const path = `/api/v1/issues/${issue.key}`;
+      page.on("dialog", (dialog) => {
+        if (dialog.type() === "confirm") confirmedAt ??= Date.now();
+        void dialog.accept();
+      });
+      page.on("request", (request) => {
+        if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
+          writes.push({ at: Date.now(), body: request.postData() ?? "" });
+        }
+      });
+      await page.clock.install();
+      await page.goto(`/issues/${issue.key}`);
+      await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
+      tabs.push(page);
+    }
+    for (const [index, page] of tabs.entries()) {
+      await queueBehindAHeldStatus(page, issues[index]?.key ?? "", `discarded-${index + 1}`);
+    }
+    // The labels wait behind the held status changes: none has gone out.
+    expect(writes.filter(({ body }) => body.includes('"labels"'))).toEqual([]);
+
+    const [signingOut] = tabs;
+    if (signingOut === undefined) throw new Error("no tab was opened");
+    await signingOut.bringToFront();
+    await signingOut.getByRole("button", { name: "Sign out" }).click();
+    await expect(signingOut.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
+    expect(confirmedAt).toEqual(expect.any(Number));
+    for (const page of tabs) {
+      await expect(pendingWrites(page)).toHaveCount(0);
+      await expect.poll(() => keptWrites(page)).toBe(0);
+    }
+    // A write a drop started would have gone out at once; running each tab's own clock past
+    // `MAX_BACKOFF_MS` shows every straggler a timer of theirs could still have scheduled, which
+    // a few seconds of real time would not, and costs none. `runFor`, not `fastForward`: it
+    // fires each repeating timer - the signing-out tab's lease renewal where the browser has no
+    // `navigator.locks` - every period it covers.
+    for (const page of tabs) await page.clock.runFor(30_000);
+
+    expect(writes.filter(({ at }) => at >= (confirmedAt ?? 0))).toEqual([]);
+    const after = await Promise.all(issues.map((issue) => getIssue(issue.key, agent)));
+    expect(after.map(({ labels, status }) => ({ labels, status }))).toEqual(
+      before.map(({ labels, status }) => ({ labels, status }))
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// A sign-out whose tab goes before it hears how the sign-out ended leaves the other tabs to ask
+// Dispatch. Alice's status change in tab 2 is failing at the connection when tab 1 signs her out,
+// so tab 2 holds it, `Waiting for a sign-out in another tab`. Tab 1's `POST /auth/logout` goes to
+// a server that takes it and never answers, so the page never hears how it ended: a route left
+// unanswered is not enough, since Chromium sends a paused request on to Dispatch once its page
+// closes. Either nothing else ends alice's session (the sign-out did not land), or the test ends
+// it at Dispatch itself (it landed). Then tab 1 closes, with the network back. Tab 2 reads who is
+// signed in: still alice, and the change goes out and lands once; nobody, and it is discarded with
+// nothing sent. A page where a closing tab said its sign-out was still out let the change go out
+// under a session Dispatch had ended, and kept it for the next sign-in. The
+// `chromium-plain-http-sign-out` project runs these on the lease a page without `navigator.locks`
+// holds by.
+for (const landed of [false, true]) {
+  test(`a sign-out ${landed ? "that landed" : "that never reached Dispatch"}, its tab closed before the answer, ${landed ? "discards" : "lets go on"} the write another tab held for it`, async ({
+    browser,
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name.startsWith("chromium-plain-http") && httpsTarget,
+      plainHttpSkipReason
+    );
+    await createProject({ key: "KW", name: "Keyed writes" });
+    const issue = await createIssue({ project: "KW", title: "Held for a sign-out" });
+    const before = await getIssue(issue.key);
+    const path = `/api/v1/issues/${issue.key}`;
+    const alice = testInfo.project.name.startsWith("chromium-plain-http")
+      ? await asPlainHttpUser(browser, "alice")
+      : await asUser(browser, "alice");
+    // Where the page's sign-out goes in place of Dispatch: it takes the request and never answers.
+    const held: Socket[] = [];
+    const silent = createServer((socket) => held.push(socket));
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    const { port } = silent.address() as AddressInfo;
+    try {
+      const holding = await alice.newPage();
+      const writes: number[] = [];
+      holding.on("request", (request) => {
+        if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
+          writes.push(Date.now());
+        }
+      });
+      const network = await outage(holding, `**${path}`, "PATCH");
+      await holding.clock.install();
+      await holding.goto(`/issues/${issue.key}`);
+      const signingOut = await alice.newPage();
+      signingOut.on("dialog", (dialog) => void dialog.accept());
+      const sent = Promise.withResolvers<void>();
+      await signingOut.route("**/auth/logout", async (route) => {
+        sent.resolve();
+        await route.continue({ url: `http://127.0.0.1:${port}/auth/logout` });
+      });
+      await signingOut.goto("/");
+
+      await holding.bringToFront();
+      await holding.getByLabel("Status").selectOption("backlog");
+      await expect(pendingWrites(holding).getByRole("status")).toHaveText("Saving 1 change…");
+      await signingOut.bringToFront();
+      await signingOut.getByRole("button", { name: "Sign out" }).click();
+      await sent.promise;
+      // The hold is read before alice's session ends: Dispatch closes the holding tab's live
+      // socket as soon as it does, and that tab then reads whoami, so its lapse would otherwise
+      // overtake the hold and leave the sign-in page, with no indicator to read.
+      await expect(pendingWrites(holding)).toContainText("Waiting for a sign-out in another tab");
+      if (landed) {
+        const ended = await fetch(new URL("/auth/logout", baseUrl), {
+          headers: await userHeaders("alice"),
+          method: "POST",
+        });
+        expect(ended.status).toBe(200);
+      }
+      network.end();
+      const closed = Date.now();
+      await signingOut.close();
+
+      if (landed) {
+        // The hold ends when the signing-out tab's lock is released - or, where the browser has
+        // no `navigator.locks`, when the lease it renewed lapses - and the holding tab's own
+        // clock runs that wait out rather than this row.
+        await runClockUntil(
+          holding,
+          expect(pendingWrites(holding)).toHaveCount(0, { timeout: 30_000 }),
+          1_000
+        );
+        await expect.poll(() => keptWrites(holding)).toBe(0);
+        // A write the discard started would go out at once; running the tab's clock past
+        // `MAX_BACKOFF_MS` shows every straggler a timer of its own could still have scheduled,
+        // which a few seconds of real time would not, and costs none.
+        await holding.clock.runFor(30_000);
+        expect(writes.filter((at) => at >= closed)).toEqual([]);
+        expect((await getIssue(issue.key, agent)).status).toBe(before.status);
+        expect(await statusEvents(issue.key, "backlog")).toEqual([]);
+      } else {
+        // The hold lifts, the tab reads that alice is still signed in, and the change goes out on
+        // the write's next backoff tick (`pause`, `keyed-write.ts`): all three are page timers,
+        // which the tab's own clock runs out.
+        await runClockUntil(
+          holding,
+          expect
+            .poll(async () => (await getIssue(issue.key, agent)).status, { timeout: 30_000 })
+            .toBe("backlog"),
+          2_000
+        );
+        await expect(pendingWrites(holding)).toHaveCount(0);
+        await expect.poll(() => keptWrites(holding)).toBe(0);
+        expect(await statusEvents(issue.key, "backlog")).toHaveLength(1);
+      }
+    } finally {
+      await alice.close();
+      for (const socket of held) socket.destroy();
+      silent.close();
+    }
+  });
+}
+
+// A write belongs to the person who pressed it, and dropping a line of writes starts none of them.
+// Alice's status change is held at the network, out and never answered, and a label she added
+// waits behind it on the same issue; then bob signs in from another tab of the same browser. Both
+// of alice's writes are dropped, and nothing goes out after bob's sign-in: neither the label nor
+// another attempt of the held change. A page that advanced the line as it dropped it sent the
+// label under bob's cookie, which only Dispatch's `409 LOGIN_CHANGED` stopped.
+// SLOW(>=2s): Two real tabs are the property - alice's issue page, with a write queued behind a
+// held one, and the tab bob signs in from - and their two loads are what is left; the straggler
+// window costs no real time.
+test("alice's write queued behind her held one sends nothing once bob signs in from another tab", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "Alice's line" });
+  const before = await getIssue(issue.key);
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const writes: { at: number; body: string }[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
+        writes.push({ at: Date.now(), body: request.postData() ?? "" });
+      }
+    });
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}`);
+    await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
+    await queueBehindAHeldStatus(page, issue.key, "alice-only");
+
+    const other = await alice.newPage();
+    const bobSignedIn = Date.now();
+    await other.goto(devSignInPath("bob"));
+    await expect
+      .poll(() =>
+        other.evaluate(async () => {
+          const whoami: unknown = await (await fetch("/auth/whoami")).json();
+          return typeof whoami === "object" && whoami !== null && "login" in whoami
+            ? whoami.login
+            : null;
+        })
+      )
+      .toBe("bob");
+    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect.poll(() => keptWrites(page)).toBe(0);
+    // A write the drop started would go out at once; running alice's tab past `MAX_BACKOFF_MS`
+    // on its own clock shows every straggler a timer of hers could still have scheduled, which a
+    // few seconds of real time would not, and costs none. Bob's tab needs no clock: the sign-in
+    // that drops her writes travels over the sign-in channel, not a timer.
+    await page.clock.runFor(30_000);
+
+    expect(writes.filter(({ at }) => at >= bobSignedIn)).toEqual([]);
+    const after = await getIssue(issue.key, agent);
+    expect({ labels: after.labels, status: after.status }).toEqual({
+      labels: before.labels,
+      status: before.status,
+    });
+  } finally {
+    await alice.close();
+  }
+});
+
+// A pin is a write like any other: pressed while the network is down, it is kept in the tab, the
+// shell's pending-writes indicator names it, and the reloaded page sends it again once the network
+// is back. The Conversation's pin on a turn goes through the pin queue; the issue header's pin is
+// a `PUT` of the issue's own state, which a reload resumes as it resumes a `POST` or a `PATCH`.
+test("a pin on a turn pressed during an outage survives a reload and lands once the network is back", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A pin through a reload" });
+  await createMessage(issue.key, { body: "Pinned through the outage" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    page.on("dialog", (dialog) => void dialog.accept());
+    const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await page
+      .getByRole("list", { name: "Conversation turns" })
+      .locator(":scope > li")
+      .filter({ has: page.getByText("Pinned through the outage", { exact: true }) })
+      .getByRole("button", { name: "Pin" })
+      .click();
+    await expect(pendingWrites(page)).toBeVisible();
+    await expect.poll(() => keptWrites(page)).toBe(1);
+    expect((await getMyState())[issue.key]?.dismissed ?? []).toEqual([]);
+
+    await page.reload();
+    network.end();
+    await expect
+      .poll(async () => (await getMyState())[issue.key]?.dismissed ?? [], { timeout: 30_000 })
+      .toHaveLength(1);
+    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect.poll(() => keptWrites(page)).toBe(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads, the browser's own "leave this page?" prompt between them, and the resumed write's
+// round trip after it - in Firefox, one of the engines this spec runs in because each keeps a
+// tab's storage and asks before it unloads its own way.
+// @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
+// and the ask before the tab unloads.
+test("the issue header's pin pressed during an outage survives a reload and lands once the network is back @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A header pin through a reload" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    page.on("dialog", (dialog) => void dialog.accept());
+    const puts = watchWrites(page, "PUT", `/api/v1/me/issues/${issue.key}/state`);
+    const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("button", { name: "Pin issue" }).click();
+    await expect(pendingWrites(page)).toBeVisible();
+    await expect.poll(() => keptWrites(page)).toBe(1);
+    expect((await getMyState())[issue.key]?.pinned ?? false).toBe(false);
+
+    await page.reload();
+    network.end();
+    await expect
+      .poll(async () => (await getMyState())[issue.key]?.pinned ?? false, { timeout: 30_000 })
+      .toBe(true);
+    await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect.poll(() => keptWrites(page)).toBe(0);
+    // The same press before and after the reload: one body, the header's own write.
+    expect(puts.length).toBeGreaterThanOrEqual(2);
+    for (const put of puts) expect(put.input).toEqual({ pinned: true });
+  } finally {
+    await alice.close();
+  }
+});
+
+// A write belongs to the person who pressed it. Alice changes a status while the network is down;
+// then bob signs in from another tab of the same browser, which replaces the cookie every tab
+// sends. Alice's write is dropped, in memory and in the tab's storage, and nothing runs as bob: an
+// attempt that still reaches Dispatch names alice (`Dispatch-Login`), so Dispatch refuses it
+// `409 LOGIN_CHANGED` before anything runs.
+test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "Alice's change" });
+  const before = (await getIssue(issue.key)).status;
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const answers = watchAnswers(page, "PATCH", path);
+    const logins: (string | undefined)[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
+        logins.push(request.headers()["dispatch-login"]);
+      }
+    });
+    const network = await outage(page, `**${path}`, "PATCH");
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByLabel("Status").selectOption("todo");
+    await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+    await expect.poll(() => keptWrites(page)).toBe(1);
+
+    const other = await alice.newPage();
+    await other.goto(devSignInPath("bob"));
+    await expect
+      .poll(() =>
+        other.evaluate(async () => {
+          const whoami: unknown = await (await fetch("/auth/whoami")).json();
+          return typeof whoami === "object" && whoami !== null && "login" in whoami
+            ? whoami.login
+            : null;
+        })
+      )
+      .toBe("bob");
+    network.end();
+
+    await expect(pendingWrites(page)).toHaveCount(0, { timeout: 45_000 });
+    await expect.poll(() => keptWrites(page)).toBe(0);
+    // Every attempt named alice, and each that reached Dispatch was refused before it ran.
+    expect(logins.every((login) => login === "alice")).toBe(true);
+    for (const answer of answers) {
+      expect(answer).toMatchObject({ code: "LOGIN_CHANGED", status: 409 });
+    }
+    expect((await getIssue(issue.key)).status).toBe(before);
+    expect(await statusEvents(issue.key, "todo")).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});

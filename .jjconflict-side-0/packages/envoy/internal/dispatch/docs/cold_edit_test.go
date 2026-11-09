@@ -1,0 +1,213 @@
+package docs
+
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/reearth/ygo/persistence"
+
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+)
+
+// A write to a document no room holds forks the stored document and loads no room while it runs:
+// a room beside the fork would hold a second copy of a heavy document until the write commits.
+// Its publish loads none either, which would hold the document with no reader in it
+// (audit finding 11): the write keeps no fork, its verdict on what it inserted is judged on the
+// store (nothing was lost), and the next read loads the room from the store, holding the write.
+func TestAColdWriteLoadsNoRoom(t *testing.T) {
+	for _, conditional := range []bool{false, true} {
+		name := "unconditional"
+		if conditional {
+			name = "conditional"
+		}
+		t.Run(name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
+			closeRoom := func() {
+				if service.srv.GetDoc(artifactID) == nil {
+					return
+				}
+				if err := service.srv.CloseRoom(artifactID, true); err != nil {
+					t.Fatalf("close the document's room: %v", err)
+				}
+				waitForNoLiveDocument(t, service, artifactID)
+			}
+			closeRoom()
+			ops := []model.EditOp{{Op: "replace", Find: "Bravo", With: "Charlie"}}
+			var precondition *model.EditPrecondition
+			if conditional {
+				token := documentToken(t, service, artifactID)
+				closeRoom()
+				precondition = &model.EditPrecondition{Document: token}
+			}
+			var write *liveWrite
+			var ledger *Ledger
+			err := joinedWrite(service, func(ctx context.Context) error {
+				if _, err := service.ApplyOps(ctx, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, precondition); err != nil {
+					return err
+				}
+				if service.srv.GetDoc(artifactID) != nil {
+					t.Error("the write loaded the document's room before it committed")
+				}
+				write, ledger = joinedLiveWrite(ctx, artifactID), ledgerFrom(ctx)
+				if write == nil || write.fork == nil || !write.cold {
+					t.Errorf("the write's fork is not the stored document's: %+v", write)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("apply the edit: %v", err)
+			}
+			if write.fork != nil || write.tree != nil || write.updates != nil || write.renderings != nil || write.forkMarkdown != nil {
+				t.Error("the committed write kept its fork, its rendering, its updates or the renderings beside them")
+			}
+			if service.roomHeld(artifactID) {
+				t.Fatal("the published write loaded a room of the document")
+			}
+			if lost, verdict := ledger.LostOps(artifactID); !verdict || len(lost) != 0 {
+				t.Fatalf("the write's lost operations = %v (verdict %t), want none, judged on the store", lost, verdict)
+			}
+			got, err := service.Text(context.Background(), artifactID)
+			if err != nil {
+				t.Fatalf("read the document: %v", err)
+			}
+			if want := "Alpha paragraph.\n\nCharlie paragraph.\n"; got != want {
+				t.Fatalf("document = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// insideFirstLoadStore runs during once, inside the first store read of room that succeeds after
+// the store is armed and before that read hands its result back. That window is where a test puts
+// what has to happen while a load of this document is running: a browser's room load, which takes
+// no lock a cold write holds, lands there while the write reads the store
+// (TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits), and a hold there keeps the room's own
+// load inside its read (TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad). Every other
+// read goes straight through.
+type insideFirstLoadStore struct {
+	VersionedStore
+	room   string
+	armed  atomic.Bool
+	during func()
+}
+
+func (s *insideFirstLoadStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
+	result, err := s.VersionedStore.Load(ctx, room)
+	if err == nil && room == s.room && s.armed.CompareAndSwap(true, false) {
+		s.during()
+	}
+	return result, err
+}
+
+// A browser that opens a document and edits it while a cold write is in flight keeps its edit, and
+// so does the write: each lands exactly once, in the room and in the store. A room that loads while
+// the write reads the store is forked from instead of the copy that read made, so the write holds
+// no copy of the document beside the room's own; one that loads after the read meets the write at
+// its publish (LEGION-504).
+func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
+	for _, during := range []bool{true, false} {
+		name := "after the store read"
+		if during {
+			name = "during the store read"
+		}
+		t.Run(name, func(t *testing.T) {
+			database := storetest.Open(t)
+			artifactID := createDocument(t, database, "# First")
+			store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID}
+			service := New(Deps{
+				Store:       database,
+				Persistence: store,
+				Events:      events.NewBroker(),
+				Identity:    headerIdentity(database),
+				ServerURL:   "https://dispatch.example",
+				Settle:      time.Hour,
+			})
+			t.Cleanup(func() {
+				if err := service.Shutdown(context.Background()); err != nil {
+					t.Errorf("shutdown document service: %v", err)
+				}
+			})
+			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
+			closeDocumentRoom(t, service, artifactID)
+
+			browserEdit := appendBlocks(t, "Browser paragraph.\n")
+			browserOpens := func() {
+				if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+					t.Errorf("a browser opens the document: %v", err)
+					return
+				}
+				if err := browserStyleWrite(service, artifactID, browserEdit, make(chan struct{})); err != nil {
+					t.Errorf("the browser edits the document: %v", err)
+				}
+			}
+			if during {
+				store.during = browserOpens
+				store.armed.Store(true)
+			} else {
+				opened := false
+				service.afterForkRead = func(room string) {
+					if room == artifactID && !opened && service.srv.GetDoc(artifactID) == nil {
+						opened = true
+						browserOpens()
+					}
+				}
+			}
+
+			ops := []model.EditOp{{Op: "replace", Find: "Bravo", With: "Charlie"}}
+			err := joinedWrite(service, func(ctx context.Context) error {
+				if _, err := service.ApplyOps(ctx, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
+					return err
+				}
+				room := service.srv.GetDoc(artifactID)
+				if room == nil {
+					t.Error("the browser's room is not resident")
+					return nil
+				}
+				write := joinedLiveWrite(ctx, artifactID)
+				if during && (write.cold || write.point.cursor != service.cursorOf(room)) {
+					t.Error("the write kept a copy of the document read from the store beside the browser's room")
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("apply the edit: %v", err)
+			}
+			if during && store.armed.Load() {
+				t.Fatal("the cold write never read the store")
+			}
+			want := "Alpha paragraph.\n\nCharlie paragraph.\n\nBrowser paragraph.\n"
+			requireText(t, service, artifactID, want)
+			// What the room holds is what the store holds once the room is gone.
+			closeDocumentRoom(t, service, artifactID)
+			requireText(t, service, artifactID, want)
+		})
+	}
+}
+
+// closeDocumentRoom closes artifactID's room, flushing it to the store, when one is resident.
+func closeDocumentRoom(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	if service.srv.GetDoc(artifactID) == nil {
+		return
+	}
+	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+		t.Fatalf("close the document's room: %v", err)
+	}
+	waitForNoLiveDocument(t, service, artifactID)
+}
+
+// documentToken is the whole-document token a guarded edit passes.
+func documentToken(t *testing.T, service *Service, artifactID string) string {
+	t.Helper()
+	outcome, err := joinedApplyOps(service, artifactID, nil, model.Actor{Kind: "user", ID: "alice"}, nil)
+	if err != nil {
+		t.Fatalf("read the document's token: %v", err)
+	}
+	return outcome.Token
+}

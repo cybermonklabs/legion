@@ -1,0 +1,402 @@
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import path from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+
+// Two runs of one batch, started at the same time as the batch's xargs starts them:
+// `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
+// checkout that holds its e2e helpers and stand-ins for what a run reaches:
+//   - docker: the batch's Postgres container;
+//   - packages/dispatch/e2e/run-server.sh: a server that answers every request with the database
+//     its DATABASE_URL names;
+//   - seed.ts: records the Dispatch that each seed reached, and writes the fixture;
+//   - tmux: runs the pane's command at once;
+//   - mise: answers `mise where <pin>` with a pin whose bin/omp is the agent, which records the
+//     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
+//     (a run names its pin's omp by path).
+// Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
+// must stop its server when it ends.
+setDefaultTimeout(120_000);
+
+// Every row here runs the rig through python3, which puts it in a process group of its own
+// (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
+const withoutPython = skipWithout("python3");
+
+const root = path.resolve(import.meta.dir, "../../../..");
+const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+
+/**
+ * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The
+ * module body makes nothing: `scratch` is reserved at the call and made by the hook that
+ * reservation registered, and a `bun test -t <pattern>` that selects no row of this file runs no
+ * hook of it, where a module body that built the checkout and ran the two rigs would leave all of
+ * it behind.
+ */
+const stagings: (() => void)[] = [];
+
+/** Writes `text` to `file`, making its directory, and makes it executable when `mode` says so,
+ *  when the staging runs. */
+function put(file: string, text: string, mode = 0o644) {
+  stagings.push(() => {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, text);
+    chmodSync(file, mode);
+  });
+}
+
+// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+const co = path.join(scratch, "checkout");
+const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
+const stub = path.join(scratch, "stub");
+stagings.push(() => {
+  mkdirSync(path.dirname(rig), { recursive: true });
+  copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  for (const lib of ["rig.sh", "port-file.sh", "held-port.py"]) {
+    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
+    copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
+  }
+  mkdirSync(stub);
+});
+put(
+  path.join(co, "packages/dispatch/e2e/run-server.sh"),
+  ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
+  0o755
+);
+// No DISPATCH_E2E_PORT: the server takes a port of the kernel's choosing and reports it as the Go
+// server does (`msg="dispatch: listening" addr=127.0.0.1:<port>`), which start_dispatch reads from
+// the run's own log.
+put(
+  path.join(stub, "server.ts"),
+  [
+    'import { appendFileSync } from "node:fs";',
+    'import path from "node:path";',
+    'const database = new URL(process.env.DATABASE_URL ?? "").pathname.slice(1);',
+    "const server = Bun.serve({",
+    '  hostname: "127.0.0.1",',
+    "  port: 0,",
+    "  fetch: () => Response.json({ database }),",
+    "});",
+    "appendFileSync(",
+    '  path.join(process.env.STUB_DIR ?? "", "servers.log"),',
+    // `\${…}` keeps each placeholder literal here: the stub writes them into server.ts, where
+    // Bun expands them when it runs.
+    `  \`\${process.pid} \${server.port} \${process.env.DATABASE_URL}\\n\``,
+    ");",
+    `console.log(\`msg="dispatch: listening" addr=127.0.0.1:\${server.port}\`);`,
+    "",
+  ].join("\n")
+);
+put(
+  path.join(co, "packages/pi-legion/scripts/skill-scenarios/seed.ts"),
+  [
+    'import { appendFileSync, writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    "const [command, file, runDir] = Bun.argv.slice(2);",
+    "const port = Number(process.env.DISPATCH_E2E_PORT);",
+    'const answer = await fetch("http://127.0.0.1:" + port + "/api/v1/whoami");',
+    "const { database } = await answer.json();",
+    "appendFileSync(",
+    '  path.join(process.env.STUB_DIR ?? "", "seeds.log"),',
+    '  JSON.stringify({ command, port, database }) + "\\n"',
+    ");",
+    'if (command === "askgate")',
+    "  writeFileSync(",
+    '    file ?? "",',
+    '    JSON.stringify({ issue: "LWEVAL-2", comment: "c1", comment_ref: "dispatch://LWEVAL-2/comment/c1" })',
+    "  );",
+    'if (command === "capture-askgate")',
+    '  for (const name of ["asks.json", "artifacts.json"]) writeFileSync(path.join(runDir ?? "", name), "[]\\n");',
+    "",
+  ].join("\n")
+);
+
+// The stand-ins first on PATH.
+const bin = path.join(scratch, "bin");
+put(
+  path.join(bin, "docker"),
+  [
+    "#!/usr/bin/env bash",
+    'printf \'%s\\n\' "$*" >>"$STUB_DIR/docker.log"',
+    'case $1 in port) echo "127.0.0.1:15432" ;; inspect) echo stub-postgres ;; exec) ;; *) exit 1 ;; esac',
+    "",
+  ].join("\n"),
+  0o755
+);
+// tmux new-session -d -s <session> -x <w> -y <h> <command>: runs <command>, its last argument, at
+// once, in the foreground.
+put(
+  path.join(bin, "tmux"),
+  [
+    "#!/usr/bin/env bash",
+    "shift 2",
+    '[ "$1" = new-session ] || exit 1',
+    'for command in "$@"; do :; done',
+    'bash -c "$command"',
+    "",
+  ].join("\n"),
+  0o755
+);
+put(
+  path.join(bin, "mise"),
+  [
+    "#!/usr/bin/env bash",
+    `if [ "$1" = where ]; then echo ${JSON.stringify(path.join(bin, "pin"))}; exit 0; fi`,
+    'while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done',
+    'shift && exec "$@"',
+    "",
+  ].join("\n"),
+  0o755
+);
+put(
+  path.join(bin, "pin", "bin", "omp"),
+  [
+    "#!/usr/bin/env bash",
+    'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
+    "",
+  ].join("\n"),
+  0o755
+);
+
+// The work directory: the label's profile, and the batch's services file and Dispatch token.
+const work = path.join(scratch, "work");
+/** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'). */
+function label(name: string, settings: string) {
+  const dir = path.join(work, "profiles", name);
+  put(path.join(dir, `home/.omp/profiles/skills-${name}/agent/config.yml`), settings);
+  stagings.push(() => {
+    for (const [file, text] of [
+      ["checkout", co],
+      ["pin", "omp@stub"],
+      ["profile", `skills-${name}`],
+      ["built-from", `checkout ${co}`],
+      ["ready", ""],
+    ])
+      writeFileSync(path.join(dir, file), `${text}\n`);
+  });
+}
+label(
+  "on",
+  "modelRoles:\n  default: anthropic/m\nextensionHandlers:\n  toolCallTimeoutMs: 120000\n"
+);
+// A profile built before the installers raised the handler limit.
+label("stale", "modelRoles:\n  default: anthropic/m\n");
+put(path.join(work, "services/env"), "ENVOY_URL=http://127.0.0.1:1\n");
+put(path.join(work, "services/dispatch-token"), "e2e-token\n");
+/** The tag rig.sh names the work directory's containers with. */
+const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
+
+/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
+ * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
+ * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
+ * developer's own home decides nothing here. */
+const miseData =
+  process.env.MISE_DATA_DIR ??
+  (process.env.XDG_DATA_HOME === undefined
+    ? undefined
+    : path.join(process.env.XDG_DATA_HOME, "mise"));
+const env = {
+  PATH: `${bin}:${process.env.PATH ?? ""}`,
+  HOME: path.join(scratch, "home"),
+  USER: process.env.USER ?? "rig",
+  TMPDIR: scratch,
+  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+  ...(process.env.XDG_CONFIG_HOME === undefined
+    ? {}
+    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  STUB_DIR: stub,
+  SKILL_SCENARIOS_WORK: work,
+  SKILL_SCENARIOS_ASKGATE_CASE: "facts",
+};
+
+/** The parent between the test and the rig: it puts the rig in a process group of its own
+ * (posix_spawnp with POSIX_SPAWN_SETPGROUP, which is setpgid in the child between fork and exec),
+ * waits for it, and reports its status as a shell does. `-I` keeps a caller's PYTHON* variables
+ * out of it; the rig's name is resolved on PATH, as posix_spawnp does, so it is the `bash` the
+ * rest of the run uses. */
+const setpgid = [
+  "import os, sys",
+  "pid = os.posix_spawnp(sys.argv[1], sys.argv[1:], os.environ, setpgroup=0)",
+  "status = os.waitpid(pid, 0)[1]",
+  "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
+].join("\n");
+
+/** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
+ *
+ * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
+ * group that is orphaned — one no member's parent watches from another group of the same session —
+ * has the kernel send SIGHUP and SIGCONT to every member the moment it is orphaned with a stopped
+ * member in it. Where a Legion worker runs this suite each shell command is a session leader, so
+ * bun's own group is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of
+ * that SIGHUP (status 129) before printing any totals. Bun.spawn leaves its child in bun's own
+ * group, so the rig needs a parent that moves it out of it.
+ *
+ * A session of its own is the wrong tool: a setsid child leads its session, so the one parent
+ * outside its group is in another session, which the orphan test does not count, and the group is
+ * orphaned from the start — the rig hangs itself up with the first stop of its own teardown. What
+ * it needs is a group of its own inside bun's session, under a parent that stays in bun's group:
+ * that parent is the connection outside the group which keeps it from being orphaned in turn.
+ *
+ * A POSIX shell reaches setpgid only through job control, and a job-control shell writes its job
+ * table's notices on its stderr, which is the rig's: on bash 5.2.21, the ubuntu-24.04 runner's of
+ * ci.yaml's pi-legion job, `set -m; "$@" & wait "$!"` leaves `[1]+  Done` and the job's command
+ * there (bash 5.2.37 prints none, so that wrapper passed on a devbox and failed on the runner). So
+ * no shell stands between the test and the rig: python3's posix_spawnp sets the group and nothing
+ * else, has no job table to report from on any bash, and redirects none of the rig's stderr away,
+ * so a complaint of the wrapper's own still reaches this test. python3 is on PATH on that runner
+ * (ci.yaml's lint job runs .github/scripts/check-action-pins.sh, which runs python3, on the same
+ * ubuntu-24.04 image, with no setup-python step) and in a Legion worker pod
+ * (packages/daemon/docker/worker.Dockerfile installs python3 in its runtime-base stage and checks
+ * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
+ * job control off, as it always has. */
+async function runRig(args: string[], vars: Record<string, string> = {}) {
+  const child = Bun.spawn(["python3", "-I", "-c", setpgid, "bash", rig, ...args], {
+    env: { ...env, ...vars },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  return { code, stderr };
+}
+
+/** What the two runs reported, and each server one of them started: both read by the hook below,
+ *  which stages the checkout and then runs the two rigs. */
+let runs: { n: number; code: number; stderr: string; dir: string }[] = [];
+let servers: { pid: number; port: number; database: string }[] = [];
+/** The batch's start second, which every run of this file is given; set with the two runs. */
+let start = "";
+const lines = (file: string) =>
+  existsSync(file)
+    ? readFileSync(file, "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+    : [];
+
+beforeAll(async () => {
+  // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
+  // of them, and this hook would throw on a host that does not have it.
+  if (withoutPython) return;
+  // A staging may queue another, so the queue is drained until it is empty.
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
+  mkdirSync(env.HOME);
+  start = String(Math.floor(Date.now() / 1000));
+  runs = await Promise.all(
+    [1, 2].map(async (n) => {
+      const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
+      return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
+    })
+  );
+  servers = lines(path.join(stub, "servers.log")).map((line) => {
+    const [pid = "", port = "", url = ""] = line.split(" ");
+    return { pid: Number(pid), port: Number(port), database: new URL(url).pathname.slice(1) };
+  });
+});
+
+test.skipIf(withoutPython)("both runs finish", () => {
+  for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+});
+
+test.skipIf(withoutPython)("each run makes a database of its own in the batch's Postgres", () => {
+  const made = lines(path.join(stub, "docker.log")).filter((line) =>
+    line.includes("CREATE DATABASE")
+  );
+  for (const line of made) expect(line).toStartWith(`exec ${tag}-pg psql `);
+  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual([
+    "run_askgate_facts_on_1",
+    "run_askgate_facts_on_2",
+  ]);
+});
+
+test.skipIf(withoutPython)(
+  "each run starts a Dispatch server of its own, on its own database and port",
+  () => {
+    expect(servers.map((server) => server.database).sort()).toEqual([
+      "run_askgate_facts_on_1",
+      "run_askgate_facts_on_2",
+    ]);
+    expect(new Set(servers.map((server) => server.port)).size).toBe(2);
+  }
+);
+
+test.skipIf(withoutPython)(
+  "each run's agent, seeds and capture reach the run's own Dispatch and no other",
+  () => {
+    const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
+    const urls = new Set<string>();
+    for (const { n, dir } of runs) {
+      const database = `run_askgate_facts_on_${n}`;
+      const server = servers.find((s) => s.database === database);
+      const url = `http://127.0.0.1:${server?.port}`;
+      urls.add(url);
+      expect(JSON.parse(readFileSync(path.join(dir, "dispatch.json"), "utf8"))).toEqual({
+        postgres: "stub-postgres",
+        database,
+        port: server?.port,
+        url,
+      });
+      expect(lines(path.join(dir, "pane.env"))).toContain(`DISPATCH_URL=${url}`);
+      expect(lines(path.join(dir, "agent-env.txt"))).toContain(`DISPATCH_URL=${url}`);
+      // The run's world, its fixture and its capture, each through that server to that database.
+      expect(seeds.filter((seed) => seed.database === database)).toEqual(
+        ["project", "askgate", "capture-askgate"].map((command) => ({
+          command,
+          port: server?.port,
+          database,
+        }))
+      );
+    }
+    expect(urls.size).toBe(2);
+  }
+);
+
+// The run's exit handler kills its server's whole tree before the run exits, so a server's pid is
+// gone or a zombie by the time its run has ended.
+test.skipIf(withoutPython)("each run stops its Dispatch server when it ends", () => {
+  expect(servers.length).toBe(2);
+  const running = servers.filter(
+    ({ pid }) =>
+      existsSync(`/proc/${pid}/stat`) &&
+      !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+  );
+  expect(running).toEqual([]);
+});
+
+// AskGate's review would time out under Oh My Pi's default handler limit, so a run whose profile
+// leaves the limit there scores the timeout rather than the rule: the rig refuses it, starting nothing.
+test.skipIf(withoutPython)(
+  "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
+    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+  }
+);
+
+// The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
+// claim about what we run today): the run's working directory must hold that file, with the line
+// the prompt quotes.
+test.skipIf(withoutPython)(
+  "a link run's working directory holds the crontab its prompt cites, with the line it quotes",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {
+      SKILL_SCENARIOS_ASKGATE_CASE: "link",
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const dir = path.join(work, "runs", "askgate-link-on-1");
+    const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
+    const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
+    const [, line = "", text = ""] = quoted ?? [];
+    expect(quoted).not.toBeNull();
+    const crontab = lines(path.join(dir, "cwd", "export-host.crontab"));
+    expect(crontab[Number(line) - 1]).toBe(text);
+  }
+);

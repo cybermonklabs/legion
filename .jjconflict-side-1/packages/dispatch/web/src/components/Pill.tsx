@@ -1,0 +1,94 @@
+import type { ReactNode } from "react";
+
+import type { ArtifactApproval } from "../api/types";
+import {
+  approvalPill,
+  statusPill,
+  statusPillDot,
+  surfaceMutedBg,
+  surfaceMutedStrongBg,
+  textMutedOnSurfaceMuted,
+  textSecondaryOnSurface,
+} from "../theme/classes";
+
+export type PillTone = "label" | "selected-label" | "status";
+
+const pillTones: Record<PillTone, string> = {
+  label: `${surfaceMutedBg} ${textMutedOnSurfaceMuted}`,
+  "selected-label": `${surfaceMutedStrongBg} ${textSecondaryOnSurface}`,
+  status: `${statusPill.bg} ${statusPill.text}`,
+};
+
+/** The pill's shape alone, with no colour of its own, for a host that paints the text itself:
+ *  stacking a second text colour after `pillClassName` leaves which of the two paints to the
+ *  CSS source order rather than the attribute order, so a pass, a fail or a gap mark could come
+ *  out muted. */
+export const pillShapeClassName =
+  "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap";
+
+/** The pill's full class string, for a host that must stay one interactive element (a parent
+ *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
+ *  outline a bigger shape than the fill. */
+export function pillClassName(tone: PillTone): string {
+  return `${pillShapeClassName} ${pillTones[tone]}`;
+}
+
+export function Pill({
+  children,
+  className,
+  tone = "label",
+}: {
+  children: ReactNode;
+  className?: string;
+  tone?: PillTone;
+}): ReactNode {
+  return <span className={`${pillClassName(tone)} ${className ?? ""}`}>{children}</span>;
+}
+
+export function LabelPill({
+  children,
+  selected = false,
+}: {
+  children: ReactNode;
+  selected?: boolean;
+}): ReactNode {
+  return <Pill tone={selected ? "selected-label" : "label"}>{children}</Pill>;
+}
+
+export function StatusPill({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <Pill className="gap-1.5 font-semibold tracking-wide uppercase" tone="status">
+      <span aria-hidden="true" className={`size-1.5 rounded-full ${statusPillDot}`} />
+      {children}
+    </Pill>
+  );
+}
+
+/** Whether `state` is one of `approvalPill`'s own keys, which are every approval state this
+ *  build has an outline for. */
+function isApprovalTone(state: string): state is keyof typeof approvalPill {
+  return Object.hasOwn(approvalPill, state);
+}
+
+/** `state` as the outline the chip wears. The route table carries the state as a plain string;
+ *  one this build does not know wears the draft outline - the neutral one - while
+ *  `approvalLabel` shows the word itself, so the chip is drawn rather than left unpainted. */
+function approvalTone(state: string): keyof typeof approvalPill {
+  return isApprovalTone(state) ? state : "draft";
+}
+
+/** The approval pill's full class string, for hosts whose chip must stay an interactive
+ * element (ApprovalChip's button opens the review history) while looking identical.
+ *
+ * It wraps and it shrinks, for every host that draws it: the longest label the chip can carry
+ * (`Awaiting approval of spec.md v1 and verification.md v1`, one request covering a spec and
+ * its Verification document) is wider than a 320 px phone, and a pill that could neither wrap
+ * nor shrink pushed the whole page sideways. The label is never clamped, ellipsized or hidden
+ * behind a `title`, so a phone reader still reads all of it; `[overflow-wrap:anywhere]` is what
+ * lets a long document name break, and so drops the pill's min-content width to something a
+ * narrow row can hold. Both utilities belong to this one string rather than being appended by a
+ * host, for the reason `pillShapeClassName` records above: two conflicting Tailwind utilities
+ * are settled by the generated CSS's order, not the attribute's. */
+export function approvalPillClassName(state: ArtifactApproval["state"]): string {
+  return `inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
+}

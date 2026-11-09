@@ -1,0 +1,1489 @@
+import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+
+import { api, issueStateRequest, type WriteBounds } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
+import type {
+  Agent,
+  Artifact,
+  Comment,
+  Message,
+  MessageDelivery,
+  MessageDeliveryMode,
+  UserState,
+} from "../../api/types";
+import { PinButton } from "../../components/PinButton";
+import { useSending } from "../../hooks/useSending";
+import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { compareTimestamps } from "../../lib/timestamps";
+import {
+  borderDefault,
+  card,
+  dangerText,
+  linkText,
+  primaryButtonBg,
+  primaryButtonHoverBg,
+  secondaryButtonBorder,
+  surfaceMutedBg,
+  surfaceMutedHoverBg,
+  textMutedOnCanvas,
+  textMutedOnSurface,
+  textMutedOnSurfaceMuted,
+  textPrimaryOnSurface,
+  textPrimaryOnSurfaceMuted,
+  textSecondaryOnCanvas,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
+import { deliveryAttempts } from "../agents/attempts";
+import { AskCard } from "../inbox/AskCard";
+import { writePin } from "../issue/pin-write";
+import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
+import { ThreadCard } from "../margin/ThreadCard";
+import { type CommentActionFailure, useCommentActionQueue } from "../margin/useCommentActionQueue";
+import type { Thread as CommentThread } from "../margin/useMarginItems";
+import {
+  AgentName,
+  type AgentPart,
+  AgentParts,
+  type AgentText,
+  useAgentText,
+} from "../refs/AgentName";
+import { CopyRefButton } from "../refs/CopyRefButton";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
+import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
+import { Unfurl } from "../refs/Unfurl";
+import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
+import { type DwellRef, useDwell } from "../shell/useDwell";
+import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { threadLayout } from "../threads/thread-layout";
+import { useThreadOrder } from "../threads/thread-order";
+import { useMarkThreadRead } from "../threads/useMarkThreadRead";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useSendMarkOnce } from "../writes/useSendMarkOnce";
+import { Avatar } from "./Avatar";
+import type { ReplyTarget } from "./composer-model";
+import {
+  buildConversations,
+  type CommentDeliveryAttempt,
+  type Conversation,
+  type ConversationFilter,
+  commentDeliveries,
+  focusConversation,
+  handoffFields,
+  type MessageConversation,
+  matchesFilter,
+} from "./conversation-model";
+import {
+  deliveryMode,
+  duplicateText,
+  failureGuidance,
+  isSafeRetry,
+  MODE_LABELS,
+  withGuidance,
+} from "./delivery";
+import {
+  redirectedReplyTarget,
+  useHeldReplyTo,
+  useHeldSends,
+  useHeldSendsUnder,
+} from "./held-sends";
+import { MentionComposer } from "./MentionComposer";
+import { ReplyButton } from "./ReplyButton";
+import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
+import type { CarriedBlockIds } from "./send-request";
+import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
+import { useFollowLatest } from "./use-follow-latest";
+import { useAgents } from "./useAgents";
+import { threadRepliesSendKey, threadReplySendKey, usePhoneThread } from "./usePhoneThread";
+
+interface ConversationTabProps {
+  /** Every artifact on the issue by id - uploads and images as well as documents, which is
+   *  what `IssuePage` has. A comment's anchor names one of them, and its link is built from it. */
+  issueArtifacts: ReadonlyMap<string, Artifact>;
+  focusItemId?: string;
+  isClosed: boolean;
+  issueKey: string;
+  /** Called once, when the tab first places the reader at the newest card (`useFollowLatest`'s
+   *  `onFirstPlacement`), before the parent's layout effects of that commit run. */
+  onFirstPlacement?: () => void;
+  state: UserState | undefined;
+  visible: boolean;
+}
+
+const FILTERS: readonly { readonly label: string; readonly value: ConversationFilter }[] = [
+  { label: "All", value: "all" },
+  { label: "Open", value: "open" },
+  { label: "Closed", value: "closed" },
+];
+
+/** A delivery's address as `AgentParts` draws it: a `session:` address is that session, drawn
+ *  by `AgentName`; a role address stays text. */
+function targetPart(target: string | null): AgentPart {
+  if (target === null) return "agent";
+  const sessionId = sessionOfAddress(target);
+  return sessionId === undefined ? target : { sessionId, storedTitle: undefined };
+}
+
+/** The session a thread's newest attempt reached, or the target it was aimed at: what the card
+ *  and its delivery lines call the recipient. */
+function recipientOf(deliveries: readonly MessageDelivery[], target: string | null): AgentPart {
+  const last = deliveries.at(-1);
+  return last === undefined || last.session_id === ""
+    ? targetPart(target)
+    : { sessionId: last.session_id, storedTitle: undefined };
+}
+
+/** The mark an unread conversation carries: its newest activity is at or after the reader's
+ *  watermark (`user_issue_state.last_read_seq`). */
+function UnreadMark(): ReactNode {
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${surfaceMutedBg} ${linkText}`}
+    >
+      New
+    </span>
+  );
+}
+
+/** The delivery a reply into this thread inherits: the root's target, in the mode of the
+ *  thread's most recent attempt (root or any reply). */
+function threadDelivery(root: MessageConversation): ReplyTarget["thread"] | undefined {
+  if (root.kind !== "targeted-message" || root.root.target === null) {
+    return undefined;
+  }
+  let last: MessageDelivery | undefined;
+  for (const attempt of [
+    ...(root.root.deliveries ?? []),
+    ...root.replies.flatMap((reply) => reply.deliveries ?? []),
+  ]) {
+    if (last === undefined || compareTimestamps(attempt.created_at, last.created_at) >= 0) {
+      last = attempt;
+    }
+  }
+  const mode = last === undefined ? undefined : deliveryMode(last.delivery);
+  return { delivery: mode ?? "steer", target: root.root.target };
+}
+
+/** What the composer quotes when the reader replies to `message`. */
+function replyTargetFor(
+  message: Message,
+  root: MessageConversation,
+  issueKey: string
+): ReplyTarget {
+  const thread = threadDelivery(root);
+  return {
+    actor: message.author,
+    excerpt: message.body,
+    id: message.id,
+    parentKind: "message",
+    to: buildIssuePath({ id: message.id, key: issueKey, kind: "message" }),
+    ...(thread === undefined ? {} : { thread }),
+  };
+}
+
+/** A reply in a thread as the Conversation renders it: the quoted parent links to that turn,
+ *  a delivered reply (a human's follow-up on a targeted thread) shows its attempt and keeps the
+ *  retry row while unanswered, and every reply can be replied to, on a closed issue too. */
+function ConversationReply({
+  agents,
+  currentReplyId,
+  issueKey,
+  markRef,
+  onReply,
+  reply,
+  replyDisabled,
+  root,
+}: {
+  agents: readonly Agent[] | undefined;
+  currentReplyId: string | undefined;
+  issueKey: string;
+  /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
+  markRef?: DwellRef;
+  onReply: (target: ReplyTarget) => void;
+  reply: Message;
+  replyDisabled: boolean;
+  root: MessageConversation;
+}): ReactNode {
+  const queryClient = useQueryClient();
+  const text = useAgentText();
+  const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
+  const retry = useKeyedWrite({
+    label: (delivery: MessageDeliveryMode) =>
+      `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
+  });
+  const capabilities = capabilitiesForTarget(root.root.target, agents);
+  const lastAttempt = (reply.deliveries ?? []).at(-1);
+  const answer = root.replies.find(
+    (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
+  );
+  const parent = [root.root, ...root.replies].find((node) => node.id === reply.in_reply_to);
+  return (
+    <ReplyTurn
+      actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
+      at={reply.created_at}
+      author={reply.author}
+      body={
+        <>
+          <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
+          <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
+        </>
+      }
+      current={reply.id === currentReplyId}
+      markRef={markRef}
+      delivery={
+        lastAttempt === undefined
+          ? undefined
+          : {
+              answeredBy: answer?.author,
+              attempts: deliveryAttempts(reply.deliveries ?? [], targetName),
+              retry: {
+                canAside: capabilities?.includes("aside") !== false,
+                canBtw: capabilities?.includes("btw") !== false,
+                canSteer: capabilities?.includes("steer") !== false,
+                onRetry: retry.mutate,
+                retrying: retry.isPending,
+              },
+              targetName,
+            }
+      }
+      onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
+      quote={{
+        author: parent?.author,
+        block: reply.reply_block,
+        excerpt: parent?.body ?? "",
+        to:
+          reply.in_reply_to === null
+            ? undefined
+            : buildIssuePath({ id: reply.in_reply_to, key: issueKey, kind: "message" }),
+      }}
+      replyDisabled={replyDisabled}
+      turnID={conversationItemId("message", reply.id)}
+    />
+  );
+}
+
+function Thread({
+  agents,
+  currentReplyId,
+  issueKey,
+  onReply,
+  replyDisabled,
+  root,
+}: {
+  agents: readonly Agent[] | undefined;
+  currentReplyId: string | undefined;
+  issueKey: string;
+  onReply: (target: ReplyTarget) => void;
+  replyDisabled: boolean;
+  root: MessageConversation;
+}): ReactNode {
+  // The shared thread read mark: the thread is read once its newest reply has been on screen.
+  // It watches that reply's own element, so a thread taller than the screen still clears.
+  const newest = root.replies.at(-1);
+  const markRef = useMarkThreadRead({
+    enabled: true,
+    newestShownAt: newest?.created_at,
+    owner: { issue: issueKey },
+    threadId: root.root.id,
+  }).ref;
+  // A thread in the Conversation folds nothing: the reader's order alone places its replies
+  // (`features/threads/thread-layout.ts`).
+  const [threadOrder] = useThreadOrder();
+  const { shown } = threadLayout({ collapse: false, order: threadOrder, replies: root.replies });
+  if (root.replies.length === 0) return null;
+  return (
+    <ThreadReplies>
+      {shown.map((reply) => (
+        <ConversationReply
+          agents={agents}
+          currentReplyId={currentReplyId}
+          issueKey={issueKey}
+          key={reply.id}
+          markRef={reply === newest ? markRef : undefined}
+          onReply={onReply}
+          reply={reply}
+          replyDisabled={replyDisabled}
+          root={root}
+        />
+      ))}
+    </ThreadReplies>
+  );
+}
+
+function TurnPin({ onPin, pinned }: { onPin: () => void; pinned: boolean }): ReactNode {
+  return <PinButton label={pinned ? "Unpin" : "Pin"} onClick={onPin} pinned={pinned} quiet />;
+}
+
+function MessageTurn({
+  agents,
+  current,
+  currentReplyId,
+
+  issueKey,
+  item,
+  onPin,
+  onReply,
+  pinned,
+  register,
+  replyDisabled,
+}: {
+  agents: readonly Agent[] | undefined;
+  current: boolean;
+  currentReplyId: string | undefined;
+
+  issueKey: string;
+  item: Extract<Conversation, { kind: "message" }>;
+  onPin: () => void;
+  onReply: (target: ReplyTarget) => void;
+  pinned: boolean;
+  register?: DwellRef;
+  replyDisabled: boolean;
+}): ReactNode {
+  const author = item.root.author;
+  return (
+    <li
+      aria-current={current ? "true" : undefined}
+      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
+      data-turn={item.id}
+      ref={register}
+    >
+      <div className="flex gap-3">
+        <Avatar actor={author} />
+        <div className="min-w-0 flex-1">
+          <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
+            <AgentName actor={author} className="font-semibold" inline />
+            <Timestamp at={item.root.created_at} />
+            {item.unread ? <UnreadMark /> : null}
+          </p>
+          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
+        </div>
+        <TurnActions>
+          <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
+          <ReplyButton
+            disabled={replyDisabled}
+            onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
+          />
+          <TurnPin onPin={onPin} pinned={pinned} />
+        </TurnActions>
+      </div>
+      <Thread
+        agents={agents}
+        currentReplyId={currentReplyId}
+        issueKey={issueKey}
+        onReply={onReply}
+        replyDisabled={replyDisabled}
+        root={item}
+      />
+    </li>
+  );
+}
+
+/** How a handoff shows JSON: an array or object field, or a body that is not a JSON object. */
+const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+
+/** A handoff's body, fetched when the reader expands its card: each top-level field a labelled
+ *  row, the `proof` list one row per entry. A version never changes once written, so the read
+ *  is kept for the page's life. A body that is not a JSON object is shown as the text it is. */
+function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
+  const handoff = useQuery({
+    queryKey: ["handoff", handoffId],
+    queryFn: () => api.getHandoff(handoffId),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const fields = useMemo(
+    () => (handoff.data === undefined ? undefined : handoffFields(handoff.data.body)),
+    [handoff.data]
+  );
+  if (handoff.isPending) {
+    return (
+      <p className={`mt-2 text-sm ${textMutedOnSurface}`} id={id}>
+        Loading handoff…
+      </p>
+    );
+  }
+  if (handoff.isError) {
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} id={id}>
+        Could not load the handoff.
+      </p>
+    );
+  }
+  if (fields === undefined) {
+    return (
+      <pre className={handoffPre} data-handoff-raw id={id}>
+        {handoff.data.body}
+      </pre>
+    );
+  }
+  return (
+    <dl className={`mt-2 flex flex-col gap-2 text-sm ${textPrimaryOnSurface}`} id={id}>
+      {fields.map(({ field, json, label, text }) => (
+        <div data-handoff-field={field} key={`${field}/${label}`}>
+          <dt className={`font-medium ${textMutedOnSurface}`}>{label}</dt>
+          <dd className="min-w-0">
+            {json ? (
+              <pre className={handoffPre}>{text}</pre>
+            ) : (
+              <span className="break-words whitespace-pre-wrap">{text}</span>
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** One version of a phase handoff: which phase and version, the session that wrote it and when.
+ *  Nobody replies to a handoff, so the card's only control besides its pin is the disclosure
+ *  that reads its body. */
+function HandoffTurn({
+  current,
+  item,
+  onPin,
+  pinned,
+  register,
+}: {
+  current: boolean;
+  item: Extract<Conversation, { kind: "handoff" }>;
+  onPin: () => void;
+  pinned: boolean;
+  register?: DwellRef;
+}): ReactNode {
+  const [expanded, setExpanded] = useState(false);
+  const fieldsId = useId();
+  const { author, phase, version } = item.handoff;
+  return (
+    <li
+      aria-current={current ? "true" : undefined}
+      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
+      data-turn={item.id}
+      ref={register}
+    >
+      <div className="flex gap-3">
+        <Avatar actor={author} />
+        <div className="min-w-0 flex-1">
+          <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
+            <AgentName actor={author} className="font-semibold" inline />
+            <Timestamp at={item.handoff.created_at} />
+            {item.unread ? <UnreadMark /> : null}
+          </p>
+          <p className={`font-medium ${textPrimaryOnSurface}`}>
+            {phase} handoff, version {version}
+          </p>
+          <button
+            aria-controls={expanded ? fieldsId : undefined}
+            aria-expanded={expanded}
+            className={`min-h-8 text-sm font-medium ${linkText}`}
+            onClick={() => setExpanded((open) => !open)}
+            type="button"
+          >
+            {expanded ? "Hide fields" : "Show fields"}
+          </button>
+          {expanded ? <HandoffFields handoffId={item.handoff.id} id={fieldsId} /> : null}
+        </div>
+        <TurnActions>
+          <TurnPin onPin={onPin} pinned={pinned} />
+        </TurnActions>
+      </div>
+    </li>
+  );
+}
+
+/** What the composer quotes when the reader replies to `comment`: its author, and the
+ *  mentions the reply starts with, each named as the mention picker names it (`sessionText`). */
+function commentReplyTarget(
+  comment: Comment,
+  text: Pick<AgentText, "sessionText">,
+  issueKey: string
+): ReplyTarget {
+  const author = comment.author;
+  const targets =
+    author.kind === "session"
+      ? [`session:${author.id}`]
+      : (comment.mentions ?? []).map((mention) => mention.target);
+  const mentions = [...new Set(targets)].map((target) => {
+    const sessionId = sessionOfAddress(target);
+    return {
+      target,
+      title:
+        sessionId === undefined
+          ? target.slice("role:".length)
+          : text.sessionText(sessionId, undefined),
+    };
+  });
+  return {
+    actor: author,
+    excerpt: comment.body,
+    id: comment.id,
+    mentions,
+    parentKind: "comment",
+    to: buildIssuePath({ id: comment.id, key: issueKey, kind: "comment" }),
+  };
+}
+
+function CommentDeliveryList({
+  agents,
+  deliveries,
+  onRetry,
+  retrying,
+}: {
+  agents: readonly Agent[] | undefined;
+  deliveries: readonly CommentDeliveryAttempt[];
+  onRetry: (delivery: CommentDeliveryAttempt) => void;
+  retrying: boolean;
+}): ReactNode {
+  if (deliveries.length === 0) return null;
+  return (
+    <ul
+      aria-label="Mention deliveries"
+      className={`mt-2 space-y-1 text-xs ${textSecondaryOnSurface}`}
+    >
+      {deliveries.map((delivery) => {
+        const capabilities = capabilitiesForTarget(delivery.target, agents);
+        const outcome = {
+          state: delivery.state,
+          createdAt: delivery.created_at,
+          duplicate: delivery.duplicate,
+          answeredWithError: delivery.answeredWithError,
+          error: delivery.error,
+        };
+        // The same rule the targeted-message card applies: a mention's Retry re-sends its own
+        // mode under its own key, so it is offered only while `isSafeRetry` holds, and the
+        // guidance beside it names that Retry or a new comment, both of which a closed issue
+        // takes too.
+        const safeRetry = isSafeRetry(outcome);
+        const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
+        const guidance = failureGuidance(outcome, "mention");
+        const recipient = targetPart(delivery.target);
+        return (
+          <li
+            className="flex flex-wrap items-center gap-x-2"
+            key={`${delivery.target}:${delivery.attempt}`}
+          >
+            <span>
+              <AgentParts parts={[recipient]} /> ·{" "}
+              {delivery.duplicate === true ? duplicateText : delivery.state}
+              {delivery.error === null
+                ? ""
+                : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
+              {delivery.error === null && guidance !== undefined ? ` · ${guidance}` : ""}
+            </span>
+            {!canRetry || !safeRetry ? null : (
+              <button
+                className={`min-h-8 font-medium ${linkText}`}
+                disabled={retrying}
+                onClick={() => onRetry(delivery)}
+                type="button"
+              >
+                Retry
+              </button>
+            )}
+            {canRetry ? null : (
+              <span className={textMutedOnSurface}>
+                <AgentParts
+                  parts={[recipient, ` no longer supports ${MODE_LABELS[delivery.delivery]}.`]}
+                />
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function CommentTurn({
+  actionFailure,
+  agents,
+  issueArtifacts,
+  composerClassName,
+  current,
+  currentReplyId,
+  expanded,
+  forceExpanded = false,
+  hideReplyComposer = false,
+  hideUnreadMark = false,
+  isClosed,
+  isPhone = false,
+  issueKey,
+  item,
+  onAction,
+  onPhoneThreadToggle,
+  onPin,
+  onReply,
+  onRetryAction,
+  pendingAction,
+  pinned,
+  register,
+  replyDisabled,
+  sendKey,
+  setExpanded,
+  viewerLogin,
+}: {
+  actionFailure: CommentActionFailure | undefined;
+  /** The roster delivery capabilities are judged against; `undefined` while the agent list's
+   *  read is not current, when every capability is unknown (`capabilitiesForTarget`). */
+  agents: readonly Agent[] | undefined;
+  issueArtifacts: ConversationTabProps["issueArtifacts"];
+  composerClassName?: string;
+  current: boolean;
+  /** The reply a deep link named, marked inside the thread. */
+  currentReplyId: string | undefined;
+  /** Whether the reader has the thread open inline. The tab owns it, so a comment whose thread is
+   *  open stays in the list whoever resolves it (`shown`), with its reply and the reply's send. */
+  expanded: boolean;
+  forceExpanded?: boolean;
+  hideReplyComposer?: boolean;
+  /** Drops the card's `New` mark. The phone thread dialog sets it: the reader has the
+   *  conversation open and is reading it, so the badge says nothing above the card they are in,
+   *  and a card that never draws one cannot move the thread's rows when it goes. The mark is
+   *  written from that same card a second after it is on screen, and the `lastReadSeq` it moves
+   *  is in the `unreadBoundary` read's key, so the read re-enters `isPending`, `unreadFrom` goes
+   *  undefined and every `New` unmounts - under whatever the reader is pressing in the thread. */
+  hideUnreadMark?: boolean;
+  isClosed: boolean;
+  isPhone?: boolean;
+  issueKey: string;
+  item: Extract<Conversation, { kind: "comment" }>;
+  onAction: (id: string, kind: "accept" | "reject" | "resolve" | "reopen") => void;
+  onPhoneThreadToggle?: () => void;
+  onPin: () => void;
+  /** Starts a reply, and says whether it did: a send that is out refuses it. On a phone a comment's
+   *  reply is its thread's, so the host opens the thread with it. */
+  onReply: (target: ReplyTarget) => boolean;
+  onRetryAction: () => void;
+  pendingAction: boolean;
+  pinned: boolean;
+  register?: DwellRef;
+  replyDisabled: boolean;
+  /** The tab's send name, beneath which the thread card's own reply composer names its send
+   *  (`threadReplySendKey`). */
+  sendKey: MutationKey;
+  setExpanded: (expanded: boolean) => void;
+  viewerLogin: string;
+}): ReactNode {
+  const queryClient = useQueryClient();
+  const agentText = useAgentText();
+  const [editingCommentId, setEditingCommentId] = useState<string>();
+  const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
+  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). */
+  const editComment = useCallback(
+    async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
+      setSavingCommentEditId(id);
+      try {
+        const comment = await api.editComment(id, { body, ...carried }, bounds);
+        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        return comment;
+      } finally {
+        setSavingCommentEditId(undefined);
+      }
+    },
+    [issueKey, queryClient]
+  );
+  const replySendKey = useMemo(
+    () => threadReplySendKey(sendKey, item.root.id),
+    [item.root.id, sendKey]
+  );
+  // Collapse thread waits for the reply until its deadline, so its answer lands where it was sent;
+  // past it the reader may leave, and the held-send store keeps the reply for the thread's return.
+  const { sending: replySending, sendingNow: replySendingNow } = useSending(replySendKey, {
+    untilDeadline: true,
+  });
+  const retryGuard = useSubmitGuard();
+  const retry = useKeyedWrite({
+    label: (delivery: CommentDeliveryAttempt) =>
+      `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
+    onSettled: () => retryGuard.release(),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    write: (delivery, bounds) =>
+      api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
+  });
+  const thread: CommentThread = {
+    anchor: item.root.anchor,
+    key: item.root.id,
+    lastReplyAt: item.replies.at(-1)?.created_at,
+    replies: [...item.replies],
+    resolved: item.closed,
+    root: { comment: item.root, kind: "comment" },
+  };
+  const deliveriesFor = (commentId: string): readonly CommentDeliveryAttempt[] =>
+    commentDeliveries(
+      (commentId === item.root.id
+        ? item.root
+        : item.replies.find((reply) => reply.id === commentId)
+      )?.deliveries ?? []
+    );
+  const anchorArtifact =
+    item.root.anchor === null ? undefined : issueArtifacts.get(item.root.anchor.artifact_id);
+  const artifactSlug = anchorArtifact?.slug;
+  const currentExpanded = forceExpanded || expanded;
+  const toggleThread = () => {
+    // A thread whose own reply is out stays open, from Send's own task on, until the send's
+    // deadline (`replySendingNow`'s `untilDeadline`).
+    if (currentExpanded && replySendingNow()) return;
+    if (forceExpanded || (isPhone && !expanded)) {
+      onPhoneThreadToggle?.();
+      return;
+    }
+    setExpanded(!expanded);
+  };
+  return (
+    <li
+      aria-current={current ? "true" : undefined}
+      className="my-2"
+      data-turn={item.id}
+      ref={register}
+    >
+      {item.unread && !hideUnreadMark ? (
+        <div className="mb-1 flex justify-end">
+          <UnreadMark />
+        </div>
+      ) : null}
+      <ThreadCard
+        actionFailure={actionFailure}
+        artifactSlug={artifactSlug}
+        composerClassName={composerClassName}
+        currentReplyId={currentReplyId}
+        expanded={currentExpanded}
+        hovered={false}
+        hideReplyComposer={hideReplyComposer}
+        isClosed={isClosed}
+        editingCommentId={editingCommentId}
+        savingCommentEditId={savingCommentEditId}
+        onAction={onAction}
+        onEdit={editComment}
+        onEditingChange={setEditingCommentId}
+        onRetryAction={onRetryAction}
+        onToggle={toggleThread}
+        owner={{ key: issueKey, kind: "issue" }}
+        pendingAction={pendingAction}
+        pulseOrphanBlock={false}
+        replyMutationKey={replySendKey}
+        showReference={false}
+        renderDeliveries={(comment) => (
+          <CommentDeliveryList
+            agents={agents}
+            deliveries={deliveriesFor(comment.id)}
+            onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
+            retrying={retry.isPending}
+          />
+        )}
+        thread={thread}
+        viewerLogin={viewerLogin}
+      />
+      {item.root.anchor === null || anchorArtifact === undefined ? null : (
+        <Link
+          className={`ml-3 text-sm ${linkText}`}
+          to={documentItemPath(anchorArtifact, { id: item.root.id, kind: "comment" })}
+        >
+          View in document
+        </Link>
+      )}
+      <div className="flex justify-end gap-1">
+        {forceExpanded ? null : (
+          <button
+            aria-expanded={currentExpanded}
+            className={`min-h-8 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText}`}
+            disabled={currentExpanded && replySending}
+            onClick={toggleThread}
+            type="button"
+          >
+            {currentExpanded ? "Collapse thread" : "Expand thread"}
+          </button>
+        )}
+        <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
+        <ReplyButton
+          disabled={replyDisabled}
+          onClick={() => {
+            if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
+              setExpanded(true);
+            }
+          }}
+        />
+        <TurnPin onPin={onPin} pinned={pinned} />
+      </div>
+    </li>
+  );
+}
+
+function TargetedMessageTurn({
+  agents,
+  current,
+  currentReplyId,
+  issueKey,
+  item,
+  onReply,
+  register,
+  replyDisabled,
+}: {
+  agents: readonly Agent[] | undefined;
+  current: boolean;
+  currentReplyId: string | undefined;
+  issueKey: string;
+  item: Extract<Conversation, { kind: "targeted-message" }>;
+  onReply: (target: ReplyTarget) => void;
+  register?: DwellRef;
+  replyDisabled: boolean;
+}): ReactNode {
+  const queryClient = useQueryClient();
+  const text = useAgentText();
+  const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
+  const retry = useKeyedWrite({
+    label: (delivery: MessageDeliveryMode) =>
+      `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
+  });
+  const capabilities = capabilitiesForTarget(item.root.target, agents);
+  const asker = item.root.author;
+
+  return (
+    <TargetedMessageCard
+      answeredBy={item.answer?.author}
+      body={
+        <>
+          <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
+            <AgentName actor={asker} className="font-semibold" inline />
+            <Timestamp at={item.root.created_at} />
+            <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
+            {item.unread ? <UnreadMark /> : null}
+          </p>
+          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
+        </>
+      }
+      canAside={capabilities?.includes("aside") !== false}
+      canBtw={capabilities?.includes("btw") !== false}
+      canSteer={capabilities?.includes("steer") !== false}
+      current={current}
+      deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
+      header={<Avatar actor={asker} />}
+      onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
+      onRetry={retry.mutate}
+      register={register}
+      replyDisabled={replyDisabled}
+      retrying={retry.isPending}
+      targetName={targetName}
+      thread={
+        <Thread
+          agents={agents}
+          currentReplyId={currentReplyId}
+          issueKey={issueKey}
+          onReply={onReply}
+          replyDisabled={replyDisabled}
+          root={item}
+        />
+      }
+      turnID={item.id}
+    />
+  );
+}
+
+export function ConversationTab({
+  issueArtifacts,
+  focusItemId,
+  isClosed,
+  issueKey,
+  onFirstPlacement,
+  state,
+  visible,
+}: ConversationTabProps): ReactNode {
+  const queryClient = useQueryClient();
+  // Every composer this tab shows names its send with `sendKey`, or beneath it: the docked one
+  // with the key itself, the phone thread's composer and a thread card's inline reply beneath it
+  // (`usePhoneThread`'s `composerKey`, `threadReplySendKey`).
+  // While one is out, every Reply holds, from Send's own task on (`sendingNow`, which matches a key
+  // and every key beneath it): a Reply would put its prefill over the draft on its way, or swap the
+  // composer that holds it for another. The request itself is frozen when Send starts
+  // (`MentionComposer`), and the held-send store holds each send by its name, out or refused,
+  // whatever unmounts its composer; this decides what the reader sees.
+  const sendKey = useMemo<MutationKey>(() => ["conversation-composer", issueKey], [issueKey]);
+  const { sending: composerSending, sendingNow } = useSending(sendKey);
+  const store = useHeldSends();
+  // Comments whose card's own reply the store holds, out or refused.
+  const heldCardReplies = useHeldSendsUnder(threadRepliesSendKey(sendKey));
+  const viewer = useQuery(whoAmIQuery());
+  // The four reads the list is built from, each the issue's whole set: a conversation is listed
+  // however old it is, which no window of the event log could promise.
+  // The comments are the read the margin already holds for this issue, under the key it owns
+  // (`features/margin/useMarginItems.ts`): the same request, shared rather than fetched and
+  // stored a second time. The asks are not: this tab draws each ask's thread and asks the list
+  // for it, where the margin and a document's decision blocks render the ask alone and read
+  // `["asks", issueKey]` without one. Hence a key of its own - beneath that prefix, so every
+  // `invalidateQueries({ queryKey: ["asks", key] })` already written reaches this read too.
+  const asks = useQuery({
+    queryKey: ["asks", issueKey, "thread"],
+    queryFn: () => api.listIssueAskThreads(issueKey, "all"),
+  });
+  const comments = useQuery({
+    queryKey: ["comments", issueKey],
+    queryFn: () => api.listComments(issueKey),
+  });
+  const messages = useQuery({
+    queryKey: ["issue-messages", issueKey],
+    queryFn: () => api.listIssueMessages(issueKey),
+  });
+  // Each version of each phase handoff, without its body; a card reads its body when expanded.
+  const handoffs = useQuery({
+    queryKey: ["handoffs", issueKey],
+    queryFn: () => api.listHandoffs(issueKey),
+  });
+  const issueState = stateForIssue(state, issueKey);
+  const lastReadSeq = issueState.last_read_seq;
+  // The watermark as a moment: the first event the reader has not read. One row - the list is
+  // ordered by activity, not by sequence, so the log is read for this and for the head alone.
+  const unreadBoundary = useQuery({
+    queryKey: ["events", issueKey, "unread-boundary", lastReadSeq],
+    queryFn: () => api.getIssueEvents(issueKey, { after: lastReadSeq, limit: 1 }),
+  });
+  // The issue's head: what a dwell on the newest conversation marks read.
+  const head = useQuery({
+    queryKey: ["events", issueKey, "head"],
+    queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
+  });
+  const unreadFrom = unreadBoundary.data?.[0]?.created_at;
+  const headSeq = head.data?.[0]?.seq ?? 0;
+  const conversations = useMemo(
+    () =>
+      buildConversations({
+        asks: asks.data ?? [],
+        comments: comments.data ?? [],
+        messages: messages.data ?? [],
+        handoffs: handoffs.data ?? [],
+        unreadFrom,
+      }),
+    [asks.data, comments.data, handoffs.data, messages.data, unreadFrom]
+  );
+  const [filter, setFilter] = useState<ConversationFilter>("all");
+  const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const phone = usePhoneThread({ isPhoneViewport, sendKey, sendingNow });
+  // The comments whose thread the reader has open inline.
+  const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
+  const setThreadOpen = useCallback((id: string, open: boolean) => {
+    setOpenThreads((current) => {
+      if (current.has(id) === open) return current;
+      const next = new Set(current);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  // The conversation a deep link names, and the reply inside it when the link names one.
+  const focus = useMemo(
+    () =>
+      focusConversation(focusItemId, {
+        asks: asks.data ?? [],
+        comments: comments.data ?? [],
+        messages: messages.data ?? [],
+        handoffs: handoffs.data ?? [],
+      }),
+    [asks.data, comments.data, focusItemId, handoffs.data, messages.data]
+  );
+  const shown = useMemo(
+    () =>
+      // One pass over the list in the order `buildConversations` gave it, newest activity first:
+      // a conversation the reader has in hand is kept wherever the filter would have dropped it -
+      // its thread open inline or full-screen, the phone thread composer holding a reply to it,
+      // or its card's own reply held, out or refused, for its thread to show again - and keeps
+      // its place in that order rather than falling in behind the conversations the filter took.
+      conversations.filter(
+        (conversation) =>
+          matchesFilter(conversation, filter) ||
+          (conversation.kind === "comment" &&
+            (openThreads.has(conversation.root.id) ||
+              phone.holds(conversation.root.id) ||
+              heldCardReplies.some((held) => held.request.replyTo?.id === conversation.root.id)))
+      ),
+    [conversations, filter, heldCardReplies, openThreads, phone.holds]
+  );
+  // Counted over the list as shown, which is the list the pill acts on: it jumps to the first
+  // card on the page, so a count taken over the whole set would name unread conversations the
+  // filter is hiding and land on a card carrying no `New` mark.
+  const unreadCount = shown.filter((conversation) => conversation.unread).length;
+  // A landing overrides the filter: arriving at a conversation the current bucket hides resets
+  // it to All, so a link never fails to land.
+  useEffect(() => {
+    if (focus === undefined || filter === "all") return;
+    if (shown.some((conversation) => conversation.id === focus.id)) return;
+    if (!conversations.some((conversation) => conversation.id === focus.id)) return;
+    setFilter("all");
+  }, [conversations, filter, focus, shown]);
+  const phoneThread = useMemo(
+    () =>
+      phone.id === undefined
+        ? undefined
+        : shown.find(
+            (item): item is Extract<Conversation, { kind: "comment" }> =>
+              item.kind === "comment" && item.root.id === phone.id
+          ),
+    [phone.id, shown]
+  );
+  const phoneThreadDialog = useDialog<HTMLElement>({
+    onClose: phone.leave,
+    open: phoneThread !== undefined,
+  });
+  const commentActions = useCommentActionQueue({
+    // Resolving a comment, or accepting or rejecting its suggestion, is the reader done with its
+    // thread: once the server takes it, the thread closes. A refusal leaves the thread and the
+    // reply the reader was writing as they were, and a thread whose own reply is out stays open,
+    // which closing would unmount.
+    onSuccess: ({ id, kind }) => {
+      void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+      if (kind === "reopen") return;
+      if (queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
+      setThreadOpen(id, false);
+      if (phone.id === id) phone.hide();
+    },
+  });
+  const [ownSendCount, setOwnSendCount] = useState(0);
+  // The docked composer's reply. A message's Reply answers here at every width, and so does a
+  // comment's above the phone layout - the same shared composer and send name
+  // (`redirectedReplyTarget`'s doc comment explains why a Reply elsewhere while it holds a
+  // refusal redirects onto that comment or message instead of overwriting its draft).
+  const [replyTo, setReplyTo] = useHeldReplyTo(sendKey);
+  const beginReply = (target: ReplyTarget): boolean => {
+    if (sendingNow()) return false;
+    const reply = redirectedReplyTarget(store, sendKey, target);
+    setReplyTo(reply);
+    return reply.id === target.id;
+  };
+  const phoneReplyTargetsThread =
+    phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id;
+  // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
+  // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The
+  // number is the newest activity's own millisecond, since the list is ordered by activity.
+  // Passed while a read is still pending, the hook's first placement would find no card and
+  // scroll to the top, and a read answering last without changing the newest time would leave
+  // the reader there (INFRA-303).
+  const loading = asks.isPending || comments.isPending || messages.isPending || handoffs.isPending;
+  const failed = asks.isError || comments.isError || messages.isError || handoffs.isError;
+  const newestShown = loading || failed ? undefined : shown.at(0);
+  const latestItemSeq = newestShown === undefined ? undefined : Date.parse(newestShown.at);
+  const follow = useFollowLatest({
+    enabled: visible,
+    latestItemSeq,
+    onFirstPlacement,
+    ownSendCount,
+  });
+  const { agents: listedAgents, current: agentsCurrent } = useAgents(visible);
+  // Delivery capabilities come only from a current list: one that is refilling or unreachable
+  // leaves every mode unknown, never "not supported".
+  const agents = agentsCurrent ? listedAgents : undefined;
+  const scrolledToFocus = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!visible || focus === undefined || scrolledToFocus.current === focus.id) {
+      return;
+    }
+    // Nothing to anchor on until the card the link names is on the page; the landing effect
+    // resets the filter for one the current bucket hides, and `shown` brings this effect back.
+    // `shown` also changes whenever a thread opens (`openThreads` is one of its inputs), which
+    // is when a named reply's own row mounts.
+    if (!shown.some((conversation) => conversation.id === focus.id)) {
+      return;
+    }
+    // The reply the link names is the anchor when it names one; a card with no reply named, or
+    // one whose reply is inside a collapsed thread, anchors on the card itself. Only the anchor
+    // of the kind the link named ends the search: the effect below opens the named comment's
+    // thread a commit later, so the first pass over a reply link finds the card alone, scrolls
+    // there, and tries again - otherwise a marked reply far down a long thread would be left
+    // below the fold.
+    const reply =
+      focus.replyId === undefined
+        ? null
+        : document.querySelector<HTMLElement>(`[data-reply][aria-current="true"]`);
+    const anchor = reply ?? document.querySelector<HTMLElement>(`[data-turn="${focus.id}"]`);
+    if (anchor !== null) {
+      anchor.scrollIntoView({ block: "center" });
+      if (focus.replyId === undefined || reply !== null) {
+        scrolledToFocus.current = focus.id;
+      }
+    }
+  }, [focus, shown, visible]);
+
+  // A link to a comment (`/issues/<key>/comments/<id>`, from a Replies row, the Inbox, search or
+  // a copied reference) opens that comment's thread as it lands, so its replies are on screen:
+  // inline at a desktop width, the thread dialog on a phone. Once per link; the reader closes it
+  // as any thread.
+  const openedFocusThread = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!visible || focus === undefined || openedFocusThread.current === focus.id) return;
+    const root = shown.find(
+      (item): item is Extract<Conversation, { kind: "comment" }> =>
+        item.kind === "comment" && item.id === focus.id
+    );
+    if (root === undefined) return;
+    openedFocusThread.current = focus.id;
+    if (isPhoneViewport) phone.open(root.root.id);
+    else setThreadOpen(root.root.id, true);
+  }, [focus, isPhoneViewport, phone.open, setThreadOpen, shown, visible]);
+
+  // The issue's read mark, and the only writer of it: the newest conversation three-quarters on
+  // screen for a second reads the issue through its head. A single watermark cannot say "I read
+  // the third conversation only", so a dwell lower down writes nothing, and under-marking never
+  // hides an unread conversation. The mark is a quiet write of the one write store
+  // (`useSendMarkOnce`): made as the person reading, tried under its key until Dispatch decides
+  // it, kept across a reload and never shown; one Dispatch refuses is sent again once the stored
+  // mark changes. It names its issue, so an answer that lands after the reader moved on is put
+  // where it belongs.
+  // A thread opened full-screen on a phone covers the list and renders it `inert` and
+  // `aria-hidden` (below), so the card behind it is nothing the reader can see: the list's own
+  // copy of the newest card gives up the ref while a thread is open. A thread showing the
+  // newest conversation is that conversation read, though, so the dialog's `CommentTurn`
+  // carries the ref there (below) and the mark is written from the card the reader has on
+  // screen. A comment link lands straight in that thread on a phone, and `usePhoneThread` adds
+  // no history entry, so without that the browser's back and the drawer would leave the issue
+  // unread for a reader who had just read its newest conversation in the thread.
+  // A thread over any older conversation holds the mark until its own Back gives the list back:
+  // the newest conversation is behind the thread, unread, and marking the issue read would also
+  // move `lastReadSeq` under the reader - that value is in the `unreadBoundary` key above, so
+  // the read re-entering `isPending` unmounts every `New` the list still draws and reflows it by
+  // a row, under the list the reader is given back. The exits that write no mark for
+  // such a thread are the ones that never give the list back: the browser's back and the
+  // drawer. A dwell already counting when an older thread opens is cancelled rather than
+  // completed, since `useDwell` drops its timers as `enabled` goes false.
+  const newestId = conversations[0]?.id;
+  // The thread the reader has open is the newest conversation itself, the one card the mark is
+  // written from, so the dwell runs in the thread rather than waiting for Back.
+  const phoneThreadIsNewest = phoneThread !== undefined && phoneThread.id === newestId;
+  const [readThrough, setReadThrough] = useState<{
+    readonly issueKey: string;
+    readonly seq: number;
+  }>();
+  const read = readThrough?.issueKey === issueKey ? readThrough : undefined;
+  const registerNewest = useDwell({
+    enabled:
+      visible &&
+      (phoneThread === undefined || phoneThreadIsNewest) &&
+      newestId !== undefined &&
+      headSeq > 0,
+    onDwell: () => setReadThrough({ issueKey, seq: headSeq }),
+    resetKey: `${issueKey} ${newestId ?? ""} ${headSeq}`,
+    shouldDwell: () => headSeq > Math.max(lastReadSeq, read?.seq ?? 0),
+  });
+  useSendMarkOnce({
+    mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
+    onSuccess: (next, mark) =>
+      queryClient.setQueryData<UserState>(["user-state"], (current) => ({
+        ...current,
+        [mark.issueKey]: next,
+      })),
+    request: (mark: { issueKey: string; seq: number }) =>
+      issueStateRequest(mark.issueKey, { last_read_seq: mark.seq }),
+    shouldSend: read !== undefined && read.seq > lastReadSeq,
+    target: `read:issue:${issueKey}`,
+    wake: lastReadSeq,
+  });
+
+  const pinConversation = (id: string) =>
+    writePin(queryClient, issueKey, (dismissed) => ({
+      id,
+      op: isPinnedConversation(dismissed, id) ? "unpin" : "pin",
+    }));
+
+  if (loading) {
+    return <p className={textMutedOnCanvas}>Loading conversation…</p>;
+  }
+  if (failed) {
+    return <p className={dangerText}>Could not load the conversation.</p>;
+  }
+
+  // The reader's card keeps its viewport position across live updates - a reply arriving while
+  // they browse, a pin reflow, the failed-operations banner, a card moving bucket - except while
+  // they follow the newest conversation, where an arrival simply appears in place.
+  return (
+    <ViewportAnchor
+      as="section"
+      className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
+      enabled={() => !follow.pinnedToTop()}
+      item="data-turn"
+      label="Conversation"
+    >
+      {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
+          send's refusal and its reply are all still there on Back. A closed issue takes comments
+          and message replies, so it shows and sends there as on an open one (`closed` hides only
+          the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
+          that sticks. */}
+      <div className="contents" hidden={phoneThread !== undefined}>
+        <MentionComposer
+          closed={isClosed}
+          docked
+          mutationKey={sendKey}
+          onCancelReply={() => setReplyTo(null)}
+          onClose={() => setReplyTo(null)}
+          onSent={() => {
+            setReplyTo(null);
+            setOwnSendCount((count) => count + 1);
+          }}
+          owner={{ issueKey, kind: "issue" }}
+          replyTo={replyTo}
+        />
+      </div>
+      {/* All / Open / Closed, the one control over the list. It starts on All every visit: a
+          reader who filtered yesterday still meets the whole conversation today. */}
+      <div className="flex items-center justify-end">
+        <fieldset
+          aria-label="Conversations"
+          className={`flex rounded-md border ${secondaryButtonBorder}`}
+        >
+          {FILTERS.map(({ label, value }) => (
+            <button
+              aria-pressed={filter === value}
+              className={`min-h-11 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
+                filter === value
+                  ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`
+                  : textSecondaryOnCanvas
+              }`}
+              key={value}
+              onClick={() => setFilter(value)}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </fieldset>
+      </div>
+      {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
+          composer's controls; below `sm` that edge is the right edge of the content column
+          itself rather than a margin outside it, which is why a card under the pill is covered
+          at all. Below `sm` the composer sits at the foot of the screen and grows upward (a
+          refusal's Retry or Discard draft with it), and the shell's status corner - the
+          pending-writes indicator and the connection pill (`app.tsx`) - floats above that
+          composer in the same corner, wider than the pill and over it. So the pill rides above
+          whatever the corner publishes in `--foot-status-inset`
+          (`web/src/hooks/useFootInset.ts`), falling back to the composer's own
+          `--foot-composer-inset` while the corner shows nothing and that property is unset, and
+          never below the phone's bottom bar; from `sm` the composer sticks to the top and the
+          pill keeps the foot it has there. The list scrolls behind the pill as it scrolls
+          behind any floating control, so a card crossing that foot band passes under it: while
+          the card is there the pill covers its Accept and Reject, as it covers its Reply and
+          Pin. That cover lasts no longer than the passage - scrolling the card on clears it,
+          and so does the pill's own tap, which jumps to the latest and takes the pill off the
+          screen. A thread opened full-screen covers the Conversation the pill acts on, and its
+          own composer sits at the foot, so the pill waits for Back. */}
+      {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
+        <button
+          className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
+          data-testid="jump-to-latest"
+          onClick={follow.jumpToLatest}
+          type="button"
+        >
+          Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
+        </button>
+      ) : null}
+      <ol
+        aria-hidden={phoneThread === undefined ? undefined : true}
+        aria-label="Conversation turns"
+        className="flex flex-col gap-1"
+        inert={phoneThread === undefined ? undefined : true}
+      >
+        {shown.map((item) => {
+          const current = item.id === focus?.id;
+          const currentReplyId = current ? focus?.replyId : undefined;
+          const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
+          // A thread covering the list hides its copy of the newest card, so that copy gives
+          // up the mark's ref while one is open; the thread's own card carries it below.
+          const register =
+            item.id === newestId && phoneThread === undefined ? registerNewest : undefined;
+
+          if (item.kind === "targeted-message") {
+            return (
+              <TargetedMessageTurn
+                agents={agents}
+                current={current}
+                currentReplyId={currentReplyId}
+                issueKey={issueKey}
+                item={item}
+                key={item.id}
+                onReply={beginReply}
+                register={register}
+                replyDisabled={composerSending}
+              />
+            );
+          }
+          if (item.kind === "message") {
+            return (
+              <MessageTurn
+                agents={agents}
+                issueKey={issueKey}
+                current={current}
+                currentReplyId={currentReplyId}
+                item={item}
+                key={item.id}
+                onPin={() => pinConversation(item.id)}
+                onReply={beginReply}
+                pinned={pinned}
+                register={register}
+                replyDisabled={composerSending}
+              />
+            );
+          }
+          if (item.kind === "handoff") {
+            return (
+              <HandoffTurn
+                current={current}
+                item={item}
+                key={item.id}
+                onPin={() => pinConversation(item.id)}
+                pinned={pinned}
+                register={register}
+              />
+            );
+          }
+          if (item.kind === "comment") {
+            return (
+              <CommentTurn
+                actionFailure={
+                  commentActions.actionFailure?.id === item.root.id
+                    ? commentActions.actionFailure
+                    : undefined
+                }
+                hideReplyComposer={replyTo?.parentKind === "comment" && replyTo.id === item.root.id}
+                agents={agents}
+                issueArtifacts={issueArtifacts}
+                isPhone={isPhoneViewport}
+                onPhoneThreadToggle={() => phone.open(item.root.id)}
+                onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                current={current}
+                currentReplyId={currentReplyId}
+                expanded={openThreads.has(item.root.id)}
+                onRetryAction={commentActions.retryItem}
+                pendingAction={commentActions.pendingActionIds.has(item.root.id)}
+                isClosed={isClosed}
+                issueKey={issueKey}
+                item={item}
+                key={item.id}
+                onPin={() => pinConversation(item.id)}
+                onReply={isPhoneViewport ? phone.beginReply : beginReply}
+                pinned={pinned}
+                register={register}
+                replyDisabled={composerSending}
+                sendKey={sendKey}
+                setExpanded={(open) => setThreadOpen(item.root.id, open)}
+                viewerLogin={viewer.data?.login ?? ""}
+              />
+            );
+          }
+          return (
+            <li
+              aria-current={current ? "true" : undefined}
+              className="my-2 flex gap-3"
+              data-turn={item.id}
+              key={item.id}
+              ref={register}
+            >
+              <div className="min-w-0 flex-1">
+                {item.unread ? (
+                  <div className="mb-1 flex justify-end">
+                    <UnreadMark />
+                  </div>
+                ) : null}
+                {/* The margin shows this same open ask beside the document, so a full
+                    two-row composer here is the question, its options and its answer
+                    controls twice on one screen. The list is the record: it carries the
+                    compact density, whose options answer in one click and whose note field
+                    stays behind its own disclosure. The row's own thread seeds the card, so a
+                    page of asks makes no per-ask thread request. */}
+                <AskCard
+                  ask={item.ask}
+                  currentReplyId={currentReplyId}
+                  initialThread={{ ask: item.ask, ...item.ask.thread }}
+                  initialThreadUpdatedAt={asks.dataUpdatedAt}
+                  markRead
+                  thread="collapsed"
+                  variant="compact"
+                />
+              </div>
+              <TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />
+            </li>
+          );
+        })}
+      </ol>
+      {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
+          another comment's thread, leaves that composer - its draft, a send it has out and the
+          send's refusal - where reopening the comment's thread finds it. */}
+      {phoneThread === undefined && phone.replyTo === null ? null : (
+        <section
+          aria-label="Thread"
+          aria-modal="true"
+          className={`fixed inset-0 z-20 flex flex-col ${card}`}
+          hidden={phoneThread === undefined}
+          ref={phoneThreadDialog.containerRef}
+          role="dialog"
+        >
+          <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
+            <button
+              className={`min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${textPrimaryOnSurface}`}
+              disabled={phone.cardReplySending}
+              onClick={phone.leave}
+              type="button"
+            >
+              Back
+            </button>
+          </header>
+          {phoneThread === undefined ? null : (
+            <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32">
+              <CommentTurn
+                actionFailure={
+                  commentActions.actionFailure?.id === phoneThread.root.id
+                    ? commentActions.actionFailure
+                    : undefined
+                }
+                agents={agents}
+                issueArtifacts={issueArtifacts}
+                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                current={phoneThread.id === focus?.id}
+                currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
+                viewerLogin={viewer.data?.login ?? ""}
+                expanded={openThreads.has(phoneThread.root.id)}
+                forceExpanded
+                hideReplyComposer={phoneReplyTargetsThread}
+                hideUnreadMark
+                isClosed={isClosed}
+                issueKey={issueKey}
+                item={phoneThread}
+                isPhone
+                key={phoneThread.id}
+                onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                onPhoneThreadToggle={phone.leave}
+                onRetryAction={commentActions.retryItem}
+                pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
+                onPin={() => pinConversation(phoneThread.id)}
+                onReply={phone.beginReply}
+                pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
+                register={phoneThreadIsNewest ? registerNewest : undefined}
+                replyDisabled={composerSending}
+                sendKey={sendKey}
+                setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}
+              />
+            </ol>
+          )}
+          {phone.replyTo === null ? null : (
+            <div hidden={!phoneReplyTargetsThread}>
+              <MentionComposer
+                closed={isClosed}
+                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                mutationKey={phone.composerKey}
+                onCancelReply={phone.endReply}
+                onClose={phone.endReply}
+                onSent={() => {
+                  phone.endReply();
+                  setOwnSendCount((count) => count + 1);
+                }}
+                owner={{ issueKey, kind: "issue" }}
+                replyTo={phone.replyTo}
+              />
+            </div>
+          )}
+        </section>
+      )}
+      {shown.length === 0 ? <p className={textMutedOnCanvas}>No conversations yet.</p> : null}
+    </ViewportAnchor>
+  );
+}

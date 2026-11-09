@@ -1,0 +1,179 @@
+package kvwatch_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testnats"
+)
+
+// jsonLogger is a JSON logger over a buffer, the shape of the one the listener hands a watcher, and
+// a reader that decodes its records back, so a test asserts a line's fields rather than its
+// rendering. Nothing reaches it through slog.Default(): a line the watcher writes anywhere but its
+// own logger is missing here.
+func jsonLogger(t *testing.T) (*slog.Logger, func() []map[string]any) {
+	t.Helper()
+	logs := &lockedBuffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return logger, func() []map[string]any {
+		var records []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			if line == "" {
+				continue
+			}
+			record := map[string]any{}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatalf("decode a log record: %v (%s)", err, line)
+			}
+			records = append(records, record)
+		}
+		return records
+	}
+}
+
+type lockedBuffer = logtest.Buffer
+
+// record returns the one record whose msg is msg, failing when there is none or more than one.
+func record(t *testing.T, records []map[string]any, msg string) map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, r := range records {
+		if r["msg"] == msg {
+			found = append(found, r)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one %q record, got %d of them in:\n%v", msg, len(found), records)
+	}
+	return found[0]
+}
+
+// A cache's warm-up says what it cost and how it ended: an interest bucket can carry tens of
+// thousands of delete markers behind a few live keys, every warm-up streams them all, and the
+// restart's log has to say where that time went (LEGION-374). The two counts are disjoint, like
+// the role restore line's: entries are the live keys the scan delivered, delete_markers what it
+// streamed past to find them.
+func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
+	const (
+		live    = 3
+		markers = 4
+	)
+	for i := range live {
+		if _, err := kv.Put(fmt.Sprintf("live-%d", i), []byte("1")); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+	}
+	for i := range markers {
+		key := fmt.Sprintf("gone-%d", i)
+		if _, err := kv.Put(key, []byte("1")); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+		if err := kv.Delete(key); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+	}
+
+	logger, records := jsonLogger(t)
+	into := newSeen()
+	w := kvwatch.New("interest registry", kv, into, kvwatch.WithLogger(logger))
+	t.Cleanup(w.Stop)
+	w.Start()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := w.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	line := record(t, records(), "interest registry cache warm-up")
+	if line["level"] != "INFO" || line["outcome"] != "completed" {
+		t.Fatalf("a completed warm-up logged level=%v outcome=%v, want INFO completed: %v", line["level"], line["outcome"], line)
+	}
+	if line["entries"] != float64(live) || line["delete_markers"] != float64(markers) {
+		t.Fatalf("warm-up line entries=%v delete_markers=%v, want %d and %d: %v",
+			line["entries"], line["delete_markers"], live, markers, line)
+	}
+	if line["bucket"] != kv.Bucket() {
+		t.Fatalf("warm-up line bucket=%v, want %q", line["bucket"], kv.Bucket())
+	}
+	if _, ok := line["elapsed_ms"].(float64); !ok {
+		t.Fatalf("warm-up line elapsed_ms=%v, want the milliseconds the scan took", line["elapsed_ms"])
+	}
+}
+
+// A warm-up whose initial scan timed out says so, at WARN, and is not the watcher's error: the
+// watcher is still running, so Err() stays nil and nothing - not the listener's self-health
+// rebuild, not /healthz - reads it as dead (row F2 of LEGION-374's plan). The jetstream watcher
+// has no idle bound of its own, so the watcher's idle wait ends a scan that delivers nothing for
+// kvwatch.ScanIdleTimeout (stallsAfter stalls one; the test fires the wait on the injected clock).
+// The read is incomplete, so it completes nothing and the copy is not served; the watcher reads the
+// bucket again itself after its re-read delay, and that read's warm-up line says it completed.
+func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
+	for _, key := range []string{"one", "two", "three"} {
+		if _, err := kv.Put(key, []byte("1")); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+
+	logger, records := jsonLogger(t)
+	into := newSeen()
+	arm := &armed{}
+	now := newClock()
+	handle := scripted(kv, stallsAfter(1))
+	w := kvwatch.New("interest registry", handle.handle(), into, kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()),
+		kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
+	t.Cleanup(w.Stop)
+	w.Start()
+	eventually(t, "the scan's one record", func() bool { return into.has("one") })
+	if w.Ready() {
+		t.Fatal("ready while the scan was still under way")
+	}
+	now.advance(kvwatch.ScanIdleTimeout)
+	arm.fireIdle(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := w.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	const warmUp = "interest registry cache warm-up"
+	if timedOut := matching(records(), "WARN", warmUp); len(timedOut) != 1 || timedOut[0]["outcome"] != "timed out" {
+		t.Fatalf("a timed-out warm-up logged %v, want one WARN line with outcome \"timed out\"", timedOut)
+	}
+	if err := w.Err(); err != nil {
+		t.Fatalf("Err() = %v after a timed-out warm-up; a live watcher's cache must not read as dead", err)
+	}
+	if err := w.Servable(); !errors.Is(err, kvwatch.ErrRefilling) || len(into.completions()) != 0 {
+		t.Fatalf("after the timed-out warm-up: Servable %v, %d reads completed; want %v and none", err, len(into.completions()), kvwatch.ErrRefilling)
+	}
+	// The watcher is live: a key written after the timeout still reaches the cache.
+	if _, err := kv.Put("after-the-timeout", []byte("1")); err != nil {
+		t.Fatalf("put after-the-timeout: %v", err)
+	}
+	eventually(t, "a key written after the timed-out scan", func() bool { return into.has("after-the-timeout") })
+
+	eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
+	if got := arm.asked(); got != 5*time.Second {
+		t.Fatalf("the re-read waits %v, want 5s", got)
+	}
+	arm.fireIt(t)
+	eventually(t, "the re-read's completion", w.Following)
+	if completed := matching(records(), "INFO", warmUp); len(completed) != 1 || completed[0]["outcome"] != "completed" || completed[0]["entries"] != float64(4) {
+		t.Fatalf("the re-read logged %v, want one INFO warm-up line with outcome completed and all 4 entries", completed)
+	}
+	if err := w.Err(); err != nil || w.Servable() != nil || handle.watches() != 2 {
+		t.Fatalf("after the re-read: Err %v, Servable %v, %d watches; want no error, served, the re-read the watcher started itself",
+			err, w.Servable(), handle.watches())
+	}
+}

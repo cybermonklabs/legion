@@ -1,0 +1,616 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// agentSandbox is the Agent Sandbox a cluster must have installed for the runtime (LEGION-206
+// Requirement 10): the Sandbox CRD and the controller's Deployment, as agent-sandbox v1.0.3 names
+// them.
+var agentSandbox = sandbox.InstallRef{
+	CRD: "sandboxes.agents.x-k8s.io", ControllerNamespace: "agent-sandbox-system", ControllerName: "agent-sandbox-controller",
+}
+
+// workerImageTools are the worker image's own gh, git, jj, legion and agent-secrets
+// (packages/daemon/docker/worker.Dockerfile: git from the distribution, gh and jj copied to
+// /usr/local/bin, legion and agent-secrets under /opt/legion/bin).
+var workerImageTools = sandbox.Tools{
+	GH: "/usr/local/bin/gh", Git: "/usr/bin/git", JJ: "/usr/local/bin/jj", Legion: "/opt/legion/bin/legion",
+	AgentSecrets: "/opt/legion/bin/agent-secrets",
+}
+
+// imageProbeRetry is how often the daemon tries its worker image again after an attempt that said
+// nothing definitive: the daemon's backoff, bounded like `legion probe-image`'s at six attempts.
+// Its transient outcomes (a pod that never finished, a kubelet failure) can repeat for a reason no
+// wait changes, such as a memory limit too small for Oh My Pi, so an unbounded retry would hold a
+// deterministic refusal as a boot that never ends. A probe pod the pool has no room for is no such
+// outcome: it is waited on at the policy's longest interval, outside the six (bootprobe.Run,
+// Outcome.Waiting), since a full pool is the pool's state and not the image's, and the daemon
+// exiting would not make room.
+var imageProbeRetry = bootprobe.Image
+
+// sandboxReads is what Agent Sandbox needs that readBoot reads: the cluster's client and the
+// runtime's Options.
+type sandboxReads struct {
+	client *rest.Config
+	opts   sandbox.Options
+}
+
+// readSandbox is Agent Sandbox's share of readBoot (C1's translation, C3): the cluster's client from
+// runtime.kubernetes' kubeconfig, and the Options every value of the configuration becomes, with
+// paneNatsUser, the public key of the pane NATS nkey seed's user ("" with none), which the image
+// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no Oh
+// My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file (a
+// pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
+// from the providers Secret), and no host gh, git, or jj (a pod runs the image's).
+func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
+	k := *cfg.Runtime.Kubernetes
+	rc, err := kubeClient(k)
+	if err != nil {
+		return sandboxReads{}, err
+	}
+	opts, err := sandboxOptions(cfg, k, project, dispatchToken, lookup, log)
+	if err != nil {
+		return sandboxReads{}, err
+	}
+	opts.NATSUser = paneNatsUser
+	return sandboxReads{client: rc, opts: opts}, nil
+}
+
+// PluginsFromFile and PluginsFromBinary name ResolvedPlugins' source: the file's
+// `runtime.kubernetes.plugins`, or the release binary's linked pair (cmd/legion's
+// piLegionVersion/piEnvoyVersion, applyLinkedPlugins).
+const (
+	PluginsFromFile   = "legion.yaml"
+	PluginsFromBinary = "binary"
+)
+
+// ResolvedPlugins is the plugin pair this Kubernetes daemon installs for a stale-plugin relaunch
+// (LEGION-164), and where it came from: the file's `runtime.kubernetes.plugins` when the file sets
+// one (PluginsFromFile), else the binary's linked pair when main filled cfg.Runtime.Kubernetes.Plugins
+// from it (cmd/legion's piLegionVersion/piEnvoyVersion, PluginsFromBinary field true; PluginsFromBinary
+// source), else nil pair and "" source — the daemon knows no plugin versions, and every stale claim is
+// recorded and reported, never relaunched or refused (supervise.Deps.PluginRelaunchable false). Nil
+// under tmux, whose pane always resumes on the plugin installed on the daemon's host. legion start
+// --check-config and the boot log both read this.
+func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
+	k := cfg.Runtime.Kubernetes
+	if k == nil || k.Plugins == nil {
+		return nil, ""
+	}
+	source := PluginsFromFile
+	if k.PluginsFromBinary {
+		source = PluginsFromBinary
+	}
+	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion}, source
+}
+
+// probeBudgetMargin is how far the image probe's attempt budget must clear
+// worker_boot_timeout_seconds (ProbeBudget): long enough that the capacity stop (stuck,
+// internal/runtime/sandbox/probe.go) can see a probe pod's Unschedulable age pass the boot
+// timeout within the same attempt, rather than the attempt ending first and the Outcome.Waiting
+// branch never firing (LEGION-636: a deployment whose worker_boot_timeout_seconds reaches or
+// exceeds slow_command_timeout_seconds never gets there).
+const probeBudgetMargin = 60 * time.Second
+
+// ProbeBudget is how long the image probe's one attempt waits for its pod (ImageProbe.Budget):
+// slow_command_timeout_seconds, or, when worker_boot_timeout_seconds plus probeBudgetMargin is
+// larger, that instead — derived true in the second case. sandboxBootOf (a booting daemon) and
+// probeBoot (`legion probe-boot`) both build their ImageProbe through imageProbe, so both carry
+// the same derived budget.
+func ProbeBudget(cfg config.Config) (budget time.Duration, derived bool) {
+	if bound := cfg.WorkerBootTimeout + probeBudgetMargin; bound > cfg.SlowCommandTimeout {
+		return bound, true
+	}
+	return cfg.SlowCommandTimeout, false
+}
+
+// ProbeBudgetLine is the plain line `legion start --check-config` prints under
+// `runtime: kubernetes` when ProbeBudget's bound exceeds slow_command_timeout_seconds: how long
+// each attempt now waits, and which keys pushed it there. "", false when the bound is
+// slow_command_timeout_seconds itself.
+func ProbeBudgetLine(cfg config.Config) (line string, derived bool) {
+	budget, derived := ProbeBudget(cfg)
+	if !derived {
+		return "", false
+	}
+	return fmt.Sprintf("image probe: each attempt waits %ds: worker_boot_timeout_seconds (%d) + %ds is above slow_command_timeout_seconds (%d)",
+		int(budget.Seconds()), int(cfg.WorkerBootTimeout.Seconds()), int(probeBudgetMargin.Seconds()), int(cfg.SlowCommandTimeout.Seconds())), true
+}
+
+// logProbeBudget is the boot's one line when ProbeBudget derives a bound above
+// slow_command_timeout_seconds: an Info line naming the derived bound and both keys. Nothing is
+// logged when the bound is slow_command_timeout_seconds itself.
+func logProbeBudget(log *slog.Logger, cfg config.Config) {
+	budget, derived := ProbeBudget(cfg)
+	if !derived {
+		return
+	}
+	log.Info("daemon: the image probe's attempt outlives slow_command_timeout_seconds",
+		"budgetSeconds", int(budget.Seconds()),
+		"slow_command_timeout_seconds", int(cfg.SlowCommandTimeout.Seconds()),
+		"worker_boot_timeout_seconds", int(cfg.WorkerBootTimeout.Seconds()))
+}
+
+// logPlugins is the boot's one line on what this Kubernetes daemon will install for a
+// stale-plugin relaunch: an Info line naming the pair and where it came from, or, with none, the
+// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused.
+func logPlugins(log *slog.Logger, plugins *runtime.PluginInstall, source string) {
+	if plugins == nil {
+		log.Warn("daemon: this daemon knows no plugin versions to relaunch a stale process onto; set runtime.kubernetes.plugins or run a release build")
+		return
+	}
+	log.Info("daemon: stale-plugin relaunches install", "piLegion", plugins.PiLegion, "piEnvoy", plugins.PiEnvoy, "source", source)
+}
+
+// prepareSandbox is the runtime over readSandbox's client and Options, and the part of boot its
+// worker pod can refuse (sandboxBootOf). The worker stream listens on tcp://<bind>:<worker_stream_port>;
+// openSupervision hands the factory the address every pod dials (shimAddress).
+func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan) error {
+	p.stream = "tcp://" + net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.WorkerStreamPort))
+	if o.runtime != nil {
+		p.newRuntime, p.probe = o.runtime, o.probe
+		return nil
+	}
+	boot, err := sandboxBootOf(cfg, reads)
+	if err != nil {
+		return err
+	}
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames)
+	p.clusterCheck = boot.clusterCheck
+	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
+		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
+		if err != nil {
+			return err
+		}
+		if legacy {
+			return fmt.Errorf("refuse the Kubernetes runtime before any schema write: project %s still has legacy per-claim Sandbox locators", p.project)
+		}
+		return nil
+	}
+	p.probe = func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error) {
+		sandboxed, ok := rt.(*sandbox.Runtime)
+		if !ok {
+			return bootprobe.ImageReport{}, fmt.Errorf("the image probe needs the Agent Sandbox runtime, not %T", rt)
+		}
+		return sandboxed.ProbeImage(ctx, boot.probe)
+	}
+	return nil
+}
+
+// sandboxBoot is the part of a Kubernetes daemon's boot its worker pod can refuse: the cluster's
+// refusals and the image probe. prepareSandbox hands both to the boot plan, and probe-boot
+// (probeBoot) runs them alone, so the two run one check and one probe by construction.
+type sandboxBoot struct {
+	// clusterCheck is the cluster's half of boot's refusals (plan.clusterCheck), each read-only:
+	// Agent Sandbox is installed, and no Sandbox of a layout before this runtime's remains in the
+	// namespace for the project. The census logs what it accepts but will not keep — an issue
+	// Sandbox whose next launch replaces its disk — to the runtime's own logger.
+	clusterCheck func(context.Context) error
+	// probe is the image probe the runtime runs (sandbox.ImageProbe), over the references of the
+	// role prompts every worker pod is handed (prompts.RoleReferences).
+	probe sandbox.ImageProbe
+}
+
+// sandboxBootOf is sandboxBoot for the configuration and boot's reads.
+func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
+	probe, err := imageProbe(cfg, prompts.RoleReferences())
+	if err != nil {
+		return sandboxBoot{}, err
+	}
+	clusterCheck := func(ctx context.Context) error {
+		checking, cancel := context.WithTimeout(ctx, cfg.SlowCommandTimeout)
+		defer cancel()
+		if err := sandbox.CheckInstalled(checking, reads.client, agentSandbox); err != nil {
+			return err
+		}
+		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.Log)
+	}
+	return sandboxBoot{clusterCheck: clusterCheck, probe: probe}, nil
+}
+
+// probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
+// one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
+// setting), runs no lane, navigates headless Chromium to the two compromised chains and its
+// control, and exits. Five fresh runs at 250m / 1Gi took 57.68–77.43 s, so those limits hold the
+// browser probe while the smaller reservation still fits a pool that cannot place a controller or
+// issue pod. It has a 5Gi bound on node disk and a 1Gi disk request. The probe runs at every boot,
+// before anything is served, and a probe that reserved a pod's share — the controller's 1 CPU and
+// 4Gi, or an issue pod's 3 CPU and 19Gi — could leave the daemon unable to boot on a pool full
+// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
+// controller reservation no node can hold, met exactly that).
+var probeReservation = config.Reservation{CPU: "250m", CPURequest: "250m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
+
+// imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts
+// every pod is handed — this daemon's, inlined at each launch, so the probe resolves what they name
+// rather than the image's copy — and the probe's own reservation (probeReservation), translated as
+// every pod's is (requirements), its requests equal to its limits so the probe pod is Guaranteed
+// whatever an issue pod requests: a deployment's Burstable issue pods never reach the probe. The error is
+// the translation's, which only an edit to probeReservation can cause. Budget is ProbeBudget's.
+func imageProbe(cfg config.Config, references promptrefs.Names) (sandbox.ImageProbe, error) {
+	resources, err := requirements("the image probe's reservation", probeReservation)
+	if err != nil {
+		return sandbox.ImageProbe{}, err
+	}
+	budget, _ := ProbeBudget(cfg)
+	return sandbox.ImageProbe{
+		Contract: api.DaemonAPIVersion, Budget: budget, Retry: imageProbeRetry,
+		RoleReferences: references,
+		Resources:      resources,
+	}, nil
+}
+
+// kubeClient is the client of runtime.kubernetes: the kubeconfig's context it names, or the
+// kubeconfig's current one, which must then exist (decision 4: the restricted role's kubeconfig
+// sets none, so the configuration names it); with no kubeconfig, the pod's in-cluster credentials.
+func kubeClient(k config.Kubernetes) (*rest.Config, error) {
+	if k.Kubeconfig == "" {
+		rc, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("runtime.kubernetes names no kubeconfig, so the daemon reads in-cluster credentials: %w", err)
+		}
+		return rc, nil
+	}
+	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: k.Kubeconfig}, &clientcmd.ConfigOverrides{CurrentContext: k.Context})
+	if k.Context == "" {
+		raw, err := loader.RawConfig()
+		if err != nil {
+			return nil, fmt.Errorf("read runtime.kubernetes.kubeconfig %s: %w", k.Kubeconfig, err)
+		}
+		if raw.CurrentContext == "" {
+			return nil, fmt.Errorf("runtime.kubernetes.context is required: the kubeconfig %s sets no current context", k.Kubeconfig)
+		}
+	}
+	rc, err := loader.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("runtime.kubernetes.kubeconfig %s: %w", k.Kubeconfig, err)
+	}
+	return rc, nil
+}
+
+// sandboxOptions translates the configuration into the runtime's Options, all but the worker
+// stream's address, the connection directory and the token source, which boot hands the factory.
+// The issue pod's one container gets runtime.kubernetes.resources.issue as its requirements, and
+// the daemon-launched controller's container runtime.kubernetes.resources.controller (requirements).
+// The project's memory overlays (`memory.config_files`) reach the runtime whatever its mode is,
+// as they reach tmuxOptions: a tree already drawn into the memory group names them under any
+// mode, and a project with no block hands over none.
+// lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
+func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
+	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
+	if err != nil {
+		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
+	}
+	var tolerations []corev1.Toleration
+	for _, t := range k.Scheduling.Tolerations {
+		tolerations = append(tolerations, corev1.Toleration{
+			Key: t.Key, Operator: corev1.TolerationOperator(t.Operator), Value: t.Value, Effect: corev1.TaintEffect(t.Effect),
+		})
+	}
+	issue, err := requirements("runtime.kubernetes.resources.issue", k.Resources.Issue)
+	if err != nil {
+		return sandbox.Options{}, err
+	}
+	controller, err := requirements("runtime.kubernetes.resources.controller", k.Resources.Controller)
+	if err != nil {
+		return sandbox.Options{}, err
+	}
+	var agentSecrets *sandbox.AgentSecrets
+	if a := k.AgentSecrets; a != nil {
+		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second}
+	}
+	cache, err := repositoryCache(k.RepositoryCache)
+	if err != nil {
+		return sandbox.Options{}, err
+	}
+	opts := sandbox.Options{
+		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
+		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
+		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
+		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL, DispatchToken: dispatchToken,
+		NATSURLs: cfg.NatsURLs,
+		// The controller this runtime launches is told the project's channels, and is relaunched
+		// when they change (sandbox's address record).
+		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
+		Tools:                   workerImageTools,
+		Pod:                     sandbox.Pod(k.Pod),
+		RoleConfigFiles:         cfg.RoleConfigFiles,
+		ProviderKeys:            providerSecretKeys(cfg.ProviderKeys),
+		LaunchSecrets:           launchSecretNames(cfg, lookup),
+		ProvidersSecrets:        providersSecrets(cfg, lookup),
+		SessionStore:            k.SessionStore,
+		Setup:                   k.Setup,
+		SkillsRepository:        k.SkillsRepository,
+		TestPostgres:            k.TestPostgres,
+		BootTimeout:             cfg.WorkerBootTimeout,
+		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
+		BusyBackoff:             busyBackoffFirst,
+		TerminationGrace:        cfg.WorkerStopTimeout,
+		ProbeInterval:           cfg.ProbeInterval,
+		AdoptTimeout:            cfg.SlowCommandTimeout,
+		AgentSecrets:            agentSecrets,
+		RepositoryCache:         cache,
+		Log:                     log,
+	}
+	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	return opts, nil
+}
+
+// repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a
+// quantity, the intervals as durations, and the reservation as a container's requirements.
+func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, error) {
+	volume, err := resource.ParseQuantity(c.Volume)
+	if err != nil {
+		return sandbox.RepositoryCache{}, fmt.Errorf("runtime.kubernetes.repository_cache.volume: %w", err)
+	}
+	resources, err := requirements("runtime.kubernetes.repository_cache.resources", c.Resources)
+	if err != nil {
+		return sandbox.RepositoryCache{}, err
+	}
+	return sandbox.RepositoryCache{
+		Volume: volume, Refresh: time.Duration(c.RefreshMinutes) * time.Minute, Retain: time.Duration(c.RetainHours) * time.Hour,
+		Resources: resources,
+	}, nil
+}
+
+// providersSecrets are the launch secrets a pod reads from the providers Secret's key of the same
+// name, never from a copy in its own Secret: the NATS nkey seed, when the daemon has one. The one
+// copy the cluster holds is the deployment's, in the Secret every pod already mounts; the daemon's
+// own file (or variable) is where the daemon reads it, and the two must hold the same seed.
+func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []string {
+	if natsauth.Configured(cfg.NatsNkeySeedFile, lookup) {
+		return []string{natsauth.SeedVariable}
+	}
+	return nil
+}
+
+// newSecretsLogin is the daemon's agent-secrets login as the machines' Enroller: it constructs the
+// client from runtime.kubernetes.agent_secrets and starts it at boot on a background context, so
+// the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
+// before each credential expires; no person approves any of it, a restart included. Every login
+// logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
+// pod enrollment waits for it. The client itself is returned too, read-only, so the state route can
+// show the login's current status (source.State, agentsecrets.Client.LoginStatus). Never part of
+// launchSecrets, so no pod is ever handed the daemon's key, token or credential. Nil, nil without
+// the block.
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, *agentsecrets.Client) {
+	k := cfg.Runtime.Kubernetes
+	if k == nil || k.AgentSecrets == nil {
+		return nil, nil
+	}
+	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	go func() { _ = client.Start(context.Background()) }()
+	return brokerEnroller{client: client}, client
+}
+
+// brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a
+// PermanentError when its status says so, which is how the machine tells a refusal from an outage,
+// and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
+type brokerEnroller struct{ client *agentsecrets.Client }
+
+func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
+	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
+		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session,
+	})
+	if err != nil {
+		return "", err
+	}
+	return enrolled.ID, nil
+}
+
+func (b brokerEnroller) Revoke(ctx context.Context, id string) error { return b.client.Revoke(ctx, id) }
+
+// providerSecretKeys are provider_keys as the runtime takes them: each variable Oh My Pi reads,
+// to the key of the providers Secret that holds it; nil when the file names none.
+func providerSecretKeys(keys []config.ProviderKey) map[string]string {
+	if len(keys) == 0 {
+		return nil
+	}
+	secretKeys := make(map[string]string, len(keys))
+	for _, key := range keys {
+		secretKeys[key.Env] = key.Secret
+	}
+	return secretKeys
+}
+
+// requirements is a reservation as a container's requirements: its cpu and memory limits, and its
+// cpu and memory requests, each at most its limit (the loader holds them there) — equal to it at
+// the defaults, so the pod the containers make is Guaranteed and bursts past nothing, and below it
+// where the file set a lower request, which makes the pod Burstable (the kubelet's QoS reads cpu
+// and memory alone); and its ephemeral storage, the limit on what the container writes to the
+// node's disk and the smaller request the scheduler fits to the node's allocatable disk. The two
+// lists are built apart so neither edit reaches the other. key names the reservation in an error:
+// a pod's configuration key, or the probe's.
+func requirements(key string, reservation config.Reservation) (corev1.ResourceRequirements, error) {
+	requests, limits := corev1.ResourceList{}, corev1.ResourceList{}
+	for _, field := range []struct {
+		name          corev1.ResourceName
+		list          corev1.ResourceList
+		key, quantity string
+	}{
+		{corev1.ResourceCPU, limits, "cpu", reservation.CPU},
+		{corev1.ResourceCPU, requests, "cpu_request", reservation.CPURequest},
+		{corev1.ResourceMemory, limits, "memory", reservation.Memory},
+		{corev1.ResourceMemory, requests, "memory_request", reservation.MemoryRequest},
+		{corev1.ResourceEphemeralStorage, limits, "ephemeral_storage", reservation.EphemeralStorage},
+		{corev1.ResourceEphemeralStorage, requests, "ephemeral_storage_request", reservation.EphemeralStorageRequest},
+	} {
+		quantity, err := resource.ParseQuantity(field.quantity)
+		if err != nil {
+			return corev1.ResourceRequirements{}, fmt.Errorf("%s.%s: %w", key, field.key, err)
+		}
+		field.list[field.name] = quantity
+	}
+	return corev1.ResourceRequirements{Requests: requests, Limits: limits}, nil
+}
+
+// sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
+// lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
+// token source (the implement App's, minted for the repository's owner) and every tree role's gh
+// bundle (gitHubCredential, a directory for each owner of repos, one for each owner a configured
+// rename moved a repository away from while repos holds the name it moved to, and one for each
+// repository the pod's recorded owner and the owner whose installation serves its repository
+// serve beside the one it writes to), with the
+// controller's own bundle beside it
+// (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
+// and the directory set those directories are compared with (appauth.GitHubDirs), whose owner
+// directories the runtime reads a running pod's gh projection against — a pod lacking an owner's
+// directory holds no token of that owner, where one lacking a `<owner>/<repo>` directory reads
+// that repository through its owner's and is left where it is (sandbox's movedGhDirs) — the
+// three over one record of what the mints found GitHub refuses (appauth.NewLeftOut), so the set
+// a pod is compared against is the set a mint produces and an owner left out of every bundle of
+// the Apps that pod runs is named by no comparison of it — the roles the runtime asks for being
+// its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
+// runs the review App alone, nothing — with
+// serving as the rule every provisioning token's repository is read through
+// (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
+// whose installation holds the repository now), with the workflow's mapping as the repositories
+// its repository caches follow (mapped), with the store's own workspace bundles as what a
+// replacement pod's launcher is sent and what its restore drops, and registers its launcher
+// acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
+// mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
+// check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
+// one — per-claim pods, or issue pods on one tree volume — remains.
+func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames) runtimeFactory {
+	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
+		// The two halves of the release's saved work: an idle release puts the issue's unpushed
+		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
+		// replaces the released one before any role of that pod starts. The confirmation deletes
+		// the bundle of the release the launcher's report names and no other, so a report that
+		// arrives late takes no newer release's work with it. The read is the bundle's one restore
+		// attempt: the first pod that is not the one the work came off takes it, whether the
+		// bundle is sent or that pod is refused as no newer than the save, and nothing is
+		// answered for that bundle again.
+		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		if apps != nil {
+			// One record per project, written by the two credentials and read by the directory
+			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
+			// no mint of its own Apps can produce (appauth.LeftOut).
+			left := appauth.NewLeftOut()
+			opts.Tokens = newImplementTokens(apps, serving, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, left, opts.Log)
+			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
+				return appauth.GitHubDirs(repos, renames, left, roles, repo)
+			}
+		}
+		rt, err := sandbox.New(ctx, rc, opts)
+		if err != nil {
+			return nil, err
+		}
+		listener.SetLauncherResolver(rt.LauncherResolver())
+		return rt, nil
+	}
+}
+
+// implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
+// pod's workspace-fetch clones with an installation token minted for the repository it fetches
+// and narrowed to reading it (contents, pull requests, Actions and metadata at read,
+// appauth.Tokens.ReadToken), which is all a clone, a fetch and a repository cache do. An
+// installation that refuses that narrowing (appauth.ErrNarrowingRefused, GitHub's 422 to a
+// request naming a repository it does not reach, since the permissions it names are what the
+// installation was granted a moment before) is served the owner's own write token for that
+// repository instead, the one fallback there is, said once for that owner on the daemon's log.
+// Every other refusal — GitHub's trouble (appauth.TransientError, a 5xx or a rate-limited 422)
+// or an App with no installation on the owner (appauth.ErrNotInstalled) — is returned as it
+// came, with no second mint and nothing logged.
+//
+// It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
+// provision, its gh credential refresh and its repository cache Secret), so the repository a
+// configured rename moved to another owner is mapped here, once, to the name whose installation
+// holds it now (serving): nothing under runtime/sandbox knows of a rename.
+//
+// Only the token follows the rename. Every address those three sites build — the pod's feed, its
+// clone, and the repository cache's volume and Service — stays the repository the record names,
+// which a transfer must not move: GitHub's own documentation of a transfer says "All links to the
+// previous repository location are automatically redirected to the new location. When you use
+// `git clone`, `git fetch`, or `git push` on a transferred repository, these commands will
+// redirect to the new repository location or URL", so a clone or a fetch addressed at the name
+// the record keeps reaches the repository GitHub holds today.
+type implementTokens struct {
+	apps    appauth.Tokens
+	serving func(ghrepo.Repository) ghrepo.Repository
+	// log receives the fallback's line; slog.Default() when nil, as the runtime's own Log is.
+	log *slog.Logger
+
+	// mu guards warned, the set of owners the fallback has already been said of.
+	mu     sync.Mutex
+	warned map[string]bool
+}
+
+// newImplementTokens is the adapter over apps, with serving as the map a mint's repository goes
+// through and log as what the fallback's line is written to, slog.Default() when nil.
+func newImplementTokens(apps appauth.Tokens, serving func(ghrepo.Repository) ghrepo.Repository, log *slog.Logger) *implementTokens {
+	return &implementTokens{apps: apps, serving: serving, log: log, warned: map[string]bool{}}
+}
+
+func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
+	if t.serving != nil {
+		repo = t.serving(repo)
+	}
+	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
+	if err == nil {
+		return lease.Token, nil
+	}
+	if !appauth.NarrowingRefused(err) {
+		return "", err
+	}
+	lease, err = t.apps.Token(ctx, appauth.Implement, repo)
+	if err != nil {
+		return "", err
+	}
+	t.warnOwnToken(repo.Owner())
+	return lease.Token, nil
+}
+
+// warnOwnToken writes the fallback's line the first time owner's pods are provisioned with the
+// owner's own installation token, and nothing on every mint after it, for the life of the process
+// (appauth's sayShortfalls, the same rule for a grant the mint had to cut its request down to).
+func (t *implementTokens) warnOwnToken(owner string) {
+	key := strings.ToLower(owner)
+	t.mu.Lock()
+	warned := t.warned[key]
+	t.warned[key] = true
+	t.mu.Unlock()
+	if warned {
+		return
+	}
+	log := t.log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Warn("daemon: this owner's installation refuses a read-only provisioning token, "+
+		"so its pods clone with the owner's own installation token rather than a reading lease", "owner", owner)
+}

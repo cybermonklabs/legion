@@ -1,0 +1,376 @@
+package fake
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+var (
+	_ runtime.Conn  = (*Conn)(nil)
+	_ runtime.Conns = (*Conns)(nil)
+)
+
+// Prompt is one prompt frame the daemon sent, recorded whether the agent took it or refused it:
+// a refused send is still a send, and the budget that counts them has to see it.
+type Prompt struct {
+	DeliveryID string
+	Message    string
+}
+
+// Adoption is one working-copy adoption the daemon asked the agent's side to perform.
+type Adoption struct {
+	Identity runtime.GitIdentity
+	Timeout  time.Duration
+}
+
+// Bundling is one workspace bundle the daemon asked the agent's side to build.
+type Bundling struct {
+	Issue   string
+	Timeout time.Duration
+}
+
+// Compaction is one compaction the daemon asked Oh My Pi for.
+type Compaction struct {
+	CustomInstructions string
+	Bound              time.Duration
+}
+
+// Conn is one agent's connection as a double: it records what was asked of the agent and answers
+// what the test told it to. The zero value is not usable; call NewConn.
+type Conn struct {
+	seq         uint64
+	mu          sync.Mutex
+	prompts     []Prompt
+	adoptions   []Adoption
+	bundled     []Bundling
+	compactions []Compaction
+	compactGate chan struct{}
+	bundle      *runtime.WorkspaceBundle
+	enrollments []string
+	podToken    string
+	tokenReads  int
+	shutdowns   int
+	state       runtime.ConnState
+	unresulted  string
+	failures    map[string]error
+}
+
+// NewConn is a connection that accepts everything and reports no turn in flight.
+func NewConn() *Conn {
+	return &Conn{failures: map[string]error{}}
+}
+
+// Sequence is the order the connection was registered in (Conns.Register), zero before it is.
+func (c *Conn) Sequence() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seq
+}
+
+// registered stamps the connection with its registration order.
+func (c *Conn) registered(seq uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seq = seq
+}
+
+func (c *Conn) Prompt(_ context.Context, deliveryID, message string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.prompts = append(c.prompts, Prompt{DeliveryID: deliveryID, Message: message})
+	if err := c.failures["Prompt"]; err != nil {
+		return err
+	}
+	c.unresulted = deliveryID
+	return nil
+}
+
+// TakePromptResult is the agent reporting how one prompt's work ended, which Oh My Pi writes as a
+// prompt_result frame behind the agent_end of the turn that prompt ran (shimwire.PromptResult).
+// It answers the delivery of the prompt this connection acknowledged and has not reported the end
+// of yet, once, and false when there is none: a prompt the connection refused reaches no turn and
+// reports no result, and a turn the daemon never prompted ends with none behind it.
+func (c *Conn) TakePromptResult() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delivery := c.unresulted
+	c.unresulted = ""
+	return delivery, delivery != ""
+}
+
+func (c *Conn) GetState(_ context.Context) (runtime.ConnState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.failures["GetState"]; err != nil {
+		return runtime.ConnState{}, err
+	}
+	return c.state, nil
+}
+
+func (c *Conn) Shutdown(_ context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.shutdowns++
+	return c.failures["Shutdown"]
+}
+
+func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeout time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
+	return c.failures["AdoptWorkingCopy"]
+}
+
+// Compact answers the daemon asking Oh My Pi to compact the session, recording what it asked
+// for. A gate HoldCompact opened makes the answer wait for the test to open it, or for the
+// caller's context: that is a compaction that takes its time, which the caller must still get
+// the real answer of.
+func (c *Conn) Compact(ctx context.Context, customInstructions string, bound time.Duration) error {
+	c.mu.Lock()
+	c.compactions = append(c.compactions, Compaction{CustomInstructions: customInstructions, Bound: bound})
+	gate, err := c.compactGate, c.failures["Compact"]
+	c.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
+// Compactions is every compaction asked over this connection, in order.
+func (c *Conn) Compactions() []Compaction {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.compactions)
+}
+
+// HoldCompact makes every later Compact wait before it answers, and returns the call that lets
+// each of them through.
+func (c *Conn) HoldCompact() func() {
+	gate := make(chan struct{})
+	c.mu.Lock()
+	c.compactGate = gate
+	c.mu.Unlock()
+	return sync.OnceFunc(func() { close(gate) })
+}
+
+// RefuseCompact makes every later Compact Oh My Pi refusing the compaction with reason — a
+// session too small, one already compacted — as the stream's connection answers `success:
+// false`; RefuseCompact("") clears it.
+func (c *Conn) RefuseCompact(reason string) {
+	if reason == "" {
+		c.fail("Compact", nil)
+		return
+	}
+	c.fail("Compact", compactRefusal{reason: reason})
+}
+
+// compactRefusal is the fake agent's `success: false` answer to a compaction, as
+// stream.RefusedError is the real one's.
+type compactRefusal struct{ reason string }
+
+func (r compactRefusal) Error() string         { return "compact: " + r.reason }
+func (r compactRefusal) RefusalReason() string { return r.reason }
+
+// FailCompact makes every later Compact return err: the transport failing under the frame, or
+// the wait for Oh My Pi's answer running out.
+func (c *Conn) FailCompact(err error) { c.fail("Compact", err) }
+
+// BundleWorkspace answers the daemon asking the agent's side for its workspace's unpushed work:
+// the bundle SetWorkspaceBundle gave it, recorded with the issue asked about. With none given it
+// fails, so a test that never expected a release to bundle sees the request go unanswered rather
+// than an empty bundle.
+func (c *Conn) BundleWorkspace(_ context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bundled = append(c.bundled, Bundling{Issue: issue, Timeout: timeout})
+	if err := c.failures["BundleWorkspace"]; err != nil {
+		return runtime.WorkspaceBundle{}, err
+	}
+	if c.bundle == nil {
+		return runtime.WorkspaceBundle{}, errors.New("fake: the shim was asked to bundle its workspace, and the test set none (SetWorkspaceBundle)")
+	}
+	return *c.bundle, nil
+}
+
+// SetWorkspaceBundle is the bundle the agent's side builds from now on.
+func (c *Conn) SetWorkspaceBundle(b runtime.WorkspaceBundle) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bundle = &b
+}
+
+// Bundlings is every workspace bundle asked over this connection, in order.
+func (c *Conn) Bundlings() []Bundling {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.bundled)
+}
+
+// FailBundleWorkspace makes every later BundleWorkspace return err; nil clears it.
+func (c *Conn) FailBundleWorkspace(err error) { c.fail("BundleWorkspace", err) }
+
+// RescueUnpushed answers a disk with no workspace on it: the daemon asks the push check through
+// its runtime (runtime.Runtime.RescueUnpushed), whose fake answers what a test scripts there.
+func (c *Conn) RescueUnpushed(context.Context, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
+	return nil, nil
+}
+
+// AgentSecretsEnrollment records the enrollment id the daemon asked the agent's shim to keep.
+func (c *Conn) AgentSecretsEnrollment(_ context.Context, enrollmentID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.enrollments = append(c.enrollments, enrollmentID)
+	return c.failures["AgentSecretsEnrollment"]
+}
+
+// AgentSecretsToken answers the daemon asking the agent's shim to read its projected token again:
+// the token SetAgentSecretsToken gave it. With none given it fails, so a test that never expected
+// the daemon to ask sees the request go unanswered rather than an empty token.
+func (c *Conn) AgentSecretsToken(_ context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tokenReads++
+	if err := c.failures["AgentSecretsToken"]; err != nil {
+		return "", err
+	}
+	if c.podToken == "" {
+		return "", errors.New("fake: the shim was asked for its projected token, and the test set none (SetAgentSecretsToken)")
+	}
+	return c.podToken, nil
+}
+
+// SetAgentSecretsToken is the projected token the shim reads from its mount from now on.
+func (c *Conn) SetAgentSecretsToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.podToken = token
+}
+
+// TokenReads is how many times the daemon asked the shim to read its projected token again.
+func (c *Conn) TokenReads() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tokenReads
+}
+
+// Prompts is every prompt frame sent over this connection, in order.
+func (c *Conn) Prompts() []Prompt {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Prompt(nil), c.prompts...)
+}
+
+// Adoptions is every working-copy adoption asked over this connection, in order.
+func (c *Conn) Adoptions() []Adoption {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Adoption(nil), c.adoptions...)
+}
+
+// Enrollments is every enrollment id asked over this connection, in order.
+func (c *Conn) Enrollments() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.enrollments...)
+}
+
+// Shutdowns is how many times the agent was asked to end itself.
+func (c *Conn) Shutdowns() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shutdowns
+}
+
+// SetStreaming is the agent's turn starting or ending, as `GetState` would report it.
+func (c *Conn) SetStreaming(streaming bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state.IsStreaming = streaming
+}
+
+// FailPrompt makes every later Prompt return err: the transport failing under the frame.
+// FailPrompt(nil) clears it, and clears a scripted refusal too.
+func (c *Conn) FailPrompt(err error) { c.fail("Prompt", err) }
+
+// RefusePrompt makes every later Prompt the agent refusing the frame with reason: an error that is
+// runtime.ErrPromptRefused and carries reason (runtime.RefusalReason), as the stream's connection
+// answers `success: false`.
+func (c *Conn) RefusePrompt(reason string) {
+	c.fail("Prompt", promptRefusal{reason: reason})
+}
+
+// promptRefusal is the fake agent's `success: false` answer to a prompt, as stream.RefusedError is
+// the real one's.
+type promptRefusal struct{ reason string }
+
+func (r promptRefusal) Error() string         { return r.reason + ": " + runtime.ErrPromptRefused.Error() }
+func (r promptRefusal) Is(target error) bool  { return target == runtime.ErrPromptRefused }
+func (r promptRefusal) RefusalReason() string { return r.reason }
+
+// FailGetState makes every later GetState return err.
+func (c *Conn) FailGetState(err error) { c.fail("GetState", err) }
+
+// FailShutdown makes every later Shutdown return err.
+func (c *Conn) FailShutdown(err error) { c.fail("Shutdown", err) }
+
+// FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
+func (c *Conn) FailAdoptWorkingCopy(err error) { c.fail("AdoptWorkingCopy", err) }
+
+// FailAgentSecretsToken makes every later AgentSecretsToken return err; nil clears it.
+func (c *Conn) FailAgentSecretsToken(err error) { c.fail("AgentSecretsToken", err) }
+
+func (c *Conn) fail(method string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failures[method] = err
+}
+
+// Conns is the connection directory as a double. The zero value is not usable; call NewConns.
+type Conns struct {
+	mu    sync.Mutex
+	conns map[claim.Token]runtime.Conn
+	// registrations numbers the connections in the order they are registered, as the listener
+	// does, so a connection registered later is newer (runtime.Conn.Sequence).
+	registrations uint64
+}
+
+// NewConns is an empty directory: no claim has connected yet.
+func NewConns() *Conns {
+	return &Conns{conns: map[claim.Token]runtime.Conn{}}
+}
+
+func (c *Conns) Conn(token claim.Token) (runtime.Conn, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	conn, ok := c.conns[token]
+	return conn, ok
+}
+
+// Register is conn connecting for the claim. A fake connection, or one that embeds it, is
+// numbered newer than every connection registered before it.
+func (c *Conns) Register(token claim.Token, conn runtime.Conn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registrations++
+	if numbered, ok := conn.(interface{ registered(uint64) }); ok {
+		numbered.registered(c.registrations)
+	}
+	c.conns[token] = conn
+}
+
+// Remove is that connection going away.
+func (c *Conns) Remove(token claim.Token) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.conns, token)
+}

@@ -1,0 +1,374 @@
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+
+import { api } from "../../api/client";
+import type { Artifact, IssueReferences } from "../../api/types";
+import { buildIssuePath } from "../refs/routes";
+import { ArtifactsTab } from "./ArtifactsTab";
+
+const artifact = {
+  created_at: "2026-09-09T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  id: "artifact-1",
+  issue_key: "CORE-1",
+  project: "CORE",
+  kind: "image",
+  name: "diagram.png",
+  primary: false,
+  ref_key: "CORE-1/diagram-png",
+  session_id: null,
+  slug: "diagram-png",
+  versions: [
+    {
+      authors: [{ id: "alice", kind: "user" }],
+      created_at: "2026-09-09T00:00:00Z",
+      mime: "image/png",
+      named: false,
+      number: 1,
+      sha256: "first-sha",
+      size: 10,
+      summary: null,
+    },
+    {
+      authors: [{ id: "alice", kind: "user" }],
+      created_at: "2026-09-09T01:00:00Z",
+      mime: "image/png",
+      named: false,
+      number: 2,
+      sha256: "second-sha",
+      size: 20,
+      summary: null,
+    },
+  ],
+  // `satisfies`, not an annotation: the tests below slice `artifact.versions`, which the route
+  // table's `Version[] | null` would not let them.
+} satisfies Artifact;
+
+const noReferences: IssueReferences = { members: [], truncated: false };
+
+function renderTab(
+  artifacts: Artifact[],
+  references: IssueReferences = noReferences,
+  isClosed = false
+) {
+  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
+  const getIssueReferences = spyOn(api, "getIssueReferences").mockResolvedValue(references);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
+      <QueryClientProvider client={queryClient}>
+        <ArtifactsTab isClosed={isClosed} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { getIssueReferences, listArtifacts, view };
+}
+
+test("renders one row per artifact with no compare controls", async () => {
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+    versions: artifact.versions.slice(0, 1),
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    expect(screen.getByTestId("artifact-notes-md")).not.toBeNull();
+    expect(screen.queryByLabelText(/Compare .* from/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Compare .* to/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Compare versions")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show all versions" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// W41. A closed issue takes no upload, and Dispatch would refuse one only after its whole body went
+// up: the tab refuses before a file is picked, with the reason on its Upload control - and on the
+// line beside it, for a reader with no pointer - and a file dropped on it is not staged. W46. The
+// hidden file input is disabled too, so no keyboard path opens a chooser whose file is ignored.
+test("a closed issue's Artifacts tab refuses an upload before a file is picked", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
+  const pick = spyOn(HTMLInputElement.prototype, "click");
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    const upload = screen.getByRole("button", { name: "Upload" });
+    expect(upload).toHaveAttribute("aria-disabled", "true");
+    expect(upload).toHaveAttribute("title", "This issue is closed. Reopen it to upload.");
+    expect(screen.getByText("This issue is closed. Reopen it to upload.")).toBeTruthy();
+    await user.click(upload);
+    expect(pick).not.toHaveBeenCalled();
+    const file = new File(["png"], "late.png", { type: "image/png" });
+    // A drop of files, which user-event has no form for.
+    fireEvent.drop(screen.getByTestId("artifact-diagram-png"), { dataTransfer: { files: [file] } });
+    expect(screen.queryByText("late.png")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Summary (optional)")).not.toBeInTheDocument();
+    const input = screen.getByLabelText("Upload artifact");
+    expect(input instanceof HTMLInputElement && input.disabled).toBe(true);
+  } finally {
+    pick.mockRestore();
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A row names how big its latest version is stored, a document's markdown as a file's bytes, so a
+// person finds a document near the size cap from the list without opening it.
+test("a row names its latest version's stored size", async () => {
+  const spec: Artifact = {
+    ...artifact,
+    id: "artifact-spec",
+    kind: "doc",
+    name: "near-cap.md",
+    slug: "near-cap-md",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-09-09T02:00:00Z",
+        named: false,
+        number: 1,
+        size: 1_048_475,
+        summary: null,
+      },
+    ],
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact, spec]);
+
+  try {
+    const document = await screen.findByTestId("artifact-near-cap-md");
+    expect(document.querySelector("p")?.textContent).toContain("doc · 1 version · 1023.9 KB ·");
+    expect(screen.getByTestId("artifact-diagram-png").querySelector("p")?.textContent).toContain(
+      "image · 2 versions · 20 B ·"
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("artifacts tab renders no make-primary control", async () => {
+  const artifacts: Artifact[] = [
+    {
+      ...artifact,
+      id: "artifact-spec",
+      kind: "doc",
+      name: "spec.md",
+      primary: true,
+      slug: "spec",
+      versions: artifact.versions.slice(0, 1),
+    },
+    {
+      ...artifact,
+      id: "artifact-notes",
+      kind: "doc",
+      name: "notes.md",
+      primary: false,
+      slug: "notes-md",
+      versions: artifact.versions.slice(0, 1),
+    },
+    artifact,
+  ];
+  const { getIssueReferences, listArtifacts, view } = renderTab(artifacts);
+
+  try {
+    await screen.findByTestId("artifact-spec");
+    expect(screen.getByTestId("artifact-spec")).toHaveTextContent("Primary");
+    expect(screen.queryByRole("button", { name: /make primary/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Not\s+primary/)).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("a primary artifact sorts first regardless of upload order", async () => {
+  const older: Artifact = {
+    ...artifact,
+    id: "artifact-older",
+    name: "older.png",
+    slug: "older-png",
+  };
+  const primary: Artifact = {
+    ...artifact,
+    id: "artifact-primary",
+    name: "primary.png",
+    primary: true,
+    slug: "primary-png",
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([older, primary]);
+
+  try {
+    await screen.findByTestId("artifact-older-png");
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]?.getAttribute("data-testid")).toBe("artifact-primary-png");
+    expect(rows[1]?.getAttribute("data-testid")).toBe("artifact-older-png");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("artifacts saved in the same second list newest first by time, not by the timestamp strings", async () => {
+  // As text `…00.12Z` sorts after `…00.123456Z`, the later time.
+  const savedAt = (id: string, createdAt: string): Artifact => ({
+    ...artifact,
+    id: `artifact-${id}`,
+    name: `${id}.png`,
+    slug: `${id}-png`,
+    versions: artifact.versions
+      .slice(0, 1)
+      .map((version) => ({ ...version, created_at: createdAt })),
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([
+    savedAt("earlier", "2026-09-09T01:00:00.12Z"),
+    savedAt("later", "2026-09-09T01:00:00.123456Z"),
+  ]);
+
+  try {
+    await screen.findByTestId("artifact-later-png");
+    expect(screen.getAllByRole("listitem").map((row) => row.getAttribute("data-testid"))).toEqual([
+      "artifact-later-png",
+      "artifact-earlier-png",
+    ]);
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("the filter input narrows rows by name and kind", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    const filter = screen.getByLabelText("Filter artifacts");
+    await user.click(filter);
+    await user.paste("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+    expect(screen.getByTestId("artifact-notes-md")).not.toBeNull();
+
+    await user.clear(filter);
+    await user.click(filter);
+    await user.paste("image");
+    expect(screen.getByTestId("artifact-diagram-png")).not.toBeNull();
+    expect(screen.queryByTestId("artifact-notes-md")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("References lists closure members with chip, via, and depth, names truncation, and renders an artifact source without an issue key, collapsed by default", async () => {
+  const referencedDocument: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    issue_key: null,
+    kind: "doc",
+    name: "Design notes",
+    primary: false,
+    slug: "design-notes",
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
+    members: [
+      {
+        artifact: referencedDocument,
+        depth: 1,
+        via: { id: "comment-1", kind: "comment" },
+      },
+    ],
+    truncated: true,
+  });
+
+  try {
+    const summary = await screen.findByText("References (1)");
+    const details = summary.closest("details");
+    expect(details).toBeInstanceOf(HTMLDetailsElement);
+    expect((details as HTMLDetailsElement).open).toBe(false);
+
+    const references = within(view.container).getByRole("region", { name: "References" });
+    expect(within(references).getByRole("link", { name: "Design notes" })).toHaveAttribute(
+      "href",
+      "/projects/CORE/documents/design-notes"
+    );
+    expect(references).toHaveTextContent("CORE");
+    expect(references).toHaveTextContent("via comment");
+    expect(references).toHaveTextContent("depth 1");
+    expect(references).toHaveTextContent("more references beyond 8 hops");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A conversation's picture is owned by the agent whose conversation holds it: the References row
+// names that agent through `AgentName`, a link to its live conversation.
+test("References names the agent that owns a conversation's artifact", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([
+    {
+      capabilities: [],
+      dir: "/w",
+      host: "host",
+      last_activity: null,
+      last_seen: 1,
+      machine_id: "host",
+      open_asks: 0,
+      roles: [],
+      session_id: "planner-session",
+      state: "live",
+      title: "Planner",
+    },
+  ]);
+  const picture: Artifact = {
+    ...artifact,
+    id: "artifact-shot",
+    issue_key: null,
+    name: "shot.png",
+    project: "",
+    session_id: "planner-session",
+    slug: "shot-png",
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
+    members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
+    truncated: false,
+  });
+
+  try {
+    const references = await screen.findByRole("region", { name: "References", hidden: true });
+    const owner = await within(references).findByRole("link", { hidden: true, name: "Planner" });
+    expect(owner).toHaveAttribute("href", "/agents/planner-session/live");
+    expect(references).toHaveTextContent("agent Planner · via comment · depth 1");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    listAgents.mockRestore();
+  }
+});

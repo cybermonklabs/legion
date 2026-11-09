@@ -1,0 +1,447 @@
+import { expect, test } from "bun:test"
+import { chmodSync, writeFileSync } from "node:fs"
+import { delimiter, join } from "node:path"
+import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { createEnvoyClient, type EnvoyClient } from "@legion/envoy-client/transport"
+import { captureEnvironment } from "@legion/test-fixtures/environment"
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import type { Server } from "bun"
+import {
+  type ChannelSession,
+  type ChannelToolRuntime,
+  channelToolDefinitions,
+  executeEnvoyTool,
+} from "../src/envoy-channel-server"
+import { SessionIdentity } from "../src/session-identity"
+import { isolatePaneEnvironment } from "./pane-environment"
+
+isolatePaneEnvironment()
+
+const makeDirectory = temporaryDirectories("claude-envoy-slack")
+
+function sessionWith(followed: string[]): ChannelSession {
+  return {
+    delivery: {
+      enqueue: async () => true,
+      inbox: () => [],
+    },
+    topics: () => ["notifications.agent.ses_claude", ...followed],
+    follow: async (topics) => {
+      const fresh = topics.filter((topic) => !followed.includes(topic))
+      followed.push(...fresh)
+      return fresh
+    },
+    unfollow: async () => [],
+    rememberRole: async () => undefined,
+    onRoleRegained: () => undefined,
+    capabilitiesChanged: () => undefined,
+    observe: () => undefined,
+    messageOf: () => undefined,
+    shutdown: async () => undefined,
+  }
+}
+const identity = new SessionIdentity("ses_claude", process.cwd())
+/** The client instance of the channel-server process the tools act for. */
+const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+test("declares exactly the shared Envoy tools, the bounded inbox included", () => {
+  const definitions = channelToolDefinitions()
+
+  expect(definitions.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
+  expect(definitions.map(({ name }) => name)).toContain("envoy_inbox")
+})
+
+test("sends Envoy messages through the shared transport", async () => {
+  let body = ""
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (_request, init) => {
+      body = String(init?.body)
+      return Response.json({
+        event_id: "evt-sent",
+        source: "agent",
+        source_event_id: "agent.ses_claude.evt-sent",
+        source_session: "ses_claude",
+        topic: "notifications.agent.ses_receiver",
+        dedupe_key: "agent.ses_receiver.evt-sent",
+        issued_at: 1,
+        payload_summary: "ready",
+        trace_id: "trace-sent",
+        recipient: "ses_receiver",
+      })
+    },
+  })
+  const followed: string[] = []
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith(followed),
+    clientInstanceID: INSTANCE,
+  }
+
+  const result = await executeEnvoyTool(runtime, "envoy_send", {
+    session_id: "ses_receiver",
+    message: "ready",
+  })
+
+  expect(JSON.parse(body)).toMatchObject({
+    source: "agent",
+    source_session: "ses_claude",
+    target_session: "ses_receiver",
+    message: "ready",
+  })
+  expect(result).toEqual({
+    message: "sent evt-sent to ses_receiver (live)",
+    event_id: "evt-sent",
+    recipient: "ses_receiver",
+    recipient_state: "live",
+    confirmed: true,
+  })
+})
+
+// The list is what the model reads before it decides a peer is dead: a session past its live
+// window is still running, so it must be asked for and must arrive with the state and the
+// heartbeat that say so (dispatch://INFRA-392).
+test("lists the unresponsive sessions too, each with its state and last_seen", async () => {
+  let requested = ""
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (request) => {
+      requested = String(request)
+      return Response.json([
+        {
+          session_id: "ses_stalled",
+          machine_id: "host-a",
+          dir: "/work",
+          port: 0,
+          title: "Reviewer",
+          topics: [],
+          self_subscribed: true,
+          last_seen: 1_700_000_000_000,
+          state: "unresponsive",
+        },
+      ])
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+
+  const result = await executeEnvoyTool(runtime, "envoy_sessions", {})
+
+  expect(requested).toBe("http://envoy.test/v1/sessions?include=unresponsive")
+  expect(result).toEqual([
+    expect.objectContaining({
+      session_id: "ses_stalled",
+      state: "unresponsive",
+      last_seen: 1_700_000_000_000,
+    }),
+  ])
+})
+
+test("renders a kept role publish as a success that says no session holds the role yet", async () => {
+  // Nobody holds the role, so the listener kept the message and answered 202 (INFRA-839). The
+  // tool says so in the same words the Oh My Pi plugin uses, and names no holder: the holder a
+  // resolution read never received the message.
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (_request, init) => {
+      const body = JSON.parse(String(init?.body)) as { readonly topic: string }
+      return new Response(
+        JSON.stringify({
+          event_id: "evt-kept",
+          source: "agent",
+          source_event_id: "agent.ses_claude.evt-kept",
+          source_session: "ses_claude",
+          topic: body.topic,
+          dedupe_key: "agent.legion-architect.evt-kept",
+          issued_at: 1,
+          payload_summary: "the worker is stalled",
+          trace_id: "trace-kept",
+          kept: true,
+          kept_reason: "unclaimed",
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      )
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+
+  const result = (await executeEnvoyTool(runtime, "envoy_publish", {
+    topic: "notifications.role.legion-architect",
+    message: "the worker is stalled",
+  })) as { readonly message: string; readonly kept: boolean; readonly kept_reason: string }
+
+  expect(result.message).toBe(
+    "published evt-kept. Envoy kept it for the role: no session holds it yet, and the message waits for the session that claims it next.",
+  )
+  expect(result.kept).toBe(true)
+  expect(result.kept_reason).toBe("unclaimed")
+})
+
+test("the role a tool claims names the process claiming it on the wire", async () => {
+  // The listener records the claim's process as the role's holder, and frees a claim only for
+  // the process that made it, so a role this `claude` takes cannot be released or taken by a
+  // second one that resumed its session id (dispatch://INFRA-783).
+  let body = ""
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (_request, init) => {
+      body = String(init?.body)
+      return Response.json({
+        session_id: "ses_claude",
+        machine_id: "devbox",
+        dir: "/work",
+        topics: ["notifications.role.reviewer"],
+      })
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+
+  await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })
+
+  expect(JSON.parse(body)).toEqual({
+    session_id: "ses_claude",
+    role: "reviewer",
+    client_instance_id: INSTANCE,
+  })
+})
+
+test("a send that is not confirmed names its key, and a resend under that key sends it again", async () => {
+  const keys: string[] = []
+  let answer: "time out" | "repeat" = "time out"
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (_request, init) => {
+      keys.push((JSON.parse(String(init?.body)) as { idempotency_key: string }).idempotency_key)
+      if (answer === "time out") throw new DOMException("The operation timed out.", "TimeoutError")
+      return Response.json({
+        event_id: "evt-resent",
+        source: "agent",
+        source_event_id: "agent.ses_claude.evt-resent",
+        source_session: "ses_claude",
+        topic: "notifications.agent.ses_receiver",
+        dedupe_key: `agent.ses_receiver.${keys[0]}`,
+        issued_at: 1,
+        payload_summary: "ready",
+        trace_id: "trace-resent",
+        recipient: "ses_receiver",
+        duplicate: true,
+      })
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+
+  const failed = await executeEnvoyTool(runtime, "envoy_send", {
+    session_id: "ses_receiver",
+    message: "ready",
+  }).then(
+    () => undefined,
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  const key = keys[0] as string
+  expect(failed).toContain("The send to ses_receiver is not confirmed delivered")
+  expect(failed).toContain(
+    `Sending it again with idempotency_key ${key} within 72 hours is the safe resend`,
+  )
+
+  answer = "repeat"
+  const resent = await executeEnvoyTool(runtime, "envoy_send", {
+    session_id: "ses_receiver",
+    message: "ready",
+    idempotency_key: key,
+  })
+
+  expect(keys).toEqual([key, key, key])
+  expect(resent).toMatchObject({
+    message:
+      "sent to ses_receiver once: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy",
+  })
+})
+
+test("replies in a Slack thread with slack_post, with the token the broker grants", async () => {
+  // The broker's client on PATH, standing in for the exec form once LEGION_SLACK_BOT_TOKEN is
+  // granted, and a fake Slack Web API at SLACK_POST_API_URL.
+  const restore = captureEnvironment(["PATH", "SLACK_POST_API_URL"])
+  let slack: Server<undefined> | undefined
+  try {
+    const dir = makeDirectory()
+    writeFileSync(
+      join(dir, "agent-secrets"),
+      '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nLEGION_SLACK_BOT_TOKEN=xoxb-granted exec "$@"\n',
+    )
+    chmodSync(join(dir, "agent-secrets"), 0o755)
+    const posts: unknown[] = []
+    slack = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(request) {
+        posts.push({
+          authorization: request.headers.get("authorization"),
+          body: await request.json(),
+        })
+        return Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" })
+      },
+    })
+    process.env["PATH"] = `${dir}${delimiter}${process.env["PATH"] ?? ""}`
+    process.env["SLACK_POST_API_URL"] = `http://127.0.0.1:${slack.port}/api`
+    const runtime: ChannelToolRuntime = {
+      identity,
+      client: createEnvoyClient({
+        baseUrl: "http://envoy.test",
+        fetch: async () => Response.json({}),
+      }),
+      session: sessionWith([]),
+      clientInstanceID: INSTANCE,
+    }
+
+    const result = await executeEnvoyTool(runtime, "slack_post", {
+      channel: "C00000000",
+      thread_ts: "1700000000.000100",
+      text: "Filed as ACME-12.",
+    })
+
+    expect(posts).toEqual([
+      {
+        authorization: "Bearer xoxb-granted",
+        body: { channel: "C00000000", thread_ts: "1700000000.000100", text: "Filed as ACME-12." },
+      },
+    ])
+    expect(result).toEqual({
+      channel: "C00000000",
+      thread_ts: "1700000000.000100",
+      ts: "1700000000.000200",
+    })
+  } finally {
+    slack?.stop(true)
+    restore()
+  }
+})
+
+test("a dispatch_* call is an unknown tool even with Dispatch configured, and reaches no Dispatch", async () => {
+  let server: Server<undefined> | undefined
+  try {
+    const requests: string[] = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        requests.push(`${request.method} ${new URL(request.url).pathname}`)
+        return Response.json({ error: "unexpected" }, { status: 500 })
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = "test-token"
+    const runtime: ChannelToolRuntime = {
+      identity,
+      client: {} as EnvoyClient,
+      session: sessionWith([]),
+      clientInstanceID: INSTANCE,
+    }
+
+    await expect(
+      executeEnvoyTool(runtime, "dispatch_ask", { issue: "DSP-3", question: "Approve?" }),
+    ).rejects.toThrow("Unsupported Envoy tool: dispatch_ask")
+    expect(requests).toEqual([])
+  } finally {
+    server?.stop(true)
+  }
+})
+
+test("envoy_list reports the union of live NATS subscriptions and registry interests", async () => {
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async () =>
+      Response.json({
+        session_id: "ses_claude",
+        machine_id: "devbox",
+        dir: "/tmp",
+        topics: ["notifications.agent.ses_claude", "notifications.dispatch.issue.DSP-9.>"],
+      }),
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith(["notifications.dispatch.issue.DSP-3.>"]),
+    clientInstanceID: INSTANCE,
+  }
+
+  const result = await executeEnvoyTool(runtime, "envoy_list", {})
+
+  expect(result).toEqual({
+    session_id: "ses_claude",
+    machine_id: "devbox",
+    dir: "/tmp",
+    topics: [
+      "notifications.agent.ses_claude",
+      "notifications.dispatch.issue.DSP-9.>",
+      "notifications.dispatch.issue.DSP-3.>",
+    ],
+    interests: [
+      { topic: "notifications.agent.ses_claude", source: "both" },
+      { topic: "notifications.dispatch.issue.DSP-9.>", source: "registry" },
+      { topic: "notifications.dispatch.issue.DSP-3.>", source: "live" },
+    ],
+  })
+})
+
+test("envoy_sessions filters by the machine a session runs on and by the listener it registered through", async () => {
+  const sessions = [
+    {
+      session_id: "ses_on_hub",
+      machine_id: "envoy-hub",
+      host: "gke-node-7",
+      dir: "/work",
+      port: 0,
+      title: "",
+      topics: [],
+      self_subscribed: true,
+    },
+    {
+      session_id: "ses_on_devbox",
+      machine_id: "devbox",
+      host: "devbox",
+      dir: "/work",
+      port: 0,
+      title: "",
+      topics: [],
+      self_subscribed: true,
+    },
+  ]
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async () => Response.json(sessions),
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+  const listed = async (machine: string) =>
+    (
+      (await executeEnvoyTool(runtime, "envoy_sessions", { machine })) as { session_id: string }[]
+    ).map((session) => session.session_id)
+
+  expect(await listed("envoy-hub")).toEqual(["ses_on_hub"])
+  expect(await listed("gke-node-7")).toEqual(["ses_on_hub"])
+  expect(await listed("devbox")).toEqual(["ses_on_devbox"])
+  expect(await listed("other")).toEqual([])
+})

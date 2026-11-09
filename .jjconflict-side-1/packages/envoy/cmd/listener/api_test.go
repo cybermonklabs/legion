@@ -1,0 +1,3840 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+	"unsafe"
+
+	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testnats"
+)
+
+type fakeStreamInfo struct {
+	info           *nats.StreamInfo
+	err            error
+	stream         string
+	subjectsFilter string
+	calls          int
+}
+
+func (f *fakeStreamInfo) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	f.calls++
+	f.stream = stream
+	if len(opts) > 0 {
+		if request, ok := opts[0].(*nats.StreamInfoRequest); ok {
+			f.subjectsFilter = request.SubjectsFilter
+		}
+	}
+	return f.info, f.err
+}
+
+// stalledStreamInfo is a stream-info lookup that never answers until the test ends, like a
+// JetStream API that has stopped responding. It records how far away each lookup's deadline was
+// when the lookup was issued.
+type stalledStreamInfo struct {
+	deadlines chan time.Duration
+	release   chan struct{}
+}
+
+func (f stalledStreamInfo) StreamInfo(_ string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	for _, opt := range opts {
+		if ctx, ok := opt.(nats.ContextOpt); ok {
+			if deadline, ok := ctx.Deadline(); ok {
+				f.deadlines <- time.Until(deadline)
+			}
+		}
+	}
+	<-f.release
+	return &nats.StreamInfo{}, nil
+}
+
+func TestSendHandler_StampsSenderAndReturnsRecipient(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, map[string][]string{
+		"ses_source": nil,
+	}, []string{"ses_source", "ses_target"})
+	claimRoles(t, registry, "ses_source", "reviewer", "maintainer")
+	if err := sessions.Put("ses_source", session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Dir:            "/test/ses_source",
+		Title:          "Release sender",
+	}); err != nil {
+		t.Fatalf("register source session: %v", err)
+	}
+
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	message := strings.Repeat("a", 161) + "\n\nsecond paragraph\n\nthird paragraph"
+	requestBody, err := json.Marshal(map[string]interface{}{
+		"source_session": "ses_source",
+		"target_session": "ses_target",
+		"message":        message,
+		"in_reply_to":    "evt-parent",
+		"supersedes":     "evt-old",
+		"urgency":        "high",
+		"expects_reply":  "required",
+		"expires_at":     1757221200000,
+	})
+	if err != nil {
+		t.Fatalf("marshal send request: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(string(requestBody)))
+
+	sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("send status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	t.Logf("send success: %s", recorder.Body.String())
+	responseBody := recorder.Body.Bytes()
+	var response contracts.Envelope
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		t.Fatalf("decode send envelope: %v", err)
+	}
+	var metadata struct {
+		Recipient string `json:"recipient"`
+	}
+	if err := json.Unmarshal(responseBody, &metadata); err != nil {
+		t.Fatalf("decode send recipient: %v", err)
+	}
+	if metadata.Recipient != "ses_target" {
+		t.Fatalf("recipient = %q, want ses_target", metadata.Recipient)
+	}
+	if response.PayloadSummary != strings.Repeat("a", 159)+"…" {
+		t.Fatalf("payload_summary = %q, want 160-rune summary with ellipsis", response.PayloadSummary)
+	}
+	if response.Payload != message {
+		t.Fatalf("payload = %q, want original message", response.Payload)
+	}
+	if response.InReplyTo != "evt-parent" || response.Supersedes != "evt-old" || response.Urgency != "high" || response.ExpectsReply != "required" {
+		t.Fatalf("correlation fields = %+v", response)
+	}
+	if response.ExpiresAt == nil || *response.ExpiresAt != 1757221200000 {
+		t.Fatalf("expires_at = %v, want 1757221200000", response.ExpiresAt)
+	}
+	if response.Sender == nil {
+		t.Fatal("sender stamp is missing")
+	}
+	if response.Sender.SessionID != "ses_source" || response.Sender.Machine != "test-machine" || response.Sender.Cwd != "/test/ses_source" || response.Sender.Title != "Release sender" {
+		t.Fatalf("sender = %+v", response.Sender)
+	}
+	if got := strings.Join(response.Sender.Roles, ","); got != "maintainer,reviewer" {
+		t.Fatalf("sender roles = %q, want maintainer,reviewer", got)
+	}
+}
+
+// TestDispatchClientSendUsesListenerWireContract keeps Dispatch's client and the
+// listener's real send handler on the same JSON boundary. In particular, payload
+// is an opaque JSON string on this HTTP API, rather than an embedded JSON value.
+func TestDispatchClientSendUsesListenerWireContract(t *testing.T) {
+	publisher := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/ses_target",
+		Title: "planner", Capabilities: []string{"btw"},
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: publisher, registry: registry, sessions: sessions}
+
+	var wire string
+	handler := sendHandler(state, logging.New("test"))
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("capture Dispatch send: %v", err)
+		}
+		wire = string(body)
+		r.Body = io.NopCloser(strings.NewReader(wire))
+		handler.ServeHTTP(w, r)
+	}))
+	defer listener.Close()
+	payloadBytes, err := os.ReadFile("../../../contracts/fixtures/dispatch-targeted-delivery.json")
+	if err != nil {
+		t.Fatalf("read targeted delivery fixture: %v", err)
+	}
+	payload := string(payloadBytes)
+
+	result, err := dispatchenvoy.New(listener.URL).Send(context.Background(), dispatchenvoy.SendInput{
+		TargetSession:  "ses_target",
+		Message:        "Can this ship?",
+		Payload:        json.RawMessage(payload),
+		IdempotencyKey: "message-1:1",
+		ExpectsReply:   "required",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch send through listener: %v", err)
+	}
+	if result.Recipient != "ses_target" || result.EnvelopeID == "" {
+		t.Fatalf("send result = %#v, want listener envelope for ses_target", result)
+	}
+	var request struct {
+		Payload      string  `json:"payload"`
+		Urgency      *string `json:"urgency"`
+		ExpectsReply string  `json:"expects_reply"`
+	}
+	if err := json.Unmarshal([]byte(wire), &request); err != nil {
+		t.Fatalf("decode captured Dispatch wire request: %v", err)
+	}
+	if request.Payload != payload || request.Urgency != nil || request.ExpectsReply != "required" {
+		t.Fatalf("captured Dispatch wire request = %s", wire)
+	}
+	t.Logf("targeted Dispatch send wire: %s", wire)
+}
+
+// TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode proves the listener refuses a
+// send when the TARGETED FRAME embedded in payload's own delivery.mode names a mode the
+// target session does not advertise -- reading the mode a caller actually asks the receiver
+// to execute, not a separate, omittable top-level hint a caller could leave off (or set to a
+// different, still-advertised mode) to bypass the guard. There is no top-level delivery field
+// on the wire at all; both of a review reproducer's bypass cases -- an omitted hint, and a
+// hint that disagrees with the frame -- are closed by construction because the hint does not
+// exist to omit or disagree: only the frame's own mode is ever read.
+func TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Dir:            "/test/ses_target",
+		Title:          "planner",
+		Capabilities:   []string{"aside", "btw"},
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	handler := sendHandler(state, logging.New("test"))
+	steerFrame := `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"steer"}}`
+
+	for name, requestJSON := range map[string]string{
+		"no top-level delivery field on the wire at all": fmt.Sprintf(
+			`{"target_session":"ses_target","message":"Can this ship?","payload":%s}`, mustJSONString(t, steerFrame),
+		),
+		"a stray unrelated field cannot override the frame": fmt.Sprintf(
+			`{"target_session":"ses_target","message":"Can this ship?","payload":%s,"urgency":"high"}`, mustJSONString(t, steerFrame),
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(requestJSON))
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 (body: %s)", rr.Code, rr.Body.String())
+			}
+			var response struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if response.Error != "session ses_target (planner) does not advertise steer" {
+				t.Fatalf("error = %q, want the standard does-not-advertise shape", response.Error)
+			}
+		})
+	}
+}
+
+// TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends proves the guard only refuses a
+// genuine mismatch: a frame naming a mode the target does advertise still sends, and a
+// genuinely untagged send -- no payload, or a payload whose exact "delivery" key is entirely
+// absent, including a payload that is not even valid JSON -- is never subjected to an
+// inferred check. This is deliberately distinct from a payload that DOES carry the exact
+// "delivery" key but cannot be read unambiguously (TestSendHandlerRefusesUnreadableOr
+// AmbiguousDeliveryFrames): presence of that key is a claim of a targeted send, and an
+// unreadable claim is refused, never defaulted open the way genuine absence is here.
+func TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Dir:            "/test/ses_target",
+		Title:          "planner",
+		Capabilities:   []string{"aside", "btw"},
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	handler := sendHandler(state, logging.New("test"))
+	btwFrame := `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
+
+	for name, requestJSON := range map[string]string{
+		"advertised frame mode": fmt.Sprintf(
+			`{"target_session":"ses_target","message":"Can this ship?","payload":%s}`, mustJSONString(t, btwFrame),
+		),
+		"no payload at all": `{"target_session":"ses_target","message":"Can this ship?"}`,
+		"delivery key entirely absent from a valid JSON payload": fmt.Sprintf(
+			`{"target_session":"ses_target","message":"Can this ship?","payload":%s}`, mustJSONString(t, `{"note":"plain interest notification"}`),
+		),
+		"payload is not valid JSON at all, so it has no delivery key either": fmt.Sprintf(
+			`{"target_session":"ses_target","message":"Can this ship?","payload":%s}`, mustJSONString(t, "not json at all"),
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(requestJSON))
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames proves the listener refuses, rather
+// than silently allows, a send whose targeted frame claims
+// delivery (the exact "delivery" key is present) but whose mode cannot be read as a single,
+// unambiguous, non-empty string: an empty delivery object, a non-string mode, an empty mode
+// string, a delivery value that is not even an object, and a same-key-different-case sibling
+// key at either level. Presence of the exact "delivery" key is itself a claim that this send
+// is targeted; an unreadable or ambiguous claim is refused, never defaulted open the way a
+// send with no "delivery" key at all is (see TestSendHandlerAllowsAdvertisedFrameModeAnd
+// UntaggedSends). The case-variant case is why the guard never decodes the payload into a Go
+// struct: case-insensitive key matching could read a same-key-different-case sibling
+// ("Delivery") instead of the exact "delivery" key the receiving client actually executes, so an
+// attacker could hide an unadvertised real mode ("btw", exact key) behind an advertised decoy in
+// the wrong-cased key ("aside", sibling key).
+func TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Dir:            "/test/ses_target",
+		Title:          "planner",
+		Capabilities:   []string{"aside"},
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	handler := sendHandler(state, logging.New("test"))
+
+	for name, payload := range map[string]string{
+		"delivery present with no mode key at all":  `{"delivery":{}}`,
+		"delivery.mode is not a JSON string":        `{"delivery":{"mode":123}}`,
+		"delivery.mode is an empty string":          `{"delivery":{"mode":""}}`,
+		"delivery is present but not a JSON object": `{"delivery":"btw"}`,
+		"case-variant duplicate delivery key hides an unadvertised real mode behind an advertised decoy (the second reviewer's reproducer)": `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"},"Delivery":{"mode":"aside"}}`,
+		"case-variant duplicate mode key inside an otherwise well-formed delivery object":                                                   `{"delivery":{"mode":"btw","Mode":"aside"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			requestJSON := fmt.Sprintf(
+				`{"target_session":"ses_target","message":"Can this ship?","payload":%s}`, mustJSONString(t, payload),
+			)
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(requestJSON))
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 (body: %s)", rr.Code, rr.Body.String())
+			}
+			var response struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if response.Error != "session ses_target (planner) sent a delivery mode that cannot be read unambiguously" {
+				t.Fatalf("error = %q, want the unreadable-delivery refusal shape", response.Error)
+			}
+		})
+	}
+}
+
+// TestSendHandlerRefusesAModeThatIsNotADeliveryMode proves the listener decides what a delivery
+// mode is, rather than deferring to what the target session advertises. `capabilities` is an
+// open string list the session itself writes at registration, so "no session advertises a bogus
+// capability" is an assumption about every present and future client, not a property of this
+// boundary. A session that advertises "agentstream" and a frame claiming that mode would pass
+// both checks and reach the receiver, so the mode itself is refused, as the Dispatch server's
+// own `validDelivery` refuses it.
+func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Dir:            "/test/ses_target",
+		Title:          "planner",
+		Capabilities:   []string{"aside", "btw", "steer", "agentstream"},
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	rr := httptest.NewRecorder()
+	requestJSON := fmt.Sprintf(
+		`{"target_session":"ses_target","message":"Can this ship?","payload":%s}`,
+		mustJSONString(t, `{"delivery":{"attempt":1,"mode":"agentstream"}}`),
+	)
+	sendHandler(state, logging.New("test")).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(requestJSON)))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.Error != "session ses_target (planner) sent a delivery mode that cannot be read unambiguously" {
+		t.Fatalf("error = %q, want the unreadable-delivery refusal shape", response.Error)
+	}
+}
+
+// TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload proves the guard
+// checks messageEnvelope's effective payload, not only the optional HTTP
+// payload field. A long structured message becomes the receiver's payload.
+func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/ses_target", Title: "planner",
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	frame, err := os.ReadFile("../../../contracts/fixtures/dispatch-targeted-delivery.json")
+	if err != nil {
+		t.Fatalf("read targeted delivery fixture: %v", err)
+	}
+	if string(frame) == contracts.OneLineSummary(string(frame)) {
+		t.Fatal("targeted delivery fixture must derive an effective payload from message")
+	}
+
+	rr := httptest.NewRecorder()
+	request := fmt.Sprintf(
+		`{"target_session":"ses_target","source":"dispatch","message":%s}`,
+		mustJSONString(t, string(frame)),
+	)
+	sendHandler(state, logging.New("test")).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(request)))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.Error != "session ses_target (planner) does not advertise btw" {
+		t.Fatalf("error = %q, want derived-payload capability refusal", response.Error)
+	}
+}
+
+// TestDispatchClientSendFrameModeIsGuardedEndToEnd proves the guard reads the mode from a
+// real Dispatch client Send call, using the same targeted-delivery fixture the existing
+// wire-contract test uses (delivery.mode "btw"), through the real listener handler -- not a
+// synthetic minimal payload -- so the parsing is proven against production shape.
+func TestDispatchClientSendFrameModeIsGuardedEndToEnd(t *testing.T) {
+	publisher := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_target", session.SessionEntry{
+		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/ses_target",
+		Title: "planner", Capabilities: []string{"aside"},
+	}); err != nil {
+		t.Fatalf("register target session: %v", err)
+	}
+	state := &listenerDeps{client: publisher, registry: registry, sessions: sessions}
+	handler := sendHandler(state, logging.New("test"))
+	payloadBytes, err := os.ReadFile("../../../contracts/fixtures/dispatch-targeted-delivery.json")
+	if err != nil {
+		t.Fatalf("read targeted delivery fixture: %v", err)
+	}
+
+	listener := httptest.NewServer(handler)
+	defer listener.Close()
+	result, sendErr := dispatchenvoy.New(listener.URL).Send(context.Background(), dispatchenvoy.SendInput{
+		TargetSession: "ses_target",
+		Message:       "Can this ship?",
+		Payload:       payloadBytes,
+	})
+	if sendErr == nil {
+		t.Fatalf("Dispatch send through listener = %#v, want a refusal: the fixture's mode is btw and ses_target only advertises aside", result)
+	}
+	if sendErr.Error() != "session ses_target (planner) does not advertise btw" {
+		t.Fatalf("send error = %q, want the standard does-not-advertise shape", sendErr.Error())
+	}
+}
+
+func mustJSONString(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode JSON string literal: %v", err)
+	}
+	return string(encoded)
+}
+
+func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	cases := []struct {
+		name  string
+		path  string
+		body  string
+		want  string
+		field string
+	}{
+		{
+			name:  "send urgency",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","urgency":"critical"}`,
+			want:  "urgency must be one of low, med, high, blocking",
+			field: "urgency",
+		},
+		{
+			name:  "publish expects reply",
+			path:  "/v1/messages/publish",
+			body:  `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","expects_reply":"soon"}`,
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+		{
+			name:  "send expects reply",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","expects_reply":"later"}`,
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+		{
+			// true is the one JSON literal the new vocabulary leaves out, and reading the
+			// field raw means it is refused by name rather than as unreadable JSON.
+			name:  "send expects reply true",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","expects_reply":true}`,
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			if tc.path == "/v1/messages/send" {
+				sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			} else {
+				publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			}
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+			}
+			var response struct {
+				Error    string   `json:"error"`
+				Expected []string `json:"expected"`
+			}
+			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+				t.Fatalf("decode error body: %v", err)
+			}
+			if response.Error != tc.want || len(response.Expected) != 1 || response.Expected[0] != tc.field {
+				t.Fatalf("error response = %+v, want field %q", response, tc.field)
+			}
+		})
+	}
+}
+
+func TestMessageHandlersRejectBlankMessage(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "send",
+			path: "/v1/messages/send",
+			body: `{"target_session":"ses_target","message":"   "}`,
+		},
+		{
+			name: "publish",
+			path: "/v1/messages/publish",
+			body: `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"   "}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			if tc.path == "/v1/messages/send" {
+				sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			} else {
+				publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			}
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+			}
+			t.Logf("%s blank message: %s", tc.name, recorder.Body.String())
+			if body := recorder.Body.String(); body != "{\"error\":\"message is required\",\"expected\":[\"message\"]}\n" {
+				t.Fatalf("body = %q", body)
+			}
+		})
+	}
+}
+
+// Each route that resolves a role names the state it found. The lookup still answers 404 with the
+// reason, unclaimed or holder_lapsed; the publish route now keeps the message for the role's next
+// holder and answers 202 with kept true and the same reason as kept_reason. Both release a lapsed
+// holder's claim.
+func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
+	type roleError struct {
+		Error         string `json:"error"`
+		Reason        string `json:"reason"`
+		Holder        string `json:"holder"`
+		HolderState   string `json:"holder_state"`
+		LastSeen      int64  `json:"last_seen"`
+		ClaimReleased bool   `json:"claim_released"`
+	}
+	assertKept := func(t *testing.T, recorder *httptest.ResponseRecorder, reason, holder string) {
+		t.Helper()
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 for a message the listener kept; body = %s", recorder.Code, recorder.Body.String())
+		}
+		t.Logf("kept role response: %s", recorder.Body.String())
+		var kept struct {
+			Kept       bool   `json:"kept"`
+			KeptReason string `json:"kept_reason"`
+			Holder     string `json:"holder"`
+			Topic      string `json:"topic"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&kept); err != nil {
+			t.Fatalf("decode kept response: %v", err)
+		}
+		if !kept.Kept || kept.KeptReason != reason || kept.Holder != holder || kept.Topic != "notifications.role.reviewer" {
+			t.Fatalf("kept response = %+v, want kept with reason %s and holder %q on the role topic", kept, reason, holder)
+		}
+	}
+	tests := []struct {
+		name string
+		// kept is whether this route keeps a role message it cannot deliver, answering 202,
+		// where the lookup, which has no message to keep, answers its 404.
+		kept    bool
+		request func() *http.Request
+		handler func(*listenerDeps) http.Handler
+	}{
+		{
+			name: "publish",
+			kept: true,
+			request: func() *http.Request {
+				return httptest.NewRequest(
+					http.MethodPost,
+					"/v1/messages/publish",
+					strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+				)
+			},
+			handler: func(d *listenerDeps) http.Handler {
+				return publishHandler(d, logging.New("test"))
+			},
+		},
+		{
+			name: "role lookup",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil)
+			},
+			handler: func(d *listenerDeps) http.Handler {
+				return roleGetHandler(d)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := setupPublishTestClient(t)
+			registry, sessions := setupSessionsTest(t, nil, nil)
+			deps := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+			handler := tc.handler(deps)
+			// The publish route's keep hands the role's lane over in a goroutine of its own
+			// (keepForNextHolder), and that handover resolves the role's holder: it would find
+			// the claim this test makes below lapsed and release it, which is right of the
+			// product and wrong for a test that is about what each route answers. The guard one
+			// handover of a role takes is held here for the whole subtest, so every handover the
+			// keeps start waits and none resolves a holder while the test is setting one up.
+			release, held := deps.delivery.roleKeepDrains.hold(context.Background(), "reviewer")
+			if !held {
+				t.Fatalf("take the reviewer role's handover guard")
+			}
+			defer release()
+
+			unclaimedRecorder := httptest.NewRecorder()
+			handler.ServeHTTP(unclaimedRecorder, tc.request())
+			if tc.kept {
+				assertKept(t, unclaimedRecorder, "unclaimed", "")
+			} else {
+				if unclaimedRecorder.Code != http.StatusNotFound {
+					t.Fatalf("unclaimed status = %d, want 404; body = %s", unclaimedRecorder.Code, unclaimedRecorder.Body.String())
+				}
+				t.Logf("unclaimed role response: %s", unclaimedRecorder.Body.String())
+				var unclaimed roleError
+				if err := json.NewDecoder(unclaimedRecorder.Body).Decode(&unclaimed); err != nil {
+					t.Fatalf("decode unclaimed response: %v", err)
+				}
+				if unclaimed.Error != "no holder for role reviewer" || unclaimed.Reason != "unclaimed" ||
+					unclaimed.Holder != "" || unclaimed.LastSeen != 0 || unclaimed.ClaimReleased {
+					t.Fatalf("unclaimed response = %+v", unclaimed)
+				}
+			}
+
+			if err := sessions.Put("ses_holder", session.SessionEntry{
+				MachineID:      "test-machine",
+				SelfSubscribed: true,
+			}); err != nil {
+				t.Fatalf("register holder: %v", err)
+			}
+			entry, err := sessions.Get("ses_holder")
+			if err != nil {
+				t.Fatalf("read holder last seen: %v", err)
+			}
+			if _, err := registry.SetRole("ses_holder", "test-machine", "reviewer", false); err != nil {
+				t.Fatalf("set holder: %v", err)
+			}
+			if err := sessions.Delete(context.Background(), "ses_holder"); err != nil {
+				t.Fatalf("expire holder session: %v", err)
+			}
+
+			lapsedRecorder := httptest.NewRecorder()
+			handler.ServeHTTP(lapsedRecorder, tc.request())
+			// A lapsed claim is kept for by nobody in this build, on the publish route as on
+			// the lookup: no resolution releases a claim, so the holder keeps its role and the
+			// 404 says the claim was retained (roleKeepable).
+			if lapsedRecorder.Code != http.StatusNotFound {
+				t.Fatalf("lapsed status = %d, want 404; body = %s", lapsedRecorder.Code, lapsedRecorder.Body.String())
+			}
+			t.Logf("lapsed role response: %s", lapsedRecorder.Body.String())
+			var lapsed roleError
+			if err := json.NewDecoder(lapsedRecorder.Body).Decode(&lapsed); err != nil {
+				t.Fatalf("decode lapsed response: %v", err)
+			}
+			if lapsed.Error != fmt.Sprintf(
+				"role reviewer holder ses_holder lapsed; claim retained (last seen %d)",
+				entry.UpdatedAt,
+			) || lapsed.Reason != "holder_lapsed" || lapsed.Holder != "ses_holder" ||
+				lapsed.HolderState != "gone" ||
+				lapsed.LastSeen != entry.UpdatedAt || lapsed.ClaimReleased {
+				t.Fatalf("lapsed response = %+v", lapsed)
+			}
+			// Nothing but the role reaper releases a claim, so the holder this answer reported
+			// lapsed still holds it: a replacement takes it with a soft claim, or the reaper does.
+			holder, err := registry.RoleHolder("reviewer")
+			if err != nil {
+				t.Fatalf("read the retained claim: %v", err)
+			}
+			if holder != "ses_holder" {
+				t.Fatalf("claim holder after the lapsed answer = %q, want ses_holder's, untouched", holder)
+			}
+		})
+	}
+}
+
+func TestRoleHolderLapsedResponseDoesNotInventLastSeen(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if _, err := registry.SetRole("ses_lapsed", "test-machine", "reviewer", false); err != nil {
+		t.Fatalf("set lapsed holder: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	recorder := httptest.NewRecorder()
+	roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		LastSeen *int64 `json:"last_seen"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode lapsed response: %v", err)
+	}
+	if response.LastSeen != nil {
+		t.Fatalf("last_seen = %d, want omitted when no session heartbeat is available", *response.LastSeen)
+	}
+}
+
+// trailingListeners opens two listeners' stores on one NATS account: claimant, through which a
+// holder registers and claims a role, and observer, whose session cache stops following the session
+// bucket once it is warm. The stopped watcher stands in for one that has not yet delivered what the
+// claimant just wrote: either way the observer's cache answers from what it last applied, while a
+// role claim is read from the role bucket itself. During a rolling deploy the old task is the
+// observer of every claim the replacement accepts.
+// Each listener's interest and role claim caches are waited for (waitForRegistry) before the
+// observer stops following the session bucket, so a route either of them serves reports the
+// session's roles rather than the bus-unavailable 503 an incomplete claims view earns.
+func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
+	t.Helper()
+	client := setupPublishTestClient(t)
+	open := func(name string) *listenerDeps {
+		t.Helper()
+		registry, err := store.Open(client.Conn, store.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("open the %s's interest registry: %v", name, err)
+		}
+		waitForRegistry(t, registry)
+		sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+		if err != nil {
+			t.Fatalf("open the %s's session registry: %v", name, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := sessions.WaitForCacheReady(ctx); err != nil {
+			t.Fatalf("warm the %s's session cache: %v", name, err)
+		}
+		return withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	}
+	claimant, observer = open("claimant"), open("observer")
+	observer.sessions.StopWatch()
+	return claimant, observer
+}
+
+// claimRole registers sessionID through d and has it claim role, as a session's plugin does.
+func claimRole(t *testing.T, d *listenerDeps, sessionID, role string) {
+	t.Helper()
+	if err := d.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	recorder := httptest.NewRecorder()
+	roleSetHandler(d, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+		strings.NewReader(fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role))))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("%s claims %s: status %d %s", sessionID, role, recorder.Code, recorder.Body.String())
+	}
+}
+
+// roleClaimLiveWindow is the live window d's session registry runs with, which POST /v1/roles/set
+// weighs a standing claim's renewal against (store.Registry.ClaimRenewedWithin): read from that
+// registry exactly as the route reads it, so a test ages a claim past the very window the route
+// will judge it by.
+func roleClaimLiveWindow(d *listenerDeps) time.Duration {
+	live, _ := d.sessions.Windows()
+	return live
+}
+
+// ageRoleClaim moves role's stored claim back by age, both the moment it was claimed and the
+// renewal that follows it (store.RoleClaim), as a holder that has stopped answering for its claim
+// leaves it. Nothing frees a claim renewed inside the live window, so a test about a holder that
+// is gone has to age the claim the holder left behind.
+func ageRoleClaim(t *testing.T, d *listenerDeps, role string, age time.Duration) {
+	t.Helper()
+	roles, err := d.client.JS().KeyValue(bus.RoleClaimBucket)
+	if err != nil {
+		t.Fatalf("open the role bucket: %v", err)
+	}
+	entry, err := roles.Get(role)
+	if err != nil {
+		t.Fatalf("read %s's claim: %v", role, err)
+	}
+	claim, err := store.DecodeRoleClaim(entry.Value())
+	if err != nil {
+		t.Fatalf("decode %s's claim: %v", role, err)
+	}
+	aged := time.Now().Add(-age).UnixMilli()
+	claim.ClaimedAt, claim.RenewedAt = aged, aged
+	record, err := json.Marshal(claim)
+	if err != nil {
+		t.Fatalf("encode %s's aged claim: %v", role, err)
+	}
+	if _, err := roles.Update(role, record, entry.Revision()); err != nil {
+		t.Fatalf("store %s's aged claim: %v", role, err)
+	}
+}
+
+// A role claim refreshes the claimant's session entry, and the entry it writes names no serving
+// port. An entry an earlier listener stored with one would otherwise be renewed by every claim
+// its client makes, while each of that client's registrations is refused (subscribeHandler); and
+// while such an entry lives, Resolve passes the session over as self-subscribed and Dispatch's
+// outbox counts the stream's ack as its delivery, so its messages are reported delivered when
+// nobody delivered them.
+func TestARoleClaimWritesTheServingPortOutOfTheClaimantsEntry(t *testing.T) {
+	const sessionID = "ses_ported_claimant"
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put(sessionID, session.SessionEntry{Port: 8080, MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("store the entry an earlier listener wrote: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	// withRoleClaimDrain, because a claim that lands hands the role's kept lane to its new
+	// holder (runKeptRoleDrain), which needs the delivery configuration and a bus.
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions})
+	roleSetHandler(deps, "test-machine", logging.New("test")).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodPost, "/v1/roles/set", strings.NewReader(`{"session_id":"`+sessionID+`","role":"ported-claimant"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("%s claims ported-claimant: status %d %s", sessionID, recorder.Code, recorder.Body.String())
+	}
+
+	entry, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the claimant's entry back: %v", err)
+	}
+	if entry.Port != 0 {
+		t.Fatalf("the refreshed entry names port %d, want none: this listener delivers nothing to a port, and a renewed entry that names one is a session reported as receiving messages nobody hands it", entry.Port)
+	}
+	if !entry.SelfSubscribed || entry.MachineID != "test-machine" {
+		t.Fatalf("the refreshed entry %+v, want it still self-subscribed on test-machine", entry)
+	}
+}
+
+// A listener's session cache trails the session bucket, so a holder another listener registered and
+// gave a role a moment ago can be in the bucket and not yet in this listener's cache. A lookup there
+// answers that holder. Reading the cache's word as the end of that session deletes the claim the
+// other listener just wrote, and every later lookup and role message finds the role unclaimed
+// until its holder claims it again.
+//
+// Once the holder has left the bucket, the lookup reports it lapsed and still releases nothing:
+// only the role reaper ends a claim, so a holder that stalled and a holder that ended are told
+// apart by one reader rather than by whoever looked first. The same holds for a holder no session
+// can register as: an id outside nats.go's key alphabet, which an earlier build or a direct
+// bucket write can leave in a claim.
+func TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
+	claimant, observer := trailingListeners(t)
+	lookup := func(role string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		return recorder
+	}
+
+	claimRole(t, claimant, "ses_fresh_holder", "fresh-claim")
+	if answer := lookup("fresh-claim"); answer.Code != http.StatusOK || !strings.Contains(answer.Body.String(), `"holder":"ses_fresh_holder"`) {
+		t.Fatalf("GET /v1/roles/fresh-claim on a listener whose session cache trails the bucket: status %d %s, want 200 naming ses_fresh_holder", answer.Code, answer.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("fresh-claim"); err != nil || holder != "ses_fresh_holder" {
+		t.Fatalf("the fresh claim after the lookup = %q, %v; want ses_fresh_holder's", holder, err)
+	}
+
+	claimRole(t, claimant, "ses_gone_holder", "lapsed-claim")
+	if err := claimant.sessions.Delete(context.Background(), "ses_gone_holder"); err != nil {
+		t.Fatalf("end ses_gone_holder's session: %v", err)
+	}
+	if answer := lookup("lapsed-claim"); answer.Code != http.StatusNotFound || !strings.Contains(answer.Body.String(), `"claim_released":false`) {
+		t.Fatalf("GET /v1/roles/lapsed-claim for a holder gone from the bucket: status %d %s, want 404 retaining the claim", answer.Code, answer.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("lapsed-claim"); err != nil || holder != "ses_gone_holder" {
+		t.Fatalf("the lapsed claim after the lookup = %q, %v; want it left for the reaper", holder, err)
+	}
+
+	roles, err := claimant.client.JS().KeyValue(bus.RoleClaimBucket)
+	if err != nil {
+		t.Fatalf("open the role bucket: %v", err)
+	}
+	stored, err := json.Marshal(store.RoleClaim{HolderSessionID: "ses:bad", ClaimedAt: time.Now().UnixMilli()})
+	if err != nil {
+		t.Fatalf("encode the ses:bad claim: %v", err)
+	}
+	if _, err := roles.Put("invalid-holder", stored); err != nil {
+		t.Fatalf("store the ses:bad claim: %v", err)
+	}
+	if answer := lookup("invalid-holder"); answer.Code != http.StatusNotFound || !strings.Contains(answer.Body.String(), `"holder_state":"gone"`) {
+		t.Fatalf("GET /v1/roles/invalid-holder for holder ses:bad, which no session can register as: status %d %s, want 404 naming it gone", answer.Code, answer.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("invalid-holder"); err != nil || holder != "ses:bad" {
+		t.Fatalf("the ses:bad claim after the lookup = %q, %v; want it left for the reaper", holder, err)
+	}
+}
+
+// A soft claim takes a role only from a holder that is gone, and a holder another listener just
+// registered is gone only from this listener's trailing cache, not from the session bucket: the soft
+// claim is refused, naming the live holder.
+func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *testing.T) {
+	claimant, observer := trailingListeners(t)
+	claimRole(t, claimant, "ses_live_holder", "contested")
+	if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register ses_resumer: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+		strings.NewReader(`{"session_id":"ses_resumer","role":"contested","soft":true}`)))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"holder":"ses_live_holder"`) {
+		t.Fatalf("soft claim of a live holder's role on a listener whose session cache trails the bucket: status %d %s, want 409 naming ses_live_holder", recorder.Code, recorder.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("contested"); err != nil || holder != "ses_live_holder" {
+		t.Fatalf("the contested claim after the soft claim = %q, %v; want ses_live_holder's", holder, err)
+	}
+}
+
+// The role reaper runs on every listener, so it reaches claims other listeners accepted: it ends a
+// claim only when the session bucket has lost the holder, not when this listener's trailing cache has
+// yet to see it.
+func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
+	claimant, observer := trailingListeners(t)
+	claimRole(t, claimant, "ses_fresh_holder", "fresh-claim")
+	claimRole(t, claimant, "ses_gone_holder", "lapsed-claim")
+	if err := claimant.sessions.Delete(context.Background(), "ses_gone_holder"); err != nil {
+		t.Fatalf("end ses_gone_holder's session: %v", err)
+	}
+	// The gone holder stopped answering for its claim when its session ended, which the claim's
+	// renewal has to say too: a claim renewed inside the live window is kept whatever the
+	// session bucket has lost.
+	ageRoleClaim(t, claimant, "lapsed-claim", 2*observer.sessions.TTL())
+	live := func(sessionID string) bool {
+		return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
+	}
+	if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), observer.sessions.TTL()); err != nil || sweep.Reaped != 1 {
+		t.Fatalf("reap role claims = %+v, %v; want the one claim whose holder left the bucket", sweep, err)
+	}
+	for role, want := range map[string]string{"fresh-claim": "ses_fresh_holder", "lapsed-claim": ""} {
+		if holder, err := claimant.registry.RoleHolder(role); err != nil || holder != want {
+			t.Fatalf("%s after the reaper = %q, %v; want %q", role, holder, err, want)
+		}
+	}
+}
+
+// The interest reaper runs on every listener too, and a session missing from this listener's
+// session cache -- one another listener registered that the cache has yet to see, or one a copy
+// reading its bucket again has not delivered yet -- is not gone: the reaper asks the session bucket
+// before it removes anything, keeps the interest of a session the bucket holds, and removes the
+// interest of one the bucket has lost.
+func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest(t *testing.T) {
+	claimant, observer := trailingListeners(t)
+	interests, err := claimant.client.JS().KeyValue(bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("open the interest bucket: %v", err)
+	}
+	stale := time.Now().Add(-20 * time.Minute).UnixMilli()
+	for _, sessionID := range []string{"ses_fresh", "ses_gone"} {
+		if err := claimant.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+			t.Fatalf("register %s: %v", sessionID, err)
+		}
+		stored, err := json.Marshal(store.Interest{SessionID: sessionID, MachineID: "test-machine", Topics: []string{"notifications.agent." + sessionID}, UpdatedAt: stale})
+		if err != nil {
+			t.Fatalf("encode %s's interest: %v", sessionID, err)
+		}
+		if _, err := interests.Put(sessionID, stored); err != nil {
+			t.Fatalf("store %s's interest: %v", sessionID, err)
+		}
+	}
+	if err := claimant.sessions.Delete(context.Background(), "ses_gone"); err != nil {
+		t.Fatalf("end ses_gone's session: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, fresh := observer.registry.Cached("ses_fresh")
+		_, gone := observer.registry.Cached("ses_gone")
+		if fresh && gone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the observer's interest cache never held both interests")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := observer.sessions.Get("ses_fresh"); err == nil {
+		t.Fatal("the observer's session cache already holds ses_fresh, so the reaper's bucket read is not under test")
+	}
+
+	reaped, err := observer.registry.Reap(func(sessionID string) (bool, error) { return sessionMayBeLive(observer.sessions, sessionID) }, 10*time.Minute)
+	if err != nil || reaped != 1 {
+		t.Fatalf("reap interests = %d, %v; want the one interest whose session left the bucket", reaped, err)
+	}
+	if _, err := interests.Get("ses_fresh"); err != nil {
+		t.Fatalf("ses_fresh's interest after the reaper: %v, want it kept", err)
+	}
+	if _, err := interests.Get("ses_gone"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("ses_gone's interest after the reaper: %v, want it deleted", err)
+	}
+}
+
+// stalledReadKV is a session bucket whose writes land and whose reads never answer, like a bucket
+// the listener can write through but whose direct get has stopped answering.
+type stalledReadKV struct {
+	nats.KeyValue
+	released <-chan struct{}
+}
+
+func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
+	<-kv.released
+	return nil, errors.New("the session bucket's read never answered")
+}
+
+// swapSessionBucket puts the handle sessions' (stopped) watcher hands out behind what wrap
+// returns over it, so every read sessions makes of the session bucket from here on goes through
+// it: a resolution of a role's holder reads the holder's session that way whenever this
+// listener's cache does not hold it (session.SessionRegistry.Refresh), which is how a test
+// counts those reads, fails one, or stalls them all. The field the handle hangs off is the
+// registry's own, so one helper holds the reflection that reaches it and a rename of it breaks
+// here alone.
+func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
+	t.Helper()
+	field := reflect.ValueOf(sessions).Elem().FieldByName("watcher")
+	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	old := watcher.Interface().(*kvwatch.Watcher).KV()
+	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	watcher.Set(reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{})))
+}
+
+// stallSessionReads makes every bucket read of sessions stall until the test ends, keeping its
+// writes. A read that does not answer must take nothing from a role holder.
+func stallSessionReads(t *testing.T, sessions *session.SessionRegistry) {
+	t.Helper()
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	swapSessionBucket(t, sessions, func(kv nats.KeyValue) nats.KeyValue {
+		return stalledReadKV{KeyValue: kv, released: released}
+	})
+}
+
+// discardingCache is a kvwatch.Cache that keeps nothing: stallSessionReads's watcher never starts,
+// and only its handle is read.
+type discardingCache struct{}
+
+func (discardingCache) Apply(kvwatch.Entry, kvwatch.Read) {}
+func (discardingCache) BeginRead(kvwatch.Read)            {}
+func (discardingCache) CompleteRead(kvwatch.Read)         {}
+
+// When the session bucket cannot be read, every path that could take a role from its holder takes
+// nothing, and answers inside its bound (roleHolderReadTimeout, well under the 10 s HTTP write
+// timeout): a lookup and a soft claim answer 503, a role delivery reports delivery_failed, and the
+// reaper keeps the claim.
+func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
+	const bound = 5 * time.Second
+	holderOf := func(t *testing.T, d *listenerDeps, role string) string {
+		t.Helper()
+		holder, err := d.registry.RoleHolder(role)
+		if err != nil {
+			t.Fatalf("read the %s claim: %v", role, err)
+		}
+		return holder
+	}
+	t.Run("lookup", func(t *testing.T) {
+		claimant, observer := trailingListeners(t)
+		claimRole(t, claimant, "ses_holder", "unread")
+		stallSessionReads(t, observer.sessions)
+		started := time.Now()
+		recorder := httptest.NewRecorder()
+		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
+		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
+			t.Fatalf("GET /v1/roles/unread while the session bucket cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
+		}
+		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
+			t.Fatalf("the claim after the lookup is held by %q, want ses_holder", holder)
+		}
+	})
+	t.Run("soft claim", func(t *testing.T) {
+		claimant, observer := trailingListeners(t)
+		claimRole(t, claimant, "ses_holder", "unread")
+		if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+			t.Fatalf("register ses_resumer: %v", err)
+		}
+		stallSessionReads(t, observer.sessions)
+		started := time.Now()
+		recorder := httptest.NewRecorder()
+		roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+			strings.NewReader(`{"session_id":"ses_resumer","role":"unread","soft":true}`)))
+		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
+			t.Fatalf("soft claim while the session bucket cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
+		}
+		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
+			t.Fatalf("the claim after the soft claim is held by %q, want ses_holder", holder)
+		}
+	})
+	t.Run("role delivery", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		claimant := &listenerDeps{client: harness.client, registry: harness.registry, delivery: &harness.config}
+		var err error
+		if claimant.sessions, err = session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
+			t.Fatalf("open the claimant's session registry: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := harness.sessions.WaitForCacheReady(ctx); err != nil {
+			t.Fatalf("warm the session cache: %v", err)
+		}
+		harness.sessions.StopWatch()
+		claimRole(t, claimant, "ses_holder", "unread")
+		stallSessionReads(t, harness.sessions)
+		var forwards atomic.Int32
+		cfg := harness.config
+		cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+			forwards.Add(1)
+			return nil
+		})
+		cfg = wireTestRoleForwarder(t, cfg)
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+"unread", "unread-holder-delivery")
+		probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
+		if err != nil {
+			t.Fatalf("subscribe exception probe: %v", err)
+		}
+		t.Cleanup(func() { _ = probe.Unsubscribe() })
+		if err := harness.client.Conn.Flush(); err != nil {
+			t.Fatalf("flush exception probe: %v", err)
+		}
+		started := time.Now()
+		coreNATSDeliveryHandler(cfg)(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
+		elapsed := time.Since(started)
+		cfg.roleForwards.settled(t)
+		if elapsed > bound || forwards.Load() != 0 {
+			t.Fatalf("role delivery while the session bucket cannot be read took %s and forwarded %d times, want none within %s", elapsed, forwards.Load(), bound)
+		}
+		assertDeliveryException(t, probe, item, "delivery_failed")
+		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
+			t.Fatalf("the claim after the delivery is held by %q, want ses_holder", holder)
+		}
+	})
+	t.Run("reaper", func(t *testing.T) {
+		claimant, observer := trailingListeners(t)
+		claimRole(t, claimant, "ses_holder", "unread")
+		stallSessionReads(t, observer.sessions)
+		live := func(sessionID string) bool {
+			return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
+		}
+		// A live window of zero so the claim's own renewal keeps nothing here: what must keep
+		// it is the session bucket the reaper cannot read.
+		if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), 0); err != nil || sweep.Reaped != 0 {
+			t.Fatalf("reap role claims while the session bucket cannot be read = %+v, %v; want none", sweep, err)
+		}
+		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
+			t.Fatalf("the claim after the reaper is held by %q, want ses_holder", holder)
+		}
+	})
+}
+
+func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_holder", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := registry.SetRole("ses_holder", "test-machine", "reviewer", false); err != nil {
+		t.Fatalf("set holder: %v", err)
+	}
+	state := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	handler := publishHandler(state, logging.New("test"))
+	// Each subtest is a test of its own to testnats.URL, with an account of its own, so the holder
+	// stand-in connects with the parent's.
+	uri := testnats.URL(t)
+
+	t.Run("unheld role is kept and answered 202 without publishing on the role topic", func(t *testing.T) {
+		roleProbe, err := client.Conn.SubscribeSync("notifications.role.unheld")
+		if err != nil {
+			t.Fatalf("subscribe to unheld role: %v", err)
+		}
+		t.Cleanup(func() { _ = roleProbe.Unsubscribe() })
+		exceptionProbe, err := client.Conn.SubscribeSync("notifications.envoy.exceptions.notifications.role.unheld")
+		if err != nil {
+			t.Fatalf("subscribe to unheld-role exception lane: %v", err)
+		}
+		t.Cleanup(func() { _ = exceptionProbe.Unsubscribe() })
+		if err := client.Conn.Flush(); err != nil {
+			t.Fatalf("flush unheld-role subscriptions: %v", err)
+		}
+
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","message":"please review"}`))
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 for a kept message; body = %s", recorder.Code, recorder.Body.String())
+		}
+		t.Logf("publish unheld role: %s", recorder.Body.String())
+		var kept struct {
+			Kept       bool   `json:"kept"`
+			KeptReason string `json:"kept_reason"`
+			Holder     string `json:"holder"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&kept); err != nil {
+			t.Fatalf("decode the kept answer: %v", err)
+		}
+		if !kept.Kept || kept.KeptReason != "unclaimed" || kept.Holder != "" {
+			t.Fatalf("kept answer = %+v, want kept with reason unclaimed and no holder", kept)
+		}
+		assertNoMessage := func(name string, probe *nats.Subscription) {
+			t.Helper()
+			message, err := probe.NextMsg(100 * time.Millisecond)
+			if err == nil {
+				t.Fatalf("unexpected %s message: %s", name, message.Data)
+			}
+			if !errors.Is(err, nats.ErrTimeout) {
+				t.Fatalf("wait for %s message: %v", name, err)
+			}
+		}
+		assertNoMessage("unheld role", roleProbe)
+		assertNoMessage("unheld-role exception", exceptionProbe)
+	})
+
+	t.Run("live holder is returned", func(t *testing.T) {
+		startStandIn(t, uri, "ses_holder", always)
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`))
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+		}
+		t.Logf("publish live-held role: %s", recorder.Body.String())
+		var response struct {
+			Holder string `json:"holder"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatalf("decode publish holder: %v", err)
+		}
+		if response.Holder != "ses_holder" {
+			t.Fatalf("holder = %q, want ses_holder", response.Holder)
+		}
+	})
+
+	t.Run("a lapsed holder keeps its claim, so the publish keeps nothing and both answer 404", func(t *testing.T) {
+		if err := sessions.Delete(context.Background(), "ses_holder"); err != nil {
+			t.Fatalf("delete holder session: %v", err)
+		}
+		publishRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(publishRecorder, httptest.NewRequest(
+			http.MethodPost,
+			"/v1/messages/publish",
+			strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+		))
+		// Nothing is kept for a claim that stands: the holder writes no new claim, so a copy
+		// would wait for a claim that never comes (roleKeepable).
+		if publishRecorder.Code != http.StatusNotFound {
+			t.Fatalf("publish status = %d, want 404 with nothing kept; body = %s", publishRecorder.Code, publishRecorder.Body.String())
+		}
+		var refusal struct {
+			Reason        string `json:"reason"`
+			Holder        string `json:"holder"`
+			HolderState   string `json:"holder_state"`
+			ClaimReleased bool   `json:"claim_released"`
+			Kept          bool   `json:"kept"`
+		}
+		if err := json.NewDecoder(publishRecorder.Body).Decode(&refusal); err != nil {
+			t.Fatalf("decode the refusal: %v", err)
+		}
+		if refusal.Reason != "holder_lapsed" || refusal.Holder != "ses_holder" || refusal.ClaimReleased || refusal.Kept {
+			t.Fatalf("refusal = %+v, want reason holder_lapsed naming ses_holder, its claim retained and nothing kept", refusal)
+		}
+		roleRecorder := httptest.NewRecorder()
+		roleGetHandler(state).ServeHTTP(roleRecorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+		if roleRecorder.Code != http.StatusNotFound {
+			t.Fatalf("role lookup status = %d, want 404; body = %s", roleRecorder.Code, roleRecorder.Body.String())
+		}
+	})
+}
+
+func TestRoleGetHandlerReturnsLiveHolder(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_holder", session.SessionEntry{MachineID: "test-machine", Host: "example-host-a", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := registry.SetRole("ses_holder", "test-machine", "reviewer", false); err != nil {
+		t.Fatalf("set holder: %v", err)
+	}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	mux := http.NewServeMux()
+	registerV1Routes(mux, state, "test-machine", logging.New("test"))
+
+	t.Run("live", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			Role      string `json:"role"`
+			Holder    string `json:"holder"`
+			MachineID string `json:"machine_id"`
+			Host      string `json:"host"`
+			LastSeen  int64  `json:"last_seen"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatalf("decode role response: %v", err)
+		}
+		if response.Role != "reviewer" || response.Holder != "ses_holder" || response.LastSeen == 0 {
+			t.Fatalf("role response = %+v", response)
+		}
+		if response.MachineID != "test-machine" {
+			t.Fatalf("machine_id = %q, want the routing listener's own machine unchanged", response.MachineID)
+		}
+		if response.Host != "example-host-a" {
+			t.Fatalf("host = %q, want the holder's reported host", response.Host)
+		}
+	})
+
+	t.Run("unheld", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unheld", nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
+		}
+		if body := recorder.Body.String(); body != "{\"error\":\"no holder for role unheld\",\"reason\":\"unclaimed\",\"claim_revision\":0}\n" {
+			t.Fatalf("body = %q", body)
+		}
+	})
+}
+
+// A restored role claim routes while its holder is live, survives the holder's absence for one
+// session TTL after the registry opened, and is released after that. Deleting the holder's session
+// ends its liveness and the registry's clock ends the grace window, so no step waits on a real TTL
+// and none can lose a race with one.
+func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
+	client := setupPublishTestClient(t)
+	const (
+		sessionID  = "ses_role_restart"
+		role       = "restart-survivor"
+		sessionTTL = time.Minute
+	)
+	firstRegistry, err := store.Open(client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open first role registry: %v", err)
+	}
+	firstSessions, err := session.OpenSessionRegistry(
+		client.Conn,
+		session.WithSessionReplicas(1),
+		session.WithSessionTTL(sessionTTL),
+	)
+	if err != nil {
+		t.Fatalf("open first session registry: %v", err)
+	}
+	if err := firstSessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register role holder: %v", err)
+	}
+	firstState := withRoleClaimDrain(t, &listenerDeps{client: client, registry: firstRegistry, sessions: firstSessions})
+	claim := httptest.NewRecorder()
+	roleSetHandler(firstState, "test-machine", logging.New("test")).ServeHTTP(
+		claim,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/v1/roles/set",
+			strings.NewReader(`{"session_id":"ses_role_restart","role":"restart-survivor","soft":true,"previous_session_id":"ses_previous"}`),
+		),
+	)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim role: status = %d, body = %s", claim.Code, claim.Body.String())
+	}
+	persisted, err := firstRegistry.RoleClaim(context.Background(), role)
+	if err != nil {
+		t.Fatalf("read persisted role claim: %v", err)
+	}
+	if persisted.HolderSessionID != sessionID || persisted.ClaimedAt <= 0 ||
+		persisted.PreviousSessionID != "ses_previous" {
+		t.Fatalf("persisted claim = %+v", persisted)
+	}
+
+	var elapsed atomic.Int64
+	opened := time.Now()
+	clock := func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
+	restoredRegistry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
+	if err != nil {
+		t.Fatalf("restore role registry: %v", err)
+	}
+	restoredSessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("restore session registry: %v", err)
+	}
+	readyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := restoredSessions.WaitForCacheReady(readyCtx); err != nil {
+		t.Fatalf("restore session cache: %v", err)
+	}
+	restoredState := &listenerDeps{client: client, registry: restoredRegistry, sessions: restoredSessions}
+	get := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		roleGetHandler(restoredState).ServeHTTP(
+			recorder,
+			httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil),
+		)
+		return recorder
+	}
+
+	if response := get(); response.Code != http.StatusOK {
+		t.Fatalf("restored live role: status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	if err := restoredSessions.Delete(context.Background(), sessionID); err != nil {
+		t.Fatalf("expire restored holder: %v", err)
+	}
+	if response := get(); response.Code != http.StatusNotFound {
+		t.Fatalf("unregistered restored role: status = %d, want 404; body = %s", response.Code, response.Body.String())
+	}
+	if holder, err := restoredRegistry.RoleHolder(role); err != nil || holder != sessionID {
+		t.Fatalf("restored grace claim = %q, %v; want %q", holder, err, sessionID)
+	}
+
+	if ttl := restoredSessions.TTL(); ttl != sessionTTL {
+		t.Fatalf("restored session TTL = %s, want the bucket's %s", ttl, sessionTTL)
+	}
+	// The grace a restored claim's holder gets to register again is the live window, the window
+	// that makes a session live to every other reader, and no longer the bucket's maximum age,
+	// which a deployment raises past the gone horizon for reasons that have nothing to do with
+	// how long a restarted listener waits for a holder.
+	live, _ := restoredSessions.Windows()
+	elapsed.Store(int64(live))
+	if response := get(); response.Code != http.StatusNotFound {
+		t.Fatalf("expired role status = %d, want 404; body = %s", response.Code, response.Body.String())
+	}
+	if holder, err := restoredRegistry.RoleHolder(role); err != nil || holder != sessionID {
+		t.Fatalf("the claim after the grace and a lookup = %q, %v; want %q, since a lookup releases nothing", holder, err, sessionID)
+	}
+	sweep, err := restoredRegistry.ReapRoleClaims(context.Background(), func(id string) bool {
+		return roleHolderMayBeLive(logging.New("test"), restoredSessions, id)
+	}, live, live)
+	if err != nil || sweep.Reaped != 1 {
+		t.Fatalf("the role reaper released %+v, %v; want the one claim whose holder is gone", sweep, err)
+	}
+	if holder, err := restoredRegistry.RoleHolder(role); err != nil || holder != "" {
+		t.Fatalf("expired role claim = %q, %v; want removed", holder, err)
+	}
+}
+
+func TestRoleSetHandlerSoftClaim(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	for _, id := range []string{"ses_live", "ses_resumer", "ses_heir"} {
+		if err := sessions.Put(id, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+	state := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	mux := http.NewServeMux()
+	registerV1Routes(mux, state, "test-machine", logging.New("test"))
+	post := func(body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set", strings.NewReader(body)))
+		return recorder
+	}
+
+	t.Run("live holder is refused with 409 naming the holder", func(t *testing.T) {
+		if rec := post(`{"session_id":"ses_live","role":"sre"}`); rec.Code != http.StatusOK {
+			t.Fatalf("seed hard claim: status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		rec := post(`{"session_id":"ses_resumer","role":"sre","soft":true}`)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+		}
+		var response struct {
+			Error  string `json:"error"`
+			Role   string `json:"role"`
+			Holder string `json:"holder"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("decode 409 body: %v", err)
+		}
+		if response.Role != "sre" || response.Holder != "ses_live" || response.Error == "" {
+			t.Fatalf("409 body = %+v", response)
+		}
+		holder, err := registry.RoleHolder("sre")
+		if err != nil || holder != "ses_live" {
+			t.Fatalf("holder after refused soft claim = %q, %v; want ses_live", holder, err)
+		}
+	})
+
+	t.Run("dead holder is superseded", func(t *testing.T) {
+		// ses_live's session entry ages out (5m TTL in production); here it is
+		// deleted, which is what the listener observes either way.
+		if err := sessions.Delete(context.Background(), "ses_live"); err != nil {
+			t.Fatalf("expire holder session: %v", err)
+		}
+		rec := post(`{"session_id":"ses_heir","role":"sre","soft":true}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		holder, err := registry.RoleHolder("sre")
+		if err != nil || holder != "ses_heir" {
+			t.Fatalf("holder after soft claim over dead holder = %q, %v; want ses_heir", holder, err)
+		}
+	})
+
+	t.Run("hard claim still takes a live holder's role", func(t *testing.T) {
+		rec := post(`{"session_id":"ses_resumer","role":"sre"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		holder, err := registry.RoleHolder("sre")
+		if err != nil || holder != "ses_resumer" {
+			t.Fatalf("holder after hard claim = %q, %v; want ses_resumer", holder, err)
+		}
+	})
+
+	t.Run("a live predecessor of the claimant's own client instance gives up the role", func(t *testing.T) {
+		// ses_resumer holds the role and is still live (a fork's parent keeps
+		// heartbeating). The forked child runs inside the same client instance
+		// - one Oh My Pi Envoy extension instance, one Claude Code
+		// channel-server process - and names it as its predecessor, so the
+		// role is the same conversation's and passes to the child.
+		const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
+		for _, id := range []string{"ses_resumer", "ses_fork_child"} {
+			if err := sessions.Put(id, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, ClientInstanceID: instance}); err != nil {
+				t.Fatalf("register %s in the forking client instance: %v", id, err)
+			}
+		}
+		rec := post(`{"session_id":"ses_fork_child","role":"sre","soft":true,"previous_session_id":"ses_resumer"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		holder, err := registry.RoleHolder("sre")
+		if err != nil || holder != "ses_fork_child" {
+			t.Fatalf("holder after child's soft claim = %q, %v; want ses_fork_child", holder, err)
+		}
+	})
+
+	t.Run("a live holder that is not the declared predecessor is still refused", func(t *testing.T) {
+		// ses_resumer now resumes its own transcript, which still records the
+		// role, but the live child holds it and ses_resumer continues nobody.
+		rec := post(`{"session_id":"ses_resumer","role":"sre","soft":true,"previous_session_id":"ses_heir"}`)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+		}
+		holder, err := registry.RoleHolder("sre")
+		if err != nil || holder != "ses_fork_child" {
+			t.Fatalf("holder after refused claim = %q, %v; want ses_fork_child", holder, err)
+		}
+	})
+
+	t.Run("a holder no session can register as is superseded", func(t *testing.T) {
+		// ses:bad is outside nats.go's key alphabet, so no session registers under it, and its
+		// interest can be neither read nor written (bus.ErrInvalidKey). An earlier build's
+		// bare-string claim, or a direct bucket write, can still name it as the holder.
+		roles, err := client.JS().KeyValue(bus.RoleClaimBucket)
+		if err != nil {
+			t.Fatalf("open the role bucket: %v", err)
+		}
+		if _, err := roles.Put("legacy", []byte("ses:bad")); err != nil {
+			t.Fatalf("store the bare-string ses:bad claim: %v", err)
+		}
+		rec := post(`{"session_id":"ses_heir","role":"legacy","soft":true}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		holder, err := registry.RoleHolder("legacy")
+		if err != nil || holder != "ses_heir" {
+			t.Fatalf("holder after soft claim over ses:bad = %q, %v; want ses_heir", holder, err)
+		}
+	})
+}
+
+// registerInstance registers sessionID through sessions as its client instance's plugin does, with
+// the client instance id that instance mints at its own start (empty for a client predating the
+// field).
+func registerInstance(t *testing.T, sessions *session.SessionRegistry, sessionID, instanceID string) {
+	t.Helper()
+	if err := sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, ClientInstanceID: instanceID}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+}
+
+// A soft claim that names a predecessor asks which client instance that predecessor belongs to -
+// one Oh My Pi Envoy extension instance, one Claude Code channel-server process - and takes the
+// role from it only when the predecessor has no live entry, when its entry carries the claimant's
+// own instance id, or when either side carries no instance id at all. A predecessor still live
+// inside another instance keeps the role: knowing its session id is not enough to take it.
+func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
+	const (
+		claimantInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
+		otherInstance    = "9b8a7c6d5e4f3a2b9b8a7c6d5e4f3a2b"
+	)
+	setup := func(t *testing.T) (*store.Registry, *session.SessionRegistry, *bytes.Buffer, func(body string) *httptest.ResponseRecorder) {
+		t.Helper()
+		registry, sessions := setupSessionsTest(t, nil, nil)
+		logs := &bytes.Buffer{}
+		// withRoleClaimDrain, because a claim that lands hands the role's kept lane to its new
+		// holder (runKeptRoleDrain), which needs the delivery configuration and a bus.
+		deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions})
+		handler := roleSetHandler(deps, "test-machine", logging.NewWithWriter("test", logs))
+		return registry, sessions, logs, func(body string) *httptest.ResponseRecorder {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set", strings.NewReader(body)))
+			return recorder
+		}
+	}
+	claim := func(t *testing.T, post func(string) *httptest.ResponseRecorder, body string) {
+		t.Helper()
+		if rec := post(body); rec.Code != http.StatusOK {
+			t.Fatalf("seed claim %s: status = %d, body = %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	holderOf := func(t *testing.T, registry *store.Registry, role string) string {
+		t.Helper()
+		holder, err := registry.RoleHolder(role)
+		if err != nil {
+			t.Fatalf("read the %s claim: %v", role, err)
+		}
+		return holder
+	}
+
+	t.Run("a live predecessor of another client instance keeps the role", func(t *testing.T) {
+		// ses_pred is another process entirely, whose session id this claimant knows: a resumed
+		// transcript records it, and the role must not follow the id out of its own instance.
+		registry, sessions, _, post := setup(t)
+		registerInstance(t, sessions, "ses_pred", otherInstance)
+		claim(t, post, `{"session_id":"ses_pred","role":"sre"}`)
+		registerInstance(t, sessions, "ses_claimant", claimantInstance)
+		rec := post(`{"session_id":"ses_claimant","role":"sre","soft":true,"previous_session_id":"ses_pred"}`)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"holder":"ses_pred"`) {
+			t.Fatalf("soft claim naming a predecessor live in another client instance: status %d %s, want 409 naming ses_pred", rec.Code, rec.Body.String())
+		}
+		if holder := holderOf(t, registry, "sre"); holder != "ses_pred" {
+			t.Fatalf("holder after the refused claim = %q, want ses_pred", holder)
+		}
+	})
+
+	t.Run("a predecessor with no registry entry gives up the role", func(t *testing.T) {
+		// The predecessor's process is gone: its entry has left the session bucket (aged out at
+		// the 5m TTL in production, deleted here), and its role is the resumed session's to take
+		// whatever instance that predecessor ran in.
+		registry, sessions, _, post := setup(t)
+		registerInstance(t, sessions, "ses_pred", otherInstance)
+		claim(t, post, `{"session_id":"ses_pred","role":"sre"}`)
+		if err := sessions.Delete(context.Background(), "ses_pred"); err != nil {
+			t.Fatalf("end the predecessor's session: %v", err)
+		}
+		registerInstance(t, sessions, "ses_claimant", claimantInstance)
+		rec := post(`{"session_id":"ses_claimant","role":"sre","soft":true,"previous_session_id":"ses_pred"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("soft claim naming a predecessor the bucket has lost: status %d %s, want 200", rec.Code, rec.Body.String())
+		}
+		if holder := holderOf(t, registry, "sre"); holder != "ses_claimant" {
+			t.Fatalf("holder after the claim = %q, want ses_claimant", holder)
+		}
+	})
+
+	t.Run("a claim from the process that holds the role keeps it", func(t *testing.T) {
+		// The holder's own process re-claims its role and names a predecessor of another
+		// instance. The predecessor rule is never reached: the role is held under this
+		// claimant's own session id, by the very process making the claim, so the route
+		// decides on that claim alone.
+		registry, sessions, _, post := setup(t)
+		registerInstance(t, sessions, "ses_holder", claimantInstance)
+		claim(t, post, fmt.Sprintf(`{"session_id":"ses_holder","role":"sre","client_instance_id":%q}`, claimantInstance))
+		registerInstance(t, sessions, "ses_other", otherInstance)
+		rec := post(fmt.Sprintf(`{"session_id":"ses_holder","role":"sre","soft":true,"previous_session_id":"ses_other","client_instance_id":%q}`, claimantInstance))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("the holder's own soft claim: status %d %s, want 200", rec.Code, rec.Body.String())
+		}
+		if holder := holderOf(t, registry, "sre"); holder != "ses_holder" {
+			t.Fatalf("holder after its own claim = %q, want ses_holder", holder)
+		}
+	})
+
+	t.Run("a live predecessor gives the role up to the process the request states", func(t *testing.T) {
+		// The claimant states its own process rather than leaving the route to read it from
+		// its registration, and the predecessor belongs to that same process: the role
+		// follows it, and the takeover is not the logged one, since neither side is
+		// unidentified. The claimant's registration carries no instance at all, so this is
+		// the stated id deciding and not the stored one.
+		registry, sessions, logs, post := setup(t)
+		registerInstance(t, sessions, "ses_pred", claimantInstance)
+		claim(t, post, `{"session_id":"ses_pred","role":"sre"}`)
+		registerInstance(t, sessions, "ses_claimant", "")
+		rec := post(fmt.Sprintf(`{"session_id":"ses_claimant","role":"sre","soft":true,"previous_session_id":"ses_pred","client_instance_id":%q}`, claimantInstance))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("soft claim stating the predecessor's own client instance: status %d %s, want 200", rec.Code, rec.Body.String())
+		}
+		if holder := holderOf(t, registry, "sre"); holder != "ses_claimant" {
+			t.Fatalf("holder after the claim = %q, want ses_claimant", holder)
+		}
+		if logged := logs.String(); strings.Contains(logged, "carries no client instance id") {
+			t.Fatalf("takeover log = %q, want none: the request named the instance both sides share", logged)
+		}
+	})
+
+	for _, tc := range []struct {
+		name                string
+		claimantInstance    string
+		predecessorInstance string
+	}{
+		{name: "a claimant with no client instance id takes the role", claimantInstance: "", predecessorInstance: otherInstance},
+		{name: "a predecessor with no client instance id gives up the role", claimantInstance: claimantInstance, predecessorInstance: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A client predating the field names no instance, and must still recover its own
+			// role rather than be stranded by the new rule; the listener logs the takeover with
+			// both session ids, since this is the one it cannot tell from another instance's.
+			registry, sessions, logs, post := setup(t)
+			registerInstance(t, sessions, "ses_pred", tc.predecessorInstance)
+			claim(t, post, `{"session_id":"ses_pred","role":"sre"}`)
+			registerInstance(t, sessions, "ses_claimant", tc.claimantInstance)
+			rec := post(`{"session_id":"ses_claimant","role":"sre","soft":true,"previous_session_id":"ses_pred"}`)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("soft claim with a missing client instance id: status %d %s, want 200", rec.Code, rec.Body.String())
+			}
+			if holder := holderOf(t, registry, "sre"); holder != "ses_claimant" {
+				t.Fatalf("holder after the claim = %q, want ses_claimant", holder)
+			}
+			logged := logs.String()
+			if !strings.Contains(logged, `"session_id":"ses_claimant"`) || !strings.Contains(logged, `"previous_session_id":"ses_pred"`) {
+				t.Fatalf("takeover log = %q, want a line naming both session ids", logged)
+			}
+		})
+	}
+
+	t.Run("a claim leaves the claimant's stored client instance id as it found it", func(t *testing.T) {
+		// The claim refreshes the claimant's registration, and that refresh must leave the id the
+		// next soft claim's predecessor rule reads: a claim that cleared it would demote every
+		// later claim. The instance the request states is not written there either, whatever it
+		// names: one registration per session id is a non-goal, and a second process claiming
+		// under this id must leave the registration of the process that registered it alone.
+		_, sessions, _, post := setup(t)
+		registerInstance(t, sessions, "ses_claimant", claimantInstance)
+		claim(t, post, fmt.Sprintf(`{"session_id":"ses_claimant","role":"sre","soft":true,"client_instance_id":%q}`, otherInstance))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stored, err := sessions.Refresh(ctx, "ses_claimant")
+		if err != nil {
+			t.Fatalf("read the claimant's entry back from the bucket: %v", err)
+		}
+		if stored.ClientInstanceID != claimantInstance {
+			t.Fatalf("stored client instance id after the claim = %q, want %q", stored.ClientInstanceID, claimantInstance)
+		}
+	})
+
+	t.Run("a predecessor whose entry cannot be read keeps the role", func(t *testing.T) {
+		// A read that does not answer takes nothing from a holder, predecessor or not: the claim
+		// is the bus-unavailable 503, inside the bound its reads hold.
+		const bound = 5 * time.Second
+		claimant, observer := trailingListeners(t)
+		claimRole(t, claimant, "ses_pred", "unread-predecessor")
+		registerInstance(t, observer.sessions, "ses_claimant", claimantInstance)
+		stallSessionReads(t, observer.sessions)
+		started := time.Now()
+		recorder := httptest.NewRecorder()
+		roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+			strings.NewReader(`{"session_id":"ses_claimant","role":"unread-predecessor","soft":true,"previous_session_id":"ses_pred"}`)))
+		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
+			t.Fatalf("soft claim whose predecessor cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
+		}
+		if holder := holderOf(t, claimant.registry, "unread-predecessor"); holder != "ses_pred" {
+			t.Fatalf("holder after the unanswered read = %q, want ses_pred", holder)
+		}
+	})
+
+	t.Run("a cached predecessor entry the bucket has replaced does not decide", func(t *testing.T) {
+		// The observer's cache still holds an entry of the instance the claimant belongs to,
+		// while the bucket's entry says the predecessor now runs in another one. The cache trails
+		// the bucket, so it cannot be what decides: the bucket's entry is read, and the live
+		// predecessor keeps the role.
+		claimant, observer := trailingListeners(t)
+		claimRole(t, claimant, "ses_pred", "contested-instance")
+		registerInstance(t, observer.sessions, "ses_pred", claimantInstance)
+		registerInstance(t, claimant.sessions, "ses_pred", otherInstance)
+		registerInstance(t, observer.sessions, "ses_claimant", claimantInstance)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if cached, err := observer.sessions.Get("ses_pred"); err != nil || cached.ClientInstanceID != claimantInstance {
+			t.Fatalf("the observer's cached predecessor = %+v, %v; want the claimant's instance %q", cached, err, claimantInstance)
+		}
+		if current, err := claimant.sessions.Refresh(ctx, "ses_pred"); err != nil || current.ClientInstanceID != otherInstance {
+			t.Fatalf("the bucket's predecessor = %+v, %v; want instance %q", current, err, otherInstance)
+		}
+		recorder := httptest.NewRecorder()
+		roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+			strings.NewReader(`{"session_id":"ses_claimant","role":"contested-instance","soft":true,"previous_session_id":"ses_pred"}`)))
+		if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"holder":"ses_pred"`) {
+			t.Fatalf("soft claim decided on a trailing cache: status %d %s, want 409 naming ses_pred", recorder.Code, recorder.Body.String())
+		}
+		if holder := holderOf(t, claimant.registry, "contested-instance"); holder != "ses_pred" {
+			t.Fatalf("holder after the refused claim = %q, want ses_pred", holder)
+		}
+	})
+}
+
+func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	inspector := &fakeStreamInfo{info: &nats.StreamInfo{}}
+	state := &listenerDeps{
+		client:     client,
+		registry:   registry,
+		sessions:   sessions,
+		streamName: "notifications",
+		streamInfo: inspector,
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(`{
+		"session_id":"ses_subscriber",
+		"self_subscribed":true,
+		"topics":["notifications.github.example-org.example-repo.pr","notifications.github.example-org.example-repo.pr.>"]
+	}`))
+	subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	t.Logf("subscribe unwired repository: %s", recorder.Body.String())
+	var response struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode subscribe response: %v", err)
+	}
+	const want = "no GitHub event for example-org/example-repo in the stream's retention window; is the App installed there?"
+	if len(response.Warnings) != 1 || response.Warnings[0] != want {
+		t.Fatalf("warnings = %#v, want [%q]", response.Warnings, want)
+	}
+	if inspector.stream != "notifications" || inspector.subjectsFilter != "notifications.github.example-org.example-repo.>" {
+		t.Fatalf("stream inspection = stream %q subjects_filter %q", inspector.stream, inspector.subjectsFilter)
+	}
+	if inspector.calls != 1 {
+		t.Fatalf("stream inspector calls = %d, want one per repository", inspector.calls)
+	}
+}
+
+func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	inspector := &fakeStreamInfo{err: errors.New("nats unavailable")}
+	state := &listenerDeps{
+		client:     client,
+		registry:   registry,
+		sessions:   sessions,
+		streamName: "notifications",
+		streamInfo: inspector,
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(`{
+		"session_id":"ses_subscriber",
+		"self_subscribed":true,
+		"topics":["notifications.github.example-org.example-repo.pr.>"]
+	}`))
+	subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, request)
+
+	var response struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode subscribe response: %v", err)
+	}
+	const want = "could not verify GitHub wiring for example-org/example-repo: nats unavailable"
+	if len(response.Warnings) != 1 || response.Warnings[0] != want {
+		t.Fatalf("warnings = %#v, want [%q]", response.Warnings, want)
+	}
+}
+
+// Identical subscribe calls inside store.InterestRefreshAge (a session's heartbeats) write its
+// interest row once: the first creates it, and each later call answers with that stored row,
+// updated_at included, without a write. The session row is still written on every call.
+func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
+	const calls = 5
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{registry: registry, sessions: sessions}
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	interests, err := js.KeyValue(bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("interest bucket: %v", err)
+	}
+	sessionRows, err := js.KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("session bucket: %v", err)
+	}
+	revision := func(kv nats.KeyValue) uint64 {
+		t.Helper()
+		entry, err := kv.Get("ses_steady")
+		if err != nil {
+			t.Fatalf("get ses_steady from %s: %v", kv.Bucket(), err)
+		}
+		return entry.Revision()
+	}
+
+	var first store.Interest
+	var interestRevision, sessionRevision uint64
+	for call := range calls {
+		recorder := httptest.NewRecorder()
+		subscribeHandler(state, "test-machine", logging.NewWithWriter("test", io.Discard)).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(`{
+			"session_id":"ses_steady",
+			"dir":"/work/steady",
+			"self_subscribed":true,
+			"topics":["notifications.team.steady"]
+		}`)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("subscribe %d: status %d, body %s", call, recorder.Code, recorder.Body.String())
+		}
+		var got store.Interest
+		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode subscribe %d: %v", call, err)
+		}
+		if call == 0 {
+			first, interestRevision, sessionRevision = got, revision(interests), revision(sessionRows)
+			continue
+		}
+		if !reflect.DeepEqual(got, first) {
+			t.Fatalf("subscribe %d answered %+v, want the stored row %+v", call, got, first)
+		}
+		if got := revision(interests); got != interestRevision {
+			t.Fatalf("subscribe %d moved the interest row from revision %d to %d", call, interestRevision, got)
+		}
+		if got := revision(sessionRows); got <= sessionRevision {
+			t.Fatalf("subscribe %d left the session row at revision %d, want a write past %d", call, got, sessionRevision)
+		}
+		sessionRevision = revision(sessionRows)
+	}
+	if want := []string{contracts.AgentSubject("ses_steady"), "notifications.team.steady"}; !reflect.DeepEqual(first.Topics, want) || first.MachineID != "test-machine" || first.Dir != "/work/steady" {
+		t.Fatalf("stored interest = %+v, want topics %v on test-machine in /work/steady", first, want)
+	}
+}
+
+func TestUnwiredRepositoryWarningSkipsWildcardRepositorySegment(t *testing.T) {
+	inspector := &fakeStreamInfo{info: &nats.StreamInfo{}}
+	deps := &listenerDeps{streamName: "notifications", streamInfo: inspector}
+	if warning := unwiredRepositoryWarning(context.Background(), deps, "notifications.github.*.example-repo.pr.>", logging.New("test")); warning != "" {
+		t.Fatalf("warning = %q, want no warning for invalid repository segment", warning)
+	}
+	if inspector.calls != 0 {
+		t.Fatalf("stream inspector calls = %d, want zero for invalid repository segment", inspector.calls)
+	}
+}
+
+// A GitHub topic writes each dot in a repository's name as `_`, and the token after the name is
+// one of contracts.GithubTopicKinds, so a subscription whose token there is not a kind or a
+// wildcard would receive nothing, and the listener warns. When a kind follows the extra tokens,
+// or the name holds an empty token, the topic spells a dotted name with its dot, and the warning
+// names the spelling Envoy publishes. Otherwise the token is a mistyped kind, and the warning names
+// the kinds rather than suggesting a name that receives nothing either. A row per kind and
+// wildcard holds that no published kind is mistaken for either.
+func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, streamName: "notifications", streamInfo: inspector}
+	warnings := func(t *testing.T, topic string) []string {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"session_id": "ses_subscriber", "self_subscribed": true, "topics": []string{topic}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := httptest.NewRecorder()
+		subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(string(body))))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("subscribe %s: status %d, body %s", topic, recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			Warnings []string `json:"warnings"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response.Warnings
+	}
+	for _, kind := range append(append([]string{}, contracts.GithubTopicKinds...), "*", ">") {
+		topic := "notifications.github.example-org.example-repo." + kind
+		if kind != ">" {
+			topic += ".>"
+		}
+		if got := warnings(t, topic); len(got) != 0 {
+			t.Errorf("subscribe %s: warnings %q, want none", topic, got)
+		}
+	}
+	for _, tc := range []struct{ topic, spelled string }{
+		{"notifications.github.acme.site.io.pr.7.>", "notifications.github.acme.site_io.pr.7.>"},
+		{"notifications.github.acme.a.b.c.pr.>", "notifications.github.acme.a_b_c.pr.>"},
+		{"notifications.github.sjawhar..github.>", "notifications.github.sjawhar._github.>"},
+	} {
+		want := tc.topic + ` spells a repository name with a dot, and GitHub topics write each dot in a name as "_": subscribe to ` + tc.spelled
+		if got := warnings(t, tc.topic); len(got) != 1 || got[0] != want {
+			t.Errorf("subscribe %s: warnings %q, want [%q]", tc.topic, got, want)
+		}
+	}
+	kinds := strings.Join(contracts.GithubTopicKinds, ", ")
+	for _, tc := range []struct{ topic, token, repository string }{
+		{"notifications.github.acme.widgets.checks.>", "checks", "acme/widgets"},
+		{"notifications.github.acme.widgets.pull_request.>", "pull_request", "acme/widgets"},
+		{"notifications.github.acme.widgets.release.>", "release", "acme/widgets"},
+		{"notifications.github.acme.a.b.c.>", "b", "acme/a"},
+	} {
+		want := tc.topic + `: "` + tc.token + `" after ` + tc.repository + ` is not a GitHub topic kind (` + kinds + `), and a dot in a repository name is written "_"`
+		if got := warnings(t, tc.topic); len(got) != 1 || got[0] != want {
+			t.Errorf("subscribe %s: warnings %q, want [%q]", tc.topic, got, want)
+		}
+	}
+}
+
+func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	lookup := stalledStreamInfo{deadlines: make(chan time.Duration, 1), release: make(chan struct{})}
+	t.Cleanup(func() { close(lookup.release) })
+	state := &listenerDeps{
+		client:     client,
+		registry:   registry,
+		sessions:   sessions,
+		streamName: "notifications",
+		streamInfo: lookup,
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(`{
+		"session_id":"ses_subscriber",
+		"self_subscribed":true,
+		"topics":["notifications.github.example-org.example-repo.pr.>"]
+	}`))
+	responded := make(chan struct{})
+	go func() {
+		defer close(responded)
+		subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, request)
+	}()
+	// The lookup never answers, so the handler can only respond by abandoning it at the check's
+	// own deadline. The wait below only turns a blocked handler into a failure instead of a hang.
+	select {
+	case <-responded:
+	case <-time.After(30 * time.Second):
+		t.Fatal("subscribe is still waiting on a stream-info lookup that never answers")
+	}
+	// The lookup goroutine records its deadline when it runs, which need not be before the handler
+	// abandons it, so wait for the record rather than expecting it to be there already.
+	select {
+	case remaining := <-lookup.deadlines:
+		if remaining > unwiredRepositoryWarningTimeout {
+			t.Fatalf("stream-info lookup was issued with a deadline %s away, want at most the %s advisory bound", remaining, unwiredRepositoryWarningTimeout)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no stream-info lookup was issued with a deadline")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode subscribe response: %v", err)
+	}
+	const want = "could not verify GitHub wiring for example-org/example-repo: context deadline exceeded"
+	if len(response.Warnings) != 1 || response.Warnings[0] != want {
+		t.Fatalf("warnings = %#v, want [%q]", response.Warnings, want)
+	}
+}
+
+func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open interest registry: %v", err)
+	}
+	routeClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open session registry connection: %v", err)
+	}
+	sessions, err := session.OpenSessionRegistry(routeClient.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open session registry: %v", err)
+	}
+	routeClient.Close()
+
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(`{
+		"session_id":"ses_unroutable",
+		"self_subscribed":true,
+		"topics":["notifications.github.example-org.example-repo.pr.>"]
+	}`))
+	subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, request)
+
+	// A put on a closed connection did not answer, so it is the bus-unavailable 503 a caller retries,
+	// still naming the session registry.
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var refusal apiError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
+	}
+	if want := busUnansweredPrefix + ": session registry unavailable: "; !strings.HasPrefix(refusal.Error, want) {
+		t.Fatalf("body = %q, want it to begin %q", refusal.Error, want)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+}
+
+func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, map[string][]string{
+		"ses_subscriber": {"notifications.github.example-org.example-repo.pr.>"},
+	}, nil)
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	mux := http.NewServeMux()
+	registerV1Routes(mux, state, "test-machine", logging.New("test"))
+
+	t.Run("missing session id", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/unsubscribe", strings.NewReader(`{"topics":["notifications.github.example-org.example-repo.pr.>"]}`)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+		}
+		t.Logf("unsubscribe missing session_id: %s", recorder.Body.String())
+		if body := recorder.Body.String(); body != "{\"error\":\"session_id is required\",\"expected\":[\"session_id\"]}\n" {
+			t.Fatalf("body = %q", body)
+		}
+	})
+
+	t.Run("success reports removed topics", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/unsubscribe", strings.NewReader(`{"session_id":"ses_subscriber","topics":["notifications.github.example-org.example-repo.pr.>"]}`)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+		}
+		if body := recorder.Body.String(); body != "{\"removed\":[\"notifications.github.example-org.example-repo.pr.\\u003e\"]}\n" {
+			t.Fatalf("body = %q", body)
+		}
+	})
+}
+
+// The empty-topics unsubscribe is the shape a client leaving sends, and it frees the role claims
+// of the process it names (client_instance_id): the claim here names that very process, so the
+// role is free for its next holder.
+func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	const (
+		sessionID = "ses_unsubscribe_role"
+		role      = "legion-controller"
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	claimRequest := store.RoleClaimRequest{SessionID: sessionID, MachineID: "test-machine", ClientInstanceID: holdingProcess, Role: role}
+	if _, err := registry.SetRoleWithPrevious(ctx, claimRequest); err != nil {
+		t.Fatalf("claim %s for %s: %v", role, sessionID, err)
+	}
+
+	mux := http.NewServeMux()
+	registerV1Routes(mux, &listenerDeps{client: client, registry: registry, sessions: sessions}, "test-machine", logging.New("test"))
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(
+		http.MethodPost,
+		"/v1/interests/unsubscribe",
+		strings.NewReader(`{"session_id":"ses_unsubscribe_role","topics":[],"client_instance_id":"`+holdingProcess+`"}`),
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	holder, err := registry.RoleHolder(role)
+	if err != nil {
+		t.Fatalf("RoleHolder: %v", err)
+	}
+	if holder != "" {
+		t.Fatalf("role holder = %q, want removed session", holder)
+	}
+}
+
+func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, map[string][]string{
+		"ses_match": nil,
+		"ses_other": nil,
+	}, []string{"ses_match", "ses_other"})
+	claimRoles(t, registry, "ses_match", "reviewer", "maintainer")
+	claimRoles(t, registry, "ses_other", "observer")
+	if err := sessions.Put("ses_match", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/work/example", Title: "Release work"}); err != nil {
+		t.Fatalf("set matching session: %v", err)
+	}
+	if err := sessions.Put("ses_other", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/work/other", Title: "Other work"}); err != nil {
+		t.Fatalf("set nonmatching session: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/sessions?dir=example&title=Release", nil)
+	sessionsHandler(registry, sessions).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response []struct {
+		SessionID string   `json:"session_id"`
+		Roles     []string `json:"roles"`
+		LastSeen  int64    `json:"last_seen"`
+		UpdatedAt int64    `json:"updated_at"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode sessions response: %v", err)
+	}
+	if len(response) != 1 || response[0].SessionID != "ses_match" {
+		t.Fatalf("sessions = %+v", response)
+	}
+	if got := strings.Join(response[0].Roles, ","); got != "maintainer,reviewer" {
+		t.Fatalf("roles = %q, want maintainer,reviewer", got)
+	}
+	if response[0].LastSeen == 0 || response[0].LastSeen != response[0].UpdatedAt {
+		t.Fatalf("last_seen = %d, updated_at = %d", response[0].LastSeen, response[0].UpdatedAt)
+	}
+}
+
+// GET /v1/sessions must report each session's real machine, not whichever listener happened to
+// handle its registration: a session whose plugin sent "host" shows that, and a session whose
+// plugin predates the field falls back to machine_id instead of an empty string.
+func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_reported", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", Host: "example-host-a"}); err != nil {
+		t.Fatalf("put reported-host session: %v", err)
+	}
+	if err := sessions.Put("ses_legacy", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener"}); err != nil {
+		t.Fatalf("put legacy session: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response []struct {
+		SessionID string `json:"session_id"`
+		MachineID string `json:"machine_id"`
+		Host      string `json:"host"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode sessions response: %v", err)
+	}
+	byID := make(map[string]string, len(response))
+	for _, row := range response {
+		if row.MachineID != "example-listener" {
+			t.Fatalf("machine_id = %q, want the routing listener's own machine unchanged", row.MachineID)
+		}
+		byID[row.SessionID] = row.Host
+	}
+	if byID["ses_reported"] != "example-host-a" {
+		t.Fatalf("host for ses_reported = %q, want example-host-a", byID["ses_reported"])
+	}
+	if byID["ses_legacy"] != "example-listener" {
+		t.Fatalf("host for ses_legacy = %q, want the machine_id fallback", byID["ses_legacy"])
+	}
+}
+
+// exampleTmuxPlace is the place the listener's tmux tests register, all ten members named so
+// that a member dropped on the way to an answer shows up as a changed value.
+func exampleTmuxPlace() *session.TmuxPlace {
+	return &session.TmuxPlace{
+		Socket:      "/tmp/tmux-1000/default",
+		ServerPID:   "4242",
+		SessionName: "legion",
+		WindowID:    "@7",
+		WindowIndex: 3,
+		WindowName:  "infra-883",
+		PaneID:      "%12",
+		PaneIndex:   1,
+		Layout:      "a1b2,180x44,0,0,7",
+		Zoomed:      true,
+	}
+}
+
+// GET /v1/sessions answers the whole place of a session that sits in a pane, and leaves the key
+// off a session that does not: a cluster whose sessions run outside tmux pays no bytes per row,
+// and a reader can tell "no pane" from a pane whose members happen to be empty.
+func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_paned", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", TmuxPlace: exampleTmuxPlace()}); err != nil {
+		t.Fatalf("put the session sitting in a pane: %v", err)
+	}
+	if err := sessions.Put("ses_outside", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener"}); err != nil {
+		t.Fatalf("put the session outside tmux: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.NewDecoder(recorder.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode sessions response: %v", err)
+	}
+	byID := make(map[string]map[string]json.RawMessage, len(rows))
+	for _, row := range rows {
+		var sessionID string
+		if err := json.Unmarshal(row["session_id"], &sessionID); err != nil {
+			t.Fatalf("decode a row's session id: %v", err)
+		}
+		byID[sessionID] = row
+	}
+	raw, named := byID["ses_paned"]["tmux_place"]
+	if !named {
+		t.Fatalf("row for ses_paned = %v, want a tmux_place", byID["ses_paned"])
+	}
+	var answered session.TmuxPlace
+	if err := json.Unmarshal(raw, &answered); err != nil {
+		t.Fatalf("decode the answered place: %v", err)
+	}
+	if answered != *exampleTmuxPlace() {
+		t.Fatalf("answered place = %+v, want %+v", answered, *exampleTmuxPlace())
+	}
+	if _, named := byID["ses_outside"]["tmux_place"]; named {
+		t.Fatalf("row for ses_outside = %v, want no tmux_place key at all", byID["ses_outside"])
+	}
+}
+
+// A session leaves tmux when its pane closes or its server dies, and registers again with no
+// place. That registration must clear the place its entry held: the entry is built fresh from
+// each body and written whole, so nothing carries the stale pane forward onto the layout.
+func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing.T) {
+	_, sessions := setupSessionsTest(t, nil, nil)
+	var placed subscribeBody
+	if err := json.Unmarshal([]byte(`{
+		"session_id":"ses_moved",
+		"tmux_place":{
+			"socket":"/tmp/tmux-1000/default","server_pid":"4242","session_name":"legion",
+			"window_id":"@7","window_index":3,"window_name":"infra-883",
+			"pane_id":"%12","pane_index":1,"layout":"a1b2,180x44,0,0,7","zoomed":true
+		}
+	}`), &placed); err != nil {
+		t.Fatalf("decode the registration that names a pane: %v", err)
+	}
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{})); err != nil {
+		t.Fatalf("store the registration that names a pane: %v", err)
+	}
+
+	var left subscribeBody
+	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
+		t.Fatalf("decode the registration that names none: %v", err)
+	}
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{})); err != nil {
+		t.Fatalf("store the registration that names none: %v", err)
+	}
+
+	stored, err := sessions.Get("ses_moved")
+	if err != nil {
+		t.Fatalf("read the session back: %v", err)
+	}
+	if stored.TmuxPlace != nil {
+		t.Fatalf("stored place = %+v, want nil once the session registered with none", stored.TmuxPlace)
+	}
+}
+
+func TestSendHandler_StampsInterestSenderWithoutSessionEntry(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, map[string][]string{
+		"ses_source": nil,
+	}, []string{"ses_target"})
+	claimRoles(t, registry, "ses_source", "reviewer", "maintainer")
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(`{
+		"source_session":"ses_source",
+		"target_session":"ses_target",
+		"message":"review this"
+	}`))
+	sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response contracts.Envelope
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode send response: %v", err)
+	}
+	if response.Sender == nil || response.Sender.Title != "" {
+		t.Fatalf("sender = %+v, want stamp without title", response.Sender)
+	}
+	if response.Sender.Machine != "test-machine" || response.Sender.Cwd != "/test/ses_source" {
+		t.Fatalf("sender = %+v", response.Sender)
+	}
+	if got := strings.Join(response.Sender.Roles, ","); got != "maintainer,reviewer" {
+		t.Fatalf("roles = %q, want maintainer,reviewer", got)
+	}
+}
+
+// The sender stamp reads an interest record its cache misses through to the bucket - any sender's,
+// while the cache refills after a reconnect - and, with the bus answering, stamps the machine and
+// directory from it as a cache hit would: bounding that read (senderStampReadTimeout) so a silent
+// bus cannot hold a send or a publish past its budget must not cost a healthy bus the stamp. The
+// cache is kept from the record by ending its watcher before another listener writes it, so nothing
+// but the read-through can find it. The roles come from the claims, not the record
+// (TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics).
+func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testing.T) {
+	const (
+		target = "ses_stamp_target"
+		sender = "ses_stamp_sender_the_cache_missed"
+	)
+	for _, route := range []struct {
+		name    string
+		handler func(*listenerDeps) http.HandlerFunc
+		path    string
+		body    map[string]any
+	}{
+		{
+			name:    "send",
+			handler: func(d *listenerDeps) http.HandlerFunc { return sendHandler(d, logging.New("test")) },
+			path:    "/v1/messages/send",
+			body:    map[string]any{"target_session": target, "source": "agent", "source_session": sender, "message": "who sent this?"},
+		},
+		{
+			name:    "publish",
+			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
+			path:    "/v1/messages/publish",
+			body:    map[string]any{"topic": "notifications.github.example-org.example-repo.pr.2", "source": "agent", "source_session": sender, "message": "who sent this?"},
+		},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			client := setupPublishTestClient(t)
+			registry, sessions := setupSessionsTest(t, nil, []string{target})
+			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			registry.EndWatch(endCtx)
+			cancel()
+			writer, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
+			if err != nil {
+				t.Fatalf("open the writing listener's registry: %v", err)
+			}
+			if _, err := writer.Upsert(store.Interest{
+				SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
+			}, []string{contracts.AgentSubject(sender)}); err != nil {
+				t.Fatalf("write %s's interest record: %v", sender, err)
+			}
+			listed, err := registry.List()
+			if err != nil {
+				t.Fatalf("list the interest cache: %v", err)
+			}
+			for _, cached := range listed {
+				if cached.SessionID == sender {
+					t.Fatalf("the listener's interest cache holds %s: the stamp could be read from the cache", sender)
+				}
+			}
+			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+			recorder := httptest.NewRecorder()
+			route.handler(state).ServeHTTP(recorder, postJSON(route.path, sendBody(route.body)))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("%s: status %d, body %s; want 200", route.name, recorder.Code, recorder.Body.String())
+			}
+			var response contracts.Envelope
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode the %s response %s: %v", route.name, recorder.Body.String(), err)
+			}
+			if response.Sender == nil || response.Sender.SessionID != sender || response.Sender.Machine != "test-machine" || response.Sender.Cwd != "/test/"+sender {
+				t.Fatalf("sender = %+v, want %s on test-machine in /test/%s", response.Sender, sender, sender)
+			}
+		})
+	}
+}
+
+func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
+	client := setupPublishTestClient(t)
+	state := &listenerDeps{client: client}
+	payload := `{"kind":"structured"}`
+	requestBody, err := json.Marshal(map[string]string{
+		"topic":   "notifications.github.example-org.example-repo.pr.1",
+		"message": "first line\nsecond line",
+		"payload": payload,
+	})
+	if err != nil {
+		t.Fatalf("marshal publish request: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(string(requestBody)))
+	publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response contracts.Envelope
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if response.PayloadSummary != "first line" || response.Payload != payload {
+		t.Fatalf("published payload = summary %q, payload %q", response.PayloadSummary, response.Payload)
+	}
+}
+
+func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
+	client := setupPublishTestClient(t)
+	state := &listenerDeps{client: client}
+	recorder := httptest.NewRecorder()
+	publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(
+		http.MethodPost,
+		"/v1/messages/publish",
+		strings.NewReader(`{
+			"topic":"notifications.github.example-org.example-repo.pr.1",
+			"message":"first paragraph\n\nsecond paragraph",
+			"in_reply_to":"evt_parent",
+			"supersedes":"evt_old",
+			"urgency":"blocking",
+			"expects_reply":"required"
+		}`),
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response contracts.Envelope
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if response.InReplyTo != "evt_parent" ||
+		response.Supersedes != "evt_old" ||
+		response.Urgency != "blocking" ||
+		response.ExpectsReply != "required" {
+		t.Fatalf("optional fields = %+v", response)
+	}
+}
+
+// The answer to a send or a publish is the request's own expects_reply bytes, so every sender
+// reads back the dialect it spoke: a request that wrote the old string "none" is answered
+// "none", since the plugin build old enough to write that word holds an EnvelopeSchema whose
+// expects_reply is the three-word enum and fails to parse the literal false in the answer to its
+// own send - a delivered message reported unconfirmed and sent again. The envelope the listener
+// puts on the bus is the parsed value instead, so it carries the one new vocabulary - false,
+// "optional" or "required" - whichever spelling the request used, and carries no expects_reply
+// at all for a request that said nothing about a reply.
+//
+// Each case therefore asserts both: the answer's bytes, and the field of the envelope that
+// reached the bus. Reading the bus is what proves the route still carries the sender's intent:
+// the answer alone is only the request read back.
+func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	const topic = "notifications.github.example-org.example-repo.expects-reply-dialect"
+	for _, tc := range []struct {
+		// wantAnswer and wantBus are the expects_reply bytes the answer and the envelope on the
+		// bus carry, and the empty string is neither word nor literal: it is the field absent.
+		name, path, body, subject, wantAnswer, wantBus string
+	}{
+		{
+			name:       "a send writing the literal false",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":false,"idempotency_key":"dialect-send-false"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `false`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a send writing the old none",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"none","idempotency_key":"dialect-send-none"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `"none"`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a send writing required",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"required","idempotency_key":"dialect-send-required"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `"required"`,
+			wantBus:    `"required"`,
+		},
+		{
+			name:       "a publish writing the literal false",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":false}`,
+			subject:    topic,
+			wantAnswer: `false`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a publish writing the old none",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"none"}`,
+			subject:    topic,
+			wantAnswer: `"none"`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a publish writing optional",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"optional"}`,
+			subject:    topic,
+			wantAnswer: `"optional"`,
+			wantBus:    `"optional"`,
+		},
+		{
+			// The escaped spelling of "none" is the one input that tells the two answers apart:
+			// echoing the request's own bytes writes these very bytes back, while re-marshalling
+			// the envelope would write the literal false. The bus gets the parsed value, false.
+			name:       "a publish writing the escaped spelling of the old none",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"\u006eone"}`,
+			subject:    topic,
+			wantAnswer: `"\u006eone"`,
+			wantBus:    `false`,
+		},
+		{
+			// A request that wrote null said nothing about a reply, and an answer that wrote
+			// null back would be refused by the EnvelopeSchema of a plugin whose expects_reply
+			// is the three-word enum, so the answer omits the field, as the envelope does.
+			name:       "a publish writing null",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":null}`,
+			subject:    topic,
+			wantAnswer: ``,
+			wantBus:    ``,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe, err := client.Conn.SubscribeSync(tc.subject)
+			if err != nil {
+				t.Fatalf("subscribe %s: %v", tc.subject, err)
+			}
+			t.Cleanup(func() { _ = probe.Unsubscribe() })
+			if err := client.Conn.Flush(); err != nil {
+				t.Fatalf("flush the probe on %s: %v", tc.subject, err)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			if tc.path == "/v1/messages/send" {
+				sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			} else {
+				publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			}
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if answered := rawJSONField(t, recorder.Body.Bytes(), "expects_reply"); answered != tc.wantAnswer {
+				t.Fatalf("answered expects_reply = %s, want %s; body = %s", quotedOrAbsent(answered), quotedOrAbsent(tc.wantAnswer), recorder.Body.String())
+			}
+			message, err := probe.NextMsg(5 * time.Second)
+			if err != nil {
+				t.Fatalf("read the envelope on %s: %v", tc.subject, err)
+			}
+			if wire := rawJSONField(t, message.Data, "expects_reply"); wire != tc.wantBus {
+				t.Fatalf("the envelope on %s carries expects_reply %s, want %s: %s", tc.subject, quotedOrAbsent(wire), quotedOrAbsent(tc.wantBus), message.Data)
+			}
+		})
+	}
+}
+
+// rawJSONField reads one top-level field of document exactly as it is written there, escapes and
+// all, and answers the empty string for a document with no such key - which no value can be
+// mistaken for, since the empty string is not JSON.
+func rawJSONField(t *testing.T, document []byte, name string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		t.Fatalf("decode %s: %v", document, err)
+	}
+	return string(fields[name])
+}
+
+// quotedOrAbsent names what rawJSONField read in a failure, so the absent field reads as a word
+// rather than as nothing at all.
+func quotedOrAbsent(raw string) string {
+	if raw == "" {
+		return "no expects_reply key"
+	}
+	return raw
+}
+
+// A caller's message NATS cannot take whole is the caller's to fix, so both message routes answer
+// it 413 and say how large it was against the server's max payload, rather than a 500 that reads
+// as the listener's own failure.
+func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, map[string][]string{}, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	message := strings.Repeat("m", 2<<20)
+	for _, tc := range []struct {
+		path    string
+		handler http.Handler
+		body    map[string]string
+	}{
+		{"/v1/messages/publish", publishHandler(state, logging.New("test")), map[string]string{
+			"topic": "notifications.github.example-org.example-repo.pr.1", "message": message,
+		}},
+		{"/v1/messages/send", sendHandler(state, logging.New("test")), map[string]string{"target_session": "ses_target", "message": message}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			body, err := json.Marshal(tc.body)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			tc.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(string(body))))
+			if recorder.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413; body = %.300s", recorder.Code, recorder.Body.String())
+			}
+			if got := recorder.Body.String(); !strings.Contains(got, "max payload of 1048576 bytes") {
+				t.Fatalf("body = %.300s, want it to name the server's max payload", got)
+			}
+		})
+	}
+}
+
+// A session id or role a caller names becomes a KV key, and a key NATS would refuse (one long enough
+// to take its subject past the server's protocol line, which would close the connection every
+// subscription and watcher of the listener runs on, one holding an empty token, which no stream
+// matches, or one outside nats.go's key alphabet, which nats.go refuses before sending anything) is
+// the caller's to fix: every /v1 route that reads or writes one answers 413 or 400, as for a message
+// NATS cannot take, and the connection stays up.
+func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
+	client, err := bus.Connect([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open registry: %v", err)
+	}
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open session registry: %v", err)
+	}
+	if err := sessions.Put("ses_live", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
+		t.Fatalf("register ses_live: %v", err)
+	}
+	legionAgents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open legion agent registry: %v", err)
+	}
+	mux := http.NewServeMux()
+	registerV1Routes(mux, withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions, legionAgents: newLegionAgentRegistry(legionAgents)}), "test-machine", logging.New("test"))
+
+	long := strings.Repeat("s", 5000)
+	longRole := strings.Repeat("r", 4100)
+	for _, tc := range []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"subscribe a long session id", http.MethodPost, "/v1/interests/subscribe", `{"session_id":"` + long + `","self_subscribed":true}`, http.StatusRequestEntityTooLarge},
+		{"subscribe a session id holding an empty token", http.MethodPost, "/v1/interests/subscribe", `{"session_id":"sess..x","self_subscribed":true}`, http.StatusBadRequest},
+		{"unsubscribe a long session id", http.MethodPost, "/v1/interests/unsubscribe", `{"session_id":"` + long + `","topics":["notifications.agent.x"]}`, http.StatusRequestEntityTooLarge},
+		{"read a long session id's interests", http.MethodGet, "/v1/interests/" + long, "", http.StatusRequestEntityTooLarge},
+		{"remove a long session id's interests", http.MethodDelete, "/v1/interests/" + long, "", http.StatusRequestEntityTooLarge},
+		{"remove a long session id", http.MethodDelete, "/v1/sessions/" + long, "", http.StatusRequestEntityTooLarge},
+		{"read a long session id's entry", http.MethodGet, "/v1/registry/" + long, "", http.StatusRequestEntityTooLarge},
+		{"read a long role", http.MethodGet, "/v1/roles/" + long, "", http.StatusRequestEntityTooLarge},
+		{"claim a long role", http.MethodPost, "/v1/roles/set", `{"session_id":"ses_live","role":"` + longRole + `"}`, http.StatusRequestEntityTooLarge},
+		{"publish to a long role", http.MethodPost, "/v1/messages/publish", `{"topic":"notifications.role.` + longRole + `","message":"hi"}`, http.StatusRequestEntityTooLarge},
+		{"subscribe a session id outside the key alphabet", http.MethodPost, "/v1/interests/subscribe", `{"session_id":"ses:bad","self_subscribed":true}`, http.StatusBadRequest},
+		{"unsubscribe a session id outside the key alphabet", http.MethodPost, "/v1/interests/unsubscribe", `{"session_id":"ses:bad","topics":["notifications.agent.x"]}`, http.StatusBadRequest},
+		{"read the interests of a session id outside the key alphabet", http.MethodGet, "/v1/interests/ses:bad", "", http.StatusBadRequest},
+		{"remove the interests of a session id outside the key alphabet", http.MethodDelete, "/v1/interests/ses:bad", "", http.StatusBadRequest},
+		{"remove a session id outside the key alphabet", http.MethodDelete, "/v1/sessions/ses:bad", "", http.StatusBadRequest},
+		{"read the entry of a session id outside the key alphabet", http.MethodGet, "/v1/registry/ses:bad", "", http.StatusBadRequest},
+		{"read a role outside the key alphabet", http.MethodGet, "/v1/roles/bad:role", "", http.StatusBadRequest},
+		{"publish to a role outside the key alphabet", http.MethodPost, "/v1/messages/publish", `{"topic":"notifications.role.bad:role","message":"hi"}`, http.StatusBadRequest},
+		// The Legion agent registry bounds and checks every name it keys before NATS sees it, so
+		// each is its 400 naming the field.
+		{"read a long legion agent's entry", http.MethodGet, "/v1/legion/agents/sessions/" + long, "", http.StatusBadRequest},
+		{"record a long legion agent", http.MethodPut, "/v1/legion/agents/sessions/" + long, legionEntry(long, "INFRA-1", "tester", "2026-10-26T03:15:00Z"), http.StatusBadRequest},
+		{"record a batch holding a long legion agent", http.MethodPut, "/v1/legion/agents", `{"entries":[` + legionEntry(long, "INFRA-1", "tester", "2026-10-26T03:15:00Z") + `]}`, http.StatusBadRequest},
+		{"read a long role token's legion agents", http.MethodGet, "/v1/legion/agents/roles/legion-" + long + "-infra-1-tester", "", http.StatusBadRequest},
+		{"read a long issue's legion agents", http.MethodGet, "/v1/legion/agents?issue=INFRA-" + strings.Repeat("1", 5000), "", http.StatusBadRequest},
+		{"read the legion agent entry of a session id outside the key alphabet", http.MethodGet, "/v1/legion/agents/sessions/ses:bad", "", http.StatusBadRequest},
+		{"record a legion agent outside the key alphabet", http.MethodPut, "/v1/legion/agents/sessions/ses:bad", legionEntry("ses:bad", "INFRA-1", "tester", "2026-10-26T03:15:00Z"), http.StatusBadRequest},
+		{"read the legion agent entry of a session id holding an empty token", http.MethodGet, "/v1/legion/agents/sessions/ses..x", "", http.StatusBadRequest},
+		{"read the legion agents of a role token holding an empty token", http.MethodGet, "/v1/legion/agents/roles/legion..infra-1-tester", "", http.StatusBadRequest},
+		{"read the legion agents of an issue outside the key alphabet", http.MethodGet, "/v1/legion/agents?issue=INFRA:1", "", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			mux.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+			if recorder.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body = %.300s", recorder.Code, tc.want, recorder.Body.String())
+			}
+			if !client.Conn.IsConnected() {
+				t.Fatalf("the refusal left the connection %v, want it connected", client.Conn.Status())
+			}
+		})
+	}
+}
+
+func TestPublishHandler_DedupeKeySelection(t *testing.T) {
+	client := setupPublishTestClient(t)
+	state := &listenerDeps{client: client}
+	const topic = "notifications.github.example-org.example-repo.dedupe-key"
+	probe, err := client.Conn.SubscribeSync(topic)
+	if err != nil {
+		t.Fatalf("subscribe topic probe: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	minted := func(key string) bool { return strings.HasPrefix(key, "publish.") && len(key) > len("publish.") }
+	cases := []struct {
+		name string
+		body string
+		want func(key string) bool
+	}{
+		{"explicit dedupe_key is used verbatim", `{"topic":"` + topic + `","message":"hello","dedupe_key":"publish.abc"}`, func(key string) bool { return key == "publish.abc" }},
+		{"empty dedupe_key is absent", `{"topic":"` + topic + `","message":"hello","dedupe_key":""}`, minted},
+		{"idempotency_key keeps the publish prefix", `{"topic":"` + topic + `","message":"hello","idempotency_key":"k1"}`, func(key string) bool { return key == "publish.k1" }},
+		{"neither mints a key", `{"topic":"` + topic + `","message":"hello"}`, minted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(tc.body)))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+			}
+			var response contracts.Envelope
+			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !tc.want(response.DedupeKey) {
+				t.Fatalf("response dedupe_key = %q", response.DedupeKey)
+			}
+			message, err := probe.NextMsg(5 * time.Second)
+			if err != nil {
+				t.Fatalf("read published envelope: %v", err)
+			}
+			var wire contracts.Envelope
+			if err := json.Unmarshal(message.Data, &wire); err != nil {
+				t.Fatalf("decode wire envelope: %v", err)
+			}
+			if wire.DedupeKey != response.DedupeKey || wire.EventID != response.EventID {
+				t.Fatalf("wire envelope dedupe_key %q event %q; response %q %q", wire.DedupeKey, wire.EventID, response.DedupeKey, response.EventID)
+			}
+		})
+	}
+}
+
+func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
+	client := setupPublishTestClient(t)
+	state := &listenerDeps{client: client}
+	const topic = "notifications.github.example-org.example-repo.dedupe-key-conflict"
+	probe, err := client.Conn.SubscribeSync(topic)
+	if err != nil {
+		t.Fatalf("subscribe topic probe: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"`+topic+`","message":"hello","dedupe_key":"publish.abc","idempotency_key":"k1"}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response apiError
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode 400 body: %v", err)
+	}
+	if response.Error == "" || len(response.Expected) != 2 || response.Expected[0] != "dedupe_key" || response.Expected[1] != "idempotency_key" {
+		t.Fatalf("400 body = %+v, want expected [dedupe_key idempotency_key]", response)
+	}
+	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("a rejected publish must publish nothing: %v", err)
+	}
+}
+
+// The role arbiter drops an envelope whose dedupe_key already carries the
+// forward prefix (it is how a forwarded copy is kept out of the arbiter), so a
+// caller who supplies one would get a 200 for a message that vanishes: no
+// forward, no exception, no log line. The prefix is reserved at the API.
+func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	for _, topic := range []string{
+		"notifications.github.example-org.example-repo.reserved-prefix",
+		contracts.RoleTopicPrefix + "reserved-prefix-unheld",
+	} {
+		t.Run(topic, func(t *testing.T) {
+			probe, err := client.Conn.SubscribeSync(topic)
+			if err != nil {
+				t.Fatalf("subscribe topic probe: %v", err)
+			}
+			t.Cleanup(func() { _ = probe.Unsubscribe() })
+			if err := client.Conn.Flush(); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"`+topic+`","message":"hello","dedupe_key":"`+roleForwardDedupePrefix+`publish.abc"}`)))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+			}
+			var response apiError
+			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+				t.Fatalf("decode 400 body: %v", err)
+			}
+			if response.Error != "dedupe_key must not begin with the reserved prefix "+roleForwardDedupePrefix || len(response.Expected) != 1 || response.Expected[0] != "dedupe_key" {
+				t.Fatalf("400 body = %+v", response)
+			}
+			if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+				t.Fatalf("a rejected publish must publish nothing: %v", err)
+			}
+		})
+	}
+}
+
+// A dispatch envelope's dedupe key is recognised by every host as the Dispatch event it names, and
+// Dispatch's outbox numbers its keys in sequence, so a key a caller chose there would make a host
+// drop the real event when it arrives. The key is still the caller's on any other source.
+func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
+	client := setupPublishTestClient(t)
+	state := &listenerDeps{client: client}
+	const topic = "notifications.dispatch.issue.SQUAT-1.comment.created"
+	probe, err := client.Conn.SubscribeSync(topic)
+	if err != nil {
+		t.Fatalf("subscribe topic probe: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	publish := func(body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(body)))
+		return recorder
+	}
+
+	refused := publish(`{"topic":"` + topic + `","source":"dispatch","message":"squat","dedupe_key":"dispatch-1000"}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", refused.Code, refused.Body.String())
+	}
+	var response apiError
+	if err := json.NewDecoder(refused.Body).Decode(&response); err != nil {
+		t.Fatalf("decode 400 body: %v", err)
+	}
+	if response.Error != "dedupe_key cannot be chosen for a dispatch envelope" || len(response.Expected) != 1 || response.Expected[0] != "dedupe_key" {
+		t.Fatalf("400 body = %+v", response)
+	}
+	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("a refused publish must publish nothing: %v", err)
+	}
+
+	for _, body := range []string{
+		`{"topic":"` + topic + `","source":"dispatch","message":"no chosen key"}`,
+		`{"topic":"` + topic + `","source":"agent","message":"a re-send","dedupe_key":"dispatch-1000"}`,
+	} {
+		if recorder := publish(body); recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200; body = %s", body, recorder.Code, recorder.Body.String())
+		}
+		if _, err := probe.NextMsg(5 * time.Second); err != nil {
+			t.Fatalf("%s: read published envelope: %v", body, err)
+		}
+	}
+}
+
+// The mutual-exclusion rule is publish's alone: send ignores dedupe_key as it
+// ignores any field it does not read, so a body carrying both keys is still a
+// send keyed by its idempotency_key (LEGION-108, architect ruling).
+func TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	recorder := httptest.NewRecorder()
+	sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(`{"target_session":"ses_target","message":"hello","dedupe_key":"publish.abc","idempotency_key":"k1"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response contracts.Envelope
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.DedupeKey != "agent.ses_target.k1" {
+		t.Fatalf("send dedupe_key = %q, want agent.ses_target.k1", response.DedupeKey)
+	}
+}
+
+// Dispatch's outbox keys the copy of a comment it publishes to a session whose mention failed by
+// contracts.AgentSendDedupeKey, so a host that holds the mention drops the copy; that holds only
+// while the listener keys the mention's send by the same function, byte for byte.
+func TestSendHandler_KeysASendByAgentSendDedupeKey(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	const idempotencyKey = "00000000-0000-0000-0000-000000000001:role:reviewer:steer"
+	recorder := httptest.NewRecorder()
+	sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(
+		`{"target_session":"ses_target","source":"dispatch","message":"ship it","idempotency_key":"`+idempotencyKey+`"}`,
+	)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response contracts.Envelope
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if want := contracts.AgentSendDedupeKey("ses_target", idempotencyKey); response.DedupeKey != want {
+		t.Fatalf("send dedupe_key = %q, want %q", response.DedupeKey, want)
+	}
+}
+
+func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
+	mux := http.NewServeMux()
+	// No known route is requested, so no store is read.
+	registerV1Routes(mux, &listenerDeps{}, "test-machine", logging.New("test"))
+
+	for _, path := range []string{"/v1", "/v1/not-a-route"} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("content type = %q, want application/json", got)
+			}
+			if body := recorder.Body.String(); body != "{\"error\":\"not found\"}\n" {
+				t.Fatalf("body = %q", body)
+			}
+		})
+	}
+}
+
+// LEGION-271. The send handler publishes before it answers, so a caller whose window expires
+// cannot tell whether the message landed. Its retry under the same idempotency key is a
+// JetStream duplicate, which the stream stores no second time; the answer has to say so, or
+// Dispatch records the retry as an ordinary send and the attempt history claims a delivery that
+// never happened. A send under a key its caller chose carries no MsgId, so it can never be one;
+// a key minted once for its message can.
+func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+	send := func(t *testing.T, body string) sendResponse {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		var response sendResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatalf("decode send response: %v", err)
+		}
+		return response
+	}
+
+	const dispatchSend = `{"target_session":"ses_target","source":"dispatch","message":"ship it","idempotency_key":"message-dup:steer"}`
+	if first := send(t, dispatchSend); first.Duplicate {
+		t.Fatalf("first send reported a duplicate; the stream held nothing")
+	}
+	second := send(t, dispatchSend)
+	if !second.Duplicate {
+		t.Fatalf("a repeat of a landed idempotency key must answer duplicate: %+v", second)
+	}
+	if second.EventID == "" {
+		t.Fatalf("a duplicate still names the envelope this request minted: %+v", second)
+	}
+
+	// The control: a different key is not a duplicate, so the flag is not simply what every
+	// send after the first answers.
+	fresh := send(t, `{"target_session":"ses_target","source":"dispatch","message":"ship it","idempotency_key":"message-dup:btw"}`)
+	if fresh.Duplicate {
+		t.Fatalf("a different idempotency key must not answer duplicate: %+v", fresh)
+	}
+
+	// An agent-sourced send under a key its caller chose carries no MsgId, so the stream cannot
+	// recognise a repeat.
+	const agentSend = `{"target_session":"ses_target","source":"agent","message":"ship it","idempotency_key":"agent-dup:steer"}`
+	send(t, agentSend)
+	if repeated := send(t, agentSend); repeated.Duplicate {
+		t.Fatalf("an agent-sourced send under its caller's own key cannot be a duplicate: %+v", repeated)
+	}
+
+	// The shared transport mints a UUID idempotency key once per message and re-sends under it only
+	// when the answer to a send that landed was lost, so that key names its event.
+	const transportSend = `{"target_session":"ses_target","source":"agent","message":"ship it","idempotency_key":"3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b"}`
+	if first := send(t, transportSend); first.Duplicate {
+		t.Fatalf("first transport send reported a duplicate; the stream held nothing")
+	}
+	if repeated := send(t, transportSend); !repeated.Duplicate {
+		t.Fatalf("the transport's re-send under its minted key must answer duplicate: %+v", repeated)
+	}
+}
+func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	deps := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	for _, tc := range []struct {
+		path, body, field string
+	}{
+		{"/v1/messages/send", `{"target_session":"ses_target","message":"hello","in_reply_to":""}`, "in_reply_to"},
+		{"/v1/messages/send", `{"target_session":"ses_target","message":"hello","supersedes":""}`, "supersedes"},
+		{"/v1/messages/publish", `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","urgency":""}`, "urgency"},
+		{"/v1/messages/publish", `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","expects_reply":""}`, "expects_reply"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			if tc.path == "/v1/messages/send" {
+				sendHandler(deps, logging.New("test")).ServeHTTP(rr, req)
+			} else {
+				publishHandler(deps, logging.New("test")).ServeHTTP(rr, req)
+			}
+			var response apiError
+			_ = json.NewDecoder(rr.Body).Decode(&response)
+			if rr.Code != http.StatusBadRequest || len(response.Expected) != 1 || response.Expected[0] != tc.field {
+				t.Fatalf("status=%d response=%+v, want expected %q", rr.Code, response, tc.field)
+			}
+		})
+	}
+}
+
+func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/messages/send", `{"target_session":"ses_target","message":"\n  \nFirst paragraph.\n\nSecond paragraph."}`},
+		{"/v1/messages/publish", `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"\n  \nFirst paragraph.\n\nSecond paragraph."}`},
+	} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		if tc.path == "/v1/messages/send" {
+			sendHandler(state, logging.New("test")).ServeHTTP(rr, req)
+		} else {
+			publishHandler(state, logging.New("test")).ServeHTTP(rr, req)
+		}
+		var envelope contracts.Envelope
+		_ = json.NewDecoder(rr.Body).Decode(&envelope)
+		if rr.Code != http.StatusOK || envelope.PayloadSummary != "First paragraph." || envelope.Payload == "" {
+			t.Fatalf("%s response = %d %+v", tc.path, rr.Code, envelope)
+		}
+	}
+}
+func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions}, "test-machine", logging.New("test"))
+
+	for _, body := range []string{
+		`{"session_id":"ses_capable","topics":[],"self_subscribed":true,"capabilities":["aside","btw"]}`,
+		`{"session_id":"ses_legacy","topics":[],"self_subscribed":true}`,
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(
+			recorder,
+			httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)),
+		)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("subscribe: status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	list := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
+	}
+	var payload []struct {
+		SessionID    string   `json:"session_id"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if len(payload) != 2 {
+		t.Fatalf("sessions = %#v, want two", payload)
+	}
+	if payload[0].SessionID != "ses_capable" || strings.Join(payload[0].Capabilities, ",") != "aside,btw" {
+		t.Fatalf("capable session = %#v, want advertised capabilities", payload[0])
+	}
+	if payload[1].SessionID != "ses_legacy" || len(payload[1].Capabilities) != 0 {
+		t.Fatalf("legacy session = %#v, want empty capabilities", payload[1])
+	}
+}
+
+// A registration names its plugin and that plugin's build; both reach the session list and the
+// per-session route, trimmed. A registration from a plugin predating the fields lists neither key.
+func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{registry: registry, sessions: sessions}
+	handler := subscribeHandler(state, "test-machine", logging.New("test"))
+	for _, body := range []string{
+		`{"session_id":"ses_versioned","topics":[],"self_subscribed":true,"plugin":" @sjawhar/pi-envoy ","plugin_version":" 11.0.0 "}`,
+		`{"session_id":"ses_unversioned","topics":[],"self_subscribed":true}`,
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("subscribe: status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	list := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
+	}
+	var rows []map[string]any
+	if err := json.NewDecoder(list.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	byID := map[string]map[string]any{}
+	for _, row := range rows {
+		byID[row["session_id"].(string)] = row
+	}
+	versioned, unversioned := byID["ses_versioned"], byID["ses_unversioned"]
+	if versioned["plugin"] != "@sjawhar/pi-envoy" || versioned["plugin_version"] != "11.0.0" {
+		t.Fatalf("versioned row = %#v, want plugin @sjawhar/pi-envoy at 11.0.0", versioned)
+	}
+	if _, ok := unversioned["plugin"]; ok {
+		t.Fatalf("unversioned row = %#v, want no plugin key", unversioned)
+	}
+	if _, ok := unversioned["plugin_version"]; ok {
+		t.Fatalf("unversioned row = %#v, want no plugin_version key", unversioned)
+	}
+
+	answer := sessionEntryRoute(t, state, "ses_versioned")
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_versioned: status %d %s, want 200", answer.Code, answer.Body.String())
+	}
+	if got := decodeSessionInfo(t, answer); got.Plugin != "@sjawhar/pi-envoy" || got.PluginVersion != "11.0.0" {
+		t.Fatalf("the route answered %#v, want plugin @sjawhar/pi-envoy at 11.0.0", got)
+	}
+}
+
+// sessionEntryRoute asks d's per-session route for sessionID, as a caller holding a session id and
+// about to address it does.
+func sessionEntryRoute(t *testing.T, d *listenerDeps, sessionID string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	sessionEntryHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/registry/"+sessionID, nil))
+	return recorder
+}
+
+// decodeSessionInfo reads the route's or the list's view of one session.
+func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) sessionInfo {
+	t.Helper()
+	var info sessionInfo
+	if err := json.NewDecoder(recorder.Body).Decode(&info); err != nil {
+		t.Fatalf("decode the session entry answer: %v", err)
+	}
+	return info
+}
+
+// A listener's session cache trails the session bucket, and refills from nothing after the bucket
+// is recreated. A session the bucket holds and the cache has not caught up with is live, so the
+// route reads the bucket itself and answers it: anything else tells a Dispatch mention, a broadcast
+// or an issue claim that a working session is gone.
+func TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled(t *testing.T) {
+	claimant, observer := trailingListeners(t)
+	entry := session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Host:           "worker-7",
+		Dir:            "/test/ses_unseen",
+		Title:          "a session this cache has not seen",
+		Capabilities:   []string{"aside", "btw"},
+	}
+	if err := claimant.sessions.Put("ses_unseen", entry); err != nil {
+		t.Fatalf("register ses_unseen: %v", err)
+	}
+	if _, err := observer.sessions.Get("ses_unseen"); err == nil {
+		t.Fatal("the observer's cache already holds ses_unseen, so its read-through is not under test")
+	}
+
+	answer := sessionEntryRoute(t, observer, "ses_unseen")
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_unseen on a listener whose cache has not refilled: status %d %s, want 200",
+			answer.Code, answer.Body.String())
+	}
+	got := decodeSessionInfo(t, answer)
+	if got.SessionID != "ses_unseen" || got.Title != entry.Title || got.Host != entry.Host ||
+		strings.Join(got.Capabilities, ",") != "aside,btw" {
+		t.Fatalf("answer = %#v, want the registered session's id, title, host and capabilities", got)
+	}
+}
+
+// Only the session bucket's word that it holds no record for an id is "no live session", and that
+// text is the contract: Dispatch classifies a delivery failure on the "no live session " prefix
+// (internal/dispatch/api/comment_delivery.go). The body says more now - the state the refusal was
+// decided on, and the last registration when one is known - and says it beside that error rather
+// than inside it, so a Dispatch reading only the prefix is unaffected. A session that is
+// registered answers itself.
+func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_live"})
+	state := &listenerDeps{registry: registry, sessions: sessions}
+
+	gone := sessionEntryRoute(t, state, "ses_gone")
+	if gone.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/registry/ses_gone for a session that never registered: status %d %s, want 404",
+			gone.Code, gone.Body.String())
+	}
+	// A session no record was ever held for has no last registration to name, so the body carries
+	// the error and the state alone, and the error says that this listener cannot name the time
+	// (noLiveSession) — after the prefix, which stays exact.
+	const want = `{"error":"no live session ses_gone; this listener does not know when it last registered","state":"gone"}`
+	if body := strings.TrimSpace(gone.Body.String()); body != want {
+		t.Fatalf("body = %s, want exactly %s, whose error Dispatch classifies a delivery failure on", body, want)
+	}
+
+	if live := sessionEntryRoute(t, state, "ses_live"); live.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_live for a registered session: status %d %s, want 200",
+			live.Code, live.Body.String())
+	}
+}
+
+// A session bucket read that does not answer is the listener's failure, not a gone session: the
+// route answers 503 with a reason and Retry-After, inside its bound (roleHolderReadTimeout, well
+// under the listener's 10 s HTTP write timeout), and never in the words a caller takes for a
+// session that has ended.
+func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer(t *testing.T) {
+	const bound = 5 * time.Second
+	claimant, observer := trailingListeners(t)
+	if err := claimant.sessions.Put("ses_unread", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register ses_unread: %v", err)
+	}
+	stallSessionReads(t, observer.sessions)
+
+	started := time.Now()
+	answer := sessionEntryRoute(t, observer, "ses_unread")
+	elapsed := time.Since(started)
+	if answer.Code != http.StatusServiceUnavailable || elapsed > bound {
+		t.Fatalf("GET /v1/registry/ses_unread while the session bucket cannot be read: status %d %s after %s, want 503 within %s",
+			answer.Code, answer.Body.String(), elapsed, bound)
+	}
+	if retryAfter := answer.Header().Get("Retry-After"); retryAfter != "1" {
+		t.Fatalf("Retry-After = %q, want \"1\"", retryAfter)
+	}
+	var body apiError
+	if err := json.NewDecoder(answer.Body).Decode(&body); err != nil {
+		t.Fatalf("decode the unavailable answer: %v", err)
+	}
+	if !strings.HasPrefix(body.Error, "envoy: the message bus did not answer") {
+		t.Fatalf("error = %q, want it to begin with the bus's own unavailable wording", body.Error)
+	}
+	if strings.HasPrefix(body.Error, "no live session ") {
+		t.Fatalf("error = %q, which Dispatch classifies as a gone session; a read that did not answer is not one", body.Error)
+	}
+}
+
+// The route and GET /v1/sessions answer one shape built one way, so a caller that reads one session
+// sees exactly the row the list would have given it, joined interests and all.
+func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
+	registry, sessions := setupSessionsTest(t,
+		map[string][]string{"ses_listed": nil},
+		[]string{"ses_listed"})
+	claimRoles(t, registry, "ses_listed", "reviewer")
+	state := &listenerDeps{registry: registry, sessions: sessions}
+
+	list := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
+	}
+	var rows []sessionInfo
+	if err := json.NewDecoder(list.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode the session list: %v", err)
+	}
+	var row sessionInfo
+	for _, candidate := range rows {
+		if candidate.SessionID == "ses_listed" {
+			row = candidate
+		}
+	}
+	if row.SessionID == "" || len(row.Roles) == 0 {
+		t.Fatalf("rows = %#v, want ses_listed's row carrying its joined roles", rows)
+	}
+
+	answer := sessionEntryRoute(t, state, "ses_listed")
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_listed: status %d %s, want 200", answer.Code, answer.Body.String())
+	}
+	if got := decodeSessionInfo(t, answer); !reflect.DeepEqual(got, row) {
+		t.Fatalf("the route answered %#v, want the list's row %#v", got, row)
+	}
+}
+
+// The route names the client process whose registration it answers, so a reader holding a session
+// id can tell one client process's registration from its successor's under the same session id.
+// The Legion daemon's clean stop of a dead role rests on that: a relaunch of the claim registers
+// the same session id again with an instance id of its own, and a stop naming the session id alone
+// would clear the live relaunch's registration. A session whose entry names no process - a client
+// predating the field, or one that states no instance - leaves client_instance_id out of the body
+// entirely, as GET /v1/roles/<role> leaves its own out, so a client reads an absent field as "this
+// registration names no process" rather than as the empty string. That half is read off the raw
+// body, because a decoded empty string cannot tell a field omitempty left out from one present and
+// empty.
+func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
+	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{registry: registry, sessions: sessions}
+	registerInstance(t, sessions, "ses_instanced", instance)
+	registerInstance(t, sessions, "ses_instanceless", "")
+
+	named := sessionEntryRoute(t, state, "ses_instanced")
+	if named.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_instanced: status %d %s, want 200", named.Code, named.Body.String())
+	}
+	if got := decodeSessionInfo(t, named); got.ClientInstanceID != instance {
+		t.Fatalf("client_instance_id = %q, want the registering client instance %q", got.ClientInstanceID, instance)
+	}
+
+	instanceless := sessionEntryRoute(t, state, "ses_instanceless")
+	if instanceless.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_instanceless: status %d %s, want 200", instanceless.Code, instanceless.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(instanceless.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the answer for a session registered with no client instance: %v", err)
+	}
+	if raw, ok := body["client_instance_id"]; ok {
+		t.Fatalf("client_instance_id = %s, want the field left out where the registration names no process", raw)
+	}
+}
+
+// The route reads; every other method on it is the caller's mistake, answered as every other /v1
+// handler answers one.
+func TestSessionEntryRouteRefusesANonGETMethod(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodDelete, "/v1/registry/ses_live", nil))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE /v1/registry/ses_live: status %d %s, want 405", recorder.Code, recorder.Body.String())
+	}
+	if body := strings.TrimSpace(recorder.Body.String()); body != `{"error":"method not allowed"}` {
+		t.Fatalf("body = %s, want the file's own method refusal", body)
+	}
+}
+
+// registrationViewRoute asks d's per-session route for sessionID under view=registration, as the
+// Legion daemon's clean stop of a dead role's session asks it before it deletes that
+// registration (ReadSessionRegistration, packages/daemon/internal/notify/notify.go). It states
+// no include, since that selector decides nothing under this view.
+func registrationViewRoute(t *testing.T, d *listenerDeps, sessionID string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	sessionEntryHandler(d).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/v1/registry/"+sessionID+"?view=registration", nil))
+	return recorder
+}
+
+// decodeRegistrationView reads the answer the registration view writes, which is a shape of its
+// own (sessionRegistration) and not the full answer's row.
+func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) sessionRegistration {
+	t.Helper()
+	var answer sessionRegistration
+	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode the registration view's answer: %v", err)
+	}
+	return answer
+}
+
+// registrationViewDeps opens one listener's stores over the test bus, with both caches waited
+// for, and answers its deps. The two tests below each break one of the reads the full answer
+// makes and the registration view does not - the role claim view, and the session's interest
+// record - so each needs a registry of its own to break and the bus client behind it to write
+// the record with.
+func registrationViewDeps(t *testing.T) *listenerDeps {
+	t.Helper()
+	client := setupPublishTestClient(t)
+	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	waitForRegistry(t, registry)
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	t.Cleanup(sessions.StopWatch)
+	waitForSessions(t, sessions)
+	return &listenerDeps{client: client, registry: registry, sessions: sessions}
+}
+
+// A listener whose role claim view has completed no scan refuses every read of it
+// (store.ErrRoleViewNotReady: a start, a recreated bucket being refilled, a copy gone stale, a
+// watcher that ended), and the full answer of GET /v1/registry/<session_id> is the
+// bus-unavailable 503 for it, because it joins the session's roles (sessionInfoFor). The
+// registration view joins nothing, so it answers the entry the session bucket holds all the
+// same: its client instance, its last registration and its state. The daemon's clean stop of a
+// dead role rests on that - a read it cannot make sends no delete at all, and the dead session
+// then holds its role claim and its issue claims until the gone horizon takes them, which is the
+// delay the stop exists to remove.
+func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnswer(t *testing.T) {
+	const (
+		sessionID = "ses_claims_view_refilling"
+		instance  = "9a8b7c6d5e4f3a2b9a8b7c6d5e4f3a2b"
+	)
+	d := registrationViewDeps(t)
+	registerInstance(t, d.sessions, sessionID, instance)
+	stored, _ := d.sessions.Lookup(sessionID)
+	refuseRoleClaimView(t, d.registry)
+
+	full := sessionEntryRoute(t, d, sessionID)
+	if full.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /v1/registry/%s while the claims view refuses: status %d %s, want the 503 that makes this view necessary",
+			sessionID, full.Code, full.Body.String())
+	}
+
+	answer := registrationViewRoute(t, d, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s?view=registration while the claims view refuses: status %d %s, want 200",
+			sessionID, answer.Code, answer.Body.String())
+	}
+	got := decodeRegistrationView(t, answer)
+	if got.SessionID != sessionID || got.ClientInstanceID != instance ||
+		got.LastSeen != stored.UpdatedAt || got.UpdatedAt != stored.UpdatedAt || got.State != session.Live {
+		t.Fatalf("the registration view answered %#v, want %s live, instance %q, last seen %d",
+			got, sessionID, instance, stored.UpdatedAt)
+	}
+}
+
+// A session's interest record that this build cannot decode is answered 500 by the full answer,
+// which reads that record for the session's topics, and a 500 reaches the daemon as a read that
+// failed, on which it sends no delete: such a session could never be clean-stopped. The
+// registration view reads no interest record, so it answers the registration the stop needs.
+func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannotBeRead(t *testing.T) {
+	const (
+		sessionID = "ses_unreadable_interest_registration"
+		instance  = "3c2b1a0f9e8d7c6b3c2b1a0f9e8d7c6b"
+	)
+	d := registrationViewDeps(t)
+	registerInstance(t, d.sessions, sessionID, instance)
+	stored, _ := d.sessions.Lookup(sessionID)
+	interests, err := d.client.JS().KeyValue(bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("open the interest bucket: %v", err)
+	}
+	if _, err := interests.Put(sessionID, []byte("not a json interest record")); err != nil {
+		t.Fatalf("write %s's unreadable interest record: %v", sessionID, err)
+	}
+
+	full := sessionEntryRoute(t, d, sessionID)
+	if full.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /v1/registry/%s over an unreadable interest record: status %d %s, want the 500 that makes this view necessary",
+			sessionID, full.Code, full.Body.String())
+	}
+
+	answer := registrationViewRoute(t, d, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s?view=registration over an unreadable interest record: status %d %s, want 200",
+			sessionID, answer.Code, answer.Body.String())
+	}
+	if got := decodeRegistrationView(t, answer); got.ClientInstanceID != instance || got.LastSeen != stored.UpdatedAt {
+		t.Fatalf("the registration view answered %#v, want instance %q last seen %d", got, instance, stored.UpdatedAt)
+	}
+}
+
+// The registration view reads the session bucket itself and never this listener's cache, because
+// that cache trails the bucket and the entry it still holds can carry a client instance id the
+// session has since replaced (bucketSessionEntry). The caller decides a delete on that id, so a
+// replaced one would have the listener keep the stop as another instance's and leave the dead
+// role's claims standing. The full answer reads the cache first, as it must for a session the
+// cache has not caught up with, and is asked here first to show that the two really differ.
+func TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTheCachedOne(t *testing.T) {
+	const (
+		sessionID = "ses_replaced_instance"
+		cached    = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+		inBucket  = "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+	)
+	claimant, observer := trailingListeners(t)
+	registerInstance(t, observer.sessions, sessionID, cached)
+	registerInstance(t, claimant.sessions, sessionID, inBucket)
+	if entry, _ := observer.sessions.Lookup(sessionID); entry.ClientInstanceID != cached {
+		t.Fatalf("the observer's cache holds instance %q, so it is not the stale entry this test is about", entry.ClientInstanceID)
+	}
+
+	full := sessionEntryRoute(t, observer, sessionID)
+	if full.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s: status %d %s, want 200", sessionID, full.Code, full.Body.String())
+	}
+	if got := decodeSessionInfo(t, full); got.ClientInstanceID != cached {
+		t.Fatalf("the full answer named instance %q, want the cached %q: the cache does not trail the bucket here, so this test proves nothing",
+			got.ClientInstanceID, cached)
+	}
+
+	answer := registrationViewRoute(t, observer, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s?view=registration: status %d %s, want 200", sessionID, answer.Code, answer.Body.String())
+	}
+	if got := decodeRegistrationView(t, answer); got.ClientInstanceID != inBucket {
+		t.Fatalf("the registration view named instance %q, want the bucket's %q", got.ClientInstanceID, inBucket)
+	}
+}
+
+// No state filter applies under the registration view: every entry the session bucket holds is
+// answered 200 with the state its own record puts it in, so a caller that states no include
+// still reads a session past the live window and one past the gone horizon. That is what the
+// stop needs - it runs exactly when the dead process has stopped registering - and a
+// registration that exists is one the caller may remove whatever state it reads. Only the
+// bucket's word that it holds no record is a 404, in the words the full answer uses for it.
+func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHolds(t *testing.T) {
+	const instance = "7e6d5c4b3a291807e6d5c4b3a2918070"
+	d, now := stalledSessionsRig(t)
+	stoppedAt := register(t, d, "ses_stopped", session.SessionEntry{
+		MachineID: "test-machine", Dir: "/test/stopped", SelfSubscribed: true, ClientInstanceID: instance,
+	})
+
+	// Past the live window and inside the gone horizon: the full answer asked without include is
+	// the 404 it has always been, and the registration view answers the record.
+	now.advance(90 * time.Second)
+	if refused := sessionEntryRoute(t, d, "ses_stopped"); refused.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/registry/ses_stopped without include: status %d %s, want the 404 this view is asked instead of",
+			refused.Code, refused.Body.String())
+	}
+	stalled := registrationViewRoute(t, d, "ses_stopped")
+	if stalled.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_stopped?view=registration past the live window: status %d %s, want 200",
+			stalled.Code, stalled.Body.String())
+	}
+	if got := decodeRegistrationView(t, stalled); got.State != session.Unresponsive ||
+		got.ClientInstanceID != instance || got.LastSeen != stoppedAt {
+		t.Fatalf("the registration view answered %#v, want state unresponsive, instance %q, last seen %d",
+			got, instance, stoppedAt)
+	}
+
+	// Past the gone horizon the record still stands in the bucket, and this view answers it: a
+	// registration no state filter would show is exactly the one a stop is owed for.
+	now.advance(2 * time.Minute)
+	gone := registrationViewRoute(t, d, "ses_stopped")
+	if gone.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_stopped?view=registration past the gone horizon: status %d %s, want 200",
+			gone.Code, gone.Body.String())
+	}
+	if got := decodeRegistrationView(t, gone); got.State != session.Gone ||
+		got.ClientInstanceID != instance || got.LastSeen != stoppedAt {
+		t.Fatalf("the registration view answered %#v, want state gone, instance %q, last seen %d",
+			got, instance, stoppedAt)
+	}
+
+	missing := registrationViewRoute(t, d, "ses_never_registered")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/registry/ses_never_registered?view=registration: status %d %s, want 404",
+			missing.Code, missing.Body.String())
+	}
+	var refusal noLiveSessionRefusal
+	if err := json.Unmarshal(missing.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode the refusal %s: %v", missing.Body.String(), err)
+	}
+	if !strings.HasPrefix(refusal.Error, "no live session ses_never_registered") || refusal.State != session.Gone {
+		t.Fatalf("the refusal = %+v, want the full answer's own wording and state gone", refusal)
+	}
+}
+
+// A view value this build does not know is refused 400 naming the selector, as
+// if_not_registered_after refuses a value it cannot read (deleteSessionHandler): a caller whose
+// selector was dropped in silence would be handed the full answer it asked not to have, and
+// would read that answer's 503 as its own session's.
+func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/v1/registry/ses_live?view=rows", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("GET /v1/registry/ses_live?view=rows: status %d %s, want 400", recorder.Code, recorder.Body.String())
+	}
+	var refusal apiError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
+	}
+	if !strings.Contains(refusal.Error, "view") || len(refusal.Expected) != 1 || refusal.Expected[0] != "view" {
+		t.Fatalf("the refusal = %+v, want it naming the view selector", refusal)
+	}
+}
+
+// Every role answer names the holder's state under one field, holder_state: the 404 of a lapsed
+// holder named it already, and the 200 of a live one and the publish route's 200 now name it too
+// (dispatch://INFRA-392, R1, which puts the role lookup and the role publish among the answers
+// that carry the state). A client then reads one field from every role answer instead of
+// inferring live from the status code.
+func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const (
+		role   = "state-on-the-200"
+		holder = "ses_live_holder"
+	)
+	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
+	startStandIn(t, testnats.URL(t), holder, always)
+	d := harness.publishDeps(t)
+
+	recorder := httptest.NewRecorder()
+	roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /v1/roles/%s: status %d %s, want 200", role, recorder.Code, recorder.Body.String())
+	}
+	var lookup struct {
+		Holder      string        `json:"holder"`
+		HolderState session.State `json:"holder_state"`
+		LastSeen    int64         `json:"last_seen"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &lookup); err != nil {
+		t.Fatalf("decode the lookup's answer %s: %v", recorder.Body.String(), err)
+	}
+	if lookup.Holder != holder || lookup.HolderState != session.Live || lookup.LastSeen == 0 {
+		t.Fatalf("the lookup's 200 = %+v, want %s live with its last registration", lookup, holder)
+	}
+
+	published, _ := publishThrough(d, `{"topic":"`+contracts.RoleTopicPrefix+role+`","message":"take this","idempotency_key":"state-1"}`)
+	if published.Code != http.StatusOK {
+		t.Fatalf("publish to %s: status %d %s, want 200", role, published.Code, published.Body.String())
+	}
+	var answer publishResponse
+	if err := json.Unmarshal(published.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the publish answer %s: %v", published.Body.String(), err)
+	}
+	if answer.Holder != holder || answer.HolderState != session.Live {
+		t.Fatalf("the publish's 200 = %+v, want holder %s and holder_state live", answer, holder)
+	}
+}
+
+// envoy_sends_unresponsive_total counts what its name and its help say: one per send accepted and
+// stored for a recipient past the live window. A send the bus did not take stored nothing, and a
+// duplicate the stream recognised stored nothing new, so neither is a message now waiting for a
+// session that stopped answering and neither is counted. The count rose for both before this
+// change, so a box's operator read the share of its traffic going to stalled sessions too high.
+func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
+	d, now := stalledSessionsRig(t)
+	const target = "ses_counted_recipient"
+	register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
+	now.advance(90 * time.Second)
+	met := metrics.New()
+	d.sendsToUnresponsive = met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
+	counted := func() string {
+		t.Helper()
+		scrape := httptest.NewRecorder()
+		met.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		for line := range strings.SplitSeq(scrape.Body.String(), "\n") {
+			if value, ok := strings.CutPrefix(line, "envoy_sends_unresponsive_total "); ok {
+				return value
+			}
+		}
+		return "0"
+	}
+	// source dispatch makes the key name an upstream event, which is what earns the publish a
+	// Nats-Msg-Id and so lets the stream recognise the repeat below as the duplicate it is
+	// (contracts.DedupeKeyNamesTheUpstreamEvent).
+	body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","source_session":"ses_sender","message":"stored for you","idempotency_key":"counted-1"}`, target)
+	send := func(through *listenerDeps) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		sendHandler(through, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body)))
+		return recorder
+	}
+
+	stored := send(d)
+	var answer sendResponse
+	if err := json.Unmarshal(stored.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the send answer %s: %v", stored.Body.String(), err)
+	}
+	if stored.Code != http.StatusOK || answer.RecipientState != session.Unresponsive || answer.Duplicate {
+		t.Fatalf("the first send: status %d %s, want 200 stored for an unresponsive recipient", stored.Code, stored.Body.String())
+	}
+	if got := counted(); got != "1" {
+		t.Fatalf("envoy_sends_unresponsive_total = %s after one stored send, want 1", got)
+	}
+
+	repeat := send(d)
+	if err := json.Unmarshal(repeat.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the repeat's answer %s: %v", repeat.Body.String(), err)
+	}
+	if repeat.Code != http.StatusOK || !answer.Duplicate {
+		t.Fatalf("the repeat: status %d %s, want 200 naming the duplicate the stream dropped", repeat.Code, repeat.Body.String())
+	}
+	if got := counted(); got != "1" {
+		t.Fatalf("envoy_sends_unresponsive_total = %s after a duplicate the stream stored nothing new for, want 1", got)
+	}
+
+	closed, err := bus.Connect([]string{testnats.URL(t)}, bus.WithName("closed-sender"))
+	if err != nil {
+		t.Fatalf("connect the sender that will be stopped: %v", err)
+	}
+	closed.Close()
+	unsent := send(&listenerDeps{client: closed, registry: d.registry, sessions: d.sessions, sendsToUnresponsive: d.sendsToUnresponsive})
+	if unsent.Code == http.StatusOK {
+		t.Fatalf("the send through a stopped client: status %d %s, want a refusal", unsent.Code, unsent.Body.String())
+	}
+	if got := counted(); got != "1" {
+		t.Fatalf("envoy_sends_unresponsive_total = %s after a send the bus never took, want 1", got)
+	}
+}

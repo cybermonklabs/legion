@@ -1,0 +1,598 @@
+import { MessageType } from "@hocuspocus/provider";
+import type { ParagraphReading } from "@legion/proof-editor/reading";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  type Route,
+  type WebSocketRoute,
+} from "@playwright/test";
+import { createDecoder, readVarUint } from "lib0/decoding";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import type { Ask } from "../web/src/api/types";
+
+import { readField } from "../web/src/features/doc/sync-frame";
+import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import { asUser } from "./users";
+
+export function documentEditor(page: Page): Locator {
+  return page.getByRole("textbox", { name: "Document editor" });
+}
+
+/** The document's connection dot once it is connected. Its accessible name is its `title`
+ * (ConnectionDot.tsx), which reads "connected" only in that state, so this matches nothing while
+ * the document connects and none of the shell skeleton's loading statuses. */
+export function connectedDot(scope: Page | Locator): Locator {
+  return scope.getByRole("status", { name: "connected" });
+}
+
+/** Opens an issue's spec and waits until its editor shows `text` and its document is connected,
+ *  so a selection or a margin card the row reaches for next is live. */
+export async function openSpec(page: Page, issueKey: string, text: string): Promise<void> {
+  await page.goto(`/issues/${issueKey}/spec`);
+  await expect(documentEditor(page)).toContainText(text);
+  await expect(connectedDot(page)).toHaveText("connected");
+}
+
+/** Opens an issue's spec in page and waits for the update its editor makes on its own as it opens
+ * the document: an id for each heading an agent wrote, which changes the document's full-state
+ * token and none of its text. The spec needs a heading. Returns the token after that update. */
+export async function openSpecAndAwaitHeadingIds(
+  page: Page,
+  issueKey: string,
+  artifactId: string,
+  text: string
+): Promise<string | undefined> {
+  const before = (await getArtifactText(artifactId)).token;
+  await page.goto(`/issues/${issueKey}/spec`);
+  await expect(documentEditor(page)).toContainText(text);
+  let after = before;
+  await expect
+    .poll(async () => {
+      after = (await getArtifactText(artifactId)).token;
+      return after;
+    })
+    .not.toBe(before);
+  return after;
+}
+
+export function actionBar(page: Page): Locator {
+  return page.locator(".dispatch-action-bar");
+}
+
+/** Presses one of the selection bar's actions, once the bar is where a press can reach it. The
+ * bar is `position: fixed` and `dispatch-action-bar.ts` places it beside the selection, so a
+ * selection outside the viewport puts the bar outside it too - and Playwright's "scroll into
+ * view" moves nothing for a fixed element, so such a click only retries until the row's budget
+ * ends and reports a button that would not take a press. The wait fails by naming the bar
+ * instead, which is the thing that did not arrive. */
+export async function barAction(page: Page, label: "Comment" | "Suggest" | "Ask"): Promise<void> {
+  await expect(actionBar(page)).toBeInViewport();
+  await actionBar(page).getByRole("button", { exact: true, name: label }).click();
+}
+
+/** Opens the Inbox or the Agents page by the sidebar's own link, and waits for the heading the
+ *  application gives that page, so a navigation that did not happen fails by naming the page
+ *  that never opened rather than by whatever the row reaches for next.
+ *
+ *  The link, not the `g i` and `g a` chords: the keymap drops a half-typed chord one second
+ *  after its first key (`CHORD_TIMEOUT_MS`, `web/src/features/shell/keymap.ts`), and the two
+ *  keys of a chord are two round trips to the engine — on the Agents page, measured in WebKit on
+ *  an idle machine, 281-382 ms of that second passes between the `g` and the `i`. A loaded lane
+ *  lands the second key after the chord is gone, where `i` on its own opens the inbox peek and
+ *  the reader never leaves the page. A link carries no such deadline. */
+export async function openFromSidebar(page: Page, name: "Agents" | "Inbox"): Promise<void> {
+  await page
+    .getByRole("navigation", { name: "Navigation" })
+    .getByRole("link", { name: new RegExp(`^${name}`) })
+    .click();
+  await expect(page.getByRole("heading", { exact: true, level: 1, name })).toBeVisible();
+}
+
+/** The comment composer: on a document page, the margin's, which a selection-bar action opens. */
+export function composer(page: Page): Locator {
+  return page.getByRole("form", { name: "Comment composer" });
+}
+
+export function markSpan(page: Page, markId: string): Locator {
+  return documentEditor(page).locator(`[data-id="${markId}"]`);
+}
+
+/** The text of each mark among `spans`, keyed by mark id: a mark another mark nests inside renders
+ *  as more than one span, and an outer span's text includes the spans inside it, so a mark's text
+ *  is its own spans' text joined in document order. */
+export function markTexts(spans: Locator): Promise<Record<string, string>> {
+  return spans.evaluateAll((elements) => {
+    const texts: Record<string, string> = {};
+    for (const element of elements) {
+      const id = element.getAttribute("data-id") ?? "";
+      texts[id] = (texts[id] ?? "") + (element.textContent ?? "");
+    }
+    return texts;
+  });
+}
+
+/** Waits until `page`'s editor shows the mark `markId` over exactly `quote`, whether it renders as
+ *  one span or, with another mark nested inside it, as several. */
+export async function expectMark(page: Page, markId: string, quote: string): Promise<void> {
+  const spans = markSpan(page, markId);
+  await expect(spans.first()).toBeVisible();
+  await expect.poll(async () => (await markTexts(spans))[markId] ?? "").toBe(quote);
+}
+
+export function cursorLabel(page: Page, name: string): Locator {
+  return page.locator(".proof-collab-cursor__label", { hasText: name });
+}
+
+/** Selects the first occurrence of `quote` inside the focused ProseMirror node the way a drag
+ * does: a DOM Range plus the selectionchange ProseMirror's DOMObserver listens to. A quote no one
+ * text node holds - text another mark's span splits - is found across the text nodes in order. */
+export async function selectEditorText(page: Page, quote: string): Promise<void> {
+  await setEditorRange(page, { extent: "whole", quote });
+  await actionBar(page).waitFor({ state: "visible" });
+}
+
+/** Selects `quote` as `selectEditorText` does, without waiting for the selection bar: for a row
+ *  whose assertion is the bar itself. It reads all of the editor's text, a read-only one's (a
+ *  closed issue's document, where no caret can enter) included. `selectTextIn` is the same for a
+ *  quote inside one element of an editable document. */
+export function selectEditorQuote(page: Page, quote: string): Promise<void> {
+  return setEditorRange(page, { anyText: true, extent: "whole", quote });
+}
+
+/** Puts the caret directly before or after the first occurrence of `quote` among the text a caret
+ * can enter, the way a click there does: a quote that also stands in `contenteditable="false"`
+ * chrome, such as a block's banner, or that a collaborator's cursor label splits, is found where
+ * the caret can go. `scope`, an element inside the editor, limits the search to the text in it. */
+export function placeCaret(
+  page: Page,
+  edge: "before" | "after",
+  quote: string,
+  scope?: Locator
+): Promise<void> {
+  return setEditorRange(page, { extent: edge, quote }, scope);
+}
+
+/** Selects the first occurrence of `quote` among the text a caret can enter inside `scope`, an
+ * element inside the editor, as `selectEditorText` does but without waiting for the selection bar.
+ * Its text nodes read as one text, so a quote may run from one paragraph into the next. */
+export function selectTextIn(page: Page, scope: Locator, quote: string): Promise<void> {
+  return setEditorRange(page, { extent: "whole", quote }, scope);
+}
+
+/** Over, before or after the first occurrence of `quote`, or the end of the last text a caret can
+ * enter: a collaborator's cursor label and an atom's text sit in `contenteditable="false"`. */
+type EditorRange =
+  | { anyText?: boolean; extent: "whole" | "before" | "after"; quote: string }
+  | { extent: "end" };
+
+/** Sets the page's selection and dispatches the selectionchange ProseMirror's DOMObserver reads, so
+ * the editor takes the selection before this returns. Every target is found only in the text a
+ * caret can enter (any text, for `anyText`), inside `scope` when one is given, else the whole
+ * editor. Without that read,
+ * ProseMirror's focus handler (prosemirror-view `handlers.focus`) writes the editor's own selection
+ * back to the page 20 ms after focus and undoes a caret placed in between. */
+async function setEditorRange(page: Page, target: EditorRange, scope?: Locator): Promise<void> {
+  const editor = documentEditor(page);
+  await editor.waitFor();
+  await editor.focus();
+  await (scope ?? editor).evaluate((root, target) => {
+    const range = document.createRange();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    if (target.extent === "end") {
+      let last: Node | null = null;
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if (node.parentElement?.isContentEditable === true) last = node;
+      }
+      if (last === null) throw new Error("the editor holds no text a caret can enter");
+      range.setStart(last, last.textContent?.length ?? 0);
+    } else {
+      // Reads the text nodes as one text, so a quote another mark's span splits is found as
+      // readily as one a single node holds, and maps the quote's two ends back to their nodes.
+      const { anyText, extent, quote } = target;
+      const runs: { node: Node; start: number; end: number }[] = [];
+      let text = "";
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if (anyText !== true && node.parentElement?.isContentEditable !== true) continue;
+        const start = text.length;
+        text += node.textContent ?? "";
+        runs.push({ end: text.length, node, start });
+      }
+      const index = text.indexOf(quote);
+      const first = runs.find((run) => run.start <= index && index < run.end);
+      const last = runs.find(
+        (run) => run.start < index + quote.length && index + quote.length <= run.end
+      );
+      if (index < 0 || first === undefined || last === undefined) {
+        throw new Error(`quote is not in the editor: ${quote}`);
+      }
+      const startAt = { node: first.node, offset: index - first.start };
+      const endAt = { node: last.node, offset: index + quote.length - last.start };
+      const from = extent === "after" ? endAt : startAt;
+      const to = extent === "before" ? startAt : endAt;
+      range.setStart(from.node, from.offset);
+      range.setEnd(to.node, to.offset);
+    }
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  }, target);
+}
+
+export async function deleteEditorText(page: Page, quote: string): Promise<void> {
+  await selectEditorText(page, quote);
+  await page.keyboard.press("Backspace");
+}
+
+/** Presses Enter at the end of the document's last text, then types `text`: after a heading or a
+ * paragraph, that is a paragraph of its own. */
+export async function typeAtEnd(page: Page, text: string): Promise<void> {
+  await setEditorRange(page, { extent: "end" });
+  await page.keyboard.press("Enter");
+  await page.keyboard.type(text);
+}
+
+export function marginCard(page: Page, id: string): Locator {
+  return page.locator(`[data-margin-item="${id}"]`);
+}
+
+/** The card of a margin thread the reader opened: in the Thread dialog on the phone layout, in
+ *  the margin beside the document everywhere else. */
+export function openedThreadCard(page: Page, project: string, rootId: string): Locator {
+  return project === "iphone"
+    ? page.getByRole("dialog", { name: "Thread" }).getByTestId(`margin-comment-${rootId}`)
+    : marginCard(page, rootId);
+}
+
+// On the phone layout the margin is a bottom sheet over the document. Acting on a selection
+// opens it; close it again before selecting another range, as a person would.
+export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
+  if (project !== "iphone") {
+    return;
+  }
+  const sheet = page.getByTestId("margin-sheet");
+  if ((await sheet.getAttribute("data-expanded")) !== String(open)) {
+    if (open) {
+      await page.getByRole("button", { name: /Open review panel/ }).click();
+    } else {
+      await page.mouse.click(1, 1);
+    }
+  }
+  await expect(sheet).toHaveAttribute("data-expanded", String(open));
+}
+
+/** The thread card rendered inside a Conversation turn (the margin renders the same thread as
+ *  its own card, so a bare `[data-margin-item]` lookup would match both). */
+export function threadCard(page: Page, rootId: string): Locator {
+  return page.locator(`[data-turn="comment:${rootId}"]`).locator(`[data-margin-item="${rootId}"]`);
+}
+
+/** Where a Conversation turn's thread shows once the reader expands it: in place, in the turn,
+ *  above the phone breakpoint; in the full-screen Thread dialog on the phone layout. */
+export function conversationThreadScope(page: Page, project: string, turn: Locator): Locator {
+  return project === "iphone" ? page.getByRole("dialog", { name: "Thread" }) : turn;
+}
+
+/** One paragraph of a reading, from the one definition (`@legion/proof-editor/reading`): the
+ *  type a spec passes `expectParagraphReadings`, and the type the fixture table stores. */
+export type { ParagraphReading };
+
+/** Asserts the paragraphs `view` draws read as `reading`, the whole table at once, so a failure
+ *  reports every row's reading. */
+export async function expectParagraphReadings(
+  view: Locator,
+  reading: ParagraphReading[]
+): Promise<void> {
+  const rows = view.locator("p");
+  await expect(rows).toHaveCount(reading.length);
+  await expect
+    .poll(() =>
+      rows.evaluateAll((paragraphs) =>
+        paragraphs.map((paragraph) => {
+          const texts = (selector: string) =>
+            [...paragraph.querySelectorAll(selector)].map((element) => element.textContent);
+          return {
+            emphasized: texts("em"),
+            strong: texts("strong"),
+            struck: texts("del"),
+            text: paragraph.textContent?.replace(/\s+/g, " ").trim(),
+          };
+        })
+      )
+    )
+    .toEqual(reading);
+}
+
+/** The Conversation's All / Open / Closed control, the one filter over its cards. It starts on
+ *  All every visit and is not persisted. */
+export function conversationFilter(page: Page, label: "All" | "Closed" | "Open"): Locator {
+  return page
+    .getByRole("group", { name: "Conversations" })
+    .getByRole("button", { exact: true, name: label });
+}
+
+/** The margin's open asks waiting on the reader. Every margin ask card, open or decided, is in one
+ *  keyed list - an answered ask moves to the decided ones in place - so the group is each card's
+ *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id. */
+export function needsYouCards(page: Page): Locator {
+  return page.locator('[data-margin-section="needs-you"]');
+}
+
+export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
+  const card = threadCard(page, rootId);
+  if ((await card.getAttribute("aria-expanded")) !== "true") {
+    await card.getByRole("button").click();
+  }
+  const phoneThread = page.getByRole("dialog", { name: "Thread" });
+  const thread = (await phoneThread.count()) === 0 ? card : phoneThread;
+  const composer = thread.getByRole("form", { name: "Comment composer" });
+  const reply = composer.getByRole("textbox", { name: "Reply" });
+  await reply.fill(body);
+  await reply.press("Control+Enter");
+  await expect(composer.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+}
+/** Document sockets the page has opened since the call, open or closed: every document's, or with
+ *  `documentId` that document's alone, for a page that holds another document beside it. */
+export function countDocumentSockets(page: Page, documentId?: string): () => number {
+  let count = 0;
+  page.on("websocket", (socket) => {
+    const path = new URL(socket.url()).pathname;
+    if (documentId === undefined ? path.startsWith("/ws/doc/") : path === `/ws/doc/${documentId}`) {
+      count += 1;
+    }
+  });
+  return () => count;
+}
+
+/** Every fact this poll waits on lands in milliseconds: Playwright's default 100/250/500/1000
+ *  ladder would first see it a quarter-second late. */
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
+
+/** Spends the document socket's reconnect draw - a uniform [0, RECONNECT_SPREAD_MS) set at the
+ *  previous open (`web/src/features/doc/connection.ts`) - on the page's own clock, until the page
+ *  holds `count` document sockets, as `countDocumentSockets` counts them. What armed the draw may
+ *  not have reached the page when the first jump lands, so the jump repeats. */
+export async function reconnectedSockets(
+  page: Page,
+  sockets: () => number,
+  count: number
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      await page.clock.fastForward(RECONNECT_SPREAD_MS);
+      return sockets();
+    }, PROBE)
+    .toBe(count);
+}
+
+/** Document sockets the tab still holds open: one per live document, never one per visit. */
+export function openDocumentSockets(page: Page): () => number {
+  let open = 0;
+  page.on("websocket", (socket) => {
+    if (!new URL(socket.url()).pathname.startsWith("/ws/doc/")) return;
+    open += 1;
+    socket.on("close", () => {
+      open -= 1;
+    });
+  });
+  return () => open;
+}
+
+/** Identifies a Hocuspocus server acknowledgement without duplicating its wire constants. */
+function isSyncStatusFrame(message: string | Buffer): boolean {
+  if (typeof message === "string") {
+    return false;
+  }
+  try {
+    const decoder = createDecoder(message);
+    readField(decoder); // the document name
+    return readVarUint(decoder) === MessageType.SyncStatus;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Proxies the document transport so a test owns its connections. `sever()` closes the ones it
+ * made, the way a network blip or a server restart does, and the client reconnects. With
+ * `holding`, or after `hold()`, new connections are held rather than connected, so the editor
+ * does not sync: the open document reports no layout and every anchored card is still stacked at
+ * the top of the margin, which is the state the link's hold exists for, and a reconnect after
+ * `sever()` waits. `release()` connects what is held and anything that arrives afterwards.
+ * `holdServerFrames()` holds only tag-8 server acknowledgements on connected routes, while still
+ * applying each client update to the server. Install it before the page's first navigation: only
+ * sockets opened afterwards are routed, and Playwright has no fallthrough for WebSocket routes.
+ */
+export async function documentTransport(
+  page: Page,
+  { holding = false }: { holding?: boolean } = {}
+): Promise<{
+  hold: () => void;
+  holdServerFrames: () => void;
+  release: () => Promise<void>;
+  releaseServerFrames: () => Promise<void>;
+  sever: () => Promise<void>;
+}> {
+  const connects: (() => void)[] = [];
+  const heldServerFrames: { message: string | Buffer; route: WebSocketRoute }[] = [];
+  const live: WebSocketRoute[] = [];
+  let holdingServerFrames = false;
+  let releasing = !holding;
+  const connect = (route: WebSocketRoute): WebSocketRoute => {
+    const server = route.connectToServer();
+    live.push(route);
+    server.onMessage((message) => {
+      if (holdingServerFrames && isSyncStatusFrame(message)) {
+        heldServerFrames.push({ message, route });
+        return;
+      }
+      route.send(message);
+    });
+    return server;
+  };
+  await page.routeWebSocket(/\/ws\/doc\//u, (route) => {
+    if (releasing) {
+      connect(route);
+      return;
+    }
+    // The page's sync messages are buffered rather than dropped: the provider sends its first
+    // one the moment the socket opens, and a connection that misses it never syncs at all.
+    let server: WebSocketRoute | undefined;
+    const pending: (string | Buffer)[] = [];
+    route.onMessage((message) => {
+      if (server === undefined) {
+        pending.push(message);
+        return;
+      }
+      server.send(message);
+    });
+    connects.push(() => {
+      server = connect(route);
+      for (const message of pending.splice(0)) {
+        server.send(message);
+      }
+    });
+  });
+  return {
+    hold: () => {
+      releasing = false;
+    },
+    holdServerFrames: () => {
+      holdingServerFrames = true;
+    },
+    release: async () => {
+      releasing = true;
+      for (const connectHeld of connects.splice(0)) {
+        connectHeld();
+      }
+    },
+    releaseServerFrames: async () => {
+      holdingServerFrames = false;
+      for (const { message, route } of heldServerFrames.splice(0)) {
+        route.send(message);
+      }
+    },
+    sever: async () => {
+      for (const route of live.splice(0)) {
+        await route.close({ code: 1012, reason: "transport blip" });
+      }
+    },
+  };
+}
+
+/**
+ * Holds the first request `page` makes for a URL matching `url` and lets every later one through,
+ * so a test decides when that one download ends: `held` resolves with its route once the page has
+ * made it, for the test to abort or continue. Install it before the navigation that makes the
+ * request. The route stays installed for the page's life on purpose. A `{ times: 1 }` route does
+ * not stay: Playwright removes an expiring route from the page before its handler runs, and a page
+ * left with no route stops intercepting while that request is still held (playwright-core 1.63,
+ * `Page._onRoute`). In Chromium the reload a failed chunk starts then got no response in 12 of 40
+ * runs.
+ */
+export async function holdFirstRequest(page: Page, url: RegExp): Promise<{ held: Promise<Route> }> {
+  const first = Promise.withResolvers<Route>();
+  let holding = false;
+  await page.route(url, async (route) => {
+    if (!holding) {
+      holding = true;
+      first.resolve(route);
+      return;
+    }
+    await route.continue();
+  });
+  return { held: first.promise };
+}
+
+export interface Clipboard {
+  html: string;
+  text: string;
+}
+
+/** Copies the selection through the editor's own copy handler: ProseMirror serializes it into the
+ * copy event's clipboardData, which is what a browser's clipboard receives. */
+export async function copy(page: Page): Promise<Clipboard> {
+  return documentEditor(page).evaluate((root) => {
+    const data = new DataTransfer();
+    root.dispatchEvent(
+      new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data })
+    );
+    return { html: data.getData("text/html"), text: data.getData("text/plain") };
+  });
+}
+
+/** Pastes clipboard contents at the caret, through the editor's own paste handler. */
+export async function paste(page: Page, clipboard: Clipboard): Promise<void> {
+  await documentEditor(page).evaluate((root, { html, text }) => {
+    const data = new DataTransfer();
+    data.setData("text/html", html);
+    data.setData("text/plain", text);
+    root.dispatchEvent(
+      new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data })
+    );
+  }, clipboard);
+}
+
+/** Creates an issue whose spec is `spec` and opens it as alice. */
+export async function openIssue(browser: Browser, title: string, spec: string) {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", spec, title });
+  const alice = await asUser(browser, "alice");
+  const page = await alice.newPage();
+  await page.goto(`/issues/${issue.key}`);
+  return { alice, issue, page };
+}
+
+/** The id of the block of `artifactId` whose markdown is exactly `text`. A paragraph's id is a
+ *  minted UUID, which `encodeBlockId` writes unchanged, so the id is also its `#b-` fragment. */
+export async function blockId(artifactId: string, text: string): Promise<string> {
+  const { markdown } = await getArtifactText(artifactId);
+  const blocks = await getArtifactBlocks(artifactId);
+  const block = blocks.find((candidate) => markdown.slice(candidate.from, candidate.to) === text);
+  if (block === undefined) {
+    throw new Error(`no block of ${artifactId} reads ${JSON.stringify(text)}: ${markdown}`);
+  }
+  expect(block.id).toMatch(/^[A-Za-z0-9-]+$/);
+  return block.id;
+}
+
+/** Waits until the issue's spec block has been indexed into an open ask and returns it. The
+ *  index lands inside the first step of Playwright's own 100/250/500 ladder, which would then
+ *  not look again until a quarter-second after it was there, so this reads it on a closer one. */
+export async function indexedBlockAsk(issueKey: string, block: string): Promise<Ask> {
+  let blockAsk: Ask | undefined;
+  await expect
+    .poll(
+      async () => {
+        blockAsk = ((await getIssue(issueKey)).open_asks ?? []).find(
+          (candidate) => candidate.block_id === block
+        );
+        return blockAsk !== undefined;
+      },
+      { intervals: [50, 50, 100, 200, 500] }
+    )
+    .toBe(true);
+  if (blockAsk === undefined) {
+    throw new Error(`the ${block} decision was not indexed`);
+  }
+  return blockAsk;
+}
+
+/** Opens `spec` as alice, with the caret collapsed at the start or the end of the text `quote`:
+ * the selection bar is gone once the selection collapses, and a paste before that replaces the
+ * selected text. */
+export async function openWithCaret(
+  browser: Browser,
+  title: string,
+  spec: string,
+  quote: string,
+  caret: "start" | "end"
+) {
+  const { alice, issue, page } = await openIssue(browser, title, spec);
+  await selectEditorText(page, quote);
+  await page.keyboard.press(caret === "start" ? "ArrowLeft" : "ArrowRight");
+  await expect(actionBar(page)).toBeHidden();
+  return { alice, issue, page };
+}

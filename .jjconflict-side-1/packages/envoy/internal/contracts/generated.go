@@ -1,0 +1,521 @@
+package contracts
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+type Envelope struct {
+	EventID           string            `json:"event_id"`
+	Source            string            `json:"source"`
+	SourceEventID     string            `json:"source_event_id"`
+	SourceSession     string            `json:"source_session,omitempty"`
+	Topic             string            `json:"topic"`
+	DedupeKey         string            `json:"dedupe_key"`
+	IssuedAt          int64             `json:"issued_at"`
+	ExpiresAt         *int64            `json:"expires_at,omitempty"`
+	KeptAt            *int64            `json:"kept_at,omitempty"`
+	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
+	PayloadSummary    string            `json:"payload_summary"`
+	PayloadRef        string            `json:"payload_ref,omitempty"`
+	Payload           string            `json:"payload,omitempty"`
+	TraceID           string            `json:"trace_id"`
+	Sender            *EnvelopeSender   `json:"sender,omitempty"`
+	InReplyTo         string            `json:"in_reply_to,omitempty"`
+	Supersedes        string            `json:"supersedes,omitempty"`
+	Urgency           string            `json:"urgency,omitempty"`
+	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
+}
+
+type EnvelopeSender struct {
+	SessionID string   `json:"session_id"`
+	Machine   string   `json:"machine,omitempty"`
+	Cwd       string   `json:"cwd,omitempty"`
+	Title     string   `json:"title,omitempty"`
+	Roles     []string `json:"roles,omitempty"`
+}
+
+func (e Envelope) Validate() error {
+	if strings.TrimSpace(e.EventID) == "" {
+		return fmt.Errorf("event_id is required")
+	}
+	if strings.TrimSpace(e.Source) == "" {
+		return fmt.Errorf("source is required")
+	}
+	if strings.TrimSpace(e.SourceEventID) == "" {
+		return fmt.Errorf("source_event_id is required")
+	}
+	if strings.TrimSpace(e.Topic) == "" {
+		return fmt.Errorf("topic is required")
+	}
+	if strings.TrimSpace(e.DedupeKey) == "" {
+		return fmt.Errorf("dedupe_key is required")
+	}
+	if e.IssuedAt == 0 {
+		return fmt.Errorf("issued_at must be set")
+	}
+	if strings.TrimSpace(e.PayloadSummary) == "" {
+		return fmt.Errorf("payload_summary is required")
+	}
+	if strings.TrimSpace(e.TraceID) == "" {
+		return fmt.Errorf("trace_id is required")
+	}
+	if e.InReplyTo != "" && strings.TrimSpace(e.InReplyTo) == "" {
+		return fmt.Errorf("in_reply_to must not be empty")
+	}
+	if e.Supersedes != "" && strings.TrimSpace(e.Supersedes) == "" {
+		return fmt.Errorf("supersedes must not be empty")
+	}
+	switch e.Source {
+	case "agent", "human", "envoy", "github", "slack", "whatsapp", "ghostwispr", "dispatch":
+	default:
+		return fmt.Errorf("source must be one of: agent, human, envoy, github, slack, whatsapp, ghostwispr, dispatch")
+	}
+	if e.Urgency != "" {
+		switch e.Urgency {
+		case "low", "med", "high", "blocking":
+		default:
+			return fmt.Errorf("urgency must be one of: low, med, high, blocking")
+		}
+	}
+	if err := e.ExpectsReply.Validate(); err != nil {
+		return err
+	}
+	if e.Sender != nil {
+		if strings.TrimSpace(e.Sender.SessionID) == "" {
+			return fmt.Errorf("sender.session_id is required")
+		}
+	}
+	return nil
+}
+
+func ValidateWire(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for _, field := range []string{"in_reply_to", "supersedes", "urgency", "expects_reply"} {
+		if err := validateWireNonEmpty(fields, field, field); err != nil {
+			return err
+		}
+	}
+	senderRaw, found := fields["sender"]
+	if !found {
+		return nil
+	}
+	var sender map[string]json.RawMessage
+	if err := json.Unmarshal(senderRaw, &sender); err != nil {
+		return err
+	}
+	return validateWireNonEmpty(sender, "session_id", "sender.session_id")
+}
+
+func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string) error {
+	raw, found := fields[field]
+	if !found {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if value == "" {
+		return fmt.Errorf("%s must not be empty", path)
+	}
+	return nil
+}
+
+const AgentTopicPrefix = "notifications.agent."
+const RoleTopicPrefix = "notifications.role."
+
+// GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
+const GithubTopicPrefix = "notifications.github."
+
+// DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
+// notification stream and by every host that subscribes over core NATS. Generated from
+// DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
+// this window bounds, so the stream, the hosts and the dashboard read one number.
+const DeliveryDuplicateWindow = 259200000 * time.Millisecond
+
+// IssueClaimUnresponsiveGrace is how long an issue claim is held for a holder the Envoy registry
+// calls unresponsive: a session that missed its heartbeats keeps the issue it is working until it
+// was last seen longer ago than this, and only then may another agent take or release the claim
+// without a person's force. Generated from ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS in
+// packages/contracts, whose doc comment states the rule, so the server's refusal and the wait a
+// client predicts are one number.
+const IssueClaimUnresponsiveGrace = 1200000 * time.Millisecond
+
+// MintedDedupeKeyPattern is the shape of a dedupe key minted once for its message, by the listener
+// or by the shared transport's idempotency key, which DedupeKeyNamesTheUpstreamEvent counts as
+// naming its event. Generated from MINTED_DEDUPE_KEY_PATTERN in packages/contracts, which the
+// hosts' dedupe reads too, so the stream and the hosts answer one question the same way.
+const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\\.[^.]+)\\.(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+
+// ReceiptTimeoutCause is what a delivery attempt records when the listener never answered its
+// send. Generated from RECEIPT_TIMEOUT_CAUSE in packages/contracts so the string Dispatch writes
+// and the string the dashboard keys its retry wording on cannot drift apart.
+const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
+
+// MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
+// MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
+// cannot drift apart.
+const MaxBroadcastRecipients = 100
+
+// SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
+// SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
+// command's cannot drift apart.
+const SearchQueryMax = 1000
+
+// SearchQueryHint follows a refusal over SearchQueryMax, saying what to send instead. Generated
+// from SEARCH_QUERY_HINT in packages/contracts so the server and the tool word it once.
+const SearchQueryHint = "search with a short phrase of a few words, not a passage"
+
+// ProjectKeyRule says the project-key pattern's rule in words; every refusal of a key that is not
+// a project key gives it. Generated from PROJECT_KEY_RULE in packages/contracts so the server and
+// the tool word it once.
+const ProjectKeyRule = "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE"
+
+// ProjectKeyPattern is a whole project key, as the server creates them and the projects.key check
+// constraint holds. Generated from PROJECT_KEY_PATTERN in packages/contracts, which the dispatch
+// command checks a key against, so the two accept the same keys.
+const ProjectKeyPattern = "^[A-Z][A-Z0-9]{1,9}$"
+
+// SearchKindDepth is how many of its best matches each kind of content lists before
+// GET /api/v1/search merges the kinds; a kind's later matches count in the total and no offset
+// returns them. Generated from SEARCH_KIND_DEPTH in packages/contracts so the server's cut and the
+// `dispatch search` command's account of it cannot drift apart.
+const SearchKindDepth = 100
+
+// SearchDegradedEmbedderUnavailable is GET /api/v1/search's SearchResponse.degraded value when
+// meaning search could not run for this request and search fell back to keyword-only ranking.
+// Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
+// Dispatch writes and the string search-answer.ts compares against cannot drift apart.
+const SearchDegradedEmbedderUnavailable = "embedder_unavailable"
+
+// The names of the frames one answer's stream carries: text as the answer arrives, item for each
+// thing the answer cites, cut when the answer reached its word cap, changed when the server did
+// not pass the answer on as the model wrote it, none when the model produced no answer text at
+// all, and end and error, the two that end a stream. A text frame carries plain text, every
+// ASCII punctuation byte of it backslash-escaped, which closes markdown's own constructs, so a
+// renderer makes no link, image, tag or code span of any of it; an escape closes none of GFM's
+// literal autolinks, so a word a renderer would link on its own is dropped from the answer
+// rather than sent; and an item frame is where the links of an answer live, each carrying a
+// cited item's own href.
+// Generated from GOING_EVENT_TEXT, GOING_EVENT_ITEM, GOING_EVENT_CUT,
+// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_END and GOING_EVENT_ERROR in
+// packages/contracts so the frames the server writes and the frames the page reads cannot drift
+// apart.
+const GoingEventText = "text"
+const GoingEventItem = "item"
+const GoingEventCut = "cut"
+const GoingEventChanged = "changed"
+const GoingEventNone = "none"
+const GoingEventEnd = "end"
+const GoingEventError = "error"
+
+// The codes an error frame carries: the run reached its window without an answer, the deployment
+// has no text model configured, and the model service refused or failed. Generated from
+// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
+// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
+// the page keys on it cannot drift apart.
+const GoingErrorAnswerDidNotArrive = "ANSWER_DID_NOT_ARRIVE"
+const GoingErrorNoModelConfigured = "NO_MODEL_CONFIGURED"
+const GoingErrorAnswerFailed = "ANSWER_FAILED"
+
+// GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
+// Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
+// name the page explains cannot drift apart.
+const GoingSearchTool = "search_dispatch"
+
+// GoingAnswerWordMax is the most words an answer carries, past which the stream cuts it and says
+// so. Generated from GOING_ANSWER_WORD_MAX in packages/contracts so the server's cut and the
+// page's account of it cannot drift apart.
+const GoingAnswerWordMax = 120
+
+// GoingHitRuneMax is the most of one hit's own text the model is shown, and GoingRequestRuneMax
+// the most hit text one run shows it in total; a hit past the total is still named to the model
+// with no body, and stays something the answer may cite.
+// Generated from GOING_HIT_RUNE_MAX and GOING_REQUEST_RUNE_MAX in packages/contracts so the
+// server's bounds and the page's account of them cannot drift apart.
+const GoingHitRuneMax = 2000
+const GoingRequestRuneMax = 30000
+
+// GoingSearchMax is the most searches one run makes, the server's own seeding search counting as
+// the first, and GoingModelCallMax the most calls it makes to the model, which bounds a model
+// that keeps searching instead of answering. Generated from GOING_SEARCH_MAX and
+// GOING_MODEL_CALL_MAX in packages/contracts so the server's bounds and the page's account of
+// them cannot drift apart.
+const GoingSearchMax = 3
+const GoingModelCallMax = 4
+
+// GoingWordsMax is the longest question the route accepts, in UTF-16 units. Generated from
+// GOING_WORDS_MAX in packages/contracts so the server's refusal and the page's own cannot drift
+// apart.
+const GoingWordsMax = 2000
+
+// GoingRunWindow is how long one run may take, measured from the POST that started it, and
+// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
+// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
+// server's windows and the page's account of them cannot drift apart.
+const GoingRunWindow = 30000 * time.Millisecond
+const GoingRequestTTL = 3600000 * time.Millisecond
+
+// MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
+// MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
+const MaxIssueBlockers = 20
+
+// MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
+// DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
+// MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
+// and the `dispatch issues` command's cannot drift apart.
+const MaxIssuePageLimit = 250
+const DefaultIssuePageLimit = 50
+
+// IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
+// PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
+// server's refusal and the dashboard's title fields cannot drift apart.
+const IssueTitleMax = 1000
+
+// DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
+// ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;
+// the server enforces it, names it in its refusal, and publishes it through GET /api/v1/limits.
+const DispatchBlockUnits = 32000
+
+// DispatchItemBlocks is the most blocks one body may hold. Generated from DISPATCH_ITEM_BLOCKS in
+// packages/contracts; the server enforces it, names it in its refusal, and publishes it through
+// GET /api/v1/limits.
+const DispatchItemBlocks = 32768
+
+// DispatchEventBodyMax is the longest body an event carries whole, in UTF-16 units, and the bound
+// on an ask's question and its options together. Generated from DISPATCH_EVENT_BODY_MAX in
+// packages/contracts; the server enforces it, names it in its refusal, and publishes it through
+// GET /api/v1/limits.
+const DispatchEventBodyMax = 32000
+
+// DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
+// POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
+// packages/contracts so the server's 413 and the `dispatch handoff-write` command's pre-send
+// refusal cannot drift apart.
+const DispatchHandoffBodyMax = 262144
+
+// HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
+// not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so
+// the server and the tool word it once.
+const HandoffPhaseRule = "a lowercase letter, then up to 31 lowercase letters, digits or hyphens, such as implement"
+
+// HandoffPhasePattern is a handoff's phase, the {phase} segment of the handoff routes, which the
+// handoffs.phase check constraint holds too. Generated from HANDOFF_PHASE_PATTERN in
+// packages/contracts, which the dispatch command checks a phase against, so the two accept the
+// same phases.
+const HandoffPhasePattern = "^[a-z][a-z0-9-]{0,31}$"
+
+// ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
+// accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
+// Settings name field and the dispatch command cannot drift apart.
+const ProjectNameMax = 80
+
+// DocumentSchemaCloseCode and DocumentSchemaCloseReason close a document websocket whose room is
+// outside the Proof schema, before any sync. Generated from DOCUMENT_SCHEMA_CLOSE_CODE and
+// DOCUMENT_SCHEMA_CLOSE_REASON in packages/contracts so the server's close and the dashboard's
+// reading of it cannot drift apart.
+const DocumentSchemaCloseCode = 4409
+const DocumentSchemaCloseReason = "DOC_SCHEMA"
+
+// LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
+// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
+// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
+// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
+// drift apart.
+const LiveSocketMaxAgeClose = 4001
+const LiveSocketMinAge = 1800000 * time.Millisecond
+const LiveSocketMaxAge = 3600000 * time.Millisecond
+const LiveSocketMaxSubscriptions = 64
+
+// IdempotencyKeyHeader is the request header a write names its intent with, the same on every
+// retry of that intent, and IdempotencyReplayedHeader the response header (?1) on an answer
+// replayed from the first request under the key rather than run again. Generated from
+// IDEMPOTENCY_KEY_HEADER and IDEMPOTENCY_REPLAYED_HEADER in packages/contracts so the server, the
+// dashboard and the agents' client name them once.
+const IdempotencyKeyHeader = "Idempotency-Key"
+const IdempotencyReplayedHeader = "Idempotency-Replayed"
+
+// IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
+// IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and
+// the keys every client mints cannot drift apart.
+const IdempotencyKeyMax = 128
+const IdempotencyKeyPattern = "^[A-Za-z0-9._:-]{1,128}$"
+
+// The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
+// used for another request (422), a key whose first request still runs (409), a key whose write
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
+// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
+// packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
+const IdempotencyKeyReused = "KEY_REUSED"
+const IdempotencyKeyInFlight = "KEY_IN_FLIGHT"
+const IdempotencyKeyCommitted = "KEY_COMMITTED"
+const IdempotencyKeyInvalid = "KEY_INVALID"
+const IdempotencyAnswerNotKept = "ANSWER_NOT_KEPT"
+
+// IdempotencyKeyTTL is how long Dispatch keeps a key's answer, and IdempotencyLease how long a
+// key's first request holds it before a repeat may run it again. Generated from
+// IDEMPOTENCY_KEY_TTL_MS and IDEMPOTENCY_LEASE_MS in packages/contracts so the server's windows and
+// the clients' account of them cannot drift apart.
+const IdempotencyKeyTTL = 86400000 * time.Millisecond
+const IdempotencyLease = 60000 * time.Millisecond
+
+// SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
+// SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
+// heartbeats plus one whole listener call fit inside the live window, so two refreshes may fail
+// and the third still completes before the session stops reading live. Generated from
+// SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS in packages/contracts, whose doc comments state
+// that arrangement, so the pane's refresh and the listener's window cannot drift apart.
+const SessionHeartbeat = 90000 * time.Millisecond
+const SessionLiveWindow = 300000 * time.Millisecond
+
+// SessionClaimStale is how long a session's role claim may go unrefreshed before a reader treats
+// the process that wrote it as gone, which allows three missed heartbeats at SessionHeartbeat.
+// Generated from SESSION_CLAIM_STALE_MS in packages/contracts so session.ClaimStaleAfter and the
+// Legion daemon's copy of it, which times its last re-hold of a notice, are one number.
+const SessionClaimStale = 300000 * time.Millisecond
+
+// ListenerCallTimeout is how long one attempt of an envoy-client call waits for the listener,
+// ListenerCallRetryDelay the pause before the next attempt, and ListenerCallAttempts how many
+// attempts one call makes. Together they are a whole call's budget, which the heartbeat interval
+// is set to leave room for. Generated from LISTENER_CALL_TIMEOUT_MS, LISTENER_CALL_RETRY_DELAY_MS
+// and LISTENER_CALL_ATTEMPTS in packages/contracts so the client's cost and every check of that
+// budget are computed from one set of numbers.
+const ListenerCallTimeout = 5000 * time.Millisecond
+const ListenerCallRetryDelay = 250 * time.Millisecond
+const ListenerCallAttempts = 2
+
+// DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
+// of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
+// is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
+// packages/contracts so the server's check and the page's header cannot drift apart.
+const DispatchLoginHeader = "Dispatch-Login"
+const DispatchLoginChanged = "LOGIN_CHANGED"
+
+// IDAmbiguous is the code of the 409 an id written as a prefix two items or more carry is
+// refused with, on a page address, a dispatch:// reference and a dashboard address in text, and
+// on a route that takes an id in its path; the refusal's candidates list the items it names.
+// Generated from ID_AMBIGUOUS in packages/contracts so the server's refusal and the page that
+// lists its candidates cannot drift apart.
+const IDAmbiguous = "ID_AMBIGUOUS"
+
+// DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
+// names a session and a service but no person: the machine holding it has signed nobody in.
+// Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
+// every client's reading of it cannot drift apart.
+const DispatchSignInRequired = "SIGN_IN_REQUIRED"
+
+func NowMillis() int64 {
+	return time.Now().UnixMilli()
+}
+
+func AgentSubject(session string) string {
+	return AgentTopicPrefix + session
+}
+
+// GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
+// segment: a name may hold a dot, which a NATS subject splits on. Mirrored on the TS side as
+// `githubRepositoryPrefix`.
+func GithubRepositoryPrefix(owner, repo string) string {
+	return GithubTopicPrefix + SanitizeSubjectSegment(owner) + "." + SanitizeSubjectSegment(repo)
+}
+
+func GithubSubject(owner string, repo string, kind string) string {
+	return GithubRepositoryPrefix(owner, repo) + "." + kind
+}
+
+func SlackSubject(team string, channel string, kind string) string {
+	return "notifications.slack." + team + "." + channel + "." + kind
+}
+
+// SanitizeSubjectSegment makes a value one NATS subject segment: a dot, which a subject splits on,
+// and whitespace and the wildcards * and >, which a published subject may not hold, each become an
+// underscore. A slash is kept. Generated from SUBJECT_SEGMENT_REPLACED in packages/contracts, which
+// `sanitizeSubjectSegment` reads too, so what the listener publishes and what a consumer expects
+// cannot drift apart.
+func SanitizeSubjectSegment(value string) string {
+	return subjectSegmentSanitizer.Replace(value)
+}
+
+var subjectSegmentSanitizer = strings.NewReplacer(".", "_", " ", "_", "\t", "_", "\r", "_", "\n", "_", "*", "_", ">", "_")
+
+func SlackThreadSubject(team, channel, threadTs, kind string) string {
+	return "notifications.slack." + team + "." + channel + ".thread." + SanitizeSubjectSegment(threadTs) + "." + kind
+}
+
+// SubjectMaxBytes is the longest subject the bus publishes on, in bytes: bus's maxSubjectBytes, the
+// NATS server's 4 KiB max control line less the rest of the longest protocol line nats.go sends.
+// The bus refuses a longer subject before sending it, since the server would close the connection
+// over it. Generated from SUBJECT_MAX_BYTES in packages/contracts.
+const SubjectMaxBytes = 4032
+
+// GithubPushSubject names a push by its ref name, one segment, sanitized. The ref is the one part of
+// a GitHub subject that GitHub bounds only as git does, which is not at all, so a subject past
+// SubjectMaxBytes keeps of the segment what fits, cut between runes, followed by ~ and the first 16
+// hex digits of the SHA-256 of the whole ref name, and is then at most SubjectMaxBytes: the bus
+// publishes it, and two refs that share the kept text still have two subjects. Git refuses ~ in a
+// ref, so a cut segment is never another ref's whole one. A consumer that needs the exact ref reads
+// the payload's ref. Mirrored on the TS side as `githubPushSubject`.
+func GithubPushSubject(owner, repo, refType, refName string) string {
+	prefix := GithubRepositoryPrefix(owner, repo) + ".push." + refType + "."
+	segment := SanitizeSubjectSegment(refName)
+	if len(prefix)+len(segment) <= SubjectMaxBytes {
+		return prefix + segment
+	}
+	digest := sha256.Sum256([]byte(refName))
+	suffix := "~" + hex.EncodeToString(digest[:8])
+	keep := max(SubjectMaxBytes-len(prefix)-len(suffix), 0)
+	for keep > 0 && !utf8.RuneStart(segment[keep]) {
+		keep--
+	}
+	return prefix + segment[:keep] + suffix
+}
+
+func GithubWorkflowSubject(owner, repo, workflowFilename, action string) string {
+	return GithubRepositoryPrefix(owner, repo) + ".workflow." + SanitizeSubjectSegment(workflowFilename) + "." + action
+}
+
+// GithubJobSubject names a finished GitHub Actions job on the default branch, of a run with no pull
+// request, by its run. Mirrored on the TS side as `githubJobSubject`.
+func GithubJobSubject(owner, repo, runID, action string) string {
+	return GithubRepositoryPrefix(owner, repo) + ".job." + SanitizeSubjectSegment(runID) + "." + action
+}
+
+func GithubResourceSubject(owner string, repo string, resourceType string, resourceNumber string) string {
+	return GithubRepositoryPrefix(owner, repo) + "." + resourceType + "." + resourceNumber
+}
+
+const GhostWisprTopicPrefix = "notifications.ghostwispr."
+
+func GhostWisprSubject(sessionId string, kind string) string {
+	return GhostWisprTopicPrefix + sessionId + "." + kind
+}
+
+// AgentStreamSubjectPrefix roots the live agent conversation stream. Generated from
+// AGENT_STREAM_SUBJECT_PREFIX in packages/contracts so the session that publishes its own turns
+// and the Dispatch relay that forwards them to a browser cannot drift apart. It sits outside
+// "notifications." deliberately: that family is what the notification stream captures, so every
+// frame travels over core NATS and the bus retains none of it.
+const AgentStreamSubjectPrefix = "agentstream."
+
+func AgentStreamFramesSubject(sessionID string) string {
+	return AgentStreamSubjectPrefix + sessionID + ".frames"
+}
+
+func AgentStreamControlSubject(sessionID string) string {
+	return AgentStreamSubjectPrefix + sessionID + ".control"
+}
+
+func WhatsappSubject(phone, jid, kind string) string {
+	return "notifications.whatsapp." + phone + "." + jid + "." + kind
+}

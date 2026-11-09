@@ -1,0 +1,602 @@
+// token_login_test.go drives POST /v1/launcher-credentials/token, a service logging in with its own
+// projected Kubernetes ServiceAccount token, which no person approves, on the same real broker
+// api_test.go mounts.
+package api_test
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"net/http"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/broker/api"
+	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
+)
+
+// wireTokenLogin is POST /v1/launcher-credentials/token's answer.
+type wireTokenLogin struct {
+	CredentialID string    `json:"credential_id"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// accountToken mints a projected ServiceAccount token for account, bound to podUID ("" for none,
+// as `kubectl create token` mints), issued a few seconds ago and expiring lifetime from now
+// (negative for one already expired), signed by the local OIDC issuer the test server trusts.
+func (ts *testServer) accountToken(t *testing.T, account, podUID string, lifetime time.Duration) string {
+	t.Helper()
+	claims := ts.podIssuer.Claims(account, podAudience)
+	now := time.Now()
+	claims["iat"] = now.Add(min(lifetime, 0) - 5*time.Second).Unix()
+	claims["nbf"] = claims["iat"]
+	claims["exp"] = now.Add(lifetime).Unix()
+	if podUID != "" {
+		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
+	}
+	return ts.podIssuer.Mint(t, ts.podKey, claims)
+}
+
+// tokenLogin posts token and request to POST /v1/launcher-credentials/token.
+func (ts *testServer) tokenLogin(t *testing.T, token, request string) (int, []byte) {
+	t.Helper()
+	return ts.req(t, http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{"token": token, "request": request})
+}
+
+// daemonRequest is the request object the Legion daemon signs for its token login: one
+// launcher_credential detail naming legion-daemon, signed by key.
+func (ts *testServer) daemonRequest(t *testing.T, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	return signMachineLoginRequest(t, key, ts.URL, "", "legion-daemon-test-7d9f", "legion-daemon")
+}
+
+// enrollPodWith enrolls a fresh pod under credentialID with key, answering the broker's status.
+func (ts *testServer) enrollPodWith(t *testing.T, key *ecdsa.PrivateKey, credentialID string) (int, []byte) {
+	t.Helper()
+	podUID := uuid.NewString()
+	return ts.launcher(t, key, credentialID, http.MethodPost, "/v1/enrollments", map[string]any{
+		"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, newSigningKey(t)),
+		"pod_token": ts.podToken(t, workerAccount, podUID),
+	})
+}
+
+// TestAServiceLogsInWithItsOwnTokenAndNoOneApproves: the daemon's ServiceAccount token and a
+// request object its new key signed issue a launcher credential at once, with no machine-login
+// record and nothing pending for anyone; it expires with the token, and its key enrolls a pod. The
+// broker's audit records the login with the account, the pod the token is bound to and the key.
+func TestAServiceLogsInWithItsOwnTokenAndNoOneApproves(t *testing.T) {
+	ts := newTestServer(t)
+	key := newSigningKey(t)
+	daemonPod := uuid.NewString()
+	before := time.Now()
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, daemonPod, 20*time.Minute), ts.daemonRequest(t, key))
+	if status != http.StatusOK {
+		t.Fatalf("token login = %d %s, want 200", status, body)
+	}
+	login := decode[wireTokenLogin](t, body)
+	if want := before.Add(20 * time.Minute).Truncate(time.Second); login.ExpiresAt.Before(want.Add(-time.Second)) || login.ExpiresAt.After(want.Add(2*time.Second)) {
+		t.Fatalf("expires_at = %s, want the token's own expiry, about %s", login.ExpiresAt, want)
+	}
+	if status, body := ts.enrollPodWith(t, key, login.CredentialID); status != http.StatusCreated {
+		t.Fatalf("enroll a pod with the token-issued credential = %d %s, want 201", status, body)
+	}
+	if got := ts.column(t, `select count(*)::text from credential_requests`); !slices.Equal(got, []string{"0"}) {
+		t.Fatalf("credential-request records = %v, want none: no person approves a token login", got)
+	}
+	if got := ts.column(t, `select coalesce(service,'') || ' ' || host || ' ' || coalesce(subject,'') from launcher_credentials where id=$1`, login.CredentialID); !slices.Equal(got, []string{"legion-daemon legion-system/legion-daemon-test " + daemonAccount}) {
+		t.Fatalf("launcher credential = %v, want legion-daemon on host legion-system/legion-daemon-test for %s", got, daemonAccount)
+	}
+	if got := ts.column(t, `select actor || ' ' || (detail->>'subject') || ' ' || (detail->>'pod_uid') || ' ' || (detail->>'key_thumbprint')
+		from audit where kind='launcher_credential.token_login'`); !slices.Equal(got, []string{record.LauncherActor(login.CredentialID) + " " + daemonAccount + " " + daemonPod + " " + thumbprintOf(t, key)}) {
+		t.Fatalf("token_login audit rows = %v, want one naming the account, its pod and the key", got)
+	}
+	if got := ts.column(t, `select ((detail->>'token_expires_at')::timestamptz = (detail->>'expires_at')::timestamptz)::text from audit where kind='launcher_credential.token_login'`); !slices.Equal(got, []string{"true"}) {
+		t.Fatalf("token_login audit row's token_expires_at matches its expires_at = %v, want true for a 20-minute token", got)
+	}
+}
+
+// TestATokenLoginIsCappedAtAnHour: a token whose expiry lies past an hour from the login, within
+// the skew MaxTokenLoginLifetime allows, issues a credential that still expires an hour after the
+// login, and the audit row records the token's own later expiry.
+func TestATokenLoginIsCappedAtAnHour(t *testing.T) {
+	ts := newTestServer(t)
+	before := time.Now()
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour+40*time.Second), ts.daemonRequest(t, newSigningKey(t)))
+	if status != http.StatusOK {
+		t.Fatalf("token login = %d %s, want 200", status, body)
+	}
+	if got := decode[wireTokenLogin](t, body).ExpiresAt; got.Before(before.Add(time.Hour-time.Second)) || got.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("expires_at = %s, want an hour after the login", got)
+	}
+	if got := ts.column(t, `select ((detail->>'token_expires_at')::timestamptz > (detail->>'expires_at')::timestamptz)::text from audit where kind='launcher_credential.token_login'`); !slices.Equal(got, []string{"true"}) {
+		t.Fatalf("token_login audit row's token_expires_at after its expires_at = %v, want true", got)
+	}
+}
+
+// TestATokenLoginRefusesAKeyAnotherLoginHolds: a token login whose request a key signed that a
+// person's live machine login already holds is 409 KEY_HOLDS_LIVE_CREDENTIAL, issues nothing, and
+// leaves the person's credential on its key.
+func TestATokenLoginRefusesAKeyAnotherLoginHolds(t *testing.T) {
+	ts := newTestServer(t)
+	personsID, key := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, key))
+	if status != http.StatusConflict || decode[wireError](t, body).Code != "KEY_HOLDS_LIVE_CREDENTIAL" {
+		t.Fatalf("token login with a person's key = %d %s, want 409 KEY_HOLDS_LIVE_CREDENTIAL", status, body)
+	}
+	if got := ts.column(t, `select count(*)::text from launcher_credentials where subject is not null`); !slices.Equal(got, []string{"0"}) {
+		t.Fatalf("token-issued credentials = %v, want none", got)
+	}
+	if got := ts.column(t, `select key_thumbprint from launcher_credentials where id=$1`, personsID); !slices.Equal(got, []string{thumbprintOf(t, key)}) {
+		t.Fatalf("the person's credential's key = %v, want it unchanged", got)
+	}
+}
+
+// TestAForgedTokenFloodIsLimitedByAddress: every token login spends its source address's bucket
+// before the token is verified, whatever account it claims, so tokens that name the daemon's
+// listed account but that the issuer never signed are refused 429 once the address's bucket is
+// empty, rather than each costing a verification (and possibly a fetch of the issuer's keys).
+func TestAForgedTokenFloodIsLimitedByAddress(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.LauncherLimits = &api.LauncherLimits{
+			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
+			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 100},
+		}
+	})
+	forger := oidctest.NewKey(t, "forger")
+	for i, want := range []int{http.StatusUnauthorized, http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusTooManyRequests} {
+		claims := ts.podIssuer.Claims(daemonAccount, podAudience)
+		status, body := ts.tokenLogin(t, ts.podIssuer.Mint(t, forger, claims), ts.daemonRequest(t, newSigningKey(t)))
+		if status != want {
+			t.Fatalf("forged token claiming %s, attempt %d = %d %s, want %d", daemonAccount, i, status, body, want)
+		}
+	}
+}
+
+// TestAVerifiedAccountSpendsItsOwnBucketToo: a verified token login spends its account's own
+// bucket after its address's, so the daemon's account logs in only as often as that bucket allows
+// even from an address with requests to spare.
+func TestAVerifiedAccountSpendsItsOwnBucketToo(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.LauncherLimits = &api.LauncherLimits{
+			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 100},
+			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 2},
+		}
+	})
+	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {
+		if status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, newSigningKey(t))); status != want {
+			t.Fatalf("the daemon's login %d = %d %s, want %d", i, status, body, want)
+		}
+	}
+}
+
+// TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAccountBucket: while the broker's database is
+// away, a verified token login fails with a 5xx the broker decided nothing by, and the daemon
+// retries it every few seconds so it logs in again soon after the database is back. Such a login
+// must not spend its account's bucket: if it did, the bucket would be empty a few retries into
+// the outage, and the daemon's first login after the database is back would be refused 429 and
+// wait out its long schedule, up to a minute, instead of being served.
+func TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAccountBucket(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.LauncherLimits = &api.LauncherLimits{
+			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 100},
+			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 2},
+		}
+	})
+	ts.Store.Close()
+	for i := range 4 {
+		status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, newSigningKey(t)))
+		if status < 500 || status > 599 {
+			t.Fatalf("the daemon's login %d with the database away = %d %s, want a 5xx: a login the broker could not complete spends none of its account's bucket of 2", i, status, body)
+		}
+	}
+}
+
+// TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAddressBucket: a verified token login the
+// broker could not complete, with the database away, gives back its source address's request as
+// well as its account's, so the daemon retrying through an outage does not drain its address's
+// bucket either, and its first login once the database is back is not refused 429 by it.
+func TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAddressBucket(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.LauncherLimits = &api.LauncherLimits{
+			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
+			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 100},
+		}
+	})
+	ts.Store.Close()
+	for i := range 4 {
+		status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, newSigningKey(t)))
+		if status < 500 || status > 599 {
+			t.Fatalf("the daemon's login %d with the database away = %d %s, want a 5xx: a login the broker could not complete spends none of its address's bucket of 2", i, status, body)
+		}
+	}
+}
+
+// TestATokenThatDoesNotVerifySpendsItsAddressBucketWhileTheDatabaseIsAway: the give-back a login
+// the broker could not complete earns applies only once its token has verified. A token that does
+// not verify keeps its address's request spent whatever it is answered, even while the database
+// is away and verified logins are refunded, since that bucket is what guards the verifier's
+// fetches of the issuer's keys: a key-fetch or other failure answered 5xx after a failed
+// verification must never refund a forged token's attempt, or a flood of forged tokens would
+// cost the broker a fetch each without limit. Here tokens claiming the daemon's account, signed
+// by a key the issuer never published, are refused 401 until the address's bucket of 2 is empty,
+// then 429.
+func TestATokenThatDoesNotVerifySpendsItsAddressBucketWhileTheDatabaseIsAway(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.LauncherLimits = &api.LauncherLimits{
+			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
+			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 100},
+		}
+	})
+	ts.Store.Close()
+	forger := oidctest.NewKey(t, "forger")
+	for i, want := range []int{http.StatusUnauthorized, http.StatusUnauthorized, http.StatusTooManyRequests} {
+		claims := ts.podIssuer.Claims(daemonAccount, podAudience)
+		status, body := ts.tokenLogin(t, ts.podIssuer.Mint(t, forger, claims), ts.daemonRequest(t, newSigningKey(t)))
+		if status != want {
+			t.Fatalf("forged token claiming %s with the database away, attempt %d = %d %s, want %d", daemonAccount, i, status, body, want)
+		}
+	}
+}
+
+// TestARefusedTokenLoginStillSpendsItsAccountBucket: a verified token login whose request the
+// broker refuses, here one naming a service the account does not log in as (403
+// ACCOUNT_NOT_LISTED), keeps its account's login spent, since the limit exists to slow guessing:
+// the account's sixth such login inside its bucket of five is refused 429.
+func TestARefusedTokenLoginStillSpendsItsAccountBucket(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.LauncherLimits = &api.LauncherLimits{
+			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 100},
+			PerLogin:   ratelimit.Limit{Every: time.Hour, Burst: 5},
+		}
+	})
+	for i := range 5 {
+		request := signMachineLoginRequest(t, newSigningKey(t), ts.URL, "", "legion-daemon-test-7d9f", "other-service")
+		status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), request)
+		if status != http.StatusForbidden || decode[wireError](t, body).Code != "ACCOUNT_NOT_LISTED" {
+			t.Fatalf("the daemon's login %d naming another service = %d %s, want 403 ACCOUNT_NOT_LISTED", i, status, body)
+		}
+	}
+	request := signMachineLoginRequest(t, newSigningKey(t), ts.URL, "", "legion-daemon-test-7d9f", "other-service")
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), request)
+	if refusal := decode[wireError](t, body); status != http.StatusTooManyRequests || refusal.Code != "RATE_LIMITED" ||
+		!strings.Contains(refusal.Error, "too many token logins for this ServiceAccount") {
+		t.Fatalf("the daemon's sixth refused login = %d %s, want 429 RATE_LIMITED: too many token logins for this ServiceAccount", status, body)
+	}
+}
+
+// TestARestartLogsInAgainAndKeepsItsOneCredential is a daemon's restart: a second token login for
+// the same account, with a new key and a fresh token, answers the same credential, moved to the new
+// key, so no person is asked and the pods the first boot enrolled stay the daemon's own. The old
+// key's proofs stop authenticating at once; the new key enrolls a pod and ends the pod the first
+// boot enrolled.
+func TestARestartLogsInAgainAndKeepsItsOneCredential(t *testing.T) {
+	ts := newTestServer(t)
+	firstKey := newSigningKey(t)
+	// One pod uid across both logins: a restart is the daemon's process starting again in the pod
+	// it already runs in, and a machine login is that pod's (migration 0029). A replaced pod is a
+	// different login, which TestAReplacedPodGetsALoginOfItsOwn drives.
+	daemonPod := uuid.NewString()
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, daemonPod, time.Hour), ts.daemonRequest(t, firstKey))
+	if status != http.StatusOK {
+		t.Fatalf("first boot's token login = %d %s, want 200", status, body)
+	}
+	first := decode[wireTokenLogin](t, body)
+	status, body = ts.enrollPodWith(t, firstKey, first.CredentialID)
+	if status != http.StatusCreated {
+		t.Fatalf("first boot's enrollment = %d %s, want 201", status, body)
+	}
+	earlier := decode[wireEnrolled](t, body).EnrollmentID
+
+	restartKey := newSigningKey(t)
+	status, body = ts.tokenLogin(t, ts.accountToken(t, daemonAccount, daemonPod, time.Hour), ts.daemonRequest(t, restartKey))
+	if status != http.StatusOK {
+		t.Fatalf("restart's token login = %d %s, want 200", status, body)
+	}
+	if restart := decode[wireTokenLogin](t, body); restart.CredentialID != first.CredentialID {
+		t.Fatalf("restart's credential = %s, want the account's one credential %s", restart.CredentialID, first.CredentialID)
+	}
+	if status, body := ts.enrollPodWith(t, firstKey, first.CredentialID); status != http.StatusUnauthorized || decode[wireError](t, body).Code != "LAUNCHER_INVALID" {
+		t.Fatalf("the first boot's key after the restart = %d %s, want 401 LAUNCHER_INVALID", status, body)
+	}
+	if status, body := ts.enrollPodWith(t, restartKey, first.CredentialID); status != http.StatusCreated {
+		t.Fatalf("the restart's key enrolls a pod = %d %s, want 201", status, body)
+	}
+	if status, body := ts.launcher(t, restartKey, first.CredentialID, http.MethodDelete, "/v1/enrollments/"+earlier, nil); status != http.StatusNoContent {
+		t.Fatalf("the restart ends the pod the first boot enrolled = %d %s, want 204", status, body)
+	}
+	if got := ts.column(t, `select count(*)::text from launcher_credentials`); !slices.Equal(got, []string{"1"}) {
+		t.Fatalf("launcher credentials = %v, want the account's one", got)
+	}
+}
+
+// TestAReplacedPodGetsALoginOfItsOwnAndEndsItsPredecessorsPods: a machine login belongs to the pod
+// whose token made it, so a replaced pod of the same account gets a credential of its own rather
+// than taking the old pod's over, which is what lets several pods of one account hold logins at
+// the same time. It still ends the enrollments its predecessor made, because they are the same
+// launcher: the same ServiceAccount, the same service, and pods of an account BROKER_SERVICES
+// binds to that service. Without it, one deploy would leave every enrollment the launcher pods
+// before it made running to its lease with nothing able to revoke it.
+//
+// Migration 0029 keeps 0015's one-credential-per-subject index so a roll serves both broker
+// generations against one database, so this drives the schema the release after this one leaves
+// (storetest.PerPodLoginSchema); TestOneSubjectHoldsOneLoginOnThisReleasesSchema drives the
+// other side of the same staging.
+func TestAReplacedPodGetsALoginOfItsOwnAndEndsItsPredecessorsPods(t *testing.T) {
+	ts := newTestServer(t)
+	storetest.PerPodLoginSchema(t, ts.Store)
+	firstKey := newSigningKey(t)
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, uuid.NewString(), time.Hour), ts.daemonRequest(t, firstKey))
+	if status != http.StatusOK {
+		t.Fatalf("the first pod's token login = %d %s, want 200", status, body)
+	}
+	first := decode[wireTokenLogin](t, body)
+	status, body = ts.enrollPodWith(t, firstKey, first.CredentialID)
+	if status != http.StatusCreated {
+		t.Fatalf("the first pod's enrollment = %d %s, want 201", status, body)
+	}
+	earlier := decode[wireEnrolled](t, body).EnrollmentID
+
+	nextKey := newSigningKey(t)
+	status, body = ts.tokenLogin(t, ts.accountToken(t, daemonAccount, uuid.NewString(), time.Hour), ts.daemonRequest(t, nextKey))
+	if status != http.StatusOK {
+		t.Fatalf("the replacement pod's token login = %d %s, want 200", status, body)
+	}
+	next := decode[wireTokenLogin](t, body)
+	if next.CredentialID == first.CredentialID {
+		t.Fatalf("the replacement pod took credential %s over, want one of its own", first.CredentialID)
+	}
+	if got := ts.column(t, `select count(*)::text from launcher_credentials where subject=$1 and revoked_at is null`, daemonAccount); !slices.Equal(got, []string{"2"}) {
+		t.Fatalf("live credentials of the account = %v, want one per pod", got)
+	}
+	if status, body := ts.enrollPodWith(t, nextKey, next.CredentialID); status != http.StatusCreated {
+		t.Fatalf("the replacement pod's enrollment = %d %s, want 201", status, body)
+	}
+	if status, body := ts.launcher(t, nextKey, next.CredentialID, http.MethodDelete, "/v1/enrollments/"+earlier, nil); status != http.StatusNoContent {
+		t.Fatalf("the replacement ends the first pod's enrollment = %d %s, want 204", status, body)
+	}
+	if got := ts.column(t, `select (revoked_at is not null)::text from enrollments where id=$1`, earlier); !slices.Equal(got, []string{"true"}) {
+		t.Fatalf("the first pod's enrollment ended = %v, want true: ended at once, not at its lease", got)
+	}
+}
+
+// TestOneSubjectHoldsOneLoginOnThisReleasesSchema is the other side of migration 0029's staging,
+// and what this release ships: while 0015's launcher_credentials_live_subject is still there — a
+// roll of the broker serves the previous generation beside this one, and that generation's own
+// upsert resolves against no other index — a subject holds one live credential whatever its pod,
+// so a replaced pod takes the account's row over exactly as the previous broker leaves it. The
+// per-pod login of TestAReplacedPodGetsALoginOfItsOwnAndEndsItsPredecessorsPods starts at the
+// release that drops that index.
+func TestOneSubjectHoldsOneLoginOnThisReleasesSchema(t *testing.T) {
+	ts := newTestServer(t)
+	firstKey := newSigningKey(t)
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, uuid.NewString(), time.Hour), ts.daemonRequest(t, firstKey))
+	if status != http.StatusOK {
+		t.Fatalf("the first pod's token login = %d %s, want 200", status, body)
+	}
+	first := decode[wireTokenLogin](t, body)
+
+	nextKey := newSigningKey(t)
+	replacementPod := uuid.NewString()
+	status, body = ts.tokenLogin(t, ts.accountToken(t, daemonAccount, replacementPod, time.Hour), ts.daemonRequest(t, nextKey))
+	if status != http.StatusOK {
+		t.Fatalf("the replacement pod's token login = %d %s, want 200", status, body)
+	}
+	if next := decode[wireTokenLogin](t, body); next.CredentialID != first.CredentialID {
+		t.Fatalf("the replacement pod's credential = %s, want the account's one row %s until the index is dropped", next.CredentialID, first.CredentialID)
+	}
+	if got := ts.column(t, `select count(*)::text from launcher_credentials where subject=$1 and revoked_at is null`, daemonAccount); !slices.Equal(got, []string{"1"}) {
+		t.Fatalf("live credentials of the account = %v, want the account's one", got)
+	}
+	if got := ts.column(t, `select coalesce(pod_uid,'') from launcher_credentials where id=$1`, first.CredentialID); !slices.Equal(got, []string{replacementPod}) {
+		t.Fatalf("the row's pod = %v, want the pod that logged in last, %s: a pod's own login still enrols that pod alone", got, replacementPod)
+	}
+	if status, body := ts.enrollPodWith(t, firstKey, first.CredentialID); status != http.StatusUnauthorized {
+		t.Fatalf("the first pod's key after the replacement = %d %s, want 401: the row moved to the replacement's key", status, body)
+	}
+}
+
+// TestAPodBoundLoginFromBeforeTheUpgradeRenewsOnItsOwnRow is the upgrade itself: migration 0028
+// adds pod_uid and writes nothing into it, so the credential a running daemon's pod made before
+// the upgrade is a live row of its subject carrying no pod. Its next renewal, with the key it
+// still holds and a token bound to the pod it still runs in, claims that row for the pod and
+// answers the same credential id, so the pods it enrolled stay under it. Without that it would
+// collide with its own row on launcher_credentials_live_key and be refused 409
+// KEY_HOLDS_LIVE_CREDENTIAL for as long as the row lives, which the row's expiry does not end,
+// leaving the daemon unable to enrol or revoke a worker until a person intervened.
+func TestAPodBoundLoginFromBeforeTheUpgradeRenewsOnItsOwnRow(t *testing.T) {
+	ts := newTestServer(t)
+	// The per-pod conflict target is what cannot match such a row, so this is the schema of the
+	// release after this one; on this release's the login's target is (subject) and the row is
+	// its own match already.
+	storetest.PerPodLoginSchema(t, ts.Store)
+	key := newSigningKey(t)
+	daemonPod := uuid.NewString()
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, daemonPod, time.Hour), ts.daemonRequest(t, key))
+	if status != http.StatusOK {
+		t.Fatalf("the daemon's login before the upgrade = %d %s, want 200", status, body)
+	}
+	before := decode[wireTokenLogin](t, body)
+	status, body = ts.enrollPodWith(t, key, before.CredentialID)
+	if status != http.StatusCreated {
+		t.Fatalf("the enrollment it made before the upgrade = %d %s, want 201", status, body)
+	}
+	enrollment := decode[wireEnrolled](t, body).EnrollmentID
+	// What migration 0028 leaves behind: the column exists and the rows that predate it are
+	// empty of it.
+	if _, err := ts.Store.Pool.Exec(context.Background(), `update launcher_credentials set pod_uid=null where id=$1`, before.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body = ts.tokenLogin(t, ts.accountToken(t, daemonAccount, daemonPod, time.Hour), ts.daemonRequest(t, key))
+	if status != http.StatusOK {
+		t.Fatalf("the daemon's renewal after the upgrade = %d %s, want 200: its own key on its own row", status, body)
+	}
+	if after := decode[wireTokenLogin](t, body); after.CredentialID != before.CredentialID {
+		t.Fatalf("the renewal's credential = %s, want the row the daemon already holds, %s", after.CredentialID, before.CredentialID)
+	}
+	if got := ts.column(t, `select count(*)::text from launcher_credentials`); !slices.Equal(got, []string{"1"}) {
+		t.Fatalf("launcher credentials = %v, want the one row, now bound to its pod", got)
+	}
+	if got := ts.column(t, `select coalesce(pod_uid,'') from launcher_credentials where id=$1`, before.CredentialID); !slices.Equal(got, []string{daemonPod}) {
+		t.Fatalf("the row's pod = %v, want the pod the renewal's token proved, %s", got, daemonPod)
+	}
+	if status, body := ts.launcher(t, key, before.CredentialID, http.MethodDelete, "/v1/enrollments/"+enrollment, nil); status != http.StatusNoContent {
+		t.Fatalf("it still ends the pod it enrolled before the upgrade = %d %s, want 204", status, body)
+	}
+}
+
+// TestATokenLoginRefusesWhatDoesNotProveTheAccount: a token for a ServiceAccount
+// BROKER_SERVICE_LOGINS does not name is 403 ACCOUNT_NOT_LISTED; an expired token is 401
+// TOKEN_EXPIRED; a token for another audience, or signed by a key the issuer never published, is 401
+// TOKEN_INVALID; a request naming another service is 403 ACCOUNT_NOT_LISTED; and a request object
+// replayed is 400 REQUEST_INVALID. None issues a credential.
+func TestATokenLoginRefusesWhatDoesNotProveTheAccount(t *testing.T) {
+	ts := newTestServer(t)
+	wrongAudience := ts.podIssuer.Claims(daemonAccount, "somebody-else")
+	replayed := ts.daemonRequest(t, newSigningKey(t))
+	if status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), replayed); status != http.StatusOK {
+		t.Fatalf("the first use of the request = %d %s, want 200", status, body)
+	}
+	if _, err := ts.Store.Pool.Exec(context.Background(), `update launcher_credentials set revoked_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, token, request string
+		status               int
+		code                 string
+	}{
+		{"another ServiceAccount's token", ts.accountToken(t, workerAccount, uuid.NewString(), time.Hour), ts.daemonRequest(t, newSigningKey(t)), http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
+		{"an expired token", ts.accountToken(t, daemonAccount, uuid.NewString(), -time.Minute), ts.daemonRequest(t, newSigningKey(t)), http.StatusUnauthorized, "TOKEN_EXPIRED"},
+		{"a token that lives three hours", ts.accountToken(t, daemonAccount, "", 3*time.Hour), ts.daemonRequest(t, newSigningKey(t)), http.StatusUnauthorized, "TOKEN_TOO_LONG_LIVED"},
+		{"a token for another audience", ts.podIssuer.Mint(t, ts.podKey, wrongAudience), ts.daemonRequest(t, newSigningKey(t)), http.StatusUnauthorized, "TOKEN_INVALID"},
+		{"a token the issuer never signed", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln", ts.daemonRequest(t, newSigningKey(t)), http.StatusUnauthorized, "TOKEN_INVALID"},
+		{"a request naming another service", ts.accountToken(t, daemonAccount, "", time.Hour), signMachineLoginRequest(t, newSigningKey(t), ts.URL, "", "legion-daemon-test-7d9f", "other-service"), http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
+		{"a replayed request object", ts.accountToken(t, daemonAccount, "", time.Hour), replayed, http.StatusBadRequest, "REQUEST_INVALID"},
+	} {
+		if status, body := ts.tokenLogin(t, c.token, c.request); status != c.status || decode[wireError](t, body).Code != c.code {
+			t.Errorf("%s = %d %s, want %d %s", c.name, status, body, c.status, c.code)
+		}
+	}
+	if got := ts.column(t, `select count(*)::text from launcher_credentials where revoked_at is null`); !slices.Equal(got, []string{"0"}) {
+		t.Fatalf("live launcher credentials = %v, want none: every refused login issues nothing", got)
+	}
+}
+
+// TestAnAccountTakenOffTheListLosesItsCredential: once BROKER_SERVICE_LOGINS no longer names the
+// daemon's account, the credential its token login issued stops authenticating at its next call,
+// and its next login is refused.
+func TestAnAccountTakenOffTheListLosesItsCredential(t *testing.T) {
+	ts := newTestServer(t)
+	credentialID, key := ts.mintServiceLauncherCredential(t)
+	if status, body := ts.enrollPodWith(t, key, credentialID); status != http.StatusCreated {
+		t.Fatalf("enroll while listed = %d %s, want 201", status, body)
+	}
+	delete(ts.ServiceLogins, daemonAccount)
+	if status, body := ts.enrollPodWith(t, key, credentialID); status != http.StatusUnauthorized || decode[wireError](t, body).Code != "LAUNCHER_INVALID" {
+		t.Fatalf("enroll once unlisted = %d %s, want 401 LAUNCHER_INVALID", status, body)
+	}
+	if status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, newSigningKey(t))); status != http.StatusForbidden || decode[wireError](t, body).Code != "ACCOUNT_NOT_LISTED" {
+		t.Fatalf("token login once unlisted = %d %s, want 403 ACCOUNT_NOT_LISTED", status, body)
+	}
+}
+
+// TestAServiceDeviceCodeLoginIsRefused: a device-code login naming a service is refused 400
+// SERVICE_LOGS_IN_WITH_TOKEN and leaves nothing pending in anyone's list.
+func TestAServiceDeviceCodeLoginIsRefused(t *testing.T) {
+	ts := newTestServer(t)
+	for _, hint := range []string{"", testApprover} {
+		status, body := ts.deviceLogin(t, newSigningKey(t), hint, "cluster.example", "legion-daemon")
+		if desc, _ := body["error_description"].(string); status != http.StatusBadRequest || !strings.HasPrefix(desc, "SERVICE_LOGS_IN_WITH_TOKEN: ") {
+			t.Fatalf("a service's device-code login (login_hint %q) = %d %v, want 400 SERVICE_LOGS_IN_WITH_TOKEN", hint, status, body)
+		}
+	}
+	if got := ts.column(t, `select count(*)::text from credential_requests`); !slices.Equal(got, []string{"0"}) {
+		t.Fatalf("credential-request records = %v, want none", got)
+	}
+}
+
+// TestAnyoneRevokesAServicesTokenLoginAndItLogsInAgain: the daemon's token login is listed for every
+// signed-in person, naming no approver, and any of them may revoke it; the revoke ends every pod it
+// enrolled at once, and the daemon's next token login, its account still listed, is a new
+// credential, which enrolls again. A person's own machine list never shows it.
+func TestAnyoneRevokesAServicesTokenLoginAndItLogsInAgain(t *testing.T) {
+	ts := newTestServer(t)
+	credentialID, key := ts.mintServiceLauncherCredential(t)
+	status, body := ts.enrollPodWith(t, key, credentialID)
+	if status != http.StatusCreated {
+		t.Fatalf("enroll a pod = %d %s, want 201", status, body)
+	}
+	enrollment := decode[wireEnrolled](t, body).EnrollmentID
+	for _, person := range []string{testApprover, "bob@example.com"} {
+		logins := ts.machineLogins(t, person)
+		if len(logins) != 1 || logins[0].CredentialID != credentialID || logins[0].Service == nil || *logins[0].Service != "legion-daemon" ||
+			logins[0].ApprovedBy != "" || logins[0].Subject == nil || *logins[0].Subject != daemonAccount || logins[0].Host != "legion-system/legion-daemon-test" {
+			t.Fatalf("machine logins of %s = %+v, want the daemon's token login, approved by no one", person, logins)
+		}
+	}
+	if status, body := ts.ui(t, http.MethodPost, "/v1/launcher-credentials/"+credentialID+"/revoke-by-approver", map[string]any{"approver": "bob@example.com"}); status != http.StatusOK {
+		t.Fatalf("bob revokes the daemon's token login = %d %s, want 200", status, body)
+	}
+	if got := ts.column(t, `select (revoked_at is not null)::text from enrollments where id=$1`, enrollment); !slices.Equal(got, []string{"true"}) {
+		t.Fatalf("the pod's enrollment after the revoke: revoked = %v, want true", got)
+	}
+	if status, body := ts.enrollPodWith(t, key, credentialID); status != http.StatusUnauthorized {
+		t.Fatalf("the revoked credential enrolls = %d %s, want 401", status, body)
+	}
+	again, againKey := ts.mintServiceLauncherCredential(t)
+	if again == credentialID {
+		t.Fatal("the daemon's next token login answered the revoked credential, want a new one")
+	}
+	if status, body := ts.enrollPodWith(t, againKey, again); status != http.StatusCreated {
+		t.Fatalf("the new credential enrolls = %d %s, want 201", status, body)
+	}
+}
+
+// TestATokenLoginEnrolsOnlyItsOwnPodAndItsServicesOverTheWire: a login whose token came from a pod
+// enrols that pod when the pod presents its own token; any other pod of the same account is 403
+// POD_SELF_ENROLL_ONLY, and its own pod under a session name is 403 POD_SELF_ENROLL_NO_SESSION; a
+// pod of the account BROKER_SERVICES binds to its service — every pod this login launches —
+// enrols as before; and a pod of an account no setting binds is 403 POD_NOT_LAUNCHED.
+func TestATokenLoginEnrolsOnlyItsOwnPodAndItsServicesOverTheWire(t *testing.T) {
+	ts := newTestServer(t)
+	key := newSigningKey(t)
+	ownPod := uuid.NewString()
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, ownPod, 20*time.Minute), ts.daemonRequest(t, key))
+	if status != http.StatusOK {
+		t.Fatalf("token login = %d %s, want 200", status, body)
+	}
+	credentialID := decode[wireTokenLogin](t, body).CredentialID
+
+	enrol := func(account, podUID, session string) (int, []byte) {
+		t.Helper()
+		enrolment := map[string]any{
+			"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, newSigningKey(t)),
+			"pod_token": ts.podToken(t, account, podUID),
+		}
+		if session != "" {
+			enrolment["session_id"] = session
+		}
+		return ts.launcher(t, key, credentialID, http.MethodPost, "/v1/enrollments", enrolment)
+	}
+	if status, body := enrol(daemonAccount, uuid.NewString(), ""); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_SELF_ENROLL_ONLY" {
+		t.Fatalf("enrol another pod of its own account = %d %s, want 403 POD_SELF_ENROLL_ONLY", status, body)
+	}
+	if status, body := enrol(daemonAccount, ownPod, "worker-g1"); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_SELF_ENROLL_NO_SESSION" {
+		t.Fatalf("enrol its own pod under a session name = %d %s, want 403 POD_SELF_ENROLL_NO_SESSION", status, body)
+	}
+	if status, body := enrol(daemonAccount, ownPod, ""); status != http.StatusCreated {
+		t.Fatalf("enrol its own pod = %d %s, want 201", status, body)
+	}
+	if status, body := enrol("system:serviceaccount:other:stranger", uuid.NewString(), ""); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_NOT_LAUNCHED" {
+		t.Fatalf("enrol a pod of an account no setting binds = %d %s, want 403 POD_NOT_LAUNCHED", status, body)
+	}
+	if status, body := ts.enrollPodWith(t, key, credentialID); status != http.StatusCreated {
+		t.Fatalf("enrol a pod of the account it launches = %d %s, want 201", status, body)
+	}
+}

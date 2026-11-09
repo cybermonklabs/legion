@@ -1,0 +1,1898 @@
+package workspace
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+)
+
+const testTimeout = 30 * time.Second
+
+// TestMain takes out of the process every variable that could lead git or jj to a workspace,
+// remote or credential not the test's own (fixtureenv.MustGuard), and gives the process a home of the
+// package's own (fixtureenv.Home), so every real jj and
+// git these tests run — provisioning's, which reads the process's environment, and the fixtures',
+// which run under fixtureenv.Isolated of that same home (setupEnvironment) — reads none of the
+// operator's configuration: in particular fsmonitor.backend = "watchman" on this devbox, which
+// would have every test-created repository register a root with the operator's long-running
+// watchman. watchman drops a root once its directory is deleted, so without this, the roots that
+// pile up are the ones from a run this devbox's load killed before t.TempDir's cleanup ran. A test
+// that sets a home of its own afterward (newLocalRunner's) still wins: os.Environ() is read fresh
+// by every exec.Command.
+func TestMain(m *testing.M) {
+	fixtureenv.MustGuard()
+	os.Exit(runUnderAHomeOfThePackagesOwn(m))
+}
+
+// runUnderAHomeOfThePackagesOwn does the setup the comment above describes and removes the home
+// afterwards. The removal is deferred, so it also runs when the setup below panics. A run killed
+// by a signal still keeps the home, which nothing here can help.
+func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
+	home, err := os.MkdirTemp("", "legion-test-home")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	defer os.RemoveAll(home)
+	for _, entry := range fixtureenv.Home(home) {
+		key, value, _ := strings.Cut(entry, "=")
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			return 1
+		}
+	}
+	return m.Run()
+}
+
+// setupEnvironment is the environment of a fixture command: fixtureenv.Isolated under the home
+// the test's provisioning reads too (TestMain's, or newLocalRunner's), so a fixture and a
+// provision read the same jj repository configuration, and no fixture reads the workspace,
+// configuration, provisioning token or credential of the process that runs the tests.
+func setupEnvironment() []string {
+	return fixtureenv.Isolated(os.Getenv("HOME"))
+}
+
+// recordingRunner runs every command through the production runner, NewRunner, with the real jj
+// and git, but replaces the GitHub clone URL with the local bare remote. That keeps
+// provisioning's argv and credential environment observable, and what the runner adds to every
+// process in force, while the fixture never reaches a network.
+type recordingRunner struct {
+	t       *testing.T
+	remote  string
+	timeout time.Duration
+	runner  Runner
+
+	mu           sync.Mutex
+	commands     []Command
+	killClone    bool
+	failReadTree bool
+	// beforeLsRemote, when set, runs before each `git ls-remote`: GitHub changing between a fetch
+	// and its read of GitHub's HEAD.
+	beforeLsRemote func()
+}
+
+func (r *recordingRunner) Timeout() time.Duration { return r.timeout }
+
+func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, error) {
+	r.mu.Lock()
+	r.commands = append(r.commands, Command{
+		Argv:    append([]string(nil), command.Argv...),
+		Env:     append([]string(nil), command.Env...),
+		Dir:     command.Dir,
+		Timeout: command.Timeout,
+	})
+	r.mu.Unlock()
+
+	if r.killClone && isClone(command.Argv) {
+		destination := command.Argv[4]
+		if err := os.MkdirAll(filepath.Join(destination, ".jj"), 0o755); err != nil {
+			return Result{}, fmt.Errorf("create partial clone: %w", err)
+		}
+		return Result{ExitCode: 137, Stderr: "clone interrupted"}, nil
+	}
+	if r.failReadTree && command.Argv[0] == "git" && slices.Contains(command.Argv, "read-tree") {
+		return Result{ExitCode: 1, Stderr: "forced read-tree failure for test"}, nil
+	}
+	if r.beforeLsRemote != nil && len(command.Argv) > 2 && command.Argv[0] == "git" && command.Argv[2] == "ls-remote" {
+		r.beforeLsRemote()
+	}
+
+	actual := command
+	actual.Argv = append([]string(nil), command.Argv...)
+	// A clone from a pod's feed reaches it through the insteadOf its own environment names.
+	if isClone(actual.Argv) && !slices.Contains(command.Env, "GIT_ALLOW_PROTOCOL=file") {
+		actual.Argv[3] = r.remote
+	}
+	// The skills clone names GitHub in its argv too: `git clone --depth 1 --single-branch
+	// --quiet <url> <dir>` (CloneSkills).
+	if commandWith(actual.Argv, "git", "clone", "--depth", "1", "--single-branch") {
+		for i, arg := range actual.Argv {
+			if arg == "https://github.com/acme/widgets" {
+				actual.Argv[i] = r.remote
+			}
+		}
+	}
+	if commandWith(actual.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
+		for i, arg := range actual.Argv {
+			if arg == "https://github.com/acme/widgets" {
+				actual.Argv[i] = r.remote
+			}
+		}
+	}
+	// The fetch into a feed that already holds the repository, and its read of GitHub's HEAD, name
+	// GitHub in their argv, too.
+	if len(actual.Argv) > 2 && actual.Argv[0] == "git" && (slices.Contains(actual.Argv, "fetch") || slices.Contains(actual.Argv, "ls-remote")) {
+		for i, arg := range actual.Argv {
+			if arg == "https://github.com/acme/widgets" {
+				actual.Argv[i] = r.remote
+			}
+		}
+	}
+	return r.runner.Run(ctx, actual)
+}
+
+func (r *recordingRunner) Calls() []Command {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Command(nil), r.commands...)
+}
+
+func isClone(argv []string) bool {
+	return len(argv) == 5 && argv[0] == "jj" && argv[1] == "git" && argv[2] == "clone"
+}
+
+// testTools are the git and jj the tests' runner starts, resolved from PATH as boot resolves them.
+// Each is a wrapper that adds git's file transport to whatever allow-list the runner set: the
+// local bare remote stands in for github.com, which the runner reaches over https alone.
+func testTools(t *testing.T) map[string]string {
+	t.Helper()
+	tools := map[string]string{}
+	dir := t.TempDir()
+	for _, tool := range []string{"git", "jj"} {
+		path, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("provisioning's tests drive a real %s: %v", tool, err)
+		}
+		wrapper := filepath.Join(dir, tool)
+		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		tools[tool] = wrapper
+	}
+	return tools
+}
+
+func localBareRemote(t *testing.T) string {
+	t.Helper()
+	return seedRemote(t, t.TempDir(), "main")
+}
+
+// seedRemote is a bare repository at <root>/remote.git, standing in for GitHub, whose default
+// branch (its HEAD) is defaultBranch, holding one commit; it returns the repository's path.
+func seedRemote(t *testing.T, root, defaultBranch string) string {
+	t.Helper()
+	remote := filepath.Join(root, "remote.git")
+	runSetup(t, root, fixturegit.InitBare(remote, defaultBranch)...)
+
+	seed := filepath.Join(root, "seed")
+	runSetup(t, root, fixturegit.JJInit(seed, true)...)
+	runSetup(t, root, "jj", "bookmark", "set", jjString(defaultBranch), "-R", seed)
+	runSetup(t, root, "jj", "git", "remote", "add", "origin", remote, "-R", seed)
+	runSetup(t, root, "jj", "git", "push", "--remote", "origin", "--bookmark", "exact:"+jjString(defaultBranch), "--allow-empty-description", "-R", seed)
+	return remote
+}
+
+// runSetup runs a fixture command under setupEnvironment, so it reads neither a
+// GIT_CONFIG_PARAMETERS a test planted for provisioning's processes alone nor the git
+// configuration of the process that runs the tests.
+func runSetup(t *testing.T, dir string, argv ...string) string {
+	t.Helper()
+	return runSetupWith(t, dir, nil, argv...)
+}
+
+// runSetupWith is runSetup with env added to the command's environment.
+func runSetupWith(t *testing.T, dir string, env []string, argv ...string) string {
+	t.Helper()
+	return fixturegit.Runner{TB: t, Env: setupEnvironment()}.
+		With(env...).
+		Raw(dir, argv...)
+}
+
+// fromOrigin runs a fixture command that reaches origin, https://github.com/acme/widgets in a
+// provisioned clone, at run's local bare remote instead.
+func fromOrigin(t *testing.T, run *recordingRunner, dir string, argv ...string) string {
+	t.Helper()
+	return runSetupWith(t, dir, []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url." + run.remote + ".insteadOf", "GIT_CONFIG_VALUE_0=https://github.com/acme/widgets"}, argv...)
+}
+
+// newLocalRunner is a runner against a fresh local bare remote whose default branch is main. jj
+// reads no configuration of the user's who runs the tests: its home (fixtureenv.Home), whose
+// config home is where jj keeps a repository's configuration, is the test's own, as in a pod's
+// init container, and its fixtures read the same one.
+func newLocalRunner(t *testing.T) *recordingRunner {
+	t.Helper()
+	return newLocalRunnerOnBranch(t, "main")
+}
+
+// newLocalRunnerOnBranch is newLocalRunner against a remote whose default branch is defaultBranch.
+func newLocalRunnerOnBranch(t *testing.T, defaultBranch string) *recordingRunner {
+	t.Helper()
+	home := t.TempDir()
+	for _, entry := range fixtureenv.Home(home) {
+		key, value, _ := strings.Cut(entry, "=")
+		t.Setenv(key, value)
+	}
+	t.Setenv("JJ_USER", "Legion test")
+	t.Setenv("JJ_EMAIL", "legion-test@example.invalid")
+	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, runner: NewRunner(testTimeout, testTools(t))}
+}
+
+// provisionRequest is a host provisioning's request, the tmux runtime's: the one-shot credential
+// goes under the state directory, and the repository's default branch is main. That directory's
+// path holds a space, as state_dir and --root may, so every refusal's way out a test runs through
+// sh proves it names the shared clone as one word.
+func provisionRequest(t *testing.T) Request {
+	t.Helper()
+	state := filepath.Join(t.TempDir(), "legion state")
+	return Request{
+		StateDir:         state,
+		Repo:             ghrepo.MustParse("acme/widgets"),
+		Issue:            "WIDGETS-42",
+		DefaultBranch:    "main",
+		CredentialHelper: GitHubCredentialHelper,
+		Source:           FromGitHub(staticToken("test-installation-token"), state),
+		Log:              func(line string) { t.Logf("provisioning logged: %s", line) },
+	}
+}
+
+// A repository whose default branch is not main, and holds a slash, provisions at that branch, on
+// the host's path and on a pod's feed: the workspace's parent is its head, a feed's fetch brings it
+// by exact name, and nothing names main.
+func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
+	for _, source := range []string{"github", "feed"} {
+		t.Run(source, func(t *testing.T) {
+			run := newLocalRunnerOnBranch(t, "release/v7.1")
+			req := provisionRequest(t)
+			req.DefaultBranch = "release/v7.1"
+			if source == "feed" {
+				req = feedRequest(t, run, req)
+			}
+			working, err := Provision(context.Background(), run, req)
+			if err != nil {
+				t.Fatalf("Provision: %v", err)
+			}
+			if working.DefaultBranch != "release/v7.1" {
+				t.Errorf("the workspace's default branch is %q, want release/v7.1", working.DefaultBranch)
+			}
+			if parent, head := commitOf(t, working.Dir, "@-"), commitOf(t, working.Clone, "release/v7.1@origin"); parent != head {
+				t.Errorf("the workspace's @- is %s, want release/v7.1's %s", parent, head)
+			}
+			if bookmark, at := commitOf(t, working.Clone, working.Bookmark), commitOf(t, working.Dir, "@"); bookmark != at {
+				t.Errorf("the issue's bookmark is on %s, want the fresh working copy %s", bookmark, at)
+			}
+			for _, call := range run.Calls() {
+				for _, arg := range call.Argv {
+					if arg == "main" || strings.Contains(arg, jjString("main")) || strings.HasPrefix(arg, "main@") || strings.HasSuffix(arg, ":main") {
+						t.Errorf("a command named main: %q", call.Argv)
+					}
+				}
+			}
+			if source == "feed" {
+				if fetch := findCall(t, run.Calls(), "jj", "git", "fetch"); !slices.Contains(fetch.Argv, "exact:"+jjString("release/v7.1")) {
+					t.Errorf("the feed fetch %q names no exact release/v7.1", fetch.Argv)
+				}
+			}
+		})
+	}
+}
+
+// A default branch whose name jj's own parser would read as syntax (`#`, `%`, `|`, `"`) names that
+// one branch and no other: on the host's path and on a pod's feed, provisioning starts at its head,
+// never at the decoy branch the bare name would select or fail on, both for the first workspace
+// and for one recreated after its directory and branch were lost, once the default branch has
+// moved on GitHub: the feed's fetch brings the branch by its exact name.
+func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
+	for _, tc := range []struct{ branch, decoy string }{
+		{"release#stable", "release"},
+		{"release%2Fstable", "release/stable"},
+		{"release|stable", "release"},
+		{`say"hi`, "say"},
+	} {
+		for _, source := range []string{"github", "feed"} {
+			t.Run(tc.branch+"/"+source, func(t *testing.T) {
+				run := newLocalRunnerOnBranch(t, tc.branch)
+				decoy := pushRemoteBranch(t, run.remote, tc.decoy, "decoy.txt")
+				provision := func(what string) Workspace {
+					t.Helper()
+					req := provisionRequest(t)
+					req.StateDir = filepath.Join(filepath.Dir(run.remote), "legion state")
+					req.Source = FromGitHub(staticToken("test-installation-token"), req.StateDir)
+					req.DefaultBranch = tc.branch
+					if source == "feed" {
+						req = feedRequest(t, run, req)
+					}
+					working, err := Provision(context.Background(), run, req)
+					if err != nil {
+						t.Fatalf("%s: Provision at %q: %v", what, tc.branch, err)
+					}
+					head := strings.TrimSpace(runSetup(t, filepath.Dir(run.remote), "git", "--git-dir="+run.remote, "rev-parse", "refs/heads/"+tc.branch))
+					if parent := commitOf(t, working.Dir, "@-"); parent != head {
+						t.Fatalf("%s: the workspace's @- is %s, want %q's head %s (the decoy %q is %s)", what, parent, tc.branch, head, tc.decoy, decoy)
+					}
+					return working
+				}
+
+				first := provision("first provisioning")
+				runSetup(t, first.Clone, "jj", "bookmark", "delete", "exact:"+jjString(first.Bookmark), "--ignore-working-copy", "-R", first.Clone)
+				runSetup(t, first.Clone, "jj", "workspace", "forget", filepath.Base(first.Dir), "--ignore-working-copy", "-R", first.Clone)
+				if err := os.RemoveAll(first.Dir); err != nil {
+					t.Fatal(err)
+				}
+				pushRemoteBranch(t, run.remote, tc.branch, "moved.txt")
+				provision("provisioning after the workspace was lost")
+			})
+		}
+	}
+}
+
+// A request with no default branch is refused before anything runs.
+func TestProvisionRequiresADefaultBranch(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	req.DefaultBranch = ""
+	if _, err := Provision(context.Background(), run, req); err == nil || err.Error() != "workspace default branch is required" || len(run.Calls()) != 0 {
+		t.Fatalf("Provision = %v after %d commands, want the refusal and none", err, len(run.Calls()))
+	}
+}
+
+// Where the one-shot credential goes is every caller's decision, and a request reaches the
+// repository one way, its Source: through a pod's feed with no credential, or from GitHub with the
+// token and a credential directory. A request with no Source, or a GitHub one with no credential
+// directory, is refused before provisioning runs anything or touches the state directory.
+func TestProvisionRefusesARequestWithNoOneWayToTheRepository(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*Request)
+		want string
+	}{
+		{"a token and no credential directory", func(r *Request) { r.Source = FromGitHub(staticToken("test-installation-token"), "") }, "workspace credential directory is required"},
+		{"no token", func(r *Request) { r.Source = FromGitHub(nil, r.StateDir) }, "workspace provisioning token is required"},
+		{"no way to the repository", func(r *Request) { r.Source = nil }, "workspace request names no way to the repository: FromFeed or FromGitHub"},
+		{"no log", func(r *Request) { r.Log = nil }, "workspace request names no log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newLocalRunner(t)
+			req := provisionRequest(t)
+			tc.edit(&req)
+			if _, err := Provision(context.Background(), run, req); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Provision = %v, want a refusal naming %q", err, tc.want)
+			}
+			if calls := run.Calls(); len(calls) != 0 {
+				t.Errorf("Provision ran %#v before refusing", calls)
+			}
+			if _, err := os.Stat(req.StateDir); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("Provision touched the state directory before refusing: %v", err)
+			}
+		})
+	}
+}
+
+// jj git clone names neither a workspace root nor a clone yet. Its empty guarded root must leave
+// the process working directory alone: specifically, no legacy disarm may turn config.toml into a
+// relative path and remove the caller's file while the clone still succeeds.
+func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
+	run := newLocalRunner(t)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	config := filepath.Join(cwd, "config.toml")
+	if err := os.WriteFile(config, []byte("[user]\nname = \"caller\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(t.TempDir(), "clone")
+
+	if err := ensureRepoClone(context.Background(), run, WallClock{}, clone, run.remote, "main", remote{}); err != nil {
+		t.Fatalf("ensureRepoClone: %v", err)
+	}
+	if _, err := os.Stat(config); err != nil {
+		t.Errorf("jj git clone removed %s from its caller's working directory: %v", config, err)
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".jj")); err != nil {
+		t.Errorf("ensureRepoClone did not complete %s: %v", clone, err)
+	}
+}
+
+// The two command constructors reject an empty Location component rather than building -R "":
+// jjWorkspaceRoot treats -R "" as no -R, the rootless path that once made the legacy disarm remove
+// config.toml from the daemon current working directory.
+func TestCloneAndWorkspaceCommandBuildersRefuseAnEmptyDirectory(t *testing.T) {
+	if _, err := onClone("", "log", "-r", "@"); err == nil || !strings.Contains(err.Error(), "clone directory is required") {
+		t.Errorf("onClone with an empty clone = %v, want a refusal", err)
+	}
+	run := newLocalRunner(t)
+	if _, err := RunCheckedIn(context.Background(), run, Workspace{}, []string{"jj", "log", "-r", "@"}); err == nil || !strings.Contains(err.Error(), "workspace directory is required") {
+		t.Errorf("RunCheckedIn with an empty workspace = %v, want a refusal", err)
+	}
+	if _, err := RunCheckedIn(context.Background(), run, Workspace{Dir: t.TempDir()}, []string{"jj", "log", "-r", "@"}); err == nil || !strings.Contains(err.Error(), "clone directory is required") {
+		t.Errorf("RunCheckedIn with an empty clone = %v, want a refusal", err)
+	}
+	if calls := run.Calls(); len(calls) != 0 {
+		t.Errorf("empty Location checks ran %#v", calls)
+	}
+}
+
+// A symlinked workspace layout directory is refused before Provision creates the workspace,
+// registers it in the clone or writes its .git and .jj outside the state layout.
+func TestProvisionRefusesASymlinkedWorkspaceLayoutBeforeCreatingAnything(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	request.Issue = "WIDGETS-43"
+	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(workspace.Dir)
+	if err := os.MkdirAll(filepath.Dir(parent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Provision(context.Background(), run, request)
+	if err == nil || !strings.Contains(err.Error(), parent+" is a symlink") {
+		t.Fatalf("Provision through a symlinked workspace layout = %v, want a refusal naming %s", err, parent)
+	}
+	if calls := run.Calls(); len(calls) != 0 {
+		t.Errorf("Provision ran %#v before refusing the symlinked layout", calls)
+	}
+	if _, err := os.Stat(filepath.Join(outside, filepath.Base(workspace.Dir))); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Provision created %s outside the layout: %v", workspace.Dir, err)
+	}
+}
+
+func commandEnv(command Command, key string) string {
+	prefix := key + "="
+	for _, entry := range command.Env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
+func commandWith(argv []string, prefix ...string) bool {
+	if len(prefix) > 0 && prefix[0] == "git" && len(argv) > 0 && argv[0] == "git" {
+		for len(argv) > 2 && argv[1] == "-c" {
+			argv = slices.Concat(argv[:1], argv[3:])
+		}
+	}
+	if len(argv) < len(prefix) {
+		return false
+	}
+	for index, value := range prefix {
+		if argv[index] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func findCall(t *testing.T, calls []Command, prefix ...string) Command {
+	t.Helper()
+	for _, call := range calls {
+		if commandWith(call.Argv, prefix...) {
+			return call
+		}
+	}
+	t.Fatalf("no command begins %q in %#v", prefix, calls)
+	return Command{}
+}
+
+// assertCredentialedEnvironment fails unless command was handed the provisioning token as a file
+// pointer, never as a value in its environment, under the slow-command budget.
+func assertCredentialedEnvironment(t *testing.T, command Command) {
+	t.Helper()
+	assertCredentialedEnvironmentBounded(t, command, testTimeout)
+}
+
+// assertCredentialedEnvironmentBounded is assertCredentialedEnvironment, but for a command bounded
+// by timeout instead of the runner's slow-command budget (the fetch's clone, bounded by
+// FetchTimeout, and the shared clone's clone, bounded by CloneTimeout).
+func assertCredentialedEnvironmentBounded(t *testing.T, command Command, timeout time.Duration) {
+	t.Helper()
+	if commandEnv(command, "LEGION_PROVISIONING_TOKEN_FILE") == "" {
+		t.Errorf("%q has no token file pointer", command.Argv)
+	}
+	for _, entry := range command.Env {
+		if strings.Contains(entry, "test-installation-token") {
+			t.Errorf("%q carries the token value in its environment: %s", command.Argv, entry)
+		}
+	}
+	if command.Timeout != timeout {
+		t.Errorf("command timeout = %s, want %s", command.Timeout, timeout)
+	}
+}
+
+// requireCheckedOut fails unless the issue's workspace holds the default branch's whole tree, what
+// a checkout leaves: its sparse patterns are the whole tree (.), and the files it lists are the
+// files the shared clone lists at main@origin.
+func requireCheckedOut(t *testing.T, working Workspace) {
+	t.Helper()
+	if listed := strings.TrimSpace(runSetup(t, working.Dir, "jj", "sparse", "list", "-R", working.Dir)); listed != "." {
+		t.Errorf("the workspace's sparse patterns are %q, want the whole tree (.)", listed)
+	}
+	files := strings.Fields(runSetup(t, working.Dir, "jj", "file", "list", "-R", working.Dir))
+	want := strings.Fields(runSetup(t, working.Clone, "jj", "file", "list", "-r", "main@origin", "--ignore-working-copy", "-R", working.Clone))
+	if !slices.Equal(files, want) || len(want) == 0 {
+		t.Errorf("the workspace holds %q, want the default branch's files %q", files, want)
+	}
+}
+
+// tokenProbe runs every command through runner, first recording whether a one-shot token file
+// exists under dir while the command runs.
+type tokenProbe struct {
+	Runner
+	dir string
+	mu  sync.Mutex
+	ran []string
+}
+
+func (p *tokenProbe) Run(ctx context.Context, command Command) (Result, error) {
+	tokens, err := filepath.Glob(filepath.Join(p.dir, "provisioning-credential-*", "token"))
+	if err != nil {
+		return Result{}, err
+	}
+	p.mu.Lock()
+	p.ran = append(p.ran, fmt.Sprintf("%s token=%t", strings.Join(command.Argv, " "), len(tokens) > 0))
+	p.mu.Unlock()
+	return p.Runner.Run(ctx, command)
+}
+
+// The one-shot token file exists only while the clone and the fetch need it: an existing
+// workspace's `jj workspace update-stale`, which runs first, runs before it is written.
+func TestProvisionWritesTheTokenFileAfterUpdatingAStaleWorkspace(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	if _, err := Provision(context.Background(), run, req); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	probe := &tokenProbe{Runner: run, dir: req.StateDir}
+	if _, err := Provision(context.Background(), probe, req); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+	var updated, fetched bool
+	for _, ran := range probe.ran {
+		switch {
+		case strings.HasPrefix(ran, "jj workspace update-stale "):
+			updated = true
+			if !strings.HasSuffix(ran, "token=false") {
+				t.Errorf("%s: the token file already existed", ran)
+			}
+		case strings.HasPrefix(ran, "jj git fetch "):
+			fetched = true
+			if !strings.HasSuffix(ran, "token=true") {
+				t.Errorf("%s: the fetch ran without its token file", ran)
+			}
+		}
+	}
+	if !updated || !fetched {
+		t.Fatalf("the second provision ran no update-stale or no fetch: %q", probe.ran)
+	}
+}
+
+func TestProvisionClonesThroughTemporarySiblingWithCredentialReset(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+
+	workspace, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	clone := findCall(t, run.Calls(), "jj", "git", "clone")
+	if got, want := clone.Argv[3], "https://github.com/acme/widgets"; got != want {
+		t.Errorf("clone remote = %q, want %q", got, want)
+	}
+	if clone.Argv[4] == filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets") {
+		t.Errorf("clone landed at final path %q instead of a temporary sibling", clone.Argv[4])
+	}
+	if !strings.HasPrefix(clone.Argv[4], filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets")+".clone-") {
+		t.Errorf("clone target = %q, want temporary sibling", clone.Argv[4])
+	}
+	assertCredentialedEnvironmentBounded(t, clone, clone.Timeout)
+	if clone.Timeout > CloneTimeout || clone.Timeout < CloneTimeout-time.Minute {
+		t.Errorf("the clone was given %s, want what remained of one %s CloneTimeout from its start", clone.Timeout, CloneTimeout)
+	}
+	fetch := findCall(t, run.Calls(), "jj", "git", "fetch")
+	assertCredentialedEnvironment(t, fetch)
+
+	if want := filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets"); workspace.Dir == want {
+		t.Errorf("workspace Dir = clone directory %q", workspace.Dir)
+	}
+	if _, err := os.Stat(filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets", ".jj")); err != nil {
+		t.Fatalf("shared clone was not renamed into place: %v", err)
+	}
+	if _, err := os.Stat(workspace.Dir); err != nil {
+		t.Fatalf("workspace was not created: %v", err)
+	}
+	if workspace.Bookmark != "legion/WIDGETS-42" {
+		t.Errorf("bookmark = %q", workspace.Bookmark)
+	}
+	if tokenFile := commandEnv(clone, "LEGION_PROVISIONING_TOKEN_FILE"); tokenFile != "" {
+		if _, err := os.Stat(tokenFile); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("provisioning token file remains after clone: %v", err)
+		}
+	}
+	if resolved := strings.TrimSpace(runSetup(t, workspace.Dir, "jj", "log", "-r", workspace.Bookmark, "--no-graph", "-T", "commit_id")); resolved == "" {
+		t.Error("missing bookmark was not created on the fresh workspace")
+	}
+}
+
+// fetchRequest is a pod's first init container's request: the feed and the credential directory are
+// the container's own, and its retries run on the wall clock.
+func fetchRequest(t *testing.T) FetchRequest {
+	t.Helper()
+	return FetchRequest{
+		Repo: ghrepo.MustParse("acme/widgets"), Token: staticToken(testInstallationToken), CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
+		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: WallClock{},
+	}
+}
+
+// testInstallationToken is the provisioning token a test's fetch reads.
+const testInstallationToken = "test-installation-token"
+
+// staticToken is a FetchRequest.Token that always answers token.
+func staticToken(token string) func() (string, error) {
+	return func() (string, error) { return token, nil }
+}
+
+// readOnly takes every write permission away from dir's tree, as a read-only mount does, until
+// the test ends.
+func readOnly(t *testing.T, dir string) {
+	t.Helper()
+	chmod := func(writable bool) error {
+		return filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.Type()&os.ModeSymlink != 0 {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			mode := info.Mode().Perm() &^ 0o222
+			if writable {
+				mode |= 0o200
+			}
+			return os.Chmod(path, mode)
+		})
+	}
+	if err := chmod(false); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = chmod(true) })
+}
+
+// Fetch clones the repository bare into the feed with the one-shot credential, and reads no git
+// configuration but its own: not the system's, not the image user's, and not what git's `-c`
+// (GIT_CONFIG_PARAMETERS) names in its environment — here each names a template directory, which
+// would plant a file in every repository git creates. Its credential is gone once it returns.
+func TestFetchClonesBareReadingNoConfigurationButItsOwn(t *testing.T) {
+	run := newLocalRunner(t)
+	template := t.TempDir()
+	if err := os.WriteFile(filepath.Join(template, "planted"), []byte("from a configuration Fetch must not read\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(config, []byte("[init]\n\ttemplateDir = "+template+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+	t.Setenv("GIT_CONFIG_SYSTEM", config)
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'init.templatedir'='"+template+"'")
+	req := fetchRequest(t)
+	// The clock stands still, so the clone is given the whole bound it shares with the reads before.
+	req.Clock = newTestClock()
+
+	report, err := Fetch(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	feed := report.Feed
+	if want := filepath.Join(req.Feed, "acme", "widgets.git"); feed != want {
+		t.Fatalf("Fetch cloned into %s, want %s", feed, want)
+	}
+	if _, err := os.Stat(filepath.Join(feed, "planted")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Fetch's git read a configuration other than its own: the template planted a file (%v)", err)
+	}
+	if bare := strings.TrimSpace(runSetup(t, feed, "git", "--git-dir="+feed, "rev-parse", "--is-bare-repository")); bare != "true" {
+		t.Errorf("the feed is bare: %s", bare)
+	}
+	if main := strings.TrimSpace(runSetup(t, feed, "git", "--git-dir="+feed, "rev-parse", "refs/heads/main")); main != strings.TrimSpace(runSetup(t, feed, "git", "--git-dir="+run.remote, "rev-parse", "main")) {
+		t.Errorf("the feed's main is %s, not the remote's", main)
+	}
+	clone := findCall(t, run.Calls(), "git", "clone")
+	if want := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", "https://github.com/acme/widgets"}; !slices.Equal(clone.Argv[:len(want)], want) || len(clone.Argv) != len(want)+1 || !strings.HasPrefix(clone.Argv[len(want)], feed+".clone-") {
+		t.Errorf("Fetch ran %q, want %q into a temporary sibling of %s", clone.Argv, want, feed)
+	}
+	assertCredentialedEnvironmentBounded(t, clone, FetchTimeout)
+	if entries, err := os.ReadDir(req.CredentialDir); err != nil || len(entries) != 0 {
+		t.Errorf("the one-shot credential outlived Fetch: %v (%v)", entries, err)
+	}
+}
+
+// A pod's second init container provisions from the feed Fetch filled, which is read-only there,
+// and holds no credential. Its local-path clone owns its object-store entries, so removing the feed
+// cannot remove history that the clone's refs need. Its origin names https://github.com/<repo>, and
+// the fetch that follows reaches that remote at the feed. No command is handed a token file, an
+// askpass, or a credential helper. The workspace starts at the default branch, which the clone
+// tracks. The next pod's fetch brings what the remote gained since.
+func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
+	run := newLocalRunner(t)
+	pushRemoteBranch(t, run.remote, "main", "history.txt")
+	state := filepath.Join(t.TempDir(), "state")
+	provision := func(issue string) (Workspace, []Command, string) {
+		t.Helper()
+		fetch := fetchRequest(t)
+		fetched, err := Fetch(context.Background(), run, fetch)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		readOnly(t, fetch.Feed)
+		before := len(run.Calls())
+		working, err := Provision(context.Background(), run, Request{
+			StateDir: state, Repo: ghrepo.MustParse("acme/widgets"), Issue: issue, DefaultBranch: "main", CredentialHelper: GitHubCredentialHelper, Source: FromFeed(fetch.Feed),
+			Log: func(line string) { t.Logf("provisioning logged: %s", line) },
+		})
+		if err != nil {
+			t.Fatalf("provision %s from the feed: %v", issue, err)
+		}
+		return working, run.Calls()[before:], fetched.Feed
+	}
+
+	first, calls, feed := provision("WIDGETS-42")
+	for _, call := range calls {
+		for _, entry := range call.Env {
+			if key := environmentKey(entry); key == "LEGION_PROVISIONING_TOKEN_FILE" || key == "GIT_ASKPASS" || strings.HasPrefix(entry, "GIT_CONFIG_KEY_0=credential.") {
+				t.Errorf("%q was handed %s", call.Argv, entry)
+			}
+		}
+		if commandWith(call.Argv, "jj", "git", "clone") {
+			t.Errorf("the clone used a credentialed Jujutsu clone: %q", call.Argv)
+		}
+	}
+	if clone := findCall(t, calls, "git", "clone", "--quiet"); len(clone.Argv) != 6 || clone.Argv[3] != "--no-checkout" || clone.Argv[4] != feed {
+		t.Errorf("the clone was made with %q, want a local clone of the feed %s with no working tree", clone.Argv, feed)
+	}
+	cloneDir := filepath.Join(state, "repos", "github.com", "acme", "widgets")
+	if _, err := os.Stat(filepath.Join(cloneDir, ".git", "objects", "info", "alternates")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the clone's alternates = %v, want no borrowed history", err)
+	}
+	if origin := strings.TrimSpace(runSetup(t, cloneDir, "git", "--git-dir="+filepath.Join(cloneDir, ".git"), "remote", "get-url", "origin")); origin != "https://github.com/acme/widgets" {
+		t.Errorf("the shared clone's origin is %s, want GitHub's", origin)
+	}
+	if tracked := runSetup(t, cloneDir, "jj", "bookmark", "list", "--tracked", "exact:main", "-T", `name ++ "@" ++ remote ++ "\n"`, "--ignore-working-copy", "-R", cloneDir); !strings.Contains(tracked, "main@origin") {
+		t.Errorf("the shared clone does not track main@origin: %q", tracked)
+	}
+	if _, err := os.Stat(first.Dir); err != nil {
+		t.Fatalf("the workspace was not created: %v", err)
+	}
+	if parent, main := commitOf(t, first.Dir, "@-"), strings.TrimSpace(runSetup(t, state, "git", "--git-dir="+run.remote, "rev-parse", "main")); parent != main {
+		t.Errorf("the workspace's @- is %s, want the default branch's %s", parent, main)
+	}
+	advanceRemote(t, run.remote)
+	head := strings.TrimSpace(runSetup(t, state, "git", "--git-dir="+run.remote, "rev-parse", "main"))
+	provision("WIDGETS-43")
+	if fetched := strings.TrimSpace(runSetup(t, cloneDir, "jj", "log", "-r", "main@origin", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", cloneDir)); fetched != head {
+		t.Errorf("after the next pod's fetch the shared clone's main@origin is %s, want the remote's %s", fetched, head)
+	}
+}
+
+// A pod writes the repository's working copy once: the shared clone a provision from a feed leaves
+// behind holds no working tree at all — its clone takes --no-checkout, and the clear and the
+// abandon that follow keep jj's first snapshot from recording that absent tree as deleted — while
+// the issue's own workspace holds the default branch's files. A clone whose working copy recorded
+// the tree as deleted would show here as a dirty status, a visible deletion commit, or a record of
+// one in .jj/legion-held, which a check of the pod's work reads (internal/rescue).
+func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
+	run := newLocalRunner(t)
+	pushRemoteBranch(t, run.remote, "main", "history.txt")
+	req := feedRequest(t, run, provisionRequest(t))
+	before := len(run.Calls())
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	calls := run.Calls()[before:]
+	cloneDir := working.Clone
+
+	entries, err := os.ReadDir(cloneDir)
+	if err != nil {
+		t.Fatalf("read the shared clone: %v", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{".git", ".jj"}) {
+		t.Errorf("the shared clone holds %q, want git's and jj's directories and no file of the tree", names)
+	}
+	// Without --ignore-working-copy, so jj snapshots the clone's working copy as it reads it: a
+	// tree the clone's first snapshot had recorded as deleted would show as a change here.
+	if status := runSetup(t, cloneDir, "jj", "status", "-R", cloneDir); !strings.Contains(status, "The working copy has no changes") {
+		t.Errorf("jj status in the shared clone = %q, want no change", status)
+	}
+	if listed := strings.TrimSpace(runSetup(t, cloneDir, "jj", "sparse", "list", "-R", cloneDir)); listed != "" {
+		t.Errorf("the shared clone's sparse patterns are %q, want none: no file of the tree is in its working copy", listed)
+	}
+	if empty := strings.TrimSpace(runSetup(t, cloneDir, "jj", "log", "-r", "@", "--no-graph", "-T", "empty", "-R", cloneDir)); empty != "true" {
+		t.Errorf("the shared clone's working-copy commit is empty = %s, want true", empty)
+	}
+	if parent, main := commitOf(t, cloneDir, "@-"), commitOf(t, cloneDir, "main@origin"); parent != main {
+		t.Errorf("the shared clone's @- is %s, want the default branch's %s", parent, main)
+	}
+	at := commitOf(t, cloneDir, "@")
+	// The repository's visible heads are the clone's own empty working-copy commit and the one the
+	// issue's workspace works on, which `jj workspace add` created after the clone was recorded:
+	// the deletion commit a clone with no working tree would otherwise carry is one of neither.
+	heads := strings.Fields(runSetup(t, cloneDir, "jj", "log", "-r", "visible_heads()", "--no-graph", "-T", `commit_id ++ "\n"`, "--ignore-working-copy", "-R", cloneDir))
+	slices.Sort(heads)
+	wantHeads := []string{at, commitOf(t, working.Dir, "@")}
+	slices.Sort(wantHeads)
+	if !slices.Equal(heads, wantHeads) {
+		t.Errorf("the shared clone's visible heads are %q, want %q: its empty working-copy commit and the issue workspace's, and no commit deleting the tree", heads, wantHeads)
+	}
+	recorded, ok, err := Held(cloneDir)
+	if err != nil || !ok {
+		t.Fatalf("Held = %v, %t, %v; want the clone's record of what it held", recorded, ok, err)
+	}
+	if !slices.Equal(recorded, []string{at}) {
+		t.Errorf("the clone's record of what it held names %q, want its empty working-copy commit %s alone: no commit deleting the tree", recorded, at)
+	}
+	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") {
+		t.Errorf("the clone was made with %q, want --no-checkout: no working tree", clone.Argv)
+	}
+
+	requireCheckedOut(t, working)
+	if status := runSetup(t, working.Dir, "jj", "status", "-R", working.Dir); !strings.Contains(status, "The working copy has no changes") {
+		t.Errorf("jj status in the workspace = %q, want no change", status)
+	}
+}
+
+// The clone from a pod's feed runs each step whose duration follows the repository's size under
+// what remains of one shared CloneTimeout — the local `git clone`, then jj's import of every
+// commit, then the two steps that leave the clone with no working tree, each with what the ones
+// before it left — the issue's checkout runs under CheckoutTimeout, and every other provisioning
+// command keeps the runner's slow-command budget.
+func TestTheSharedClonesCloneIsBoundedByCloneTimeout(t *testing.T) {
+	run := newLocalRunner(t)
+	req := feedRequest(t, run, provisionRequest(t))
+	before := len(run.Calls())
+	if _, err := Provision(context.Background(), run, req); err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	var steps []string
+	var given []time.Duration
+	for _, call := range run.Calls()[before:] {
+		if isSharedCloneStep(call.Argv) {
+			steps = append(steps, strings.Join(call.Argv[:3], " "))
+			given = append(given, call.Timeout)
+			if call.Timeout > CloneTimeout || call.Timeout < CloneTimeout-time.Minute {
+				t.Errorf("%q ran under %s, want what remained of one %s CloneTimeout", call.Argv, call.Timeout, CloneTimeout)
+			}
+			continue
+		}
+		// The checkout is the one provisioning command outside the clone's steps whose time
+		// follows the repository's size, so it holds CheckoutTimeout, its own
+		// (TestProvisionBoundsEachCommandByItsOwnBudget reads every command's).
+		if isCheckout(call.Argv) {
+			if call.Timeout != CheckoutTimeout {
+				t.Errorf("%q ran under %s, want CheckoutTimeout %s", call.Argv, call.Timeout, CheckoutTimeout)
+			}
+			continue
+		}
+		if call.Timeout != testTimeout {
+			t.Errorf("%q ran under %s, want %s", call.Argv, call.Timeout, testTimeout)
+		}
+	}
+	for i := 1; i < len(given); i++ {
+		if given[i] >= given[i-1] {
+			t.Errorf("%s was given %s, no less than %s's %s: want what remained after it", steps[i], given[i], steps[i-1], given[i-1])
+		}
+	}
+	if !slices.Equal(steps, []string{"git clone --quiet", "jj git init", "jj sparse set", "jj abandon @"}) {
+		t.Errorf("provisioning ran the clone's steps %q, want the local clone, jj's import, and the two that leave no working tree, once each", steps)
+	}
+}
+
+// The clone's size-following steps share one CloneTimeout, counted from the first's start, as
+// ProvisionBound budgets one: the local `git clone` gets the whole bound and jj's import what
+// remains of it, and the two steps that leave the clone with no working tree follow with what
+// those left. Two steps that fit together clone; a clone that leaves the import too little fails
+// at the shared deadline, the import killed there, and no clone is left in place.
+func TestTheSharedClonesStepsShareOneCloneTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		took     map[string]time.Duration
+		timeouts map[string][]time.Duration
+		fails    bool
+	}{
+		{
+			name:     "two steps that fit together",
+			took:     map[string]time.Duration{"git clone": 10 * time.Minute, "jj git": 10 * time.Minute},
+			timeouts: map[string][]time.Duration{"git clone": {CloneTimeout}, "jj git": {CloneTimeout - 10*time.Minute}},
+		},
+		{
+			name:     "a clone that leaves the import too little",
+			took:     map[string]time.Duration{"git clone": 25 * time.Minute, "jj git": 25 * time.Minute},
+			timeouts: map[string][]time.Duration{"git clone": {CloneTimeout}, "jj git": {CloneTimeout - 25*time.Minute}},
+			fails:    true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := newLocalRunner(t)
+			req := feedRequest(t, local, provisionRequest(t))
+			source, err := req.Source.open(req.Repo, "legion/LEGION-1", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = source.remove() }()
+			clock := newTestClock()
+			start := clock.Now()
+			run := &slowSteps{recordingRunner: local, clock: clock, step: sharedCloneStep, took: tc.took, timeouts: map[string][]time.Duration{}}
+			cloneDir := filepath.Join(t.TempDir(), "acme", "widgets")
+
+			err = ensureRepoClone(context.Background(), run, clock, cloneDir, GitHubURL(req.Repo), "main", source)
+			if !maps.EqualFunc(run.timeouts, tc.timeouts, slices.Equal[[]time.Duration]) {
+				t.Errorf("the shared clone's steps were given %v, want %v: what remained of one CloneTimeout", run.timeouts, tc.timeouts)
+			}
+			if elapsed := clock.Now().Sub(start); elapsed > CloneTimeout {
+				t.Errorf("the shared clone ran %s, past its one %s bound", elapsed, CloneTimeout)
+			}
+			_, statErr := os.Stat(filepath.Join(cloneDir, ".jj"))
+			if tc.fails && (err == nil || !strings.Contains(err.Error(), "command timed out: jj git init") || statErr == nil) {
+				t.Fatalf("ensureRepoClone = %v with the clone in place %t, want the import timed out at the shared deadline and no clone", err, statErr == nil)
+			}
+			if !tc.fails && (err != nil || statErr != nil) {
+				t.Fatalf("ensureRepoClone = %v (clone: %v), want the clone", err, statErr)
+			}
+		})
+	}
+}
+
+// slowSteps is the local runner with the clock time each step a test names takes: step names the
+// command's step, "" for one that takes no clock time; each named step records the timeout it was
+// given, then takes took of the clock's time — or, given less than that, runs to its timeout and is
+// killed there — before it runs.
+type slowSteps struct {
+	*recordingRunner
+	clock    *testClock
+	step     func(argv []string) string
+	took     map[string]time.Duration
+	timeouts map[string][]time.Duration
+}
+
+func (r *slowSteps) Run(ctx context.Context, command Command) (Result, error) {
+	step := r.step(command.Argv)
+	if step == "" {
+		return r.recordingRunner.Run(ctx, command)
+	}
+	r.timeouts[step] = append(r.timeouts[step], command.Timeout)
+	took := r.took[step]
+	if command.Timeout < took {
+		r.clock.advance(command.Timeout)
+		return Result{ExitCode: -1, TimedOut: true}, nil
+	}
+	r.clock.advance(took)
+	return r.recordingRunner.Run(ctx, command)
+}
+
+// sharedCloneStep names the two size-following steps this test gives clock time to, `git clone`
+// and then `jj git init`; the clear and the abandon that follow them take none of it.
+func sharedCloneStep(argv []string) string {
+	if commandWith(argv, "git", "clone") || commandWith(argv, "jj", "git", "init") {
+		return strings.Join(argv[:2], " ")
+	}
+	return ""
+}
+
+// isSharedCloneStep answers for every size-following step of the shared clone's clone from a feed:
+// the four commands feedClone runs under one CloneTimeout — the local `git clone`, jj's import of
+// every commit (`jj git init --colocate`), and the sparse clear and the abandon that leave the
+// clone with no working tree. It is not sharedCloneStep above, which is one case's clock-naming
+// function and deliberately names only the two of those steps that case gives clock time to.
+func isSharedCloneStep(argv []string) bool {
+	return commandWith(argv, "git", "clone") || commandWith(argv, "jj", "git", "init", "--colocate") ||
+		commandWith(argv, "jj", "sparse", "set") || commandWith(argv, "jj", "abandon")
+}
+
+// The feed is GitHub as it stood when the pod's workspace-fetch ran, and a tree agent can push to
+// the shared clone's origin in the meantime. Provisioning from the feed moves only the default
+// branch and the issue's own bookmark, so a bookmark another agent pushed after the snapshot keeps
+// its target and its tracking — its next push is not refused as stale.
+func TestProvisionFromAFeedKeepsABookmarkPushedAfterTheSnapshot(t *testing.T) {
+	run := newLocalRunner(t)
+	state := filepath.Join(t.TempDir(), "state")
+	request := func(issue, feed string) Request {
+		return Request{StateDir: state, Repo: ghrepo.MustParse("acme/widgets"), Issue: issue, DefaultBranch: "main", CredentialHelper: GitHubCredentialHelper, Source: FromFeed(feed),
+			Log: func(line string) { t.Logf("provisioning logged: %s", line) }}
+	}
+	first := fetchRequest(t)
+	if _, err := Fetch(context.Background(), run, first); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	working, err := Provision(context.Background(), run, request("WIDGETS-42", first.Feed))
+	if err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	stale := fetchRequest(t)
+	if _, err := Fetch(context.Background(), run, stale); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(working.Dir, "pushed.txt"), []byte("an agent's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	push := exec.Command("jj", "git", "push", "--named", "legion/WIDGETS-99=@", "--allow-empty-description")
+	push.Dir = working.Dir
+	push.Env = append(setupEnvironment(), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url."+run.remote+".insteadOf", "GIT_CONFIG_VALUE_0=https://github.com/acme/widgets")
+	if output, err := push.CombinedOutput(); err != nil {
+		t.Fatalf("a tree agent's push: %v\n%s", err, output)
+	}
+	pushed := strings.TrimSpace(runSetup(t, working.Dir, "jj", "log", "-r", "legion/WIDGETS-99", "--no-graph", "-T", "commit_id", "--ignore-working-copy"))
+
+	if _, err := Provision(context.Background(), run, request("WIDGETS-43", stale.Feed)); err != nil {
+		t.Fatalf("provision from the older feed: %v", err)
+	}
+	clone := filepath.Join(state, "repos", "github.com", "acme", "widgets")
+	for _, revset := range []string{`bookmarks(exact:"legion/WIDGETS-99")`, `remote_bookmarks(exact:"legion/WIDGETS-99", exact:"origin")`} {
+		if got := strings.TrimSpace(runSetup(t, clone, "jj", "log", "-r", revset, "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", clone)); got != pushed {
+			t.Errorf("%s is %q after provisioning from the older feed, want the pushed %s", revset, got, pushed)
+		}
+	}
+}
+
+func TestProvisionKilledCloneLeavesNoFinalDirectory(t *testing.T) {
+	run := newLocalRunner(t)
+	run.killClone = true
+	req := provisionRequest(t)
+
+	if _, err := Provision(context.Background(), run, req); err == nil {
+		t.Fatal("Provision succeeded after its clone was killed")
+	}
+
+	final := filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets")
+	if _, err := os.Stat(final); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("interrupted clone left final directory: %v", err)
+	}
+	parent := filepath.Dir(final)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatalf("read clone parent: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "widgets.clone-") {
+			t.Errorf("interrupted clone left temporary sibling %q", entry.Name())
+		}
+	}
+}
+
+func TestProvisionForgetsRegisteredMissingWorkspace(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("initial provision: %v", err)
+	}
+	if err := os.RemoveAll(workspace.Dir); err != nil {
+		t.Fatalf("remove workspace directory: %v", err)
+	}
+
+	before := len(run.Calls())
+	if _, err := Provision(context.Background(), run, req); err != nil {
+		t.Fatalf("re-provision registered missing workspace: %v", err)
+	}
+	findCall(t, run.Calls()[before:], "jj", "workspace", "forget")
+	if _, err := os.Stat(workspace.Dir); err != nil {
+		t.Fatalf("missing workspace was not re-added: %v", err)
+	}
+}
+
+func TestProvisionKeepsWorkspaceWhenFetchDeletesMergedBookmark(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("initial provision: %v", err)
+	}
+	clone := filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets")
+	if err := os.WriteFile(filepath.Join(workspace.Dir, "feature.txt"), []byte("merged work\n"), 0o644); err != nil {
+		t.Fatalf("write worker change: %v", err)
+	}
+	runSetup(t, workspace.Dir, "jj", "status")
+	commit := strings.TrimSpace(runSetup(t, workspace.Dir, "jj", "log", "-r", workspace.Bookmark, "--no-graph", "-T", "commit_id"))
+	runSetup(t, clone, "jj", "git", "push", "--remote", "origin", "--bookmark", workspace.Bookmark, "--allow-empty-description")
+	runSetup(t, req.StateDir, "git", "--git-dir="+run.remote, "branch", "-D", workspace.Bookmark)
+
+	if _, err := Provision(context.Background(), run, req); err != nil {
+		t.Fatalf("provision after remote branch deletion: %v", err)
+	}
+	reads, writes := 0, 0
+	for _, call := range run.Calls() {
+		if commandWith(call.Argv, "jj", "config", "get") && len(call.Argv) > 3 && call.Argv[3] == "git.abandon-unreachable-commits" {
+			reads++
+		}
+		if commandWith(call.Argv, "jj", "config", "set") && len(call.Argv) > 4 && call.Argv[4] == "git.abandon-unreachable-commits" {
+			writes++
+		}
+	}
+	if reads != 2 || writes != 1 {
+		t.Errorf("abandon-unreachable setting operations = %d reads, %d writes; want 2 reads and 1 write", reads, writes)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Dir, "feature.txt")); err != nil {
+		t.Fatalf("fetch deleting bookmark lost working-copy content: %v", err)
+	}
+	if listed := strings.TrimSpace(runSetup(t, clone, "jj", "log", "-r", "bookmarks(exact:"+workspace.Bookmark+")", "--no-graph", "-T", "commit_id")); listed != "" {
+		t.Errorf("bookmark remains after merged branch deletion: %s", listed)
+	}
+	ancestors := runSetup(t, workspace.Dir, "jj", "log", "-r", "ancestors(@)", "--no-graph", "-T", "commit_id")
+	if !strings.Contains(ancestors, commit) {
+		t.Errorf("working copy no longer descends from merged commit %s: %s", commit, ancestors)
+	}
+}
+
+func TestRemoveForgetsTheWorkspace(t *testing.T) {
+	run := newLocalRunner(t)
+	workspace, err := Provision(context.Background(), run, provisionRequest(t))
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if err := Remove(context.Background(), run, workspace, nil); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := os.Stat(workspace.Dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("workspace remains after Remove: %v", err)
+	}
+}
+
+// Every workspace of the shared clone has its own git worktree entry, and provisioning or removing
+// one workspace touches no other's, even one whose directory this process cannot see, as an
+// isolated session on the same host that mounts only its own checkout cannot. A bare `git worktree
+// prune` takes such an entry for stale and deletes it, and git then fails in that workspace while jj
+// keeps working. Each workspace provisioning adds is locked, so a bare prune anyone else runs skips
+// it too.
+func TestProvisioningAndRemovalTouchOnlyTheirOwnGitWorktree(t *testing.T) {
+	run := newLocalRunner(t)
+	otherRequest := provisionRequest(t)
+	otherRequest.Issue = "WIDGETS-41"
+	other, err := Provision(context.Background(), run, otherRequest)
+	if err != nil {
+		t.Fatalf("provision the other workspace: %v", err)
+	}
+	if locked := gitWorktreeLocks(t, other.Clone); !locked[other.Dir] {
+		t.Errorf("provisioning left the new workspace's git worktree unlocked: %v", locked)
+	}
+	// An entry another process added carries no lock; this one is out of this process's view.
+	unlockGitWorktree(t, other.Clone, other.Dir)
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Rename(other.Dir, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+
+	request := otherRequest
+	request.Issue = "WIDGETS-42"
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	// Registered but gone, the shape a crash inside Remove leaves: forgotten and added again.
+	if err := os.RemoveAll(workspace.Dir); err != nil {
+		t.Fatal(err)
+	}
+	before := len(run.Calls())
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("re-provision the registered missing workspace: %v", err)
+	}
+	findCall(t, run.Calls()[before:], "jj", "workspace", "forget")
+	if locked := gitWorktreeLocks(t, workspace.Clone); !locked[workspace.Dir] {
+		t.Errorf("the re-added workspace's git worktree is unlocked: %v", locked)
+	}
+	if got := strings.TrimSpace(runSetup(t, workspace.Dir, "git", "rev-parse", "--show-toplevel")); got != workspace.Dir {
+		t.Errorf("git in the re-added workspace answers %q, want %q", got, workspace.Dir)
+	}
+	if err := Remove(context.Background(), run, workspace, nil); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if locked, registered := gitWorktreeLocks(t, workspace.Clone)[workspace.Dir]; registered {
+		t.Errorf("Remove left the removed workspace's git worktree registered (locked: %v)", locked)
+	}
+
+	if err := os.Rename(elsewhere, other.Dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(runSetup(t, other.Dir, "git", "rev-parse", "--show-toplevel")); got != other.Dir {
+		t.Errorf("git in the other workspace answers %q, want %q", got, other.Dir)
+	}
+}
+
+// A workspace provisioned before provisioning locked anything has an unlocked git worktree entry;
+// the next provisioning of it, which adds nothing, locks it.
+func TestProvisionLocksAnExistingUnlockedWorkspace(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	unlockGitWorktree(t, workspace.Clone, workspace.Dir)
+	before := len(run.Calls())
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision the existing workspace: %v", err)
+	}
+	if slices.ContainsFunc(run.Calls()[before:], func(call Command) bool { return commandWith(call.Argv, "jj", "workspace", "add") }) {
+		t.Fatalf("provisioning an existing workspace added it again")
+	}
+	if locked := gitWorktreeLocks(t, workspace.Clone); !locked[workspace.Dir] {
+		t.Errorf("provisioning left the existing workspace's git worktree unlocked: %v", locked)
+	}
+}
+
+// Provisioning that creates a workspace records when it did (Created), where jj never snapshots
+// it: `jj status` in the new workspace lists no change. Provisioning the workspace again keeps the
+// record as it was, and a workspace removed and created again records its new creation, which the
+// role launcher compares with a resumed session's last write.
+func TestProvisionRecordsWhenItCreatedTheWorkspace(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	started := time.Now()
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	created, ok, err := Created(workspace.Dir)
+	if err != nil || !ok || created.Before(started.Truncate(time.Millisecond)) || created.After(time.Now()) {
+		t.Fatalf("Created = %v, %t, %v; want a record between %v and now", created, ok, err, started)
+	}
+	if status := runSetup(t, workspace.Dir, "jj", "status"); !strings.Contains(status, "The working copy has no changes") {
+		t.Errorf("jj status in the new workspace = %q, want no change: the record is not the working copy's", status)
+	}
+
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision the existing workspace: %v", err)
+	}
+	if again, _, err := Created(workspace.Dir); err != nil || !again.Equal(created) {
+		t.Errorf("Created after provisioning the existing workspace = %v, %v; want %v unchanged", again, err, created)
+	}
+
+	if err := Remove(context.Background(), run, workspace, nil); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, ok, err := Created(workspace.Dir); ok || err != nil {
+		t.Fatalf("Created of the removed workspace = %t, %v; want no record", ok, err)
+	}
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision the removed workspace again: %v", err)
+	}
+	if recreated, ok, err := Created(workspace.Dir); err != nil || !ok || !recreated.After(created) {
+		t.Errorf("Created of the workspace created again = %v, %t, %v; want a record after %v", recreated, ok, err, created)
+	}
+}
+
+// The creation record is on a volume every agent of the tree can write, so Created reads only a
+// regular file holding one RFC 3339 instant and refuses anything else by name: a symlink, which it
+// does not follow, a FIFO, which it does not block on, and text that is no instant.
+func TestCreatedRefusesARecordThatIsNotOneInstant(t *testing.T) {
+	for name, plant := range map[string]func(t *testing.T, path string){
+		"a symlink": func(t *testing.T, path string) {
+			target := filepath.Join(t.TempDir(), "elsewhere")
+			if err := os.WriteFile(target, []byte("2026-10-09T00:00:00Z\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a FIFO": func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"text": func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("yesterday\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, ".jj", createdFile)
+			plant(t, path)
+			if _, ok, err := Created(dir); ok || err == nil || !strings.Contains(err.Error(), path) {
+				t.Errorf("Created = %t, %v; want a refusal naming %s", ok, err, path)
+			}
+		})
+	}
+}
+
+// Provision writes ".codegraph/" to the shared clone's ".git/info/exclude" exactly once, and
+// every workspace of that clone — this one, and any other issue's — has a `codegraph init`
+// inside it leave no trace for `jj status`: CodeGraph's own generated `.codegraph/.gitignore`
+// (`*` then `!.gitignore`) would otherwise get tracked, since git worktrees share one
+// `info/exclude` through their common git directory.
+func TestProvisionExcludesTheCodegraphDirectoryFromEveryWorkspaceOfTheClone(t *testing.T) {
+	run := newLocalRunner(t)
+	// No global git or jj configuration anywhere a real `jj status` below could read one: the
+	// bug this guards against only shows on a host with no global ignore for `.codegraph/`.
+	t.Setenv("HOME", t.TempDir())
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	excludePath := filepath.Join(workspace.Clone, ".git", "info", "exclude")
+	body, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", excludePath, err)
+	}
+	if !slices.Contains(strings.Split(string(body), "\n"), ".codegraph/") {
+		t.Fatalf("%s = %q, want a \".codegraph/\" line", excludePath, body)
+	}
+
+	// A second provisioning of a different issue on the same clone writes the line again only
+	// if it is missing; with it already present, the file does not grow.
+	second := request
+	second.Issue = "WIDGETS-91"
+	if _, err := Provision(context.Background(), run, second); err != nil {
+		t.Fatalf("provision a second issue on the same clone: %v", err)
+	}
+	after, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read %s after the second provisioning: %v", excludePath, err)
+	}
+	if string(after) != string(body) {
+		t.Fatalf("%s changed on a second provisioning: %q -> %q", excludePath, body, after)
+	}
+
+	// A codegraph init's own tracked file (`.codegraph/.gitignore`, which CodeGraph's `*` then
+	// `!.gitignore` leaves visible to git) must not reach `jj status` from this workspace, nor
+	// from the other issue's, since both share the clone's one `info/exclude`. runSetup's bare
+	// `jj status`, unlike onClone's, snapshots the working copy for real.
+	for _, dir := range []string{workspace.Dir, filepath.Join(filepath.Dir(workspace.Dir), "widgets-91")} {
+		if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".codegraph", ".gitignore"), []byte("*\n!.gitignore\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		status := runSetup(t, dir, "jj", "status")
+		if strings.Contains(status, "codegraph") {
+			t.Fatalf("jj status in %s = %q, want no .codegraph path tracked", dir, status)
+		}
+	}
+}
+
+// git writes a relative worktree pointer between real paths, so provisioning finds its own entry
+// through a state directory reached by a symlink: it locks it, re-adds the workspace after its
+// directory went, and removal deletes it. The state directory is the one place in the tree
+// volume's path a symlink is allowed (refuseSymlinkedLayout); git names the workspace by its
+// physical path through the resolved state directory.
+func TestGitWorktreeEntriesThroughASymlinkedClone(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	if err := os.MkdirAll(filepath.Dir(request.StateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), request.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	physical, err := filepath.EvalSymlinks(workspace.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if physical == workspace.Dir {
+		t.Fatalf("test setup: %s is not reached through the symlinked state directory", workspace.Dir)
+	}
+	if locked := gitWorktreeLocks(t, workspace.Clone); !locked[physical] {
+		t.Errorf("provisioning left the workspace's git worktree unlocked: %v", locked)
+	}
+	if err := os.RemoveAll(workspace.Dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("re-provision the registered missing workspace: %v", err)
+	}
+	if got := strings.TrimSpace(runSetup(t, workspace.Dir, "git", "rev-parse", "--show-toplevel")); got != physical {
+		t.Errorf("git in the re-added workspace answers %q, want %q", got, physical)
+	}
+	if err := Remove(context.Background(), run, workspace, nil); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if locks := gitWorktreeLocks(t, workspace.Clone); len(locks) != 0 {
+		t.Errorf("Remove left git worktrees registered: %v", locks)
+	}
+}
+
+// gitWorktreeEntries must resolve the clone's worktree admin directory before resolving a
+// relative gitdir: git >= 2.48 writes that gitdir between real paths. Here the clone is reached
+// through a symlink while the workspace is outside that symlink, so without the admin
+// EvalSymlinks a lexical join misses its own entry. This calls gitWorktreeEntries directly,
+// outside the jj runner, because refuseSymlinkedLayout deliberately refuses that clone before a
+// production jj command reaches git.
+func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T) {
+	root := t.TempDir()
+	realClone := filepath.Join(root, "real", "clone")
+	runSetup(t, root, fixturegit.InitWorkTree(realClone, "main")...)
+	if err := os.WriteFile(filepath.Join(realClone, "README"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t, realClone, "git", "add", "README")
+	runSetup(t, realClone, "git", "commit", "-m", "seed")
+
+	logicalClone := filepath.Join(root, "logical", "clone")
+	if err := os.MkdirAll(filepath.Dir(logicalClone), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realClone, logicalClone); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace", "widgets-42")
+	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t, logicalClone, "git", "worktree", "add", "--detach", workspace, "HEAD")
+
+	admin := filepath.Join(realClone, ".git", "worktrees")
+	entries, err := os.ReadDir(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("git registered %d worktrees at %s, want 1", len(entries), admin)
+	}
+	entry := filepath.Join(admin, entries[0].Name())
+	// Git >= 2.48 writes this relative path itself. The devbox's git 2.43 writes an absolute
+	// path, so write the newer format over the real worktree entry to test the parser against the
+	// worker-image behavior without asking the test host to upgrade git.
+	relative, err := filepath.Rel(entry, filepath.Join(workspace, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "gitdir"), []byte(relative+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := gitWorktreeEntries(logicalClone, workspace)
+	if err != nil {
+		t.Fatalf("gitWorktreeEntries(%s, %s): %v", logicalClone, workspace, err)
+	}
+	if !slices.Equal(got, []string{entry}) {
+		t.Errorf("gitWorktreeEntries(%s, %s) = %q, want %q", logicalClone, workspace, got, []string{entry})
+	}
+}
+
+// A bare prune that could not see the workspace deleted its entry: git fails there while jj works.
+// The next provisioning restores the entry at the working copy's parent, with an index to match and
+// the working copy untouched, and locks it.
+func TestProvisionRestoresALostGitWorktree(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	var logged []string
+	request.Log = func(line string) { logged = append(logged, line) }
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Dir, "tracked.txt"), []byte("committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t, workspace.Dir, "jj", "commit", "-m", "tracked")
+	parent := strings.TrimSpace(runSetup(t, workspace.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
+	if err := os.WriteFile(filepath.Join(workspace.Dir, "notes.txt"), []byte("in progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gitWorktreeAdmin(t, workspace.Dir)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision the workspace whose git worktree entry is gone: %v", err)
+	}
+	if got := strings.TrimSpace(runSetup(t, workspace.Dir, "git", "rev-parse", "HEAD")); got != parent {
+		t.Errorf("git HEAD in the restored workspace = %s, want the working copy's parent %s", got, parent)
+	}
+	if got := strings.TrimSpace(runSetup(t, workspace.Dir, "git", "status", "--porcelain")); got != "?? notes.txt" {
+		t.Errorf("git status in the restored workspace = %q, want only the uncommitted notes.txt", got)
+	}
+	if notes, err := os.ReadFile(filepath.Join(workspace.Dir, "notes.txt")); err != nil || string(notes) != "in progress\n" {
+		t.Errorf("the working copy's notes.txt = %q, %v; want it untouched", notes, err)
+	}
+	if locked := gitWorktreeLocks(t, workspace.Clone); !locked[workspace.Dir] {
+		t.Errorf("the restored git worktree is unlocked: %v", locked)
+	}
+	if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "restored it at "+parent) }) {
+		t.Errorf("provisioning logged no restoration: %q", logged)
+	}
+}
+
+// A failed git read-tree while restoring a lost git worktree entry leaves nothing at the target: the
+// next provisioning still finds the entry gone and restores it, instead of skipping the restore
+// because a half-written entry already exists.
+func TestProvisionCleansUpAFailedRestore(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	admin := gitWorktreeAdmin(t, workspace.Dir)
+	if err := os.RemoveAll(admin); err != nil {
+		t.Fatal(err)
+	}
+
+	run.failReadTree = true
+	if _, err := Provision(context.Background(), run, request); err == nil {
+		t.Fatal("provision with a forced read-tree failure = <nil>, want it refused")
+	}
+	if _, statErr := os.Stat(admin); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the failed restore left %s behind: %v", admin, statErr)
+	}
+	run.failReadTree = false
+
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision after the failed restore: %v", err)
+	}
+	if got := strings.TrimSpace(runSetup(t, workspace.Dir, "git", "rev-parse", "--show-toplevel")); got != workspace.Dir {
+		t.Errorf("git in the restored workspace answers %q, want %q", got, workspace.Dir)
+	}
+}
+
+// A pointer naming a directory outside the shared clone's git worktrees is nothing provisioning
+// creates or may write into: it is refused by name.
+func TestProvisionRefusesAGitPointerOutsideTheClone(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "worktrees", "widgets-42")
+	if err := os.WriteFile(filepath.Join(workspace.Dir, ".git"), []byte("gitdir: "+elsewhere+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Provision(context.Background(), run, request)
+	if err == nil || !strings.Contains(err.Error(), "outside the shared clone's") {
+		t.Fatalf("provision with a pointer outside the clone = %v, want it refused", err)
+	}
+	if _, statErr := os.Stat(elsewhere); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("provisioning created %s: %v", elsewhere, statErr)
+	}
+}
+
+// A tree agent that can write the shared clone's .git can replace .git/worktrees with a symlink to
+// any directory: resolving only .git, never worktrees itself, keeps that symlink from extending
+// where a restored entry may land.
+func TestProvisionRefusesAWorktreesSymlinkEscape(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	admin := gitWorktreeAdmin(t, workspace.Dir)
+	worktreesDir := filepath.Dir(admin)
+	if err := os.RemoveAll(worktreesDir); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, worktreesDir); err != nil {
+		t.Fatal(err)
+	}
+	evil := filepath.Join(worktreesDir, "evil")
+	if err := os.WriteFile(filepath.Join(workspace.Dir, ".git"), []byte("gitdir: "+evil+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Provision(context.Background(), run, request)
+	if err == nil || !strings.Contains(err.Error(), "outside the shared clone's") {
+		t.Fatalf("provision through a symlinked worktrees directory = %v, want it refused", err)
+	}
+	entries, err := os.ReadDir(elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("provisioning wrote into the symlinked-away directory: %v", entries)
+	}
+}
+
+// A kill between the writes into the temporary entry and its rename (a SIGKILL, an OOM, a pod
+// eviction, a daemon restart) never runs the Go defer that would clean it up, and MkdirTemp's
+// randomized name means a later attempt cannot find it by name either: it plays no part in the
+// present check, which looks at the entry itself, so the next provisioning still finds that gone
+// and restores cleanly through a temporary directory of its own. Its own successful restore then
+// sweeps the stale sibling away, since nothing else can still be using it once that restore's own
+// rename has succeeded.
+func TestProvisionRestoresCleanlyAfterAKillBetweenTheWrites(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	admin := gitWorktreeAdmin(t, workspace.Dir)
+	if err := os.RemoveAll(admin); err != nil {
+		t.Fatal(err)
+	}
+	// A process killed after MkdirTemp but before every write, or before the rename, leaves exactly
+	// this: a temporary sibling with partial or stale content, and no entry at admin itself.
+	stale := filepath.Join(filepath.Dir(admin), "."+filepath.Base(admin)+".restore-stale")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "HEAD"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision after a kill between the writes: %v", err)
+	}
+	if got := strings.TrimSpace(runSetup(t, workspace.Dir, "git", "rev-parse", "--show-toplevel")); got != workspace.Dir {
+		t.Errorf("git in the restored workspace answers %q, want %q", got, workspace.Dir)
+	}
+	if _, statErr := os.Stat(stale); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the stale temporary entry %s survived a successful restore: %v", stale, statErr)
+	}
+}
+
+// A workspace whose working copy has no real parent commit yet -- its @- is the root commit, which
+// has no git tree -- restores with jj's own unborn ref and an empty index instead of failing at
+// `git read-tree HEAD` ("failed to unpack tree object HEAD").
+func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
+	clone := t.TempDir()
+	runSetup(t, clone, fixturegit.JJInit(".", true)...)
+	other := filepath.Join(t.TempDir(), "other")
+	runSetup(t, clone, "jj", "workspace", "add", other, "-R", clone)
+	admin := gitWorktreeAdmin(t, other)
+	if err := os.RemoveAll(admin); err != nil {
+		t.Fatal(err)
+	}
+
+	run := NewRunner(testTimeout, testTools(t))
+	var logged []string
+	err := restoreGitWorktree(context.Background(), run, Workspace{Dir: other, Clone: clone}, func(line string) {
+		logged = append(logged, line)
+	})
+	if err != nil {
+		t.Fatalf("restore a workspace with no real parent commit: %v", err)
+	}
+	if got := strings.TrimSpace(runSetup(t, other, "git", "rev-parse", "--show-toplevel")); got != other {
+		t.Errorf("git in the restored workspace answers %q, want %q", got, other)
+	}
+	headContent, err := os.ReadFile(filepath.Join(admin, "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(headContent)) != rootHeadRef {
+		t.Errorf("HEAD = %q, want %q", headContent, rootHeadRef)
+	}
+	if got := strings.TrimSpace(runSetup(t, other, "git", "status", "--porcelain")); got != "" {
+		t.Errorf("git status in the restored workspace = %q, want empty", got)
+	}
+	if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "fresh, with no real commit yet") }) {
+		t.Errorf("provisioning logged no restoration: %q", logged)
+	}
+}
+
+// A second workspace whose own directory base name is what this workspace's temporary restore
+// entry would be named survives untouched: the temporary entry's name never collides with a real
+// worktree's own admin id.
+func TestProvisionRestoreDoesNotCollideWithAWorkspaceNamedLikeItsTemporaryEntry(t *testing.T) {
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	workspace, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if err := os.RemoveAll(gitWorktreeAdmin(t, workspace.Dir)); err != nil {
+		t.Fatal(err)
+	}
+
+	colliding := request
+	colliding.Issue = "WIDGETS-42.TMP"
+	other, err := Provision(context.Background(), run, colliding)
+	if err != nil {
+		t.Fatalf("provision the colliding workspace: %v", err)
+	}
+
+	if _, err := Provision(context.Background(), run, request); err != nil {
+		t.Fatalf("provision the workspace whose git worktree entry is gone: %v", err)
+	}
+	if got := strings.TrimSpace(runSetup(t, other.Dir, "git", "rev-parse", "--show-toplevel")); got != other.Dir {
+		t.Errorf("git in the colliding workspace answers %q, want %q", got, other.Dir)
+	}
+}
+
+// A crash between Remove's forget and its entry deletion leaves a workspace neither registered nor
+// present, with its locked entry still in the clone; the next Remove deletes it.
+func TestRemoveDeletesTheEntryACrashAfterTheForgetLeft(t *testing.T) {
+	run := newLocalRunner(t)
+	workspace, err := Provision(context.Background(), run, provisionRequest(t))
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if err := os.RemoveAll(workspace.Dir); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t, workspace.Clone, "jj", "workspace", "forget", filepath.Base(workspace.Dir), "--ignore-working-copy", "-R", workspace.Clone)
+	if _, registered := gitWorktreeLocks(t, workspace.Clone)[workspace.Dir]; !registered {
+		t.Fatal("the forget already removed the git worktree entry; the crash shape is not reproduced")
+	}
+	if err := Remove(context.Background(), run, workspace, nil); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if locks := gitWorktreeLocks(t, workspace.Clone); len(locks) != 0 {
+		t.Errorf("Remove left git worktrees registered: %v", locks)
+	}
+}
+
+// unlockGitWorktree deletes the lock of the git worktree the workspace at dir names in its .git
+// file, leaving the entry as a process that locks nothing leaves it, and fails the test unless git
+// then reports the worktree unlocked.
+func unlockGitWorktree(t *testing.T, clone, dir string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(gitWorktreeAdmin(t, dir), "locked")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	locks := gitWorktreeLocks(t, clone)
+	if locked, registered := locks[dir]; !registered || locked {
+		t.Fatalf("git does not report %s registered and unlocked after unlocking it: %v", dir, locks)
+	}
+}
+
+// gitWorktreeAdmin is the admin directory the workspace at dir names in its .git file. The pointer
+// is relative to dir when git writes relative worktree paths (jj asks for them; git 2.48 and later
+// honour it).
+func gitWorktreeAdmin(t *testing.T, dir string) string {
+	t.Helper()
+	pointer, err := os.ReadFile(filepath.Join(dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
+	if !ok {
+		t.Fatalf("%s/.git names no git worktree: %q", dir, pointer)
+	}
+	if !filepath.IsAbs(admin) {
+		admin = filepath.Join(dir, admin)
+	}
+	return admin
+}
+
+// gitWorktreeLocks is every linked worktree git registers in clone, by path, and whether it is
+// locked: git's own account (`git worktree list --porcelain`), one block per worktree after the
+// clone's own, which git always lists first.
+func gitWorktreeLocks(t *testing.T, clone string) map[string]bool {
+	t.Helper()
+	listed := runSetup(t, clone, "git", "--git-dir="+filepath.Join(clone, ".git"), "worktree", "list", "--porcelain")
+	locks := map[string]bool{}
+	for _, block := range strings.Split(strings.TrimSpace(listed), "\n\n")[1:] {
+		lines := strings.Split(block, "\n")
+		path, ok := strings.CutPrefix(lines[0], "worktree ")
+		if !ok {
+			t.Fatalf("git worktree list printed a block with no worktree line: %q", block)
+		}
+		locks[path] = slices.ContainsFunc(lines[1:], func(line string) bool {
+			return line == "locked" || strings.HasPrefix(line, "locked ")
+		})
+	}
+	return locks
+}
+
+func TestLocationMatchesProvisionedWorkspacePath(t *testing.T) {
+	working, err := Location("/state", ghrepo.MustParse("acme/widgets"), "WIDGETS-42")
+	if err != nil {
+		t.Fatalf("Location: %v", err)
+	}
+	if working.Dir != "/state/workspaces/acme/widgets/widgets-42" || working.Bookmark != "legion/WIDGETS-42" ||
+		working.Clone != "/state/repos/github.com/acme/widgets" {
+		t.Fatalf("Location = %#v, want workspace path, bookmark, and shared clone", working)
+	}
+}
+
+// A `.` or `..` segment would put the shared clone somewhere else under the state directory, and
+// provisioning removes an incomplete clone there: `--repo ../..` once removed the tree volume's
+// root. A Repository cannot hold one: Parse refuses every such input, and only Parse makes a
+// non-zero Repository (ghrepo's TestParse and TestRepositoryExportsNoField). The one value a caller
+// can build, the zero Repository, is refused by Provision and Fetch before either runs a command or
+// touches the state directory.
+func TestAZeroRepositoryNeverReachesTheVolume(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "volume-root.txt"), []byte("the tree volume's root\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := newLocalRunner(t)
+	request := provisionRequest(t)
+	request.StateDir, request.Repo = state, ghrepo.Repository{}
+	if _, err := Provision(context.Background(), run, request); err == nil || err.Error() != "workspace repository is required" {
+		t.Errorf("Provision with the zero Repository = %v, want it refused", err)
+	}
+	fetch := fetchRequest(t)
+	fetch.Feed, fetch.Repo = state, ghrepo.Repository{}
+	if _, err := Fetch(context.Background(), run, fetch); err == nil || err.Error() != "workspace repository is required" {
+		t.Errorf("Fetch with the zero Repository = %v, want it refused", err)
+	}
+	if calls := run.Calls(); len(calls) != 0 {
+		t.Errorf("the refusals ran %q", calls)
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "volume-root.txt" {
+		t.Errorf("the state directory holds %v after the refusals, want only its sentinel", entries)
+	}
+}
+
+// A `.` or `..` issue would name the repository's workspaces directory, or its owner's, as the
+// issue's workspace, and Remove deletes the workspace directory whole: Location refuses one, naming
+// it, and Remove removes nothing but a workspace Location names.
+func TestAnIssueWithADotSegmentIsRefused(t *testing.T) {
+	state := t.TempDir()
+	for _, issue := range []string{".", ".."} {
+		want := `workspace issue "` + issue + `" is a "` + issue + `" segment`
+		if _, err := Location(state, ghrepo.MustParse("acme/widgets"), issue); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Location(%q) = %v, want an error naming %q", issue, err, want)
+		}
+	}
+	sentinel := filepath.Join(state, "workspaces", "acme", "other", "widgets-7", "work.txt")
+	if err := os.MkdirAll(filepath.Dir(sentinel), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sentinel, []byte("another repository's workspace\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := newLocalRunner(t)
+	clone := filepath.Join(state, "repos", "github.com", "acme", "widgets")
+	for _, dir := range []string{
+		filepath.Join(state, "workspaces", "acme", "widgets") + "/..",
+		filepath.Join(state, "workspaces", "acme", "widgets") + "/.",
+		filepath.Join(state, "workspaces", "acme"),
+		filepath.Join(state, "workspaces", "acme", "other", "widgets-7"),
+	} {
+		err := Remove(context.Background(), run, Workspace{Dir: dir, Bookmark: "legion/WIDGETS-42", Clone: clone}, nil)
+		if err == nil || !strings.Contains(err.Error(), "is not a workspace Location names") {
+			t.Errorf("Remove(%s) = %v, want it refused as no workspace Location names", dir, err)
+		}
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("Remove deleted another repository's workspace: %v", err)
+	}
+	if calls := run.Calls(); len(calls) != 0 {
+		t.Errorf("Remove ran %#v before refusing", calls)
+	}
+}

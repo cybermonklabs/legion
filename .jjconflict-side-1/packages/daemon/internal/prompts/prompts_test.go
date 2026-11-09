@@ -1,0 +1,609 @@
+package prompts
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
+// daemon's instructions win before the shared role instructions. The prompt paths are what the
+// tmux runtime gives OMP in one --append-system-prompt word, so their order is the contract. The
+// Go daemon's text is the role's own part, then the part every architect or every phase worker
+// shares.
+func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Every operation the legion tool gives an architect besides register_gate
+	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused.
+	architectOperations := []string{"`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
+
+	for _, tc := range []struct {
+		name     string
+		role     claim.Role
+		isRoot   bool
+		shared   []string
+		goParts  []string
+		contains []string
+	}{
+		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree.
+		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
+		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
+		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
+		// A root with no code of its own pushes one empty commit to open its pull request. The
+		// implementer is also told the completion of implementing the handoff route refuses with no
+		// open pull request, and what to do about it.
+		{"implementer", claim.RoleImplementer, false, []string{"core/common.md", "core/implementer.md", "mechanics/headless.md", "implementer.md"}, []string{"implementer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
+			"Retro removes nothing", "the root of its children; no code of its own",
+			"(`HANDOFF_NO_PULL_REQUEST`), recording nothing: open the pull request and complete again at the same commit"}},
+		// The tester runs the application, not CI again (dispatch://LEGION-631).
+		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`, `verdict: "pass"`, `verdict: "fail"`,
+			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
+		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
+			"your approval of the head that commit made is read by no daemon check: READY reads `record.ApprovedHead`, which only a review submitted while the issue stands in `reviewing` writes", "`pullRequest.head` is the commit the pull request stands on"}},
+		// The merger is told how its over-long packet is refused, at the call that carries it.
+		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "`ready: true`", "`READY_HEAD_CONFLICTS`: the pull request conflicts with its base",
+			"`READY_NOT_APPROVED`", "`READY_DISARM_PENDING`",
+			"refused at `handoff_complete` with `READY_PACKET_TOO_LONG`, which names the bound and how far over the packet is",
+			"`READY_HEAD_MOVED`", "`READY_FILES_TRUNCATED`", "`READY_PULL_REQUEST_CLOSED`",
+			"`GITHUB_READ_FAILED`", "`DESIGN_GATE_CLOSED`", "`NO_PULL_REQUEST`", "`READY_REQUIRED`"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts, err := composer.Compose(tc.role, tc.isRoot)
+			if err != nil {
+				t.Fatalf("Compose: %v", err)
+			}
+			want := make([]string, 0, len(tc.shared)+len(tc.goParts))
+			for _, part := range tc.shared {
+				want = append(want, filepath.Join(stateDir, "prompts", "shared", part))
+			}
+			for _, part := range tc.goParts {
+				want = append(want, filepath.Join(stateDir, "prompts", "go", part))
+			}
+			if !reflect.DeepEqual(parts.RolePromptPaths, want) {
+				t.Fatalf("RolePromptPaths = %q, want %q", parts.RolePromptPaths, want)
+			}
+			// A pane reads each shared part from the snapshot by path, so the snapshot holds the
+			// embedded part byte for byte.
+			for _, part := range tc.shared {
+				got, err := os.ReadFile(filepath.Join(stateDir, "prompts", "shared", part))
+				if err != nil {
+					t.Fatalf("read the snapshot's %s: %v", part, err)
+				}
+				if string(got) != rolePart(t, part) {
+					t.Errorf("the snapshot's %s is not the embedded part", part)
+				}
+			}
+			// The runtimes join the parts byte for byte ($(cat …)), so the role's Go daemon part and
+			// the shared one must meet at one blank line, as the paragraphs within a part do. The
+			// phrases each role is held to are read from the whole composed prompt, shared parts and
+			// the Go daemon's alike.
+			var text strings.Builder
+			for i, path := range parts.RolePromptPaths {
+				body, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read part: %v", err)
+				}
+				if joined := text.String(); i > len(tc.shared) {
+					gap := len(joined) - len(strings.TrimRight(joined, "\n")) + len(body) - len(strings.TrimLeft(string(body), "\n"))
+					if gap != 2 {
+						t.Errorf("Go daemon parts %q join %s with %d newlines, want one blank line", tc.goParts, path, gap)
+					}
+				}
+				text.Write(body)
+			}
+			for _, requirement := range append([]string{
+				"This Go daemon advances phases",
+				"re-read your issue record with the `legion` tool's `read_record`",
+				// Every role is told not to retry a `legion` call its plugin refused because the
+				// daemon answered a shape it does not read (INFRA-1048): the phrase pinned is the
+				// plugin's own refusal text, which survives a rewording of the clauses around it.
+				"the daemon API contract does not describe",
+			}, tc.contains...) {
+				if !strings.Contains(text.String(), requirement) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, requirement)
+				}
+			}
+		})
+	}
+}
+
+// The planner this daemon composes runs the gap analyst before it drafts and the plan reviewer
+// after (LEGION-421). Only the shared headless residue names them: the core is also composed with
+// the interactive fragment, and no load probe checks the agents an interactive session names, and
+// the Go daemon's own parts leave the checks to the shared text.
+func TestTheComposedPlannerDispatchesItsPlanChecksFromTheHeadlessResidue(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	parts, err := composer.Compose(claim.RolePlanner, false)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	var text strings.Builder
+	dispatched := promptrefs.New()
+	for _, path := range parts.RolePromptPaths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+		rel, err := filepath.Rel(stateDir, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatched.Text(filepath.Join("state", rel), body)
+	}
+	gap := strings.Index(text.String(), "`task(agent=\"plan-gap-analyst\")`")
+	review := strings.Index(text.String(), "`task(agent=\"plan-reviewer\")`")
+	if gap < 0 || review < gap {
+		t.Errorf("the composed planner dispatches the gap analyst at %d and the plan reviewer at %d, want the analyst first", gap, review)
+	}
+	want := []string{"plan-gap-analyst", "plan-reviewer"}
+	residue := []string{filepath.Join("state", "prompts", "shared", "planner.md")}
+	for _, agent := range want {
+		files, named := dispatched[promptrefs.TaskAgents][agent]
+		if !named {
+			t.Errorf("the composed planner does not dispatch task agent %s", agent)
+			continue
+		}
+		if !slices.Equal(files, residue) {
+			t.Errorf("task agent %s is dispatched by %q, want the headless residue %q alone", agent, files, residue)
+		}
+	}
+}
+
+// composedText is the whole text a role's composed prompt gives its pane: the parts Compose names,
+// in the order the tmux runtime appends them (Parts.RolePromptPaths), read back from the snapshot
+// and joined. A test that asks whether a prompt still says something retired asks it of this join,
+// since which part holds the words is no part of the claim, and a compose or a read that fails
+// leaves the question unanswered rather than unsaid, so both end the test (t.Fatalf).
+func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool) string {
+	t.Helper()
+	parts, err := composer.Compose(role, isRoot)
+	if err != nil {
+		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
+	}
+	var text strings.Builder
+	for _, path := range parts.RolePromptPaths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
+}
+
+// No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
+// composed prompt still teaches the committed handoff file, its commit and push, the trailer that
+// kept a handoff-only push from starting CI, or retro's removal of the handoffs from the head that
+// merges. Nor does any carry the rules that removal replaced: that the approved and the merged
+// head keep .legion/, and that the daemon strips the leftovers from the next issue's branch.
+// The daemon holds the commits above the approved head to nothing — the repository's branch rules
+// decide the merge, the owner's ruling (dispatch://INFRA-714/ask/beea7685) — so no prompt carries
+// the merger's own fileset check any more, and the merger's names READY's refusals.
+func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retired := []string{"No role pushes a `.legion/` deletion", "No role removes `.legion/`", "nobody removes it before the merge", "strips whatever `.legion/`", "still carries `.legion/`",
+		"Retro then commits only `docs/solutions/`", "no file changes above the approved head", "the same sha when retro added nothing", "Retro's `docs/solutions/` commit is never",
+		"'~(docs/solutions | .legion/<issue>)'", ".legion/<issue>/<phase>.json", "record handoff", "handoff-only", "Retro's last commit removes",
+		"committed handoff", "READY_UNREVIEWED_CHANGE"}
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
+		text := composedText(t, composer, role, false)
+		for _, phrase := range retired {
+			if strings.Contains(text, phrase) {
+				t.Errorf("the composed %s prompt still says %q", role, phrase)
+			}
+		}
+		for _, want := range []string{"`READY_NOT_APPROVED`"} {
+			if role == claim.RoleMerger && !strings.Contains(text, want) {
+				t.Errorf("the merger's prompt does not name %s, READY's refusal of a head whose review round recorded no approval", want)
+			}
+		}
+	}
+}
+
+// GitHub, under each repository's base-branch rules, decides whether a merge happens, and no
+// prompt may tell an agent that Legion refuses one over a check (dispatch://INFRA-83). READY reads
+// none of the head's checks and judges none, so no composed prompt — any phase worker's, and the
+// architect's in both its shapes — still names the refusal that read them, the packet note that
+// said which checks went unread, or a trailer the daemon turns away for the CI it leaves the head
+// without.
+func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retired := []string{"READY_CHECKS_NOT_GREEN", "no check is required on", "refused at READY"}
+	for _, tc := range []struct {
+		role   claim.Role
+		isRoot bool
+	}{
+		{claim.RolePlanner, false}, {claim.RoleImplementer, false}, {claim.RoleTester, false},
+		{claim.RoleReviewer, false}, {claim.RoleMerger, false},
+		{claim.RoleArchitect, true}, {claim.RoleArchitect, false},
+	} {
+		text := composedText(t, composer, tc.role, tc.isRoot)
+		for _, phrase := range retired {
+			if strings.Contains(text, phrase) {
+				t.Errorf("the composed %s prompt (root %t) still says %q", tc.role, tc.isRoot, phrase)
+			}
+		}
+	}
+}
+
+// An issue with no Verification document, or with one holding no `before_merge` check, is a
+// coverage gap every role names and none refuses (dispatch://INFRA-174, R1 and R2): every gate
+// counts the `check` blocks that exist, and a rule that made the empty case a failure would stop
+// every issue in flight on the day these prompts deploy. So the tester records the gap in its
+// handoff without failing the phase for it, the reviewer names it in its review without asking
+// for changes over it, and the architect's acceptance comment names it and decides, which is the
+// only gate on an issue that has no `before_merge` check. Each composed prompt that carries the
+// rule says the empty case and its role's answer to it, and no paragraph of that rule calls the
+// case a failure or a request for changes. Each is also told what a child proves: a child's own
+// check whose `serves` names the root's requirement, never a result against the root's own check.
+func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const empty = "no Verification document, or with one that holds no `before_merge` check"
+	// A rule paragraph that says any of these has made the gap a refusal again. They are matched
+	// against the lower-cased paragraph, so a sentence that opens with one is caught too.
+	refusals := []string{"a failure", "a test failure", "fail the phase", "fails the phase",
+		"request_changes", "request changes", "requests changes", "`rejected`",
+		"is proved by nothing", "has no evidence at all", "accepted by nobody"}
+	for _, tc := range []struct {
+		role    claim.Role
+		isRoot  bool
+		answers []string
+	}{
+		{claim.RoleTester, false, []string{"is a gap you name, never a reason of its own to send the issue back"}},
+		{claim.RoleReviewer, false, []string{"is a gap you name in your review, never a review that asks for changes"}},
+		{claim.RoleArchitect, false, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
+		{claim.RoleArchitect, true, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
+	} {
+		text := composedText(t, composer, tc.role, tc.isRoot)
+		paragraphs := ruleParagraphs(text, empty)
+		if len(paragraphs) == 0 {
+			t.Errorf("the composed %s prompt (root %t) omits %q", tc.role, tc.isRoot, empty)
+		}
+		for _, paragraph := range paragraphs {
+			for _, refusal := range refusals {
+				if strings.Contains(strings.ToLower(paragraph), refusal) {
+					t.Errorf("the composed %s prompt (root %t) still calls the gap %q: %s",
+						tc.role, tc.isRoot, refusal, paragraph)
+				}
+			}
+		}
+		for _, want := range append(tc.answers, "`serves` names") {
+			if !strings.Contains(foldWhitespace(text), want) {
+				t.Errorf("the composed %s prompt (root %t) omits %q", tc.role, tc.isRoot, want)
+			}
+		}
+	}
+}
+
+// foldWhitespace is one line of text, so a phrase a hard-wrapped prompt breaks over two lines is
+// still one phrase to match.
+func foldWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
+// each folded to one line: a paragraph is the span a reader takes the rule and its framing from,
+// so it is the span a test asks what the rule calls its case. A composed prompt holds one per
+// part that carries the rule (the role's own part and the core its phase shares).
+func ruleParagraphs(text, marker string) []string {
+	var found []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		if folded := foldWhitespace(paragraph); strings.Contains(folded, marker) {
+			found = append(found, folded)
+		}
+	}
+	return found
+}
+
+// What a phase proved is a result recorded against a `check` block of the issue's Verification
+// document (`dispatch result`), and the pull request body carries one line per check. No composed
+// prompt — any phase worker's, and the architect's in both its shapes — still teaches the two
+// lines the body carried before, the six-field `proof` array a handoff carried, or the
+// `Production:` line the production check wrote, which is now an `after_merge` result a closed
+// issue takes. The two line names are built from their role rather than written out, so a search
+// of the repository for either finds the texts that teach it and not this test.
+//
+// The production check's own retired sentences are read here too (retiredCheckSentences): the
+// check is no longer the implementer's, and no deployment's event wakes a look. This test reads
+// what Compose joins, so it answers for the prompt a role is actually given;
+// TestNoPartMakesTheProductionCheckTheImplementersOrWakesItFromADeploy reads the same sentences
+// over every part of both trees, where one Compose never joins would otherwise sit unread.
+func TestNoComposedPromptTeachesAnE2ELineOrAProofArray(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retired := []string{"`proof` array", "`Production:` line",
+		"pending deploy of", "the production-like proof", "the implementer's proof"}
+	retired = append(retired, retiredCheckSentences...)
+	for _, role := range []string{"implementer", "tester"} {
+		retired = append(retired, fmt.Sprintf("E2E (%s)", role))
+	}
+	for _, tc := range []struct {
+		role   claim.Role
+		isRoot bool
+	}{
+		{claim.RolePlanner, false}, {claim.RoleImplementer, false}, {claim.RoleTester, false},
+		{claim.RoleReviewer, false}, {claim.RoleMerger, false},
+		{claim.RoleArchitect, true}, {claim.RoleArchitect, false},
+	} {
+		text := composedText(t, composer, tc.role, tc.isRoot)
+		for _, phrase := range retired {
+			if strings.Contains(text, phrase) {
+				t.Errorf("the composed %s prompt (root %t) still says %q", tc.role, tc.isRoot, phrase)
+			}
+		}
+	}
+}
+
+// A state directory outlives the daemon binary that wrote its prompt snapshot, so a boot of a newer
+// daemon finds the older daemon's words there. A part whose content is not the running binary's is
+// rewritten, shared or the daemon's own: a prompt that contradicts the daemon's own behaviour (who
+// posts READY) is the defect, and nothing treats these files as the operator's to edit (the
+// operator's text is `instructions`). A part already holding the running binary's content is left
+// as it is, so an ordinary restart writes nothing.
+func TestNewRewritesAPartTheRunningDaemonDidNotWrite(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := New(stateDir); err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	snapshot := func(name string) string { return filepath.Join(stateDir, "prompts", name) }
+	embedded := map[string]string{
+		"go/merger.md":          "go/merger.md",
+		"go/tester.md":          "go/tester.md",
+		"shared/merger.md":      "roles/merger.md",
+		"shared/core/tester.md": "roles/core/tester.md",
+	}
+	stale := []string{"go/merger.md", "shared/merger.md"}
+	current := []string{"go/tester.md", "shared/core/tester.md"}
+	for _, name := range stale {
+		if err := os.WriteFile(snapshot(name), []byte("an older daemon's "+name+"\n"), 0o600); err != nil {
+			t.Fatalf("write the older part: %v", err)
+		}
+	}
+	written := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, name := range current {
+		if err := os.Chtimes(snapshot(name), written, written); err != nil {
+			t.Fatalf("date the current part: %v", err)
+		}
+	}
+	if _, err := New(stateDir); err != nil {
+		t.Fatalf("second New: %v", err)
+	}
+	for name, source := range embedded {
+		parts := goParts
+		if strings.HasPrefix(source, "roles/") {
+			parts = roleParts
+		}
+		want, err := parts.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", source, err)
+		}
+		got, err := os.ReadFile(snapshot(name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s after the second New = %q, want the running daemon's part", name, got)
+		}
+	}
+	for _, name := range current {
+		if info, err := os.Stat(snapshot(name)); err != nil || !info.ModTime().Equal(written) {
+			t.Errorf("%s, already holding the running daemon's content, was written again: %v", name, err)
+		}
+	}
+}
+
+// stepClauses are the clauses of a composed prompt that name marker: its sentences, split again
+// at each comma, since a rule that binds each design-gate step to its document names one pair
+// per clause. A clause is the span a reader takes one binding from, so a test asks which
+// document a step is bound to of the clause that names that step, never of the prompt as a
+// whole: a prompt naming the three steps in one place and the three documents in another would
+// satisfy the second question while teaching nothing.
+func stepClauses(text, marker string) []string {
+	var found []string
+	for _, sentence := range strings.Split(foldWhitespace(text), ". ") {
+		for _, clause := range strings.Split(sentence, ", ") {
+			if strings.Contains(clause, marker) {
+				found = append(found, clause)
+			}
+		}
+	}
+	return found
+}
+
+// The root architect's composed prompt binds each design-gate step to the document that step
+// records, so an architect whose addressing line names a step knows what to register for it; a
+// step bound in a clause that names another step binds nothing, since the architect cannot tell
+// which of the two the document belongs to. The prompt also tells a root whose gate was carried
+// what to do about a step nothing has registered — register it, on this issue's own document —
+// rather than only what not to do, and tells every root how to find which step a review notice
+// was of, since `design-approved`, `design-changes-requested` and `carried-gate-opened` each
+// name a version and no step. The policy words the list replaced are gone from both parts: an
+// architect told to read `gates.design: root-issues` off its addressing would wait for a line
+// the daemon no longer writes.
+func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := composedText(t, composer, claim.RoleArchitect, true)
+	documents := []struct {
+		step     record.DesignStep
+		document string
+	}{
+		{record.DesignStepDecisions, "decisions document"},
+		{record.DesignStepCriteria, "Verification document"},
+		{record.DesignStepSpec, "primary document"},
+	}
+	for _, bind := range documents {
+		bound := false
+		for _, clause := range stepClauses(text, "`"+string(bind.step)+"` step") {
+			if !strings.Contains(clause, bind.document) {
+				continue
+			}
+			others := false
+			for _, other := range documents {
+				if other.step != bind.step && strings.Contains(clause, "`"+string(other.step)+"`") {
+					others = true
+				}
+			}
+			if !others {
+				bound = true
+			}
+		}
+		if !bound {
+			t.Errorf("the composed root architect prompt binds the `%s` step to its %s in no clause of its own",
+				bind.step, bind.document)
+		}
+	}
+	// The architect reads the steps off its addressing line, so both parts name that line by the
+	// words the daemon writes on it (daemon.DesignGateFragment).
+	if !strings.Contains(text, "`Design gate steps`") {
+		t.Error("the composed root architect prompt never names the `Design gate steps` line its steps come from")
+	}
+	// Folded, because a retired phrase broken across two lines is still a retired phrase a reader
+	// follows, and the line a prompt wraps at is nobody's decision.
+	for _, retired := range retiredGatePhrases {
+		if strings.Contains(foldWhitespace(text), retired) {
+			t.Errorf("the composed root architect prompt still says %q", retired)
+		}
+	}
+	carried := ruleParagraphs(text, "says `carried`")
+	if len(carried) != 2 {
+		t.Fatalf("the composed root architect prompt holds %d paragraphs on a carried root, want one in each part", len(carried))
+	}
+	for _, paragraph := range carried {
+		folded := strings.ToLower(paragraph)
+		if !strings.Contains(folded, "register each step the catch-up reports `unregistered`") {
+			t.Errorf("the carried-root rule does not tell the architect to register each unregistered step: %s", paragraph)
+		}
+		if strings.Contains(folded, "never `register_gate`") {
+			t.Errorf("the carried-root rule still forbids every registration: %s", paragraph)
+		}
+		if !strings.Contains(paragraph, "this issue's own document for that step") {
+			t.Errorf("the carried-root rule does not say which document that registration names: %s", paragraph)
+		}
+	}
+	notices := ruleParagraphs(text, "`design-changes-requested`")
+	if len(notices) != 2 {
+		t.Fatalf("the composed root architect prompt holds %d paragraphs on the review notices, want one in each part", len(notices))
+	}
+	for _, paragraph := range notices {
+		for _, want := range []string{"`gatedSteps`", "`read_record`"} {
+			if !strings.Contains(paragraph, want) {
+				t.Errorf("the review-notice rule does not send the architect to %s for the step the notice leaves out: %s", want, paragraph)
+			}
+		}
+	}
+}
+
+// retiredGatePhrases are the words the step list replaced. A prompt that still carries one tells
+// its reader to look on the addressing line for a sentence the daemon no longer writes.
+var retiredGatePhrases = []string{"gates.design: root-issues", "gates.design: off", "Design gate policy",
+	"either design gate policy", "The gate records one document"}
+
+// The controller reads the same addressing line as a root architect, so its own prompt names the
+// steps sentence and carries none of the words that sentence replaced. Its text is read folded:
+// the retired phrase that outlived the first sweep was one broken across two lines.
+func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, headless := range []bool{true, false} {
+		paths, err := composer.ControllerPromptPaths(headless)
+		if err != nil {
+			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
+		}
+		var text strings.Builder
+		for _, path := range paths {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			text.Write(body)
+		}
+		folded := foldWhitespace(text.String())
+		if !strings.Contains(folded, "`Design gate steps:`") {
+			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
+		}
+		for _, retired := range retiredGatePhrases {
+			if strings.Contains(folded, retired) {
+				t.Errorf("the composed controller prompt (headless %t) still says %q", headless, retired)
+			}
+		}
+	}
+}
+
+// A push moves the branch, but the pull request can keep naming the old commit, so the new
+// commit gets no checks and nothing reports it (dispatch://INFRA-1318). Every pushing role's
+// composed prompt therefore carries the read of the pull request's own head after its own push,
+// escalation sentence included, and neither architect shape does: a later edit that moves the
+// step into a part both shapes compose fails here rather than telling an architect to push. The
+// implementer's part carries the carve-out that names the step's spaced reads as the one sleep
+// its "never sleep in a loop for anything" rule allows. This shows the text is loaded, never
+// that a role follows it.
+func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const headRead = "gh pr view <n> --repo <the issue's repository> --json headRefOid --jq .headRefOid"
+	step := []string{
+		headRead,
+		"about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
+		"once the branch has an open pull request",
+		"an empty one when your work is complete",
+		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
+		"The merger and the reviewer push nothing, so this step never falls to either; each reports a mismatch it sees to the architect.",
+	}
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+		claim.RoleReviewer, claim.RoleMerger} {
+		text := foldWhitespace(composedText(t, composer, role, false))
+		for _, phrase := range step {
+			if !strings.Contains(text, phrase) {
+				t.Errorf("the composed %s prompt omits %q", role, phrase)
+			}
+		}
+	}
+	const carveOut = "the step's spaced reads of the pull request's head after a push are the one sleep this rule allows, and they read no check"
+	if !strings.Contains(foldWhitespace(composedText(t, composer, claim.RoleImplementer, false)), carveOut) {
+		t.Errorf("the composed %s prompt omits %q, so it holds \"never sleep in a loop for anything\" beside a step whose reads are spaced by sleeps, with nothing saying that rule allows them",
+			claim.RoleImplementer, carveOut)
+	}
+	for _, isRoot := range []bool{true, false} {
+		text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, isRoot))
+		if strings.Contains(text, headRead) {
+			t.Errorf("the composed %s prompt (root %t) says %q", claim.RoleArchitect, isRoot, headRead)
+		}
+	}
+}

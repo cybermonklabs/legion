@@ -1,0 +1,103 @@
+package supervise
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+// Every delivery first hands the agent's working copy its role's App identity for the claim's
+// issue, so a commit the task makes is authored by the bot rather than by whoever the workspace
+// last named. A send the adoption stops never reaches the agent, and what the claim is charged
+// for it is the split refused makes (table.go): the shim's own refusal of the working copy is the
+// far side's answer about this workspace and spends the prompt budget, while a transport failure
+// under the frame and a failure to mint the role's App identity — which never leaves the daemon,
+// and is an outage of the App rather than a fault of this workspace — spend nothing and are
+// retried for ever (INFRA-1480).
+func TestADeliveryAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
+	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
+	for _, tc := range []struct {
+		name string
+		// mint is what the role's App identity is answered with, and fail what the runtime
+		// answers the adoption itself with.
+		mint      error
+		fail      error
+		prompts   int
+		adoptions int
+		budgets   Budgets
+	}{
+		{name: "an adopted working copy gets the task", prompts: 1, adoptions: 1},
+		{name: "a working copy the shim refuses to adopt does not, and is charged",
+			fail:      adoptRefusal("jj metaedit exited 1: the git lock /w/.git/index.lock was last written 31m ago"),
+			adoptions: 1, budgets: Budgets{PromptFailures: 1}},
+		{name: "an adoption the transport loses is charged nothing", fail: errBoom, adoptions: 1},
+		{name: "an App identity that cannot be minted is charged nothing",
+			mint: errors.New("mint the implementer's installation token: the GitHub App is unreachable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			var asked []string
+			h.deps.Identity = func(_ context.Context, role claim.Role, issue string) (runtime.GitIdentity, error) {
+				asked = append(asked, string(role)+" "+issue)
+				return bot, tc.mint
+			}
+			h.restart()
+			if tc.fail != nil {
+				h.rt.FailAdoptWorkingCopy(tc.fail)
+			}
+			h.launch()
+			h.connect()
+			h.register()
+			h.ready()
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
+			h.wantPrompts(tc.prompts)
+
+			adoptions := h.rt.CallsOf("AdoptWorkingCopy")
+			if len(adoptions) != tc.adoptions || tc.adoptions == 1 && adoptions[0].Identity != bot {
+				t.Fatalf("adoptions = %+v, want %d for %v", adoptions, tc.adoptions, bot)
+			}
+			if want := string(h.claim().Role) + " " + h.claim().Issue; len(asked) != 1 || asked[0] != want {
+				t.Fatalf("identity asked for %v, want once for %q, the claim's role and issue", asked, want)
+			}
+			h.wantBudgets(tc.budgets)
+			if p := h.pending(); p.Task != "implement the plan" || !p.ConfirmedAt.IsZero() {
+				t.Fatalf("pending %+v, want the task still queued for the next send", p)
+			}
+		})
+	}
+}
+
+// controllerClaim is the project controller's claim, queued: the controller role, its token, and no
+// issue and no tree.
+func controllerClaim() Claim {
+	return Claim{Token: claim.ControllerToken("legion"), Project: "legion", Role: claim.RoleController, State: StateQueued}
+}
+
+// The project's controller works no checkout and commits nothing, so a task it is handed — the
+// start message each of its launches gets — reaches it with no working copy adopted and no App
+// identity asked for, where a workflow role's adoption would ask for an App the controller has none
+// of and keep the task from it.
+func TestTheControllersTaskReachesItWithNoWorkingCopyAdopted(t *testing.T) {
+	h := newHarnessOf(t, controllerClaim())
+	var asked []claim.Role
+	h.deps.Identity = func(_ context.Context, role claim.Role, _ string) (runtime.GitIdentity, error) {
+		asked = append(asked, role)
+		return runtime.GitIdentity{}, errors.New("no App for the controller role")
+	}
+	h.restart()
+	h.launch()
+	h.connect()
+	h.register()
+	h.ready()
+	h.must(RequestDeliver{Claim: h.token, Task: "Legion controller start"})
+	h.wantPrompts(1)
+	if adoptions := h.rt.CallsOf("AdoptWorkingCopy"); len(adoptions) != 0 {
+		t.Fatalf("adoptions = %+v, want none for the controller", adoptions)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("identity asked for roles %v, want none for the controller", asked)
+	}
+}

@@ -1,0 +1,103 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import { api } from "../../api/client";
+import type { ApproverGrantResp } from "../../api/types";
+import { textSecondaryOnSurface } from "../../theme/classes";
+import { Timestamp } from "../refs/Timestamp";
+import { credentialGrantsQuery } from "./grants";
+import { type RevocableColumn, RevocableList } from "./RevocableList";
+
+/** How a grant came to be, for its Live grants row: the policy's, or the person who approved it.
+ *  The broker writes which of the two on every grant (`granted`, "automatic" or "approval"), so
+ *  that field is what this reads; `approver` is the name to show once it says someone approved,
+ *  and a grant the policy gave has none. */
+function grantedBy(grant: ApproverGrantResp): string {
+  return grant.granted === "automatic" ? "Automatically" : `Approved by ${grant.approver}`;
+}
+
+/**
+ * Why nobody may revoke this grant, or null where somebody may. This is the broker's `mayRevoke`
+ * condition, which is why it reads the two fields that decide it rather than `granted`: the
+ * broker allows the grant's approver or its session's operator, and refuses a grant that names
+ * neither — one the policy gave without asking, on a session nobody operates — to every
+ * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone so that what a pod took
+ * is on somebody's page, and it ends when the service's machine login that enrolled that session
+ * is revoked, which ends every session under it, or when it expires.
+ *
+ * The wire says "nobody" two ways and both arrive here: an absent approver is `null`
+ * (`approverGrantResp.Approver` is a `*string`), and an enrollment with no operator is `""`
+ * (`recordEnrollmentResp.Operator` is a Go `string`, so it is never null), which Dispatch relays
+ * unchanged. `mayRevoke` reads both as nobody, since a login that canonicalizes to the empty
+ * string matches no person, so this reads both as nobody too.
+ */
+function unrevocable(grant: ApproverGrantResp): string | null {
+  const approver = (grant.approver ?? "").trim();
+  const operator = (grant.enrollment.operator ?? "").trim();
+  return approver === "" && operator === "" ? "Ends with its machine login" : null;
+}
+
+const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
+  {
+    cell: (grant) => (
+      <>
+        {grant.enrollment.kind} · {grant.enrollment.runtime_id} · {grant.enrollment.operator || "—"}
+        {grant.enrollment.slot ? (
+          <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
+            slot {grant.enrollment.slot}
+          </span>
+        ) : null}
+      </>
+    ),
+    header: "Enrollment",
+  },
+  { cell: (grant) => (grant.names ?? []).join(", "), header: "Names" },
+  { cell: grantedBy, header: "Granted" },
+  { cell: (grant) => <Timestamp at={grant.created_at} />, header: "Created" },
+  {
+    cell: (grant) =>
+      grant.expires_at === null ? "When the session ends" : <Timestamp at={grant.expires_at} />,
+    header: "Expires",
+  },
+];
+
+/**
+ * The viewer's live credential grants: every grant of a session the viewer operates, whether the
+ * policy gave it without asking or someone approved it, and every grant the viewer approved on
+ * anyone's session. Each row names how it was granted and is revocable with one click: Dispatch
+ * sends the broker the viewer's own login, and the broker allows the revoke only when that login
+ * is the grant's approver or its enrollment's operator. Only the operator sees an automatic grant,
+ * and revoking one also ends that session's other automatic grants of those secrets and makes it
+ * ask before it gets them again. A pod enrollment's slot shows under its enrollment, so the grants
+ * of two roles in one pod read apart.
+ *
+ * It also lists, to every signed-in person, every live grant that belongs to no person: one the
+ * policy gave a session a service's machine login enrolled, which has neither an approver nor an
+ * operator. Nobody may revoke one of those (`unrevocable`), so each is read-only and says what
+ * ends it: revoking that machine login, which ends every session under it. Rendered on the
+ * Settings page.
+ */
+export function GrantsSection(): ReactNode {
+  const queryClient = useQueryClient();
+  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
+
+  return (
+    <RevocableList
+      className="mt-10"
+      columns={columns}
+      description="Every live grant of your sessions, given automatically or on approval, and the grants you approved. Revoking one ends its access immediately; after you revoke an automatic grant, that session asks before it gets those secrets again. Grants that belong to no person — the ones a service's machine login took without asking — are listed here to everyone and cannot be revoked one at a time: revoke that machine login to end every session under it."
+      empty="No live grants."
+      heading="Live grants"
+      headingId="credential-grants-heading"
+      noun="grants"
+      onRevoked={() =>
+        void queryClient.invalidateQueries({ queryKey: credentialGrantsQuery().queryKey })
+      }
+      query={grants}
+      revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
+      revokeError="Could not revoke this grant."
+      rowKey={(grant) => grant.grant_id}
+      unrevocable={unrevocable}
+    />
+  );
+}

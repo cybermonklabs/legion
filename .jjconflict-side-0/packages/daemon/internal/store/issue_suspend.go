@@ -1,0 +1,135 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
+)
+
+// IssueClose is one workflow close of an issue, as its issue_suspend outbox row names it: the run
+// it closed (the issue's generation and its tree root's) and the row, written after the close's
+// per-role stops. A later start supersedes it even within the same generation.
+type IssueClose struct {
+	Issue, Tree                     string
+	IssueGeneration, TreeGeneration uint64
+	Row                             int64
+}
+
+// IssueSuspension decides whether a workflow close may suspend its issue's Sandbox now, in one
+// short transaction under the shared serializer: false, finishing the close without acting, once
+// the run it closed is over (the root no longer lingers at its generation, and the issue is no
+// child that left the workflow done), a start that will start the issue was written, or the tree's
+// cleanup is reserved, which deletes the Sandbox this close would; a wait while one of the close's
+// role stops (a suspend, an issue close, or a role stop of an idle release) is unfinished or a
+// stored claim of the issue may still hold a process. The close deletes the issue's Sandbox once
+// its pod is gone, which costs a claim of the issue nothing it still holds: the role Secrets go
+// with it and the issue's next launch writes its own, and no session lives there — an issue pod's
+// disk goes with the pod. The caller holds the runtime's launch turn of the issue's pod through
+// this check and its Sandbox patch, never this transaction. outOfWorkflow is the workflow's rule
+// for a status that takes an issue out of it (record.OutOfWorkflow), which the store does not
+// restate.
+//
+// A start that will start the issue is one a claim has already run (claims.last_start_row) or a
+// queued look of a production check. Every other queued start row is one the outbox's own start
+// fence or its lingering-tree guard will decline, so finishing the suspension on such a row would
+// release nothing and leave the Sandbox, the pod and the disk under it standing with no row left
+// to try. The look is the one queued start kept, because it is the one an issue out of the
+// workflow still runs: a merged root's close queues the suspensions and then the first look's
+// start in the same transaction, so that start stands above them, and a suspension that acted
+// there would delete the Sandbox and the pod immediately before the look resumed its role in
+// them.
+func (s *Store) IssueSuspension(ctx context.Context, project string, close IssueClose, outOfWorkflow func(status string) bool) (bool, error) {
+	if close.Issue == "" || close.Tree == "" || close.IssueGeneration == 0 || close.TreeGeneration == 0 || close.Row <= 0 {
+		return false, errors.New("issue suspension requires issue, tree, both generations and its outbox row")
+	}
+	var act bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		var issueGeneration, rootGeneration int64
+		var issuePhase, status string
+		var lingering bool
+		err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.generation, root.linger_until is not null
+			from issues i join issues root on root.key = i.tree where i.key = $1 and i.tree = $2`,
+			close.Issue, close.Tree).Scan(&issueGeneration, &issuePhase, &status, &rootGeneration, &lingering)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		leftDone := close.Issue != close.Tree && phase.Phase(issuePhase) == phase.Done && outOfWorkflow(status)
+		if uint64(issueGeneration) != close.IssueGeneration || uint64(rootGeneration) != close.TreeGeneration || !(lingering || leftDone) {
+			return nil
+		}
+		var restarted bool
+		if err := tx.QueryRow(ctx, `select exists (
+			select 1 from claims where project = $1 and issue = $2 and last_start_row > $3)
+			or exists (select 1 from outbox where issue = $2 and id > $3 and kind = 'supervise'
+			and payload->>'op' = 'start' and coalesce((payload->>'checkLook')::bigint, 0) > 0)`,
+			project, close.Issue, close.Row).Scan(&restarted); err != nil {
+			return err
+		}
+		if restarted {
+			return nil
+		}
+		may, err := issueStopFences(ctx, tx, project, close.Issue, close.Tree, "suspension", close.Row, close.IssueGeneration)
+		if err != nil {
+			return err
+		}
+		act = may
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("authorize issue suspension: %w", err)
+	}
+	return act, nil
+}
+
+// issueStopFences are the last three checks a close's authorizer and a release's both make, in
+// the order both make them and against the caller's own transaction: the tree's cleanup
+// reservation, the issue's own unfinished role stops, and a stored claim of the issue that may
+// still hold a process. what is the noun the caller's waits are read with ("suspension",
+// "release").
+//
+// It answers false with no error for a reserved cleanup, which deletes the Sandbox the caller
+// would and so finishes the caller without acting, and a wait error for each of the other two,
+// which the caller is retried on. A close and a release order against each other here: both read
+// the same `suspend`, `issue_close` and `release` ops, so each waits on the other's role stops.
+func issueStopFences(ctx context.Context, tx pgx.Tx, project, issue, tree, what string, row int64, generation uint64) (bool, error) {
+	var reserved bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
+		where project = $1 and tree = $2 and cleanup_started)`, project, tree).Scan(&reserved); err != nil {
+		return false, err
+	}
+	if reserved {
+		return false, nil
+	}
+	var stopping bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from outbox where issue = $1 and id < $2 and kind = 'supervise'
+		and payload->>'op' in ('suspend', 'issue_close', 'release') and (payload->>'generation')::bigint = $3)`,
+		issue, row, generation).Scan(&stopping); err != nil {
+		return false, err
+	}
+	if stopping {
+		return false, wait.Errorf("issue %s %s waits for its role stop effects", issue, what)
+	}
+	var pending string
+	err := tx.QueryRow(ctx, `select token || ':' || state from claims where project = $1 and issue = $2 and `+claimMayRun+`
+		order by token limit 1`, project, issue).Scan(&pending)
+	if err == nil {
+		return false, wait.Errorf("issue %s %s waits for stored claim %s", issue, what, pending)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	return true, nil
+}

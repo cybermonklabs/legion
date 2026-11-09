@@ -1,0 +1,267 @@
+# Acceptance, retro, the merge and the close
+
+Part of `skill://legion-architect`, sections 3, 5, 6 and 7. Read the section for the step you are
+at.
+
+## Retro's result
+
+Retro output is one `dispatch comment` on the issue with what the work taught, the PR body content
+the repository's instructions derive from the pull request's changed paths at that head, and one
+`dispatch message` on the issue. Retro commits nothing and pushes nothing, since every handoff is
+a record on the Dispatch issue and `docs/solutions/` is history no role writes to now. Retro
+writes no handoff and never rewrites the reviewer-approved head.
+
+When the implementer reports that it cannot compute that body content or do the work a line of it
+affirms, that its read of the body failed or came back empty, or that GitHub refused the body, it
+has pushed nothing and is still in its phase. Answer it with `envoy_publish` to its role topic,
+saying how from the deployment instructions; when they do not say, open a `dispatch ask` naming the
+missing instruction.
+
+## Accepting
+
+Sign off an issue with no children once its evidence holds for its goal and every requirement of
+its spec, none unmet; a parent only after its last round (below), because
+before it the approved head does not carry its children's merges.
+
+```text
+dispatch comment --issue LEGION-40 --body-file - <<'EOF'
+<acceptance: scope, integration evidence, the tester's handoff, each check with its result, the approved head>
+EOF
+legion({ op: "sign_off", issue: "LEGION-40" })
+```
+
+- The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
+- An approval may stand with text threads open, and then your acceptance is the only gate on the
+  head that closes them, since READY reads the round's first approval and the daemon's compare
+  above it is gone. The reviewer leaves each text finding as the inline review thread it already
+  wrote, publishes that head and those threads to the implementer's role topic once its own
+  `read_record` shows the issue in `accepting` — not merely once its completion is accepted,
+  since the round ends on the review fact too — the implementer fixes the text and pushes it
+  once in its own live session while you read the issue, and the reviewer then resolves each
+  thread, approves the head the fix landed on and publishes that head to your role topic.
+  **Hold `sign_off` until that message arrives**, and accept on that second approval, reading
+  it on GitHub yourself.
+  Where you doubt the reviewer's call between a text and a behavioural finding, read the threads
+  yourself and send the issue back with `request_backward_move` rather than accepting; a thread
+  the fix cannot close reaches you the same way (*A review thread that cannot be closed*, below).
+- Accept on a result current at the approved head, or on one current at an earlier head whose
+  approval says the reviewer read the push above it and that the push changes no code that runs;
+  without that statement, or where the push changed code that runs, the result is stale and the
+  issue goes back.
+- A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
+  is in `accepting`, and the `phase-finished` that moved it there may never have reached you (a
+  failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
+  alone). Accept it as this section says, a parent only after its last round (below).
+- The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
+  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): take each one to done, or out of the workflow
+  with `park_child`, and sign off again. A parent: sign off only after its last round (below). The
+  daemon then closes a parent that is not the root at its own merge, which under this rule comes
+  after its children's. One issue beneath never holds it: one the daemon itself holds at
+  `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
+- `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
+  that phase's role with your reason in its task.
+- `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
+  in `accepting` returns the issue to `implementing` by the daemon's table.
+- No `after_merge` result is asked here: the production check records it after the close, where
+  the project's `production_check` opens one.
+- A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`
+  lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `
+  (`skill://legion-worker/references/findings.md`, "When no controller takes it"). Follow each
+  (`dispatch follow --ask <id> --action follow`) and, once answered, publish its reference to the
+  controller topic. Accept only once each is resolved or carries the controller's
+  `Filed dispatch://`, `Handed dispatch://` or `Not filed:` reply, because a closed issue hides
+  its asks from the controller.
+
+## The last round
+
+A parent's own pull request proves each of its checks, so sign off a parent with children only
+on an approved head carrying the merges of every child those checks need. Each needs a current
+passing result at that head, or, for one in another repository, at a commit on the branch that
+issue's pull request merged into or on that repository's default branch — that default branch
+alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
+default branch whatever branch the pull request merged into. A child records no result that
+proves a parent's check: a child's pull
+request never makes a parent check's result current, and a child carrying part of a parent's
+requirement proves it with a check on its own Verification document whose `serves` names that
+requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
+that waits for it waits forever, so work another child builds on is a child of its own, in a
+repository of its own or with a deploy of its own. While the approved head does not carry those
+merges, or the result of a check in another repository is older than the close of a child it
+needs, leave the issue in `accepting` until each has closed (`child-closed`) or been parked for
+good (`child-status`). Move a parked child's criterion to the root's own pull request or a
+released, open child first; never downgrade it. A root's requirement stays the root's, pending
+until this round, where its head must meet it.
+Then, in one turn:
+
+1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
+   test round of every check of the issue, not the forward-merge re-check." The backward move's
+   reason reaches only the implementer.
+2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
+   branch your addressing line names into the branch, push, end your forward-merge comment with
+   `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
+   counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
+   record holds the head conflicting with its base.
+
+While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
+its own: the last round's forward merge resolves them all, so spend no backward move per child.
+A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
+the head to leave it out; a move for a conflict the record does hold is left out, and still costs
+the implementer a forward merge the last round makes anyway.
+
+A criterion proven on a deployed system is proven after that child's deploy, as the repository's
+deploy skill says.
+
+If the pull request merged before its last round, it can carry no new head, so move nothing back.
+Once they have closed, have a fresh `task` subagent run each check on the default branch,
+record each result, post them in the acceptance comment, then `sign_off`.
+
+## The order after your acceptance
+
+The daemon keeps this order from its fixed table; you start none of its steps:
+
+1. The tester's last result is green and the reviewer approves the head.
+2. The reviewer's approval of the head by SHA moves the issue to `accepting`; your `sign_off` moves
+   it to `retro`.
+3. Retro records what the work taught as a `dispatch comment` on the issue and brings the PR body
+   up to date. It commits nothing, so the approved head is the head READY names. No merge carries
+   a handoff onto the default branch, since no commit carries one.
+4. The merger quotes what sits above the approved head
+   (`jj diff --from <approved-sha> --to <tip-sha> --summary`) in READY and sends the READY packet
+   with its completion. The daemon checks nothing above that head: it keeps no check of its own
+   on what sits there, and the repository's branch rules decide the merge, which is the owner's
+   ruling (dispatch://INFRA-714/ask/beea7685). It
+   posts `READY #<n> at <current sha> (approved at <approved sha>) for <KEY> (<pr url>)` on the
+   Dispatch issue, publishes it to the project's merge queue role when one is set, and submits the
+   merge of that head itself, as the implement App with GitHub's expected-head check. The
+   repository's required reviews and checks decide when it lands; Legion neither reads nor writes
+   those rules, and a review only a person can give is waited for, never bypassed. A READY the
+   design gate refused is submitted by the daemon once that spec version is approved.
+5. The merge lands under the repository's rules and closes the issue; a root's close waits until
+   the rest of its tree has left the workflow.
+
+A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
+`retro` or `merging` the role holding the phase makes the `request_backward_move`; in
+`awaiting_merge` the implementer pushes, which withdraws the READY.
+A refused or failed READY arrives while the merger holds `merging`, so the merger makes the move
+and you tell it which; from `accepting` you send an issue back only to `implementing` or
+`testing`.
+
+- A failed verification the merger reports: handle it as the `pr-blocked` row of
+  `skill://legion-architect/references/wake-routing.md` says, telling the merger to move the
+  issue back with `request_backward_move`, naming what failed; never bypass.
+- A merger task with no approved head (`READY_NOT_APPROVED`): the merger moves it back to
+  `reviewing`, the reason naming the code, so the reviewer runs a new round.
+
+## A conflicting head
+
+What returns the tree to review is a changed diff: a commit above the approved head that touches
+anything outside `docs/solutions/`, other than a change whose every path is under `.legion/`, or
+a conflict-resolution merge whose fingerprint (the unchanged-diff check,
+`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
+A conflict merge whose fingerprint is unchanged does not.
+
+Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
+(`gh pr view <n> --json mergeable,mergeStateStatus`). Outside `awaiting_merge` the daemon records
+a conflict and moves nothing, so the moment you see it:
+
+- In a phase a worker holds, tell that worker (`envoy_publish` to its role topic) to move the issue
+  back to `implementing` with `request_backward_move`.
+- In `accepting`, make the move yourself (`request_backward_move` with `issue`).
+- In `awaiting_merge`, do nothing: the daemon withdraws the READY and sends the issue back to
+  `implementing` itself, telling you with a `checks-red` whose reason reads
+  `the head conflicts with <base>`.
+
+The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
+with the destination and pushes it (the procedure in
+`skill://legion-worker/references/conflicts-and-rewrites.md`), posting the before and after
+fingerprints; the tester re-runs the bare gates only and the class search of every earlier
+round's findings at the new head; the reviewer approves the new head by SHA, or continues its
+round if it had not approved; the daemon carries the issue through your acceptance and retro to
+the merger's new READY.
+
+## A review thread that cannot be closed
+
+The reviewer resolves each thread it opened, with plain `gh`, once it has read the fix that
+closed it: its own threads and the bot threads it accepted. The implementer replies and resolves
+none. A thread whose text fix the implementer cannot make — the sentence is false because the
+code is wrong, or closing it would change code that runs — is a behavioural finding, and it
+reaches you from whichever of the two found it, with `envoy_publish` to your role topic. You
+move the issue back with `request_backward_move`, the reason naming the thread, and you are the
+only one who can: a review submitted while the issue stands outside `reviewing` records nothing
+and moves nothing (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` there
+is the record of the finding on GitHub and no more. A fix whose own diff changes code that runs
+reaches you the same way and goes back to `testing`, since every result above it is stale.
+If the reviewer reports that GitHub refused its `resolveReviewThread`, open a
+`dispatch ask` naming the thread's id or URL and GitHub's message, for a human to resolve it by
+hand, with options for resolved / could not. The merger does not complete while that ask is open;
+READY itself checks no thread state
+(`skill://legion-worker/references/merge-gate.md`).
+
+## The close
+
+The merge closes the issue: when GitHub reports the pull request merged while the issue is in
+`awaiting_merge` (a merge before that closes it the moment it gets there), the daemon writes `done`.
+
+- A root whose merge lands while another issue of its tree is still in the workflow stays in
+  `awaiting_merge`, its workers kept and live and no admission slot held, until the last of them
+  is done or parked. One
+  `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
+  request on GitHub.
+- A child's close reaches you as `child-closed`. Where the project's `production_check` names the
+  role that works the check — the tester, unless the setting is `off` — the daemon retires five
+  of its six claims and leaves that role running, because the issue still owes the production
+  check; where the setting is `off` no check opens, and the close retires all six and releases
+  the pod. When the issue's
+  pod and Sandbox go is in `skill://legion-worker/references/merge-gate.md`, *The production check
+  after the close*.
+- A root's close writes `done`, releases any admission slot the tree's issues still held, and lingers the tree for
+  `linger_hours` with every member suspended. The linger's end, the tree's last step, waits until
+  every member's open production check has closed.
+
+Nothing of the production check is yours. Its record is the pull request and the result of the
+issue's `after_merge` check, whether or not the issue is closed. A defect it finds is never an
+issue the checking role files: a clear defect goes to the controller, and any other is a
+`dispatch ask`. `read_record` shows a closed issue's open check (`check`: the pull request, the
+merge commit, the role the check records as the one that works it, the looks, what woke the last
+one, and `nextWakeAt`, when the next look is due — the time the checking agent named for itself on
+a `pending`, the retry of a look nobody reported, or the check's own bound where neither stands).
+
+## Hand-over at a root's linger
+
+When a person closes a root and it stays `done` through its linger, each child still in the
+workflow is handed to Legion as a root of its own: `todo` with the `legion` label, its phase, gate,
+phase records and pull request carried into a new generation, and that phase's role started. A
+child that never started is handed over too, carrying no run, whatever held it at `admitted`: it
+waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
+root and registers its own spec. Only a child that finished, was parked or was never released
+stays. The child stays its own tree; reopening the old root does not take it back. Park a child
+with `park_child` before then when its work should stop with the root. A root that is parked
+rather than closed hands over only a child at `awaiting_merge` whose pull request is still open,
+since the daemon re-admits no parked root and only that child's own new READY arms the merge the
+park disarmed; park that child too when its merge should wait with the root.
+
+If you are that child's architect:
+
+- Your catch-up says `handed_over` and `carried`: resume from the phase, and never register a spec
+  or ask for approval again.
+- It says `handed_over` alone (no gate to carry): your workers already run their phases, so
+  decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
+  `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
+  merger's READY waits for its approval.
+  That registration's approval request waits with the person like any other, but it returns no admission slot: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
+  The slot rule below is for a root of your own at `admitted`, not for this one.
+  When that `design-approved` arrives, release and start
+  nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
+  `awaiting_merge` the READY is through, so register none; a red or conflicting head that returns
+  the root to `implementing` makes its next READY read the gate again, so a later `ready-refused`
+  is when you register.
+
+## Your slot while a person has your spec
+
+This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
+A registration that leaves the approval request with the person returns your root's admission slot, and what brings the root back is the answer, not the registration.
+What decides whether your resume waits for a slot is whether the gate has ever opened in this generation, never whether it stands open now: an approval opens your gate, and a root whose gate has ever opened needs no slot to resume, so it resumes however full the cap is.
+The first phase that resume starts takes a slot of its own: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval; it brings back no need for a slot to resume, and only a root whose gate has never opened has one: then, while every slot is taken, you get one `waiting-for-slot` notice, and your record carries `waitingLine`, your place in the line and its length.
+You get the notice only while this session holds its Envoy role: a session whose pod the daemon released while the root waited is told nothing, and its resume task says what answered the wait.
+Act on neither: the daemon starts you again at the next free slot.

@@ -1,0 +1,2186 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/registry"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+)
+
+// testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
+// — its argv, its signal handling, its exit status — so a test can run a command as its own
+// process; workspace-init's tests run several contending for one tree volume, the way two pods'
+// init containers do.
+const testMainEnv = "LEGION_CMD_TEST_MAIN"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(testMainEnv) == "1" {
+		main()
+	}
+	// environment_test.go reads these variables again once every test before it has run, so the
+	// snapshot is taken here, ahead of MustGuard, the first thing that changes this binary's own
+	// environment.
+	snapshotStartupEnvironment()
+	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
+	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
+	fixtureenv.MustGuard("LEGION_GH_PATH")
+	os.Exit(runWithoutTheOperatorsJJConfig(m))
+}
+
+// runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
+// their own and removes it afterwards. The removal is deferred, so it also runs when the setup
+// below panics. A run killed by a signal still keeps the directory, which nothing here can help.
+func runWithoutTheOperatorsJJConfig(m *testing.M) int {
+	// Every test below starts isolated from the operator's own jj configuration — in particular
+	// fsmonitor.backend = "watchman" on this devbox: JJ_CONFIG names a file that does not exist,
+	// so jj falls back to its built-in defaults instead of reading ~/.jjconfig.toml, and no
+	// test-created repository ever registers a root with the operator's long-running watchman.
+	// watchman drops a root once its directory is deleted, so without this, the roots that pile
+	// up are the ones from a run this devbox's load killed before t.TempDir's cleanup ran. A test
+	// that sets its own JJ_CONFIG afterward (issueVolume's isolated one) still wins: os.Environ() is
+	// read fresh by every exec.Command.
+	configDir, err := os.MkdirTemp("", "legion-test-jj-config")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	defer os.RemoveAll(configDir)
+	if err := os.Setenv("JJ_CONFIG", filepath.Join(configDir, "no-user-config.toml")); err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	return m.Run()
+}
+
+// legionState points the registry at a directory of this test's own, so nothing here reads or
+// writes the box's real record of running legions.
+func legionState(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", home)
+	return registry.Path(nil, home)
+}
+
+// legionConfig writes a configuration whose Postgres is deliberately unreachable: every test
+// here is about the claim on the team, which `start` settles before it opens a store.
+func legionConfig(t *testing.T, project string, port int) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legion.yaml")
+	body := fmt.Sprintf("project: %s\nport: %d\npostgres_dsn: postgres://legion:legion@127.0.0.1:1/legion\nstate_dir: %s\n",
+		project, port, filepath.Join(dir, "state"))
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the config: %v", err)
+	}
+	return path
+}
+
+// runningLegion is a live process named `legion`, which is what the registry's pids point at and
+// what registry.Alive answers true for. A copy of sleep: Alive reads argv[0], and a shell
+// script's argv[0] is the shell.
+func runningLegion(t *testing.T) int {
+	t.Helper()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("find sleep to copy as the probe: %v", err)
+	}
+	body, err := os.ReadFile(sleep)
+	if err != nil {
+		t.Fatalf("read %s: %v", sleep, err)
+	}
+	path := filepath.Join(t.TempDir(), "legion")
+	if err := os.WriteFile(path, body, 0o700); err != nil {
+		t.Fatalf("write the probe: %v", err)
+	}
+
+	probe := exec.Command(path, "300")
+	if err := probe.Start(); err != nil {
+		t.Fatalf("start the probe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = probe.Process.Kill()
+		_, _ = probe.Process.Wait()
+	})
+	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
+		t.Fatalf("the probe at %s never exec'd", path)
+	}
+	return probe.Process.Pid
+}
+
+// claim seeds the registry the way `legion start` takes a team.
+func claim(t *testing.T, legions string, e registry.Entry) {
+	t.Helper()
+	held, ok, err := registry.Claim(legions, e)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if !ok {
+		t.Fatalf("Claim refused %s: pid %d holds the team", e.Team, held.PID)
+	}
+}
+
+func reapedPID(t *testing.T) int {
+	t.Helper()
+	done := exec.Command("/bin/true")
+	if err := done.Run(); err != nil {
+		t.Fatalf("run /bin/true: %v", err)
+	}
+	return done.Process.Pid
+}
+
+// healthzOn serves /healthz on one address and returns the port, so a status can be told to dial
+// somewhere other than 127.0.0.1 and be wrong about it.
+func healthzOn(t *testing.T, host string) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Skipf("this box does not serve on %s: %v", host, err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+// The registry entry is the team's one claim, and a second start must not take it: the first
+// daemon is still serving, and a start that overwrote the entry and then failed to bind would
+// delete it on the way out — leaving the running daemon invisible to stop, status and legions.
+func TestStartRefusesWhileTheTeamsLegionIsRunning(t *testing.T) {
+	legions := legionState(t)
+	pid := runningLegion(t)
+	claim(t, legions, registry.Entry{
+		Team: "LEGION", ConfigPath: "/srv/legion.yaml", PID: pid, Port: 13370,
+		Bind: "127.0.0.1", StartedAt: time.Now().UTC(),
+	})
+
+	var errb bytes.Buffer
+	code := start(context.Background(), legionConfig(t, "LEGION", 13370), &errb)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "already running") || !strings.Contains(errb.String(), strconv.Itoa(pid)) {
+		t.Fatalf("stderr = %q, want it to name the running legion and its pid", errb.String())
+	}
+
+	entry, ok, err := registry.Find(legions, "LEGION")
+	if err != nil || !ok {
+		t.Fatalf("Find = %v, %v, want the running legion's entry still there", ok, err)
+	}
+	if entry.PID != pid {
+		t.Fatalf("entry pid = %d, want the running daemon's %d", entry.PID, pid)
+	}
+}
+
+// Two teams on one state directory would share the worker stream socket and the panes' secret
+// files, so `legion start` refuses the second while the first is live — naming both teams and the
+// directory, the three things the operator changes one of — and records nothing for it.
+func TestStartRefusesTheStateDirectoryAnotherTeamIsRunningOn(t *testing.T) {
+	legions := legionState(t)
+	config := legionConfig(t, "LEGION", 13370)
+	stateDir := filepath.Join(filepath.Dir(config), "state")
+	claim(t, legions, registry.Entry{
+		Team: "WIDGETS", ConfigPath: "/srv/widgets.yaml", PID: runningLegion(t), Port: 14370,
+		Bind: "127.0.0.1", StateDir: stateDir, StartedAt: time.Now().UTC(),
+	})
+
+	var errb bytes.Buffer
+	code := start(context.Background(), config, &errb)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, errb.String())
+	}
+	for _, name := range []string{"LEGION", "WIDGETS", stateDir} {
+		if !strings.Contains(errb.String(), name) {
+			t.Errorf("stderr = %q, want it to name %s", errb.String(), name)
+		}
+	}
+	if _, ok, err := registry.Find(legions, "LEGION"); err != nil || ok {
+		t.Fatalf("Find(LEGION) = %v, %v; want the refused start unrecorded", ok, err)
+	}
+}
+
+// A harness hands `legion start` the socket it holds as LEGION_LISTEN_FD, and legion.yaml's bind
+// and port must name that socket: the registry entry, the default daemon_url and `legion state`
+// dial them. A socket they do not name, or a descriptor that is no listening socket, is refused
+// naming the variable and the setting, before the team is claimed and so before the daemon opens
+// its store or binds anything.
+func TestStartRefusesAnInheritedSocketLegionYAMLDoesNotName(t *testing.T) {
+	for _, probe := range []struct {
+		name string
+		// bind is legion.yaml's bind; empty leaves its 127.0.0.1 default.
+		bind string
+		// otherPort gives legion.yaml a port next to the held socket's.
+		otherPort bool
+		// notSocket hands a regular file in place of the held socket.
+		notSocket bool
+		want      func(held, configured int) []string
+	}{
+		{
+			name: "another port", otherPort: true,
+			want: func(held, configured int) []string {
+				return []string{fmt.Sprintf("port=%d does not match", configured), "LEGION_LISTEN_FD=3", "127.0.0.1:" + strconv.Itoa(held)}
+			},
+		},
+		{
+			name: "another bind", bind: "0.0.0.0",
+			want: func(held, _ int) []string {
+				return []string{"bind=0.0.0.0 does not match", "LEGION_LISTEN_FD=3", "127.0.0.1:" + strconv.Itoa(held)}
+			},
+		},
+		{
+			name: "no socket", notSocket: true,
+			want: func(int, int) []string { return []string{"LEGION_LISTEN_FD=3 is not a socket"} },
+		},
+	} {
+		t.Run(probe.name, func(t *testing.T) {
+			legions := legionState(t)
+			descriptor, port := heldSocket(t)
+			if probe.notSocket {
+				var err error
+				if descriptor, err = os.CreateTemp(t.TempDir(), "not-a-socket"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			configured := port
+			if probe.otherPort {
+				if configured++; configured > 65535 {
+					configured = port - 1
+				}
+			}
+			config := legionConfig(t, "LEGION", configured)
+			if probe.bind != "" {
+				appendTo(t, config, "bind: "+probe.bind+"\n")
+			}
+
+			code, stderr := startOnDescriptor(t, config, descriptor)
+
+			if code != 1 {
+				t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr)
+			}
+			for _, want := range probe.want(port, configured) {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr = %q, want it to name %q", stderr, want)
+				}
+			}
+			if _, ok, err := registry.Find(legions, "LEGION"); err != nil || ok {
+				t.Fatalf("Find(LEGION) = %v, %v; want the refused start to have claimed nothing", ok, err)
+			}
+		})
+	}
+}
+
+// heldSocket listens on a loopback port the kernel chooses and returns a descriptor of its own for
+// the socket, which stays listening once the listener is closed, and the port. The descriptor is
+// closed when t ends, if its caller has not closed it first.
+func heldSocket(t *testing.T) (*os.File, int) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold a loopback port: %v", err)
+	}
+	file, err := listener.(*net.TCPListener).File()
+	_ = listener.Close()
+	if err != nil {
+		t.Fatalf("take the held socket's descriptor: %v", err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file, listener.Addr().(*net.TCPAddr).Port
+}
+
+// startOnDescriptor runs `legion start --config <config>` as its own process, handed descriptor
+// as its descriptor 3 and LEGION_LISTEN_FD=3, as a harness starts it, and returns its exit code
+// and stderr once it exits. The test's copy of descriptor is closed once the process has started.
+func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, string) {
+	t.Helper()
+	command := exec.Command(os.Args[0], "start", "--config", config)
+	command.Env = append(os.Environ(), testMainEnv+"=1", "LEGION_LISTEN_FD=3")
+	command.ExtraFiles = []*os.File{descriptor}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	err := command.Start()
+	_ = descriptor.Close()
+	if err != nil {
+		t.Fatalf("start legion: %v", err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(30 * time.Second):
+		_ = command.Process.Kill()
+		<-exited
+		t.Fatalf("legion start did not exit within 30s; stderr = %q", stderr.String())
+	}
+	return command.ProcessState.ExitCode(), stderr.String()
+}
+
+// appendTo appends text to the file at path.
+func appendTo(t *testing.T, path, text string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	if _, err := file.WriteString(text); err != nil {
+		_ = file.Close()
+		t.Fatalf("write %s: %v", path, err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close %s: %v", path, err)
+	}
+}
+
+// A daemon that died without cleaning up leaves an entry naming a pid nothing holds. A stop is
+// then the record's own repair, not an error.
+func TestStopRemovesTheEntryOfADaemonThatIsGone(t *testing.T) {
+	legions := legionState(t)
+	claim(t, legions, registry.Entry{
+		Team: "LEGION", ConfigPath: "/srv/legion.yaml", PID: reapedPID(t), Port: 13370,
+		Bind: "127.0.0.1", StartedAt: time.Now().UTC(),
+	})
+
+	var out, errb bytes.Buffer
+	code := runStop(context.Background(), []string{"--config", legionConfig(t, "LEGION", 13370)}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "not running") {
+		t.Fatalf("stdout = %q, want it to say the legion is not running", out.String())
+	}
+	if _, ok, err := registry.Find(legions, "LEGION"); err != nil || ok {
+		t.Fatalf("Find after the stop = %v, %v, want the stale entry gone", ok, err)
+	}
+}
+
+// `bind` is a shipped key the overlays set, so the address a legion answers on is the one it
+// recorded — not loopback by assumption.
+func TestStatusDialsTheAddressTheLegionRecorded(t *testing.T) {
+	for _, probe := range []struct {
+		name   string
+		serve  string
+		record string
+	}{
+		{name: "a bind that is not 127.0.0.1", serve: "127.0.0.2", record: "127.0.0.2"},
+		{name: "every interface", serve: "127.0.0.1", record: "0.0.0.0"},
+	} {
+		t.Run(probe.name, func(t *testing.T) {
+			legions := legionState(t)
+			port := healthzOn(t, probe.serve)
+			claim(t, legions, registry.Entry{
+				Team: "LEGION", ConfigPath: "/srv/legion.yaml", PID: runningLegion(t), Port: port,
+				Bind: probe.record, StartedAt: time.Now().UTC(),
+			})
+
+			var out, errb bytes.Buffer
+			code := runStatus(context.Background(), []string{"LEGION"}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr = %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), "running") || !strings.Contains(out.String(), "healthy") {
+				t.Fatalf("stdout = %q, want the legion reported running and healthy", out.String())
+			}
+		})
+	}
+}
+
+func TestUnknownSubcommandIsUsageError(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "frobnicate"}, &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), `unknown command "frobnicate"`) {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+}
+
+// `legion --help` is the one place the commands are listed, which the docs site's CLI reference is
+// generated from: every command, each on a line of its own, on stdout with exit 0; a bare `legion`
+// prints the same list as a usage error.
+func TestHelpListsEveryCommand(t *testing.T) {
+	for _, tc := range []struct {
+		argv   []string
+		code   int
+		stdout bool
+	}{
+		{[]string{"legion", "--help"}, 0, true},
+		{[]string{"legion", "-h"}, 0, true},
+		{[]string{"legion", "help"}, 0, true},
+		{[]string{"legion"}, 2, false},
+	} {
+		var out, errb bytes.Buffer
+		code := run(context.Background(), tc.argv, &out, &errb)
+		listed := errb.String()
+		if tc.stdout {
+			listed = out.String()
+		}
+		if code != tc.code {
+			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
+		}
+		for name := range commands {
+			if !strings.Contains(listed, "\n  "+name+" ") {
+				t.Errorf("%v does not list %s: %q", tc.argv, name, listed)
+			}
+		}
+	}
+}
+
+// Every command answers -h, -help and --help with its usage, `usage: legion <command>…`, and exit
+// 0: the docs site's CLI generator fails the build on any other answer. It runs each help with no
+// LEGION_* variable, and so does this test: in a Legion pane, LEGION_GH_PATH would have `legion gh
+// --help` exec the real gh in place of the test binary.
+func TestEveryCommandAnswersHelp(t *testing.T) {
+	fixtureenv.Unset(t, "LEGION_GH_PATH")
+	for name := range commands {
+		for _, help := range []string{"-h", "-help", "--help"} {
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", name, help}, &out, &errb)
+			if code != 0 || !usageOf(errb.String(), name) {
+				t.Errorf("legion %s %s = %d, stderr %q; want exit 0 and its usage", name, help, code, errb.String())
+			}
+		}
+	}
+}
+
+// usageOf says whether help begins with the usage line of `legion <words…>`.
+func usageOf(help string, words ...string) bool {
+	line, _, _ := strings.Cut(help, "\n")
+	fields := strings.Fields(line)
+	return len(fields) >= 2+len(words) && slices.Equal(fields[:2+len(words)], append([]string{"usage:", "legion"}, words...))
+}
+
+// A command with subcommands answers --help, exit 0, with a usage line naming every one of them —
+// every key of its table — as `legion <command> a|b|…`, the line the docs site's CLI generator
+// reads each subcommand from; and each subcommand answers --help with its own usage.
+func TestDispatchersAnswerHelpWithTheirSubcommands(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		table   map[string]command
+	}{
+		{"claims", claimsCommands},
+		{"workspace-init", workspaceInitCommands},
+		{"controller", controllerCommands},
+	} {
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", tc.command, "--help"}, &out, &errb)
+		prefix := "usage: legion " + tc.command + " "
+		line, _, _ := strings.Cut(errb.String(), "\n")
+		if code != 0 || !strings.HasPrefix(line, prefix) {
+			t.Errorf("legion %s --help = %d, stderr %q; want exit 0 and stderr starting %q", tc.command, code, errb.String(), prefix)
+			continue
+		}
+		named := strings.Split(strings.Fields(strings.TrimPrefix(line, prefix))[0], "|")
+		for sub := range tc.table {
+			if !slices.Contains(named, sub) {
+				t.Errorf("legion %s --help names %v, not %s: %q", tc.command, named, sub, line)
+			}
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", tc.command, sub, "--help"}, &out, &errb)
+			if code != 0 || !usageOf(errb.String(), tc.command, sub) {
+				t.Errorf("legion %s %s --help = %d, stderr %q; want exit 0 and its usage", tc.command, sub, code, errb.String())
+			}
+		}
+	}
+}
+
+func TestVersionPrintsBuildInfo(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "version"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if !strings.HasPrefix(out.String(), "legion ") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
+// The worker image links the commit it builds (`-ldflags "-X main.revision=<commit>"`), and
+// `legion version` names it after the module version.
+func TestVersionNamesTheLinkedRevision(t *testing.T) {
+	linked := revision
+	t.Cleanup(func() { revision = linked })
+	revision = "0123456789abcdef0123456789abcdef01234567"
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "version"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "legion ") || !strings.HasSuffix(got, " commit "+revision+"\n") {
+		t.Fatalf("stdout = %q, want \"legion <version> commit %s\\n\"", got, revision)
+	}
+}
+
+// The legion release links its version and commit as release.yaml does
+// (`-ldflags "-X main.revision=<commit> -X main.release=v<version>"`), and the built binary's
+// `legion version` prints both: a variable renamed without the workflow would leave every
+// release binary printing the module version instead.
+func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	binary := filepath.Join(t.TempDir(), "legion")
+	build := exec.Command("go", "build", "-ldflags", "-X main.revision="+commit+" -X main.release=v9.9.9", "-o", binary, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	out, err := exec.Command(binary, "version").Output()
+	if err != nil {
+		t.Fatalf("%s version: %v", binary, err)
+	}
+	if got, want := string(out), "legion v9.9.9 commit "+commit+"\n"; got != want {
+		t.Fatalf("legion version = %q, want %q", got, want)
+	}
+}
+
+// `legion version` prints a second line naming the linked plugin pair (the release workflow links
+// both beside revision and release) only when both are linked: a build with neither stays one
+// line, and one of the two linked alone counts as neither, so a half-linked build is never read as
+// a release that shipped a pair.
+func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
+	linkedLegion, linkedEnvoy := piLegionVersion, piEnvoyVersion
+	t.Cleanup(func() { piLegionVersion, piEnvoyVersion = linkedLegion, linkedEnvoy })
+
+	for _, tc := range []struct {
+		name            string
+		legion, envoy   string
+		wantPluginsLine bool
+	}{
+		{"neither linked", "", "", false},
+		{"pi-legion alone", "9.7.0", "", false},
+		{"pi-envoy alone", "", "9.6.1", false},
+		{"both linked", "9.7.0", "9.6.1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			piLegionVersion, piEnvoyVersion = tc.legion, tc.envoy
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "version"}, &out, &errb); code != 0 {
+				t.Fatalf("exit %d: %s", code, errb.String())
+			}
+			lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+			hasPlugins := len(lines) == 2 && lines[1] == "plugins @sjawhar/pi-legion "+tc.legion+" @sjawhar/pi-envoy "+tc.envoy
+			if hasPlugins != tc.wantPluginsLine || (!tc.wantPluginsLine && len(lines) != 1) {
+				t.Fatalf("stdout = %q, want a plugins line: %t", out.String(), tc.wantPluginsLine)
+			}
+		})
+	}
+}
+
+// Both commands that read a configured bind dial it the same way: `legion state --config` on a
+// daemon bound to every interface reads loopback, as `legion status` does.
+func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legion.yaml")
+	body := "project: demo\nbind: 0.0.0.0\nport: 13370\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: " + dir + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the config: %v", err)
+	}
+
+	address, err := stateAddress(path, 0)
+	if err != nil {
+		t.Fatalf("stateAddress: %v", err)
+	}
+	if address != "127.0.0.1:13370" {
+		t.Fatalf("address = %q, want 127.0.0.1:13370", address)
+	}
+}
+
+// Every Go role prompt tells a worker to re-read its issue record with `legion state` on relaunch.
+// A pane has no legion.yaml; it has the daemon's URL (LEGION_DAEMON_URL) and its issue
+// (LEGION_ISSUE), which the daemon names on every pane. From there `legion state` reads the state
+// the daemon serves and prints the pane's issue record.
+func TestStateInAPaneReadsTheDaemonItNamesAndPrintsTheIssueRecord(t *testing.T) {
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{"LEGION-208":{"key":"LEGION-208","generation":2,"phase":"testing","status":"testing","workers":{}}},"pendingStatusWrites":[]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/legion/v1/state" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "LEGION-208")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state in a pane = %d, stderr %q", code, errb.String())
+	}
+	for _, want := range []string{"LEGION-208", `"phase": "testing"`, `"generation": 2`} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("legion state printed %q, want the pane's issue record naming %s", out.String(), want)
+		}
+	}
+}
+
+// workflowConfig writes a Stage 3 configuration whose two GitHub Apps read their keys through a
+// private_key_command that leaves marker behind and fails: a command that ran it is seen twice
+// over, in the marker and in the refusal. The operator and Dispatch bearer files it names exist, and
+// LEGION_OMP_PATH and LEGION_GH_PATH name an executable, so the OMP invocation resolves without
+// mise and the real gh whatever heads the machine's PATH.
+func workflowConfig(t *testing.T, port int, extra string) (path, marker string) {
+	t.Helper()
+	omp, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_OMP_PATH", omp)
+	t.Setenv("LEGION_GH_PATH", omp)
+	dir := t.TempDir()
+	marker = filepath.Join(dir, "private-key-command-ran")
+	command := "touch " + marker + "; exit 1"
+	body := fmt.Sprintf(`project: DEMO
+port: %d
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+state_dir: %s
+operator_token_file: ./operator-token
+dispatch_url: https://dispatch.test
+dispatch_token_file: ./dispatch-token
+nats_urls: [nats://127.0.0.1:4222]
+projects:
+  DEMO: {}
+github_apps:
+  implement: { app_id: "1", private_key_command: %q }
+  review: { app_id: "2", private_key_command: %q }
+%s`, port, filepath.Join(dir, "state"), command, command, extra)
+	path = filepath.Join(dir, "legion.yaml")
+	for name, contents := range map[string]string{path: body, filepath.Join(dir, "operator-token"): "operator-token\n", filepath.Join(dir, "dispatch-token"): "dispatch-token\n"} {
+		if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return path, marker
+}
+
+// tmuxCapabilityGaps are the two lines `legion start --check-config` prints after Config OK for a
+// tmux configuration that decides neither: the tmux runtime enrolls nothing with the secrets broker
+// and sets no requests or limits, so both deployment capabilities are open until the file records
+// a decision (TestStartCheckConfigReportsTheConfigurationsCapabilityGaps).
+const tmuxCapabilityGaps = "capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n" +
+	"capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: \"<reason>\"\n"
+
+// productionCheckTesterLine is the production-check line `legion start --check-config` prints
+// for a project that names no `production_check` and so gets the tester, and deploysIgnoredLine
+// the warning it prints, and boot logs, for one that still sets `deploys`.
+func productionCheckTesterLine(key string) string {
+	return "projects." + key + ".production_check: tester — a merge that closes one of its issues opens a production check the tester works\n"
+}
+
+func deploysIgnoredLine(key string) string {
+	return "projects." + key + ".deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml\n"
+}
+
+// demoProductionCheck is the production-check line of the one DEMO project workflowConfig and
+// kubernetesCheckConfig declare, which names no `production_check`
+// (TestStartCheckConfigPrintsEachProjectsProductionCheck); demoCheckConfigOK is it after the OK
+// line, which is what every check here prints before its first capability line.
+var demoProductionCheck = productionCheckTesterLine("DEMO")
+
+var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
+
+// projectsConfig is a tmux legion.yaml whose `projects` block is the given text: the Stage 1
+// keys, the operator bearer and the github_apps a file with projects must carry (with the keys
+// written out, so no command runs at boot), and a deliberately unreachable Postgres, as
+// legionConfig's is — every test of it stops before a store is opened.
+func projectsConfig(t *testing.T, projects string) string {
+	t.Helper()
+	omp, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_OMP_PATH", omp)
+	t.Setenv("LEGION_GH_PATH", omp)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legion.yaml")
+	body := fmt.Sprintf(`project: DEMO
+port: 13370
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+state_dir: %s
+operator_token_file: ./operator-token
+%sgithub_apps:
+  implement: { app_id: "1", private_key: implement-test-key }
+  review: { app_id: "2", private_key: review-test-key }
+`, filepath.Join(dir, "state"), projects)
+	for name, contents := range map[string]string{path: body, filepath.Join(dir, "operator-token"): "operator-token\n"} {
+		if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return path
+}
+
+// twoProjectsWithDeploys is a projects block whose two projects each still set
+// `projects.<KEY>.deploys`: one with an entry the deleted reader would have parsed, one with the
+// empty list it took for none. Nothing reads either.
+const twoProjectsWithDeploys = "projects:\n" +
+	"  DEMO:\n    deploys:\n      - {repo: acme/infra, workflow: .github/workflows/envoy.yaml, step: Apply}\n" +
+	"  OTHER:\n    deploys: []\n"
+
+// A file another deployment still writes `deploys` into is accepted and warned about, never
+// refused: `--check-config` prints one warning per project that names the key, immediately after
+// Config OK and before every other line, and exits 0, so the deprecation is the first thing an
+// operator reads.
+func TestStartCheckConfigWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
+	legionState(t)
+	config := projectsConfig(t, twoProjectsWithDeploys)
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+
+	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
+		demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps
+	if code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// `legion start` logs each of the configuration's warnings once as it boots, before any other
+// work it does with the file: the start below is refused for a team another legion holds, which
+// is read after the lines are logged, so both are in its log.
+func TestStartLogsEachConfigurationWarningOnceAsItBoots(t *testing.T) {
+	legions := legionState(t)
+	config := projectsConfig(t, twoProjectsWithDeploys)
+	claim(t, legions, registry.Entry{
+		Team: "DEMO", ConfigPath: "/srv/legion.yaml", PID: runningLegion(t), Port: 13370,
+		Bind: "127.0.0.1", StartedAt: time.Now().UTC(),
+	})
+
+	var errb bytes.Buffer
+	if code := start(context.Background(), config, &errb); code != 1 {
+		t.Fatalf("exit code = %d, want 1 (the team is held); stderr %q", code, errb.String())
+	}
+	for _, key := range []string{"DEMO", "OTHER"} {
+		line := strings.TrimSuffix(deploysIgnoredLine(key), "\n")
+		if count := strings.Count(errb.String(), line); count != 1 {
+			t.Errorf("the boot log carries %s's warning %d times, want once: %s", key, count, errb.String())
+		}
+	}
+}
+
+// --check-config prints one `production_check` line per project, in key order: the word the file
+// writes for the project that turns the check off, and the tester for the one that names no key.
+func TestStartCheckConfigPrintsEachProjectsProductionCheck(t *testing.T) {
+	legionState(t)
+	config := projectsConfig(t, "projects:\n  DEMO: {}\n  OTHER:\n    production_check: off\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+
+	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck +
+		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" +
+		tmuxCapabilityGaps
+	if code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// `legion start --check-config` validates the file the way boot does, says so, and exits: no App
+// key command runs, no store is opened (the configured Postgres is unreachable), and no team is
+// taken.
+func TestStartCheckConfigValidatesAndStartsNothing(t *testing.T) {
+	legions := legionState(t)
+	config, marker := workflowConfig(t, 13370, "")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("legion start --check-config = %d, stderr %q", code, errb.String())
+	}
+	if want := demoCheckConfigOK + tmuxCapabilityGaps; out.String() != want {
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+	if _, found, err := registry.Find(legions, "DEMO"); err != nil || found {
+		t.Fatalf("registry.Find = %v, %v, want no entry: a check takes no team", found, err)
+	}
+}
+
+// A file given as an argument is refused rather than ignored: before, `legion start --check-config
+// broken.yaml` checked ./legion.yaml instead and answered Config OK for the file it never read.
+func TestStartRefusesAConfigurationGivenAsAnArgument(t *testing.T) {
+	legionState(t)
+	config, _ := workflowConfig(t, 13370, "")
+	dir := filepath.Dir(config)
+	if err := os.Rename(config, filepath.Join(dir, "legion.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("worker_cap: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "broken.yaml"}, &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout %q stderr %q", code, out.String(), errb.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want nothing: the file checked was not the one named", out.String())
+	}
+	if !strings.Contains(errb.String(), `unexpected argument "broken.yaml"`) || !strings.Contains(errb.String(), "--config") {
+		t.Fatalf("stderr = %q, want it to name the argument and --config", errb.String())
+	}
+}
+
+// stop and state refuse a file given as an argument as start does: they too read only --config, so
+// `legion stop other.yaml` read ./legion.yaml instead and acted on the team that file names.
+func TestStopAndStateRefuseAConfigurationGivenAsAnArgument(t *testing.T) {
+	for _, command := range []string{"stop", "state"} {
+		t.Run(command, func(t *testing.T) {
+			legionState(t)
+			config, _ := workflowConfig(t, 13370, "")
+			dir := filepath.Dir(config)
+			if err := os.Rename(config, filepath.Join(dir, "legion.yaml")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "other.yaml"), []byte("worker_cap: [\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", command, "other.yaml"}, &out, &errb)
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2; stdout %q stderr %q", code, out.String(), errb.String())
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout = %q, want nothing: ./legion.yaml was not the file named", out.String())
+			}
+			want := "legion " + command + `: unexpected argument "other.yaml"`
+			if !strings.Contains(errb.String(), want) || !strings.Contains(errb.String(), "--config") {
+				t.Fatalf("stderr = %q, want %q and --config", errb.String(), want)
+			}
+		})
+	}
+}
+
+// Every broken variant is refused naming its key, and the command exits non-zero — including a
+// key only boot read before (the Dispatch bearer's file, internal/daemon/workflow.go bind).
+func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
+	legionState(t)
+	for _, variant := range []struct{ extra, drop, says string }{
+		{extra: "worker_cap: 3\n", says: "worker_cap"},
+		{extra: "resync_interval_seconds: 600\n", says: "resync_interval_seconds"},
+		{extra: "admission_cap: 0\n", says: "admission_cap"},
+		{extra: "worker_wakes_per_minute: -1\n", says: "worker_wakes_per_minute"},
+		{extra: "worker_wakes_per_minute: 2.5\n", says: "worker_wakes_per_minute"},
+		{extra: "worker_wake_burst: 0\n", says: "worker_wake_burst"},
+		{extra: "worker_wake_burst: -1\n", says: "worker_wake_burst"},
+		{extra: "worker_wake_burst: 2.5\n", says: "worker_wake_burst"},
+		{extra: "gates: { design: sometimes }\n", says: "gates.design"},
+		{extra: "envoy_url: not a url\n", says: "envoy_url"},
+		{drop: "dispatch_token_file: ./dispatch-token\n", says: "dispatch_token_file is required when dispatch_url is configured"},
+		{extra: "nats_nkey_seed_file: ./nats-seed\nprovider_keys: {NATS_NKEY_SEED: NATS_NKEY_SEED_TESTS}\n", says: "provider_keys names NATS_NKEY_SEED, the launch secret every launch carries"},
+		{extra: "provider_keys: {GH_TOKEN: GH_TOKEN_TESTS}\n", says: "provider_keys names GH_TOKEN, which the daemon sets on every pane and pod"},
+	} {
+		config, marker := workflowConfig(t, 13370, variant.extra)
+		if variant.drop != "" {
+			body, err := os.ReadFile(config)
+			if err != nil || !strings.Contains(string(body), variant.drop) {
+				t.Fatalf("the fixture does not hold %q (%v)", variant.drop, err)
+			}
+			if err := os.WriteFile(config, []byte(strings.Replace(string(body), variant.drop, "", 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		if code != 1 {
+			t.Fatalf("%+v: exit code = %d, want 1; stdout %q stderr %q", variant, code, out.String(), errb.String())
+		}
+		if !strings.Contains(errb.String(), variant.says) {
+			t.Fatalf("%+v: stderr = %q, want it to name %s", variant, errb.String(), variant.says)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("%+v: the private_key_command ran (marker stat: %v)", variant, err)
+		}
+	}
+}
+
+// max_fix_attempts is the other kind: a setting that no longer exists and that the daemon accepts
+// all the same, since nothing reads it and a refusal here would stop a deployment over a word in
+// a file. --check-config exits 0, prints the warning after Config OK and before the project's
+// production-check line and the capability gaps, and the warning says what the refusal would
+// have said: the key, that nothing counts fix attempts, that a red CI verdict always sends the
+// work back to the implementer, that the architect decides when to stop, and review_round_cap,
+// the one cap left that blocks a pull
+// request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
+// resync_interval_seconds) are the control that the two kinds stay apart.
+func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
+	legionState(t)
+	config, marker := workflowConfig(t, 13370, "max_fix_attempts: 3\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+}
+
+// --check-config makes every refusal boot makes from the configuration, the environment and the
+// files they name before boot writes anything (daemon.CheckStart, which boot's prepare shares): the
+// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation and
+// the real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not.
+// Each is refused in boot's words, no App key command runs, and no state directory is made.
+func TestStartCheckConfigRefusesWhatBootRefuses(t *testing.T) {
+	legionState(t)
+	for _, tc := range []struct {
+		name   string
+		extra  string
+		change func(t *testing.T, dir string)
+		says   func(dir string) string
+	}{
+		{"a missing operator token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "operator-token")) },
+			func(dir string) string {
+				return "legion start: operator_token_file names " + filepath.Join(dir, "operator-token") + ", which could not be read: "
+			}},
+		{"no operator token file", "", func(t *testing.T, dir string) {
+			rewrite(t, filepath.Join(dir, "legion.yaml"), "operator_token_file: ./operator-token\n", "")
+		},
+			func(string) string {
+				return "legion start: operator_token_file is required: the operator routes that spawn and drive claims authenticate against the bearer it names\n"
+			}},
+		{"a missing Dispatch token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "dispatch-token")) },
+			func(dir string) string {
+				return "legion start: dispatch_token_file names " + filepath.Join(dir, "dispatch-token") + ", which could not be read: "
+			}},
+		{"a missing instructions file", "instructions: ./instructions.md\n", func(*testing.T, string) {},
+			func(dir string) string {
+				return "legion start: instructions file " + filepath.Join(dir, "instructions.md") + " could not be read: "
+			}},
+		{"no OMP invocation", "", func(t *testing.T, _ string) { t.Setenv("LEGION_OMP_PATH", "") },
+			func(string) string {
+				return "legion start: omp_invocation is not set: set it to 'mise x <tool> -- omp', or set LEGION_OMP_PATH to an absolute executable path\n"
+			}},
+		{"a script as the first gh on PATH", "", func(t *testing.T, dir string) {
+			shims := filepath.Join(dir, "shims")
+			if err := os.MkdirAll(shims, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fixtureenv.Unset(t, "LEGION_GH_PATH")
+			t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+		},
+			func(dir string) string {
+				return "legion start: the first gh on PATH, " + filepath.Join(dir, "shims", "gh") + ", is a script, not the real gh"
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, marker := workflowConfig(t, 13370, tc.extra)
+			dir := filepath.Dir(config)
+			tc.change(t, dir)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if want := tc.says(dir); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "state")); !os.IsNotExist(err) {
+				t.Fatalf("the check created the state directory (stat: %v)", err)
+			}
+		})
+	}
+}
+
+func remove(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rewrite(t *testing.T, path, old, replacement string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(body), old) {
+		t.Fatalf("%s does not hold %q (%v)", path, old, err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(body), old, replacement, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --check-config reads every launch secret the way boot does (daemon.CheckStart): the Envoy
+// bearer's file, and the NATS nkey seed (natsauth.Seed: the key's file over both variables, a file
+// the daemon owns held to 0600, a user's nkey seed or nothing). A file boot
+// would refuse fails the check with boot's refusal, and one it would take passes, the OK line
+// naming the seed's public key and never the seed.
+func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
+	legionState(t)
+	seed, public := testnats.User(t)
+	const seedKey, envoyKey = "nats_nkey_seed_file", "envoy_token_file"
+	for _, tc := range []struct {
+		name     string
+		key      string
+		contents string
+		mode     os.FileMode
+		refusal  func(path string) string
+	}{
+		{"a missing Envoy token file", envoyKey, "", 0, func(path string) string { return "envoy_token_file names " + path + ", which could not be read: " }},
+		{"a blank Envoy token file", envoyKey, " \n", 0o600, func(path string) string { return "envoy_token_file names " + path + ", which is empty\n" }},
+		{"an Envoy token file", envoyKey, "envoy-token\n", 0o600, nil},
+		{"a missing seed file", seedKey, "", 0, func(path string) string { return "nats_nkey_seed_file names " + path + ", which could not be read: " }},
+		{"a seed file others can read", seedKey, seed + "\n", 0o644, func(path string) string {
+			return "nats_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
+		}},
+		{"a group-readable seed file the daemon owns", seedKey, seed + "\n", 0o640, func(path string) string {
+			return "nats_nkey_seed_file " + path + " is readable by its group or others (mode 0640); chmod 0600 it\n"
+		}},
+		{"a seed file holding no seed", seedKey, "SUNOTASEED\n", 0o600, func(path string) string {
+			return "nats_nkey_seed_file (" + path + ") does not hold a valid nkey seed"
+		}},
+		{"a user seed", seedKey, seed + "\n", 0o600, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, marker := workflowConfig(t, 13370, tc.key+": ./secret\n")
+			path := filepath.Join(filepath.Dir(config), "secret")
+			if tc.mode != 0 {
+				if err := os.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.key == seedKey {
+				t.Setenv("NATS_NKEY_SEED", "hunter2") // the key's file outranks it, as at boot
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if strings.Contains(out.String()+errb.String(), seed) {
+				t.Fatalf("the check printed the seed: stdout %q stderr %q", out.String(), errb.String())
+			}
+			want := demoCheckConfigOK
+			if tc.key == seedKey {
+				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProductionCheck
+			}
+			want += tmuxCapabilityGaps
+			if tc.refusal == nil {
+				if code != 0 || out.String() != want || errb.Len() != 0 {
+					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+				}
+			} else if want := "legion start: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+			}
+		})
+	}
+}
+
+// --check-config reads the daemon's own seed as boot does, beside the pane seed: a refusal in boot's
+// words, or an OK line naming both users by public key, never either seed.
+func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
+	legionState(t)
+	paneSeed, paneUser := testnats.User(t)
+	daemonSeed, daemonUser := testnats.User(t)
+	for _, tc := range []struct {
+		name     string
+		contents string
+		mode     os.FileMode
+		refusal  func(path string) string
+	}{
+		{"a missing file", "", 0, func(path string) string {
+			return "nats_daemon_nkey_seed_file names " + path + ", which could not be read: "
+		}},
+		{"a file others can read", daemonSeed + "\n", 0o644, func(path string) string {
+			return "nats_daemon_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
+		}},
+		{"a file holding no seed", "SUNOTASEED\n", 0o600, func(path string) string {
+			return "nats_daemon_nkey_seed_file (" + path + ") does not hold a valid nkey seed"
+		}},
+		{"a user seed only its owner can read", daemonSeed + "\n", 0o600, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, marker := workflowConfig(t, 13370, "nats_daemon_nkey_seed_file: ./nats-daemon-seed\n")
+			path := filepath.Join(filepath.Dir(config), "nats-daemon-seed")
+			if tc.mode != 0 {
+				if err := os.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("NATS_NKEY_SEED", paneSeed)
+			t.Setenv("NATS_DAEMON_NKEY_SEED", "hunter2") // the key's file outranks it, as at boot
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if printed := out.String() + errb.String(); strings.Contains(printed, daemonSeed) || strings.Contains(printed, paneSeed) {
+				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
+			}
+			if tc.refusal == nil {
+				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+				}
+			} else if want := "legion start: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+			}
+		})
+	}
+}
+
+// Under runtime: kubernetes, --check-config also makes boot's refusals of the runtime: an operator
+// pod that collides with Legion's own (a mount at Legion's launcher token projection, refused naming both
+// paths), and a kubeconfig that cannot be read — with no App key command run.
+func TestStartCheckConfigRefusesWhatTheSandboxRuntimeRefuses(t *testing.T) {
+	legionState(t)
+	for _, tc := range []struct {
+		name, runtime string
+		says          func(dir string) string
+	}{
+		{"an operator pod colliding with Legion's", `    pod:
+      volumes: [{name: creds, secret: {name: legion-creds}}]
+      volume_mounts: [{volume: creds, mount_path: /var/run/legion/launcher}]
+`, func(string) string {
+			return "legion start: runtime.kubernetes.pod.volume_mounts[0].mount_path /var/run/legion/launcher overlaps /var/run/legion/launcher, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's\n"
+		}},
+		{"an operator mount reaching Legion's roles directory through the image's /var/run link", `    pod:
+      volumes: [{name: creds, secret: {name: legion-creds}}]
+      volume_mounts: [{volume: creds, mount_path: /run/legion/roles/implementer/private}]
+`, func(string) string {
+			return "legion start: runtime.kubernetes.pod.volume_mounts[0].mount_path /run/legion/roles/implementer/private overlaps /var/run/legion/roles (spelled /run/legion/roles/implementer/private against /run/legion/roles, through the worker image's directory links), which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's\n"
+		}},
+		{"a kubeconfig that cannot be read", "    kubeconfig: ./kubeconfig\n", func(dir string) string {
+			return "legion start: read runtime.kubernetes.kubeconfig " + filepath.Join(dir, "kubeconfig") + ": "
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "private-key-command-ran")
+			command := "touch " + marker + "; exit 1"
+			body := fmt.Sprintf(`project: DEMO
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+state_dir: %s
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+envoy_token_file: ./envoy-token
+operator_token_file: ./operator-token
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: ./dispatch-token
+nats_urls: [nats://nats.internal.example:4222]
+projects:
+  DEMO: {}
+github_apps:
+  implement: { app_id: "1", private_key_command: %q }
+  review: { app_id: "2", private_key_command: %q }
+runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    session_store: postgres
+    session_dsn_secret: SESSION_DSN
+%s`, filepath.Join(dir, "state"), command, command, tc.runtime)
+			config := filepath.Join(dir, "legion.yaml")
+			for name, contents := range map[string]string{config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n"} {
+				if !filepath.IsAbs(name) {
+					name = filepath.Join(dir, name)
+				}
+				if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if want := tc.says(dir); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+			}
+		})
+	}
+}
+
+// kubernetesCheckConfig is a kubernetes configuration `legion start --check-config` passes: the
+// keys every pod needs, a kubeconfig naming a context the check never dials, and extra appended
+// at the top level (a four-space-indented line extends the runtime.kubernetes block, which comes
+// last before it).
+func kubernetesCheckConfig(t *testing.T, extra string) string {
+	t.Helper()
+	dir := t.TempDir()
+	body := fmt.Sprintf(`project: DEMO
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+state_dir: %s
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+envoy_token_file: ./envoy-token
+operator_token_file: ./operator-token
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: ./dispatch-token
+nats_urls: [nats://nats.internal.example:4222]
+projects:
+  DEMO: {}
+github_apps:
+  implement: { app_id: "1", private_key_command: "exit 1" }
+  review: { app_id: "2", private_key_command: "exit 1" }
+runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    session_store: postgres
+    session_dsn_secret: SESSION_DSN
+    kubeconfig: ./kubeconfig
+    context: legion-daemon
+%s`, filepath.Join(dir, "state"), extra)
+	config := filepath.Join(dir, "legion.yaml")
+	for name, contents := range map[string]string{
+		config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
+		"kubeconfig": `apiVersion: v1
+kind: Config
+clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
+users: [{name: legion-daemon, user: {token: placeholder}}]
+contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
+current-context: legion-daemon
+`,
+	} {
+		if !filepath.IsAbs(name) {
+			name = filepath.Join(dir, name)
+		}
+		if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return config
+}
+
+// After Config OK, --check-config prints one line per deployment capability the file alone leaves
+// open (daemon.Deployment: secrets with no broker configured), each in the words boot logs it with
+// and naming the legion.yaml line that records a decision — and exits 0, because a gap is reported,
+// never refused. A decision quiets its row, and a configured broker's secrets row is boot's to
+// measure, so the check says nothing of it. The resource-limits row is never open on a Kubernetes
+// file: the loader fills both pods' reservations from the daemon's defaults, with or without a
+// `resources` block and whatever fields it sets (config.Reservation.Reserved); the tmux cases
+// (tmuxCapabilityGaps) are where it is open. Model fallback is the probe's, and pool capacity the
+// probe's run's, and neither is printed here.
+func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
+	legionState(t)
+	const issueSet = "    resources:\n      issue: {cpu: \"4\", memory: 24Gi}\n"
+	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	for _, tc := range []struct{ name, extra, want string }{
+		{"no resources block, no broker: both pods at the defaults", "", secretsGap},
+		{"the issue pod with one field set, the other the default", "    resources: {issue: {memory: 12Gi}}\n", secretsGap},
+		{"the issue pod's disk bound set, its request the default", "    resources: {issue: {ephemeral_storage: 40Gi}}\n", secretsGap},
+		{"the issue pod set", issueSet, secretsGap},
+		{"the controller at its default under controller: daemon", issueSet + "controller: daemon\n", secretsGap},
+		{"a broker configured, whose login is boot's", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n", ""},
+		{"secrets decided", "capabilities:\n  decided:\n    secrets: \"dispatch://LEGION-205 enrolls pods later\"\n", ""},
+		{"the issue pod requesting less memory than its limit", "    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n",
+			secretsGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
+		{"the controller requesting less cpu than its limit", "    resources: {controller: {cpu: 2, cpu_request: 500m}}\ncontroller: daemon\n",
+			secretsGap + "resources: Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.extra)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if want := demoCheckConfigOK + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
+// --check-config refuses a cpu or memory request above its limit and a request that is no
+// quantity, naming the key, with exit 1 and no Config OK.
+func TestStartCheckConfigRefusesARequestItCannotRender(t *testing.T) {
+	legionState(t)
+	for _, tc := range []struct{ name, extra, want string }{
+		{"a memory request past its limit", "    resources: {issue: {memory: 32Gi, memory_request: 40Gi}}\n",
+			"legion start: runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi\n"},
+		{"a cpu request past the default limit", "    resources: {issue: {cpu_request: 4}}\n",
+			"legion start: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 3\n"},
+		{"a request that is no quantity", "    resources: {issue: {memory_request: lots}}\n",
+			"legion start: runtime.kubernetes.resources.issue.memory_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.extra)
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			if code != 1 || out.Len() != 0 || errb.String() != tc.want {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), tc.want)
+			}
+		})
+	}
+}
+
+// --check-config's plugins line names the pair runtime.kubernetes.plugins sets, "from
+// legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
+// gap (TestStartCheckConfigReportsTheConfigurationsCapabilityGaps's pluginsGap). When
+// worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
+// whose plugin is the worker image's and never an install.
+func TestStartCheckConfigNamesTheResolvedPluginPair(t *testing.T) {
+	legionState(t)
+	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
+		"a plugin-contract change for such a role is answered by a new image, not by an install."
+	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
+	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
+		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
+			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
+			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
+		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
+			"plugins: @sjawhar/pi-legion 9.7.1 @sjawhar/pi-envoy 9.6.2 (from legion.yaml)\n"},
+		{"the Claude Code roles' plugin is the image's", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n" + claudeRoles, "", "",
+			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)" + claudeSentence + "\n"},
+		{"the Claude Code roles are named beside the gap too", claudeRoles, "", "",
+			"plugins: none — set runtime.kubernetes.plugins or run a release build; " +
+				"a daemon that knows none relaunches no process on another plugin contract" + claudeSentence + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			linkedLegion, linkedEnvoy := piLegionVersion, piEnvoyVersion
+			t.Cleanup(func() { piLegionVersion, piEnvoyVersion = linkedLegion, linkedEnvoy })
+			piLegionVersion, piEnvoyVersion = tc.legion, tc.envoy
+
+			config := kubernetesCheckConfig(t, tc.extra)
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
+			if code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
+// --check-config prints one more plain line, after Config OK and the capability gaps and before
+// the plugins line, only when worker_boot_timeout_seconds pushes the image probe's attempt budget
+// above slow_command_timeout_seconds (daemon.ProbeBudget): a deployment whose
+// worker_boot_timeout_seconds reaches or exceeds slow_command_timeout_seconds prints it naming the
+// derived bound; the defaults, and a tmux configuration (which runs no probe), print nothing.
+func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
+	legionState(t)
+	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	budgetLine := "image probe: each attempt waits 660s: worker_boot_timeout_seconds (600) + 60s is above slow_command_timeout_seconds (300)\n"
+
+	t.Run("worker_boot_timeout_seconds derives a bound above slow_command_timeout_seconds", func(t *testing.T) {
+		config := kubernetesCheckConfig(t, "")
+		body, err := os.ReadFile(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(config, append(body, []byte("worker_boot_timeout_seconds: 600\n")...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		if want := demoCheckConfigOK + secretsGap + budgetLine + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		}
+	})
+
+	t.Run("the defaults derive nothing", func(t *testing.T) {
+		config := kubernetesCheckConfig(t, "")
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		}
+	})
+
+	t.Run("tmux runs no probe, and prints nothing", func(t *testing.T) {
+		config, _ := workflowConfig(t, 13370, "")
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		}
+	})
+}
+
+// defaultCacheLine is the line --check-config prints under kubernetes for the repository cache at
+// its defaults, before the plugins line.
+const defaultCacheLine = "repository cache: a 20Gi volume per mapped repository, fetched from GitHub every 10 minutes, kept 168 hours after its repository leaves the mapping; its container reserves cpu 1, memory 4Gi, ephemeral storage 1Gi under 2Gi\n"
+
+// --check-config names the repository cache each mapped repository gets, as the file settles it:
+// the defaults, or the file's own members over them, a raised limit alone requested in full and a
+// lower request named under its limit, as a role's.
+func TestStartCheckConfigNamesTheRepositoryCache(t *testing.T) {
+	legionState(t)
+	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	config := kubernetesCheckConfig(t, "    repository_cache: {volume: 50Gi, refresh_minutes: 5, retain_hours: 24, resources: {cpu: \"2\", memory: 8Gi, memory_request: 4Gi}}\n")
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	cache := "repository cache: a 50Gi volume per mapped repository, fetched from GitHub every 5 minutes, kept 24 hours after its repository leaves the mapping; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
+	if want := demoCheckConfigOK + secretsGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// A decision may name only a capability the daemon measures from the deployment: anything else is
+// refused as an unknown key naming the four, and a blank reason records nothing, so it is refused
+// too — each with exit 1 and no Config OK.
+func TestStartCheckConfigRefusesAnUnknownCapabilityDecision(t *testing.T) {
+	legionState(t)
+	for _, tc := range []struct{ name, extra, want string }{
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion start: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
+		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion start: capabilities.decided.secrets must not be empty\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, marker := workflowConfig(t, 13370, tc.extra)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if code != 1 || out.Len() != 0 || errb.String() != tc.want {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr %q", code, out.String(), errb.String(), tc.want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+			}
+		})
+	}
+}
+
+// `legion state --config` reads where the file says the daemon answers, and nothing else of it:
+// both GitHub Apps' private_key_command would fail, and the state is read all the same, with
+// neither command run.
+func TestStateConfigRunsNoPrivateKeyCommand(t *testing.T) {
+	served := `{"daemon":{"project":"DEMO","schemaVersion":7,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	port, err := strconv.Atoi(server.URL[strings.LastIndex(server.URL, ":")+1:])
+	if err != nil {
+		t.Fatalf("read the test server's port: %v", err)
+	}
+	config, marker := workflowConfig(t, port, "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state", "--config", config, "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state --config = %d, stderr %q", code, errb.String())
+	}
+	if out.String() != served {
+		t.Fatalf("stdout = %q, want the state served", out.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+}
+
+// `legion stop` needs the file only for the team it names, so it runs neither App's key command
+// either: the answer is about the registry, never the key command's failure.
+func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
+	legionState(t)
+	config, marker := workflowConfig(t, 13370, "")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "no legion is registered for DEMO") {
+		t.Fatalf("legion stop = %d, stderr %q, want 1 naming the unregistered team", code, errb.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+}
+
+// An operator reading plain `legion state` during a Dispatch outage is told how many status writes
+// wait and why the oldest has not landed: the count, the oldest's issue, its attempts, its next
+// attempt and its last error, on one line. With none waiting the line says so.
+func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{}`
+	for _, tc := range []struct {
+		name, pending, want string
+	}{
+		{
+			name: "two waiting",
+			pending: `[{"issue":"LEGION-208","payload":{"status":"testing"},"attempts":3,"nextAt":"2026-09-23T00:01:04Z","lastError":"Dispatch unavailable"},` +
+				`{"issue":"LEGION-209","payload":{"status":"retro"},"attempts":0,"nextAt":"2026-09-23T00:00:30Z"}]`,
+			want: "pending Dispatch status writes: 2; the oldest, for LEGION-208, has failed 3 attempts, next at 2026-09-23T00:01:04Z: Dispatch unavailable\n",
+		},
+		{
+			name:    "oldest not yet attempted",
+			pending: `[{"issue":"LEGION-209","payload":{"status":"retro"},"attempts":0,"nextAt":"2026-09-23T00:00:30Z"}]`,
+			want:    "pending Dispatch status writes: 1; the oldest, for LEGION-209, has not run yet, next at 2026-09-23T00:00:30Z\n",
+		},
+		{name: "none", pending: `[]`, want: "pending Dispatch status writes: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"pendingStatusWrites":` + tc.pending + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told how many lifecycle rows wait behind their
+// issues' running ones and which has waited longest: its kind, id, issue, wait and the row it waits
+// on, on one line. With none held the line says so.
+func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	for _, tc := range []struct {
+		name, held, want string
+	}{
+		{
+			name: "one",
+			held: `[{"id":802,"kind":"supervise","issue":"LEGION-208","waitedSeconds":150,"waitsOn":801}]`,
+			want: "held lifecycle rows: 1; the longest waiting, supervise row 802 of LEGION-208, has waited 2m30s behind row 801\n",
+		},
+		{
+			name: "several, the longest waiting not the first",
+			held: `[{"id":802,"kind":"supervise","issue":"LEGION-208","waitedSeconds":150,"waitsOn":801},` +
+				`{"id":811,"kind":"workspace_remove","issue":"LEGION-209","waitedSeconds":3725,"waitsOn":810},` +
+				`{"id":812,"kind":"supervise","issue":"LEGION-209","waitedSeconds":3725,"waitsOn":810}]`,
+			want: "held lifecycle rows: 3; the longest waiting, workspace_remove row 811 of LEGION-209, has waited 1h2m5s behind row 810\n",
+		},
+		{name: "none", held: `[]`, want: "held lifecycle rows: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"heldOutboxRows":` + tc.held + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which agents are in a tool call right now:
+// each by issue and role with the call its stream named and when that call started, read from
+// each claim view's `step`. A call whose end the daemon received is over, so the claim that made
+// it is in none; with no agent in a call the line says so.
+func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// The architect's call ended; the implementer's has a start and no end, which is the shape a
+	// turn that stopped moving leaves behind.
+	open := `"step":{"at":"2026-09-23T01:14:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"bash",` +
+		`"callId":"toolu_impl_3","argsBytes":128,"argsHash":"9b2e45c0d1f8a673","startedAt":"2026-09-23T01:14:00Z"}`
+	ended := `"step":{"at":"2026-09-23T01:12:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"read",` +
+		`"callId":"toolu_arch_2","argsBytes":74,"argsHash":"3f7c1a9d62b40e58","startedAt":"2026-09-23T01:11:00Z","endedAt":"2026-09-23T01:12:00Z"}`
+	stepping := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
+		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
+	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "one agent in a call, one whose call ended",
+			issues: stepping,
+			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
+		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told how many production checks are open and the
+// oldest: its issue, pull request and merge commit, the role working it, the look it is on with
+// what woke it and when, and when its next look is due — read from each issue record's `check`,
+// which the daemon serves for an open check and leaves out once it closes. The role tells a check
+// opened before this release, which carries the implementer and a wake the daemon no longer reads
+// (LEGION-208's), from one the project's `production_check` opened for the tester (LEGION-209's).
+// `nextWakeAt` is whichever names that look, the time the checking agent asked for (LEGION-209's,
+// inside its bound) or the check's bound where no agent's time stands (LEGION-208's). With none
+// open the line says so.
+func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	closed := `"LEGION-207":{"key":"LEGION-207","generation":1,"phase":"done","status":"done"}`
+	oldest := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"done","status":"done","check":{"repo":"sjawhar/legion","pullRequest":1301,` +
+		`"mergeCommit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","openedAt":"2026-10-19T09:00:00Z","role":"implementer","looks":2,"lookOpen":false,` +
+		`"lastWake":{"kind":"issue.deployed","detail":"run 77 completed 2026-10-19T10:00:00Z","at":"2026-10-19T10:00:05Z"},"nextWakeAt":"2026-11-02T09:00:00Z","last":false}}`
+	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"done","status":"done","check":{"repo":"sjawhar/legion","pullRequest":1302,` +
+		`"mergeCommit":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","openedAt":"2026-10-19T11:00:00Z","role":"tester","looks":1,"lookOpen":true,` +
+		`"lastWake":{"kind":"merge","detail":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","at":"2026-10-19T11:00:00Z"},"nextWakeAt":"2026-10-20T11:00:00Z","last":false}}`
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "two open, the oldest not the first listed",
+			issues: `{` + newer + `,` + closed + `,` + oldest + `}`,
+			want:   "open production checks: 2; the oldest, LEGION-208 #1301 at a1b2c3d, worked by the implementer, look 2 woken by issue.deployed at 2026-10-19T10:00:05Z, next look 2026-11-02T09:00:00Z\n",
+		},
+		{
+			name:   "one open",
+			issues: `{` + closed + `,` + newer + `}`,
+			want:   "open production checks: 1; the oldest, LEGION-209 #1302 at b2c3d4e, worked by the tester, look 1 woken by merge at 2026-10-19T11:00:00Z, next look 2026-10-20T11:00:00Z\n",
+		},
+		{name: "none open", issues: `{` + closed + `}`, want: "open production checks: none\n"},
+		{name: "no issues", issues: `{}`, want: "open production checks: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which roots gave their slot up to wait on a
+// person, how many of them a person answered and the daemon's own published waiting line still
+// names, and each by key with what it waits on: an unanswered one is
+// in neither admission list, so without this line the capacity it freed looks idle.
+func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":["LEGION-211"]},"pendingStatusWrites":[]`
+	gate := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"awaiting_person","status":"in_progress",` +
+		`"waitingOn":{"kind":"gate","gateVersion":3,"artifactId":"spec-210","since":"2026-10-25T10:00:00Z"}}`
+	asked := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"awaiting_person","status":"in_progress",` +
+		`"waitingLine":{"place":1,"length":1},` +
+		`"waitingOn":{"kind":"ask","ask":"ask-7","since":"2026-10-25T11:00:00Z","answeredAt":"2026-10-25T12:00:00Z","answeredBy":"reply"}}`
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "two waiting, one answered",
+			issues: `{` + asked + `,` + gate + `}`,
+			want: "roots waiting on a person: 2, 1 answered and standing in the admission line — LEGION-210 waits on spec version 3 of spec-210, unanswered; " +
+				"LEGION-211 waits on ask ask-7, answered at 2026-10-25T12:00:00Z (reply)\n",
+		},
+		{
+			name:   "one unanswered",
+			issues: `{` + gate + `}`,
+			want:   "roots waiting on a person: 1, 0 answered and standing in the admission line — LEGION-210 waits on spec version 3 of spec-210, unanswered\n",
+		},
+		{name: "none", issues: `{}`, want: "roots waiting on a person: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// The `roots waiting on a person` line counts the answered roots the daemon's own published
+// waiting line still names (api.WaitingLineView), not every answered one: a root whose design
+// gate has opened at every gated step resumes at once and takes no slot, so it stands in no line
+// and belongs in no count of one. A daemon below contract 58 serves no place at all, and 0 is
+// the true answer for a caller that cannot see the line.
+//
+// The operator's guide prints this line as its sample and says what the count is, so the sample
+// is built here from the state the guide describes and read back out of the guide. That the
+// guide also names the words of the wait itself is one rule held in one place, workflow's
+// TestTheShippedWordsNameTheWaitingLineNotice, which reads each out of the source that declares
+// it. (INFRA-1100.)
+func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
+	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	const (
+		gateWait   = "LEGION-210 waits on spec version 3 of spec-210, unanswered"
+		askWait    = "LEGION-211 waits on ask ask-7, answered at 2026-10-25T12:00:00Z (reply)"
+		unanswered = "roots waiting on a person: 2, 0 answered and standing in the admission line — "
+	)
+	waiting := api.Issue{WaitingOn: &api.WaitingOnView{Kind: "gate", GateVersion: 3, ArtifactID: "spec-210"}}
+	resumed := api.Issue{WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "ask-7", AnsweredAt: &answered, AnsweredBy: "reply"}}
+	standing := resumed
+	standing.WaitingLine = &api.WaitingLineView{Place: 2, Length: 3}
+	for _, tc := range []struct {
+		name   string
+		issues map[string]api.Issue
+		want   string
+	}{
+		{
+			name:   "an answered root standing in the line",
+			issues: map[string]api.Issue{"LEGION-210": waiting, "LEGION-211": standing},
+			want:   "roots waiting on a person: 2, 1 answered and standing in the admission line — " + gateWait + "; " + askWait,
+		},
+		{
+			name:   "an answered root the line does not name",
+			issues: map[string]api.Issue{"LEGION-210": waiting, "LEGION-211": resumed},
+			want:   unanswered + gateWait + "; " + askWait,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := awaitingSummary(tc.issues); got != tc.want {
+				t.Fatalf("awaitingSummary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
+	body, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatalf("read %s: %v", guide, err)
+	}
+	sample := awaitingSummary(map[string]api.Issue{"WIDGETS-9": {WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "7f3c2a10"}}})
+	if !strings.Contains(string(body), sample) {
+		t.Errorf("running-legion.md does not carry %q", sample)
+	}
+}
+
+// An operator reading plain `legion state` is told how many issues carry a memory draw and under
+// which group and mode, on one line however many issues the state carries. It counts issues
+// rather than trees because the state names no tree: every issue of a tree carries its root's
+// draw, and a tree handed over as one of its own carries its old tree's draw verbatim, so one
+// draw is two trees' and no draw is a tree's name. The line names no issue: the keys stay in
+// `--json`, where a line per issue would print hundreds on a live deployment.
+func TestPlainStateCountsTheIssuesDrawnIntoAMemoryGroup(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// A drawn root and a child of its tree, which carries the same draw.
+	root := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+		`"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
+	child := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"admitted","status":"in_progress",` +
+		`"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
+	// A tree of its own, handed over from that one: its draw is the old tree's verbatim, the
+	// instant included, so it counts as one more issue under the same group and mode.
+	handedOver := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"planning","status":"in_progress",` +
+		`"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
+	// A second tree the same mode drew the other way, and a third an earlier mode drew.
+	second := `"LEGION-300":{"key":"LEGION-300","generation":1,"phase":"done","status":"done",` +
+		`"memoryGroup":"none","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T11:00:00Z"}`
+	third := `"LEGION-400":{"key":"LEGION-400","generation":1,"phase":"implementing","status":"in_progress",` +
+		`"memoryGroup":"memory","memoryDrawMode":"on","memoryDrawnAt":"2026-10-26T09:00:00Z"}`
+	// A tree first opened before the setting existed carries no draw and is counted in nothing.
+	undrawn := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"implementing","status":"in_progress"}`
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "four trees under two modes, one of them handed over",
+			issues: `{` + root + `,` + child + `,` + handedOver + `,` + second + `,` + third + `,` + undrawn + `}`,
+			want:   "memory: 5 issues — 1 memory (on), 3 memory (random), 1 none (random)\n",
+		},
+		{
+			name:   "one tree, root and child",
+			issues: `{` + root + `,` + child + `}`,
+			want:   "memory: 2 issues — 2 memory (random)\n",
+		},
+		{name: "one issue", issues: `{` + third + `}`, want: "memory: 1 issue — 1 memory (on)\n"},
+		{name: "nothing drawn", issues: `{` + undrawn + `}`, want: "memory: none\n"},
+		{name: "no issues", issues: `{}`, want: "memory: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which claims nothing will wake, each by issue
+// and role under the move that brings it back (api.StrandedClaim.Move), on one line however many
+// there are; with none the line says so.
+//
+// The state body names no claim's suspender — every plugin parses it with the schema of its own
+// contract, and one whose answer side predates INFRA-1048 refuses a key it does not know — so the
+// command reads that from the operator claim list, with the bearer
+// --operator-token-file names (strandedSuspenders). Read without that flag, as a pane reads,
+// there is no bearer and a released claim reads as the suspended worker it is.
+func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	// The claims as the operator routes serve them, which is the one surface that names a
+	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended.
+	operatorClaims := `{"claims":[` +
+		`{"token":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","state":"suspended","suspendedBy":"released","pluginContract":48},` +
+		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48}]}`
+	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
+		`{"issue":"LEGION-209","role":"tester","state":"suspended"},` +
+		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
+	// The phrase `legion state` puts before the claims a workflow start brings back
+	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts
+	// that queue such a start (INFRA-1480).
+	const workflowStart = "failed or retired, needs a workflow start: the architect's retry_or_escalate of a held phase, a transition into the phase, or a tree close and re-admission"
+	for _, tc := range []struct {
+		name, stranded, want string
+		// bearer reads the daemon with --operator-token-file, as an operator does; otherwise the
+		// command reads it as a pane does, with no bearer to name a suspender with.
+		bearer bool
+	}{
+		{
+			name: "every move",
+			stranded: `[{"issue":"LEGION-208","role":"architect","state":"suspended"},{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
+				`{"issue":"LEGION-210","role":"architect","state":"failed"},{"issue":"LEGION-211","role":"reviewer","state":"failed"}]`,
+			want: "claims nothing will wake: 4 — resume LEGION-208 architect; suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer; failed, retry LEGION-210 architect; " +
+				workflowStart + " LEGION-211 reviewer\n",
+		},
+		{
+			name:     "only failed",
+			stranded: `[{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,
+			want:     "claims nothing will wake: 1 — " + workflowStart + " LEGION-210 reviewer\n",
+		},
+		// INFRA-945 R6: a claim whose idle pod the daemon released and whose wake never brought
+		// the pod back reads as that, under a move of its own, never as a suspension to resume or
+		// a failure to retry.
+		{
+			name: "a released claim apart from a suspended and a failed one", bearer: true,
+			stranded: released,
+			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-209 tester; " +
+				"released, woken over ten minutes ago and the pod never came back LEGION-208 implementer; " + workflowStart + " LEGION-210 reviewer\n",
+		},
+		{
+			name: "no bearer to read the suspensions with", stranded: released,
+			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
+				workflowStart + " LEGION-210 reviewer\n",
+		},
+		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
+		// operator claim list still names the one a release suspended before its close retired it
+		// as released: the line names it under the workflow start, never as a pod coming back.
+		{
+			name: "a retired claim beside a failed one", bearer: true,
+			stranded: `[{"issue":"LEGION-208","role":"implementer","state":"retired"},` +
+				`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,
+			want: "claims nothing will wake: 2 — " + workflowStart + " LEGION-208 implementer, LEGION-210 reviewer\n",
+		},
+		{name: "none", stranded: `[]`, want: "claims nothing will wake: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"strandedClaims":` + tc.stranded + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == claimsRoute {
+					if r.Header.Get("Authorization") != "Bearer operator-token" {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					_, _ = w.Write([]byte(operatorClaims))
+					return
+				}
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_ISSUE", "")
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+
+			args := []string{"legion", "state"}
+			if tc.bearer {
+				args = append(args, "--operator-token-file", writeFile(t, "operator-token", "operator-token\n"))
+			}
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), args, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which wakes the daemon's pacing is holding,
+// each by claim with its kind and when it is due, on one line however many there are
+// (api.State.WakesWaiting). The line is there only while something waits: outside a restart or a
+// plugin wave the queue is empty, and a line saying so on every read would be noise.
+func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	for _, tc := range []struct {
+		name, wakes, want string
+	}{
+		{
+			name: "a launch and an update task",
+			wakes: `[{"claim":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","kind":"launch","dueAt":"2026-09-23T00:00:08Z"},` +
+				`{"claim":"legion-legion-legion-210-reviewer","issue":"LEGION-210","role":"reviewer","kind":"plugin-task","dueAt":"2026-09-23T00:00:15Z"}]`,
+			want: "wakes waiting: 2 — legion-legion-legion-208-implementer launch due 2026-09-23T00:00:08Z; " +
+				"legion-legion-legion-210-reviewer plugin-task due 2026-09-23T00:00:15Z\n",
+		},
+		{name: "none", wakes: `[]`, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"wakesWaiting":` + tc.wakes + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if tc.want == "" {
+				if strings.Contains(out.String(), "wakes waiting") {
+					t.Fatalf("legion state printed %q, want no wakes-waiting line while nothing waits", out.String())
+				}
+				return
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told each served repository Dispatch's GitHub App is
+// not known to be installed on, one line each with why, as the daemon serves the state; with none
+// the one line says so.
+func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	for _, tc := range []struct {
+		name, gaps, want string
+	}{
+		{
+			name: "two repositories",
+			gaps: `[{"repo":"acme/widgets","reason":"` + missing + `"},{"repo":"zeta/tools","reason":"the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"}]`,
+			want: "webhook App missing on acme/widgets: " + missing + "\n" +
+				"webhook App missing on zeta/tools: the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500\n",
+		},
+		{name: "none", gaps: `[]`, want: "webhook App missing: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told, one line per durable consumer, how many
+// messages wait for it and how old the oldest is; when it is stalled, how long it has handled none
+// and since when — its last handled message, or the daemon's start before the first; and what NATS
+// did not answer, alone on the line when the consumer's info could not be read. With no consumers
+// the one line says so.
+func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
+	startedAt := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 28, 9, 20, 30, 0, time.UTC)
+	for _, tc := range []struct {
+		name, consumers string
+		want            []string
+	}{
+		{name: "none", consumers: `[]`, want: []string{"durable consumers: none"}},
+		{
+			name: "caught up, waiting, stalled since the last, stalled since the start",
+			consumers: `[{"name":"legion-go-LEGION-dispatch","waiting":0,"oldestAt":null,"oldestAgeSeconds":null,"lastHandledAt":"2026-10-28T09:20:01Z","stalled":false},` +
+				`{"name":"legion-go-LEGION-wake","waiting":2,"oldestAt":"2026-10-28T09:20:25Z","oldestAgeSeconds":5,"lastHandledAt":"2026-10-28T09:20:01Z","stalled":false},` +
+				`{"name":"legion-go-LEGION-github","waiting":412,"oldestAt":"2026-10-28T09:08:00Z","oldestAgeSeconds":750,"lastHandledAt":"2026-10-28T09:10:00Z","stalled":true},` +
+				`{"name":"legion-go-LEGION-other","waiting":3,"oldestAt":"2026-10-28T09:01:00Z","oldestAgeSeconds":1170,"lastHandledAt":null,"stalled":true}]`,
+			want: []string{
+				"consumer legion-go-LEGION-dispatch: 0 waiting",
+				"consumer legion-go-LEGION-wake: 2 waiting, oldest 5s",
+				"consumer legion-go-LEGION-github: 412 waiting, oldest 12m30s; STALLED: none handled for 10m30s, the last at 2026-10-28T09:10:00Z",
+				"consumer legion-go-LEGION-other: 3 waiting, oldest 19m30s; STALLED: none handled for 20m30s, none since the daemon started at 2026-10-28T09:00:00Z",
+			},
+		},
+		{
+			name: "NATS did not answer",
+			consumers: `[{"name":"legion-go-LEGION-dispatch","waiting":0,"oldestAt":null,"oldestAgeSeconds":null,"lastHandledAt":null,"stalled":false,"unavailable":"read the consumer's info: context deadline exceeded"},` +
+				`{"name":"legion-go-LEGION-github","waiting":7,"oldestAt":null,"oldestAgeSeconds":null,"lastHandledAt":"2026-10-28T09:19:00Z","stalled":true,"unavailable":"read the oldest waiting message: nats: permissions violation"}]`,
+			want: []string{
+				"consumer legion-go-LEGION-dispatch: unavailable: read the consumer's info: context deadline exceeded",
+				"consumer legion-go-LEGION-github: 7 waiting, oldest unknown; STALLED: none handled for 1m30s, the last at 2026-10-28T09:19:00Z; unavailable: read the oldest waiting message: nats: permissions violation",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var consumers []api.ConsumerLagView
+			if err := json.Unmarshal([]byte(tc.consumers), &consumers); err != nil {
+				t.Fatalf("decode consumers: %v", err)
+			}
+			if got := consumerLines(consumers, startedAt, now); !slices.Equal(got, tc.want) {
+				t.Fatalf("consumerLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which issues Legion is waiting to start behind
+// a Dispatch issue nobody has finished (api.Admission.Blocked): each by issue and what it waits
+// on, roots and held children alike, on one line however many there are; with none the line says
+// so. Nothing here is the daemon's to clear, so the line names them and stops.
+func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
+	admission := func(blocked string) string {
+		return `"admission":{"cap":2,"active":["LEGION-208"],"waiting":["LEGION-211"],"blocked":` + blocked + `}`
+	}
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
+	for _, tc := range []struct {
+		name, blocked, want string
+	}{
+		{
+			name: "a held child and a waiting root",
+			blocked: `[{"issue":"LEGION-209","blockedBy":["LEGION-300"]},` +
+				`{"issue":"LEGION-211","blockedBy":["LEGION-301","LEGION-302"]}]`,
+			want: "blocked on Dispatch links: 2 — LEGION-209 waits on LEGION-300; LEGION-211 waits on LEGION-301, LEGION-302\n",
+		},
+		{
+			name:    "one",
+			blocked: `[{"issue":"LEGION-209","blockedBy":["LEGION-300"]}]`,
+			want:    "blocked on Dispatch links: 1 — LEGION-209 waits on LEGION-300\n",
+		},
+		{name: "none", blocked: `[]`, want: "blocked on Dispatch links: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + admission(tc.blocked) + `,"issues":{},"pendingStatusWrites":[]}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}

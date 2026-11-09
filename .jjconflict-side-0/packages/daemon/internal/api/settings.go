@@ -1,0 +1,549 @@
+package api
+
+import (
+	"maps"
+	"net/url"
+	"slices"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
+// 35): the values the daemon runs on, defaults included (a file that omits `review_round_cap`
+// answers 3), keyed as the file is. The route is unauthenticated, so the audience is every pod of
+// the deployment and anything else that reaches the daemon's API port; the block therefore leaves
+// out every credential, every source of one (a secretsd or Secret key, a key command) and every
+// path of a file holding one, and carries only what every pod may already know. Of the strings it
+// carries, the four address keys (`daemon_url`, `envoy_url`, `nats_urls`, `dispatch_url`) ride
+// endpointOf, which masks their userinfo as `xxxxx@`; a `runtime.kubernetes.plugins` source in
+// URL form rides it too (pluginSourceOf), losing its userinfo, query and fragment; and
+// `runtime.kubernetes.agent_secrets.url` rides as written, since the loader refuses userinfo, a
+// path, a query and a fragment on it. Every other string is a name, a path, a quantity or a
+// version, never a URL. SettingsOf is an allowlist: it names each field it emits, and a
+// `config.Config` field added without a place in settings_test.go's emitted or excluded table
+// fails TestSettingsOfClassifiesEveryConfigField.
+type Settings struct {
+	Project string `json:"project"`
+	Port    int    `json:"port"`
+	Bind    string `json:"bind"`
+	// AdvertiseHost is absent while the file sets none.
+	AdvertiseHost string          `json:"advertise_host,omitempty"`
+	StateDir      string          `json:"state_dir"`
+	Runtime       RuntimeSettings `json:"runtime"`
+	// AdmissionCap is the cap; `admission.cap` carries the same value, read from the same configuration.
+	AdmissionCap     int    `json:"admission_cap"`
+	DaemonURL        string `json:"daemon_url"`
+	WorkerStreamPort int    `json:"worker_stream_port"`
+	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then.
+	OmpInvocation   string   `json:"omp_invocation,omitempty"`
+	OmpLaunchPrefix []string `json:"omp_launch_prefix"`
+	// ProviderKeys are the variable names of `provider_keys`, in file order, and never the store
+	// key each names: the one key whose shape differs from the file's mapping.
+	ProviderKeys []string `json:"provider_keys"`
+	// Instructions is the deployment instructions' path, absent while the file sets none.
+	Instructions string `json:"instructions,omitempty"`
+	// The durations, in whole seconds as the file takes them.
+	WorkerBootTimeoutSeconds      int `json:"worker_boot_timeout_seconds"`
+	WorkerRPCTimeoutSeconds       int `json:"worker_rpc_timeout_seconds"`
+	WorkerStopTimeoutSeconds      int `json:"worker_stop_timeout_seconds"`
+	TreeStopTimeoutSeconds        int `json:"tree_stop_timeout_seconds"`
+	SlowCommandTimeoutSeconds     int `json:"slow_command_timeout_seconds"`
+	ProbeIntervalSeconds          int `json:"probe_interval_seconds"`
+	ControllerWakeIntervalSeconds int `json:"controller_wake_interval_seconds"`
+	// The counts.
+	WorkerBootRegistrationDeadlineIntervals int `json:"worker_boot_registration_deadline_intervals"`
+	LaunchFailureLimit                      int `json:"launch_failure_limit"`
+	PromptFailureLimit                      int `json:"prompt_failure_limit"`
+	PromptRetireLimit                       int `json:"prompt_retire_limit"`
+	// The wake pacing: at most WorkerWakesPerMinute wakes a minute in bursts of WorkerWakeBurst,
+	// a rate of 0 being the pacing off.
+	WorkerWakesPerMinute int      `json:"worker_wakes_per_minute"`
+	WorkerWakeBurst      int      `json:"worker_wake_burst"`
+	EnvoyURL             string   `json:"envoy_url"`
+	NatsURLs             []string `json:"nats_urls"`
+	// DispatchURL is absent while the file sets none.
+	DispatchURL string `json:"dispatch_url,omitempty"`
+	// Projects is `{}` while the file declares none.
+	Projects map[string]ProjectSettings `json:"projects"`
+	Gates    GatesSettings              `json:"gates"`
+	// GitHubApps is absent while the file configures none.
+	GitHubApps *GitHubAppsSettings `json:"github_apps,omitempty"`
+	// LingerHours and ProductionCheckHours are `linger_hours` and `production_check_hours` as the
+	// file takes them, decimal numbers of hours.
+	LingerHours          float64 `json:"linger_hours"`
+	ProductionCheckHours float64 `json:"production_check_hours"`
+	// PodUpdateRetaskHours and PodUpdateNoticeHours are `pod_update_retask_hours` and
+	// `pod_update_notice_hours`, decimal numbers of hours as the two above are: how long an open
+	// update round waits before it asks a worker again, and how long after the round opened the
+	// controller is told it is stalled. They are decimals so a live proof and the production
+	// check can drive each bound inside one run.
+	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
+	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
+	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
+	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
+	// the file names no limit, so a reader of the settings sees the key and reads from it that
+	// the deployment caps nothing.
+	PodUpdateMaxOpenRounds   *int                    `json:"pod_update_max_open_rounds"`
+	PodUpdateRoundsPerMinute *int                    `json:"pod_update_rounds_per_minute"`
+	ReviewRoundCap           int                     `json:"review_round_cap"`
+	Controller               config.ControllerLaunch `json:"controller"`
+	Capabilities             CapabilitiesSettings    `json:"capabilities"`
+	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
+	// role, `{}` while the file names none.
+	WorkerBackends map[string]string `json:"worker_backends"`
+	// RoleConfigFiles is `role_config_files`, the Oh My Pi overlays one role names and no other
+	// does, by role, `{}` while the file names none.
+	RoleConfigFiles map[string][]string `json:"role_config_files"`
+	// WorkerStallBackstopHours is `worker_stall_backstop_hours`, how long after a role's last
+	// recorded step the daemon ends that turn itself, by role, in hours as the file names them,
+	// 0 being the backstop off for that role. It is absent while the file names no role's
+	// bound, as `github_apps` is absent while the file configures no App: a deployment that
+	// names none runs every role on its own stall ladder's length, which is no number of this
+	// file's.
+	WorkerStallBackstopHours map[string]float64 `json:"worker_stall_backstop_hours,omitempty"`
+	// RepositoryRenames is `repository_renames`, the pairs this deployment treats as one
+	// repository wherever a name is compared, in configured order, `[]` while the file
+	// configures none.
+	RepositoryRenames []RepositoryRenameSettings `json:"repository_renames"`
+}
+
+// RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the
+// tmux block when the file names one.
+type RuntimeSettings struct {
+	Name       string              `json:"name"`
+	Kubernetes *KubernetesSettings `json:"kubernetes,omitempty"`
+	Tmux       *TmuxSettings       `json:"tmux,omitempty"`
+}
+
+// TmuxSettings is the settled `runtime.tmux` block: its Oh My Pi overlays as resolved, the names
+// alone of its pane variables, whose values are the operator's free text, delivered to every pane,
+// and the runtime whose claims the daemon takes over (`take_over`), empty for none.
+type TmuxSettings struct {
+	PaneEnv       []string `json:"pane_env"`
+	PiConfigFiles []string `json:"pi_config_files"`
+	TakeOver      string   `json:"take_over,omitempty"`
+}
+
+// KubernetesSettings is the settled `runtime.kubernetes` block without its credential file
+// (`kubeconfig`, `context`), the session store's own fields (`session_dsn_secret`, the credential
+// source, and `session_database`, the instance and login behind it) and the operator's `pod`
+// pieces, which every pod reads from its own spec.
+type KubernetesSettings struct {
+	Namespace    string               `json:"namespace"`
+	Image        string               `json:"image"`
+	StorageClass string               `json:"storage_class"`
+	IssueVolume  string               `json:"issue_volume"`
+	Scheduling   SchedulingSettings   `json:"scheduling"`
+	Resources    PodResourcesSettings `json:"resources"`
+	// SessionStore is the settled store's kind and nothing else of it: always one that keeps
+	// sessions in a database (ompsessions.Store.InDatabase), since `runtime: kubernetes` refuses
+	// "pvc" (readSessionStore).
+	SessionStore string                `json:"session_store"`
+	AgentSecrets *AgentSecretsSettings `json:"agent_secrets,omitempty"`
+	// Plugins is the settled pair, whatever its source, absent while the daemon knows none.
+	Plugins *PluginsSettings `json:"plugins,omitempty"`
+	// Setup is the argv every role runs before each start of its Oh My Pi, `[]` while the
+	// file sets none: every pod runs it, so every pod knows it, as with `omp_launch_prefix`.
+	Setup []string `json:"setup"`
+	// SkillsRepository is the skills marketplace every issue pod's roles install from
+	// (`runtime.kubernetes.skills_repository`), as `<owner>/<name>`; empty while the file names
+	// none. It is a public repository name, not a credential, and every pod's init container
+	// carries it on its command line already.
+	SkillsRepository string `json:"skills_repository"`
+	// TestPostgres is whether every issue pod serves its own PostgreSQL for tests, which every
+	// role of such a pod is told as LEGION_TEST_PG_DSN, so every pod may read it.
+	TestPostgres    bool                    `json:"test_postgres"`
+	RepositoryCache RepositoryCacheSettings `json:"repository_cache"`
+	// IdleRelease is the settled `runtime.kubernetes.idle_release`: how long an issue pod must
+	// have had no turn in progress and no turn due before the daemon releases it, and how long
+	// after a release the backstop wakes a phase worker whose phase is still open. Neither is a
+	// credential, and a role reads both to know whether its own pod may go away under it, so
+	// every pod may read them.
+	IdleRelease IdleReleaseSettings `json:"idle_release"`
+}
+
+// IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
+// release switched off.
+type IdleReleaseSettings struct {
+	IdleMinutes     int `json:"idle_minutes"`
+	BackstopMinutes int `json:"backstop_minutes"`
+}
+
+// SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
+// and `[]` when the file sets none.
+type SchedulingSettings struct {
+	NodeSelector  map[string]string    `json:"node_selector"`
+	Tolerations   []TolerationSettings `json:"tolerations"`
+	PriorityClass string               `json:"priority_class,omitempty"`
+}
+
+// TolerationSettings is one `scheduling.tolerations` entry; Value is absent under operator Exists.
+type TolerationSettings struct {
+	Key      string `json:"key"`
+	Operator string `json:"operator"`
+	Value    string `json:"value,omitempty"`
+	Effect   string `json:"effect"`
+}
+
+// PodResourcesSettings is the settled reservations of the two pods the daemon builds: every issue
+// pod's, whose one container runs all six workflow roles, and the controller's pod's.
+type PodResourcesSettings struct {
+	Issue      ReservationSettings `json:"issue"`
+	Controller ReservationSettings `json:"controller"`
+}
+
+// ReservationSettings is one settled reservation, every field filled.
+type ReservationSettings struct {
+	CPU                     string `json:"cpu"`
+	CPURequest              string `json:"cpu_request"`
+	Memory                  string `json:"memory"`
+	MemoryRequest           string `json:"memory_request"`
+	EphemeralStorage        string `json:"ephemeral_storage"`
+	EphemeralStorageRequest string `json:"ephemeral_storage_request"`
+}
+
+// RepositoryCacheSettings is the settled `runtime.kubernetes.repository_cache`: each repository
+// cache's volume, its fetch period, how long an unmapped repository's cache is kept, and its one
+// container's reservation in a pod's shape.
+type RepositoryCacheSettings struct {
+	Volume         string              `json:"volume"`
+	RefreshMinutes int                 `json:"refresh_minutes"`
+	RetainHours    int                 `json:"retain_hours"`
+	Resources      ReservationSettings `json:"resources"`
+}
+
+// AgentSecretsSettings is `runtime.kubernetes.agent_secrets` without `token_file`, the path of the
+// daemon's own login token.
+type AgentSecretsSettings struct {
+	URL                string `json:"url"`
+	Audience           string `json:"audience"`
+	TokenExpirySeconds int    `json:"token_expiry_seconds"`
+}
+
+// PluginsSettings is `runtime.kubernetes.plugins`.
+type PluginsSettings struct {
+	PiLegion string `json:"pi_legion"`
+	PiEnvoy  string `json:"pi_envoy"`
+}
+
+// ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
+// the state's `repositories` shows, never this file's.
+type ProjectSettings struct {
+	MergeQueueRole string         `json:"merge_queue_role,omitempty"`
+	Merge          MergeSettings  `json:"merge"`
+	SlackChannels  []string       `json:"slack_channels"`
+	Memory         MemorySettings `json:"memory"`
+	// ProductionCheck is `production_check` as the file writes it: the role that works the
+	// production check a merge closing one of the project's issues opens, or the word `off`
+	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
+	// the role takes for off.
+	ProductionCheck string `json:"production_check"`
+	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
+	// reads nothing from it (config's readProject, which warns a project that sets it): no
+	// deploy run wakes a production check any more. It is the deprecated key's resolved value,
+	// so it is always `[]` — the daemon holds no deploy whatever the file writes — and the
+	// settings body names every key a file may set, which is what an operator reads it for. It
+	// goes when the loader stops accepting the key.
+	Deploys []DeploySettings `json:"deploys"`
+}
+
+// MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
+// drawn under, absent for a project that names no block, which is off (config.Memory.Word); the
+// Oh My Pi overlays every role of a memory-group tree names after the operator's and its own, `[]`
+// for a project that names none; and the one instructions file the daemon appends to such a role's
+// system prompt, absent when the block names none. The paths are the operator's own file names,
+// which no credential rides in.
+type MemorySettings struct {
+	Mode         config.MemoryMode `json:"mode,omitempty"`
+	ConfigFiles  []string          `json:"config_files"`
+	Instructions string            `json:"instructions,omitempty"`
+}
+
+// DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
+// key: the repository as `<owner>/<name>`, the workflow's path and the step whose success was a
+// deploy. Nothing fills it any more — the loader keeps no entry — so the list is always empty;
+// the type is here so the key keeps the shape every reader of the settings knows until it goes.
+type DeploySettings struct {
+	Repo     string `json:"repo"`
+	Workflow string `json:"workflow"`
+	Step     string `json:"step"`
+}
+
+// RepositoryRenameSettings is one `repository_renames` entry as the file writes it: the
+// repository as it was and the one it moved to, each `<owner>/<name>`.
+type RepositoryRenameSettings struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// MergeSettings is a project's `merge` policy: the by-hand expressions as written, never compiled.
+type MergeSettings struct {
+	ByHand []string `json:"by_hand"`
+}
+
+// GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
+// `gates.design` named them, and `[]` for a deployment that gates none.
+type GatesSettings struct {
+	Design []record.DesignStep `json:"design"`
+}
+
+// GitHubAppsSettings is `github_apps`, each App its id and installations alone: never a private
+// key, nor the command or secret key it came from.
+type GitHubAppsSettings struct {
+	Implement GitHubAppSettings `json:"implement"`
+	Review    GitHubAppSettings `json:"review"`
+}
+
+// GitHubAppSettings is one App of `github_apps`.
+type GitHubAppSettings struct {
+	AppID         string            `json:"app_id"`
+	Installations map[string]string `json:"installations"`
+}
+
+// CapabilitiesSettings is `capabilities`: the decided capabilities with their reasons, `{}` when
+// none.
+type CapabilitiesSettings struct {
+	Decided map[string]string `json:"decided"`
+}
+
+// SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
+// unauthenticated route may read, and no credential, credential source or credential file path
+// (Settings). Of the URLs it emits, the four address keys ride endpointOf and a plugin source in
+// URL form rides pluginSourceOf, so no userinfo reaches the wire; `agent_secrets.url` is the one
+// URL that rides as written, which the loader has made safe by refusing userinfo, a path, a query
+// and a fragment on it (internal/config/kubernetes.go, readAgentSecrets). Every slice and map it
+// emits is non-nil, so the state marshals no `null` inside it.
+func SettingsOf(cfg config.Config) Settings {
+	settings := Settings{
+		Project:                                 cfg.Project,
+		Port:                                    cfg.Port,
+		Bind:                                    cfg.Bind,
+		AdvertiseHost:                           cfg.AdvertiseHost,
+		StateDir:                                cfg.StateDir,
+		Runtime:                                 RuntimeSettings{Name: cfg.Runtime.Name, Kubernetes: kubernetesSettingsOf(cfg.Runtime.Kubernetes), Tmux: tmuxSettingsOf(cfg.Runtime.Tmux)},
+		AdmissionCap:                            cfg.AdmissionCap,
+		DaemonURL:                               endpointOf(cfg.DaemonURL),
+		WorkerStreamPort:                        cfg.WorkerStreamPort,
+		OmpInvocation:                           cfg.OmpInvocation,
+		OmpLaunchPrefix:                         stringsOf(cfg.OmpLaunchPrefix),
+		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
+		Instructions:                            cfg.InstructionsPath,
+		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
+		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),
+		WorkerStopTimeoutSeconds:                seconds(cfg.WorkerStopTimeout),
+		TreeStopTimeoutSeconds:                  seconds(cfg.TreeStopTimeout),
+		SlowCommandTimeoutSeconds:               seconds(cfg.SlowCommandTimeout),
+		ProbeIntervalSeconds:                    seconds(cfg.ProbeInterval),
+		ControllerWakeIntervalSeconds:           seconds(cfg.ControllerWakeInterval),
+		WorkerBootRegistrationDeadlineIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
+		LaunchFailureLimit:                      cfg.LaunchFailureLimit,
+		PromptFailureLimit:                      cfg.PromptFailureLimit,
+		PromptRetireLimit:                       cfg.PromptRetireLimit,
+		WorkerWakesPerMinute:                    cfg.WorkerWakesPerMinute,
+		WorkerWakeBurst:                         cfg.WorkerWakeBurst,
+		EnvoyURL:                                endpointOf(cfg.EnvoyURL),
+		NatsURLs:                                make([]string, len(cfg.NatsURLs)),
+		DispatchURL:                             endpointOf(cfg.DispatchURL),
+		Projects:                                make(map[string]ProjectSettings, len(cfg.Projects)),
+		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
+		LingerHours:                             cfg.Linger.Hours(),
+		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
+		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
+		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
+		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
+		ReviewRoundCap:                          cfg.ReviewRoundCap,
+		Controller:                              cfg.ControllerLaunch,
+		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
+		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
+		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),
+		RepositoryRenames:                       repositoryRenamesOf(cfg.RepositoryRenames),
+	}
+	for i, key := range cfg.ProviderKeys {
+		settings.ProviderKeys[i] = key.Env
+	}
+	for i, raw := range cfg.NatsURLs {
+		settings.NatsURLs[i] = endpointOf(raw)
+	}
+	for key, project := range cfg.Projects {
+		entry := ProjectSettings{
+			MergeQueueRole: project.MergeQueueRole,
+			Merge:          MergeSettings{ByHand: make([]string, len(project.Merge.ByHand))},
+			SlackChannels:  stringsOf(project.SlackChannels),
+			Memory: MemorySettings{
+				Mode:         project.Memory.Mode,
+				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
+				Instructions: project.Memory.InstructionsPath,
+			},
+			ProductionCheck: project.ProductionCheckWord(),
+			Deploys:         []DeploySettings{},
+		}
+		for i, pattern := range project.Merge.ByHand {
+			entry.Merge.ByHand[i] = pattern.Expression
+		}
+		settings.Projects[key] = entry
+	}
+	if apps := cfg.GitHubApps; apps.Implement.AppID != "" || apps.Review.AppID != "" {
+		settings.GitHubApps = &GitHubAppsSettings{Implement: gitHubAppSettingsOf(apps.Implement), Review: gitHubAppSettingsOf(apps.Review)}
+	}
+	for name, reason := range cfg.Capabilities.Decided {
+		settings.Capabilities.Decided[string(name)] = reason
+	}
+	for role, backend := range cfg.WorkerBackends {
+		settings.WorkerBackends[string(role)] = string(backend)
+	}
+	for role, files := range cfg.RoleConfigFiles {
+		settings.RoleConfigFiles[string(role)] = stringsOf(files)
+	}
+	for role, bound := range cfg.WorkerStallBackstops {
+		if settings.WorkerStallBackstopHours == nil {
+			settings.WorkerStallBackstopHours = make(map[string]float64, len(cfg.WorkerStallBackstops))
+		}
+		settings.WorkerStallBackstopHours[string(role)] = bound.Hours()
+	}
+	return settings
+}
+
+// repositoryRenamesOf is the configured equivalence as the state shows it: one `{from, to}` per
+// pair, in configured order, and `[]` for a deployment that configures none.
+func repositoryRenamesOf(renames ghrepo.Renames) []RepositoryRenameSettings {
+	pairs := renames.Pairs()
+	settings := make([]RepositoryRenameSettings, len(pairs))
+	for i, pair := range pairs {
+		settings[i] = RepositoryRenameSettings{From: pair.From.String(), To: pair.To.String()}
+	}
+	return settings
+}
+
+// tmuxSettingsOf is block as the state shows it, nil when the file names none: the pane
+// variables' names in name order, never their values.
+func tmuxSettingsOf(block *config.Tmux) *TmuxSettings {
+	if block == nil {
+		return nil
+	}
+	return &TmuxSettings{PaneEnv: stringsOf(slices.Sorted(maps.Keys(block.PaneEnv))), PiConfigFiles: stringsOf(block.PiConfigFiles), TakeOver: block.TakeOver}
+}
+
+// kubernetesSettingsOf is block as the state shows it, nil under another runtime.
+func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
+	if block == nil {
+		return nil
+	}
+	settings := &KubernetesSettings{
+		Namespace:    block.Namespace,
+		Image:        block.Image,
+		StorageClass: block.StorageClass,
+		IssueVolume:  block.IssueVolume,
+		Scheduling: SchedulingSettings{
+			NodeSelector:  make(map[string]string, len(block.Scheduling.NodeSelector)),
+			Tolerations:   make([]TolerationSettings, len(block.Scheduling.Tolerations)),
+			PriorityClass: block.Scheduling.PriorityClass,
+		},
+		Resources: PodResourcesSettings{
+			Issue:      reservationSettingsOf(block.Resources.Issue),
+			Controller: reservationSettingsOf(block.Resources.Controller),
+		},
+		SessionStore:     string(block.SessionStore.Kind),
+		Setup:            stringsOf(block.Setup),
+		SkillsRepository: skillsRepositorySetting(block.SkillsRepository),
+		TestPostgres:     block.TestPostgres,
+		RepositoryCache: RepositoryCacheSettings{
+			Volume:         block.RepositoryCache.Volume,
+			RefreshMinutes: block.RepositoryCache.RefreshMinutes,
+			RetainHours:    block.RepositoryCache.RetainHours,
+			Resources:      reservationSettingsOf(block.RepositoryCache.Resources),
+		},
+		IdleRelease: IdleReleaseSettings{
+			IdleMinutes:     block.IdleRelease.IdleMinutes,
+			BackstopMinutes: block.IdleRelease.BackstopMinutes,
+		},
+	}
+	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
+	for i, toleration := range block.Scheduling.Tolerations {
+		settings.Scheduling.Tolerations[i] = TolerationSettings{Key: toleration.Key, Operator: toleration.Operator, Value: toleration.Value, Effect: toleration.Effect}
+	}
+	if broker := block.AgentSecrets; broker != nil {
+		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds}
+	}
+	if plugins := block.Plugins; plugins != nil {
+		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+	}
+	return settings
+}
+
+// reservationSettingsOf is one settled reservation as the state shows it.
+func reservationSettingsOf(reservation config.Reservation) ReservationSettings {
+	return ReservationSettings{
+		CPU: reservation.CPU, CPURequest: reservation.CPURequest,
+		Memory: reservation.Memory, MemoryRequest: reservation.MemoryRequest,
+		EphemeralStorage: reservation.EphemeralStorage, EphemeralStorageRequest: reservation.EphemeralStorageRequest,
+	}
+}
+
+// gitHubAppSettingsOf is app's id and installations, and nothing of its key.
+func gitHubAppSettingsOf(app config.GitHubApp) GitHubAppSettings {
+	settings := GitHubAppSettings{AppID: app.AppID, Installations: make(map[string]string, len(app.Installations))}
+	maps.Copy(settings.Installations, app.Installations)
+	return settings
+}
+
+// seconds is d in whole seconds, as the file's `*_seconds` keys take it.
+func seconds(d time.Duration) int {
+	return int(d / time.Second)
+}
+
+// stringsOf is a copy of values that is `[]` on the wire when values is nil.
+func stringsOf(values []string) []string {
+	return append([]string{}, values...)
+}
+
+// skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which
+// is what a file naming no skills marketplace leaves: ghrepo's own String() of the zero value is
+// not the empty string.
+func skillsRepositorySetting(repository ghrepo.Repository) string {
+	if repository.IsZero() {
+		return ""
+	}
+	return repository.String()
+}
+
+// endpointOf is one address key's value as the state shows it: the scheme, the host and the path,
+// with the userinfo, where the loader has NATS and Envoy credentials live (`use URL userinfo or a
+// secret for credentials`), masked as `xxxxx@`. "" stays "" (`dispatch_url` may be unset); an
+// address that yields no scheme and host is `xxxxx` whole, never the raw string. The result is
+// composed from the parsed scheme, the userinfo mark, the host and EscapedPath, so a query or a
+// fragment never reaches the wire either: the loader refuses one on each of the four address keys,
+// and a plugin URL's pre-signed query (pluginSourceOf) is dropped here. runtime/sandbox's namedURL
+// is the same mask for a log line and keeps the host alone; this one keeps the path because a
+// setting is a value its reader acts on, where namedURL's result is only a name.
+func endpointOf(address string) string {
+	if address == "" {
+		return ""
+	}
+	u, err := url.Parse(address)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "xxxxx"
+	}
+	endpoint := u.Scheme + "://"
+	if u.User != nil {
+		endpoint += "xxxxx@"
+	}
+	return endpoint + u.Host + u.EscapedPath()
+}
+
+// pluginSourceOf is one `runtime.kubernetes.plugins` source as the state shows it. The loader
+// (internal/config/kubernetes.go, readPluginSource) admits an exact version, an absolute tarball
+// path, or an http(s) URL stored whole, so a private or pre-signed tarball URL carries its
+// credential in userinfo or in a query (`X-Amz-Signature`): the URL form, told by the loader's own
+// shape test, rides endpointOf, which masks the userinfo and drops the query and fragment; a
+// version and a path carry no credential and pass through unchanged, never `xxxxx`.
+func pluginSourceOf(source string) string {
+	if u, err := url.Parse(source); err == nil && u.IsAbs() && (u.Scheme == "http" || u.Scheme == "https") {
+		return endpointOf(source)
+	}
+	return source
+}

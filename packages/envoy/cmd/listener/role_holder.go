@@ -178,9 +178,11 @@ func liveSessionEntry(
 }
 
 // bucketSessionEntry is sessionID's entry read from the session bucket itself
-// (session.SessionRegistry.Refresh) and from nowhere else, for the one decision that must not be
-// made on a cached entry: a soft claim naming a predecessor, which reads that predecessor's client
-// instance id to decide whether the role passes to the claimant (POST /v1/roles/set). It asks the
+// (session.SessionRegistry.Refresh) and from nowhere else, for the decisions that must not be
+// made on a cached entry because they turn on the entry's client instance id: a soft claim naming
+// a predecessor, which reads that predecessor's id to decide whether the role passes to the
+// claimant (POST /v1/roles/set), and the registration view of GET /v1/registry/<session_id>
+// (writeSessionRegistration), whose caller names that id in the delete that follows. It asks the
 // cache nothing, not even as a first answer the way liveSessionEntry does, because the cache
 // follows the bucket through a watcher and so trails it: the entry it still holds can carry an
 // instance id that session has since replaced, or no id at all where the bucket has one, and a

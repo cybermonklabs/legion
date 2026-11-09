@@ -1,0 +1,1349 @@
+import { expect, test } from "bun:test";
+import { type LegionRole, roleToken } from "@legion/contracts";
+import type { LegionPhase } from "@legion/contracts/legion-api";
+import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import {
+  findHandoffReport,
+  type JjRunner,
+  type LatestHandoff,
+} from "@legion/pi-shared/handoff-record";
+import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
+import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
+import { z } from "zod";
+import { createLegionTool, type LegionToolSession } from "./tools";
+
+function context(sessionId = "ses_208"): SessionContext {
+  return {
+    cwd: "/workspace",
+    hasUI: true,
+    setInterval: () => undefined,
+    setTimeout: () => undefined,
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getSessionFile: () => "/sessions/208.jsonl",
+      ensureOnDisk: async () => undefined,
+      getEntries: () => [],
+    },
+    ui: { notify: () => undefined },
+  };
+}
+
+const pi = {
+  zod: z,
+  sendMessage: () => undefined,
+  appendEntry: () => undefined,
+  getActiveTools: () => [],
+  setActiveTools: async () => undefined,
+  on: () => undefined,
+  registerTool: () => undefined,
+  registerCommand: () => undefined,
+  registerMessageRenderer: () => undefined,
+} as unknown as PiApi;
+
+/** The document lookup of a tool that must never look a document up. */
+const noDocumentLookup = async (_issue: string, reference: string): Promise<string> => {
+  throw new Error(`no document lookup expected for "${reference}"`);
+};
+
+/** The controller grant of a tool that answers for no controller. */
+const noControllerGrant = async (sessionId: string): Promise<never> => {
+  throw new Error(`no controller grant expected for ${sessionId}`);
+};
+
+/** The handoff report of a tool that must never complete a phase. */
+const noHandoffReport = async (phase: LegionPhase, role: LegionRole): Promise<never> => {
+  throw new Error(`no handoff report expected for the ${role} at ${phase}`);
+};
+
+/** The branch-head lookup of a tool that must never read a branch head. */
+const noBranchHead = async (): Promise<string> => {
+  throw new Error("branchHead is not expected in this test");
+};
+
+/** A claim's session on LEGION-208: a root architect's, a sub-architect's (its issue is not its
+ * tree), or a phase worker's by role. */
+function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession {
+  return {
+    kind: role === "architect" ? "architect" : "phase-worker",
+    role,
+    sessionID: "ses_208",
+    claimToken: roleToken("omp", issue, role),
+    generation: 5,
+    tree: "LEGION-208",
+    issue,
+    secret: "claim-secret",
+  };
+}
+
+/** A daemon stub that records every call: `grant` answers a grant, `state` the state given, and
+ * every other route the answer given for it (an empty object by default). */
+function recordingDaemon(options: {
+  readonly state?: unknown;
+  readonly answers?: Readonly<Record<string, unknown>>;
+}) {
+  const calls: Array<readonly [string, object | undefined]> = [];
+  const routes = [
+    "gateRegister",
+    "waveRelease",
+    "phaseBackward",
+    "phaseRetry",
+    "signOff",
+    "rootClose",
+    "childPark",
+    "childRerun",
+    "issueStatus",
+    "freshSession",
+    "compact",
+    "handoffComplete",
+    "releaseRecords",
+  ];
+  const daemon = {
+    grant: async (input: object) => {
+      calls.push(["grant", input]);
+      return { grantId: "grant-208", expiresAt: "2099-01-01T00:00:00Z" };
+    },
+    state: async () => {
+      calls.push(["state", undefined]);
+      return options.state ?? { issues: {} };
+    },
+    ...Object.fromEntries(
+      routes.map((name) => [
+        name,
+        async (input: object) => {
+          calls.push([name, input]);
+          const answer = options.answers?.[name];
+          if (answer instanceof Error) throw answer;
+          return answer ?? {};
+        },
+      ])
+    ),
+  };
+  return { calls, daemon: () => daemon as never };
+}
+
+/** The `legion` tool description Oh My Pi agents read, written out whole: the shared template
+ * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
+const OMP_LEGION_TOOL_DESCRIPTION =
+  "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
+  "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
+  "every release, resume and hold the daemon recorded, and over them the counts of releases, of resumes by wake kind and of holds by reason, " +
+  "the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a " +
+  "wake to the woken role's first turn. " +
+  "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+  "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for " +
+  "the architect, or the merger's READY packet), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict " +
+  "from any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
+  "yet), `ready: true` for the merger's READY. A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
+  "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
+  "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
+  "`legion/<issue>@origin` names, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
+  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
+  "`legion/<issue>@origin`, each naming the remedy. A production check report " +
+  "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
+  "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
+  "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
+  "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
+  "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+  "The daemon refuses " +
+  "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
+  "write this phase's handoff), " +
+  "HANDOFF_STALE_ASSIGNMENT (the issue left your phase and came back while your turn ran, so this completion is of the assignment before the one " +
+  "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
+  "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
+  "pull request on `legion/<issue>` and none recorded " +
+  "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide) and, for READY, each " +
+  "refusal the merger's role names; a refused completion changed nothing, so fix what it names and complete again. An accepted READY whose `note` " +
+  "begins MANUAL_MERGE_REQUIRED: is one a person merges: arm nothing. " +
+  "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
+  "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+  "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
+  "daemon holds your next task until your process comes back on the new pod, in this same session. " +
+  "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
+  "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
+  "counts a review round. sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
+  "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
+  "to done, or out of the workflow with park_child, and sign off again. close_root is refused the same way and with the " +
+  "same code while an issue beneath the root is still in the workflow, since closing it would stop that work mid-turn. " +
+  "release_children and rerun_child are refused for a child whose ancestor is in retro, merging or awaiting_merge " +
+  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+  "under it now: wait for the ancestor to close, then release it. " +
+  "The controller's read_state returns the daemon's whole state and set_status moves an issue to todo, backlog or icebox. " +
+  "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+  "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
+  "The answer is empty when the claim came back and nothing else is to be said, and names why nothing restarted the " +
+  "phase (phaseNotRestarted) when the claim came back owing no task and the workflow refused that restart: the claim is " +
+  "running, and no work was handed to it. " +
+  "The daemon refuses it for a claim it records as working, which may be in a turn " +
+  "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
+  "of it found gone, where no turn is running (CLAIM_IN_A_TURN as well), for a claim a " +
+  "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
+  "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
+  "one queued, one whose launch is in flight, and one left working under a relaunch the " +
+  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
+  "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
+  "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
+  "whatever task it owes again. Try compact before fresh_session for a claim that stays stuck. The answer says " +
+  "whether the session was compacted and, when it was not, why; the claim is back either way. The daemon refuses " +
+  "it for a claim that is suspended, failed or retired (CLAIM_NOT_RUNNING: fresh_session " +
+  "reaches that one), for a claim it records as working, which may be in a turn " +
+  "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
+  "of it found gone, where no turn is running (CLAIM_IN_A_TURN), for a claim a " +
+  "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
+  "where it is not), for a claim between states — one queued, one whose launch is in " +
+  "flight, one whose agent has registered and is not ready yet, which fresh_session " +
+  "reaches, and one left working under a relaunch the wake pacing parked " +
+  "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
+  "and for role controller. " +
+  "Each refusal says what the claim does now and which operation reaches each state. It " +
+  "names no moment to come back at: ask again later, and read the claim's state in " +
+  "read_state. " +
+  "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
+
+/** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
+ * and the controller. */
+const EVERY_SESSION: readonly LegionToolSession[] = [
+  claimSession("architect"),
+  claimSession("architect", "LEGION-209"),
+  ...(["planner", "implementer", "tester", "reviewer", "merger"] as const).map((role) =>
+    claimSession(role)
+  ),
+  { kind: "controller", sessionID: "ses_controller" },
+];
+
+const toolFor = (active: LegionToolSession) =>
+  createLegionTool({
+    pi,
+    daemon: recordingDaemon({}).daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => active,
+  });
+
+test("the legion tool's description is the exact text Oh My Pi agents read, for every session", () => {
+  for (const active of EVERY_SESSION) {
+    expect(toolFor(active).description).toBe(OMP_LEGION_TOOL_DESCRIPTION);
+  }
+});
+
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
+ * property and every `op` value in the order the tool declares them. */
+const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  type: "object",
+  properties: {
+    op: {
+      type: "string",
+      enum: [
+        "register_gate",
+        "release_children",
+        "request_backward_move",
+        "retry_or_escalate",
+        "sign_off",
+        "close_root",
+        "park_child",
+        "rerun_child",
+        "read_record",
+        "read_release_records",
+        "handoff_complete",
+        "ready_for_update",
+        "read_state",
+        "set_status",
+        "fresh_session",
+        "compact",
+      ],
+    },
+    issue: { type: "string" },
+    since: { type: "string" },
+    artifactId: {
+      type: "string",
+      description:
+        "register_gate's document for the step it registers: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
+    },
+    version: { type: "number" },
+    step: {
+      type: "string",
+      enum: ["decisions", "criteria", "spec"],
+      description:
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
+    },
+    issues: { type: "array", items: { type: "string" } },
+    to: {
+      type: "string",
+      enum: [
+        "admitted",
+        "planning",
+        "implementing",
+        "testing",
+        "reviewing",
+        "accepting",
+        "retro",
+        "merging",
+        "awaiting_merge",
+        "done",
+        "held",
+      ],
+    },
+    reason: { type: "string" },
+    decision: { type: "string", enum: ["retry", "escalate"] },
+    summary: { type: "string" },
+    verdict: { type: "string", enum: ["pass", "pending", "fail"] },
+    ready: { type: "boolean" },
+    wake_at: { type: "string" },
+    round: { type: "string" },
+    status: { type: "string", enum: ["todo", "backlog", "icebox"] },
+    role: {
+      type: "string",
+      enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
+    },
+  },
+  required: ["op"],
+  additionalProperties: false,
+});
+
+test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
+  for (const active of EVERY_SESSION) {
+    expect(JSON.stringify(z.toJSONSchema(toolFor(active).parameters as z.ZodType))).toBe(
+      OMP_LEGION_TOOL_SCHEMA
+    );
+  }
+});
+
+// The tool lists its fields by hand, so a field the phase ops take could be left out of it and
+// no agent could ever send it. Every field `phaseOpParameters` declares is in the schema.
+test("the schema the Oh My Pi tool exposes carries every field the phase ops take, wake_at among them", () => {
+  const declared = z.toJSONSchema(toolFor(claimSession("implementer")).parameters as z.ZodType);
+  const properties = Object.keys(declared.properties ?? {});
+  expect(properties).toContain("wake_at");
+  for (const field of Object.keys(phaseOpParameters(z))) expect(properties).toContain(field);
+});
+
+test("a root architect's handoff_complete is refused as unavailable before its arguments are read", async () => {
+  const root = toolFor(claimSession("architect"));
+  for (const parameters of [
+    {},
+    { summary: "" },
+    { summary: "x", verdict: "maybe", ready: "yes" },
+  ]) {
+    await expect(
+      root.execute("", { op: "handoff_complete", ...parameters }, undefined, undefined, context())
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: "handoff_complete is not available to a root architect session, which runs no phase",
+        },
+      ],
+      details: {},
+      isError: true,
+    });
+  }
+  // A field handoff_complete never takes is named first, as the operation's field check names it.
+  await expect(
+    root.execute("", { op: "handoff_complete", phase: "plan" }, undefined, undefined, context())
+  ).resolves.toMatchObject({
+    content: [
+      {
+        type: "text",
+        text: 'handoff_complete does not accept field "phase"; handoff_complete is not available to a root architect session, which runs no phase',
+      },
+    ],
+  });
+});
+
+test("the legion tool exposes only the workflow operations each role owns", async () => {
+  const state = {
+    issues: { "LEGION-208": { key: "LEGION-208", phase: "held" } },
+  };
+  const { calls, daemon } = recordingDaemon({ state });
+  const run = async (session: LegionToolSession, parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", parameters, undefined, undefined, context());
+  const architect = claimSession("architect");
+  const worker = claimSession("implementer");
+  const phaseWorkerTool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => worker,
+  });
+
+  await expect(
+    run(architect, {
+      op: "register_gate",
+      issue: "LEGION-208",
+      artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+      version: 7,
+    })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls).toEqual([
+    [
+      "grant",
+      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    [
+      "gateRegister",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 7,
+      },
+    ],
+  ]);
+
+  expect(
+    (phaseWorkerTool.parameters as z.ZodType).safeParse({
+      op: "request_backward_move",
+      to: "integrating",
+      reason: "test failed",
+    }).success
+  ).toBeFalse();
+
+  // A phase worker's move is of its own issue, which its grant names, so the request carries no
+  // issue; one naming another issue is refused before any mint. The architect's grant serves its
+  // whole tree, so its move names the issue it returns from accepting, and is refused without one.
+  await expect(
+    run(worker, { op: "request_backward_move", to: "implementing", reason: "test failed" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseBackward",
+    { grantId: "grant-208", to: "implementing", reason: "test failed" },
+  ]);
+  await expect(
+    run(worker, {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "test failed",
+      issue: "LEGION-208",
+    })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseBackward",
+    { grantId: "grant-208", to: "implementing", reason: "test failed" },
+  ]);
+  const beforeRefusedMove = calls.length;
+  await expect(
+    run(worker, {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "test failed",
+      issue: "LEGION-209",
+    })
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: expect.stringContaining(
+          "a phase worker moves only its own issue LEGION-208, not LEGION-209"
+        ),
+      },
+    ],
+  });
+  await expect(
+    run(architect, { op: "request_backward_move", to: "testing", reason: "the proof is thin" })
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [
+      { type: "text", text: expect.stringContaining("request_backward_move requires issue") },
+    ],
+  });
+  expect(calls).toHaveLength(beforeRefusedMove);
+  await expect(
+    run(architect, {
+      op: "request_backward_move",
+      to: "testing",
+      reason: "the proof is thin",
+      issue: "LEGION-209",
+    })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseBackward",
+    { grantId: "grant-208", to: "testing", reason: "the proof is thin", issue: "LEGION-209" },
+  ]);
+  await expect(
+    run(architect, { op: "release_children", issues: ["LEGION-209"] })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual(["waveRelease", { grantId: "grant-208", issues: ["LEGION-209"] }]);
+  await expect(
+    run(architect, { op: "retry_or_escalate", issue: "LEGION-208", decision: "retry" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseRetry",
+    { grantId: "grant-208", issue: "LEGION-208", decision: "retry" },
+  ]);
+  await expect(run(architect, { op: "sign_off", issue: "LEGION-208" })).resolves.toMatchObject({
+    details: {},
+  });
+  expect(calls.at(-1)).toEqual(["signOff", { grantId: "grant-208", issue: "LEGION-208" }]);
+  await expect(
+    run(architect, { op: "close_root", issue: "LEGION-208", reason: "no change" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "rootClose",
+    { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
+  ]);
+  await expect(run(architect, { op: "close_root", issue: "LEGION-208" })).resolves.toMatchObject({
+    isError: true,
+  });
+  await expect(run(architect, { op: "park_child", issue: "LEGION-209" })).resolves.toMatchObject({
+    details: {},
+  });
+  expect(calls.at(-1)).toEqual(["childPark", { grantId: "grant-208", issue: "LEGION-209" }]);
+  await expect(run(architect, { op: "rerun_child", issue: "LEGION-209" })).resolves.toMatchObject({
+    details: {},
+  });
+  expect(calls.at(-1)).toEqual(["childRerun", { grantId: "grant-208", issue: "LEGION-209" }]);
+  await expect(run(architect, { op: "read_record", issue: "LEGION-208" })).resolves.toMatchObject({
+    details: { record: state.issues["LEGION-208"] },
+  });
+  for (const op of ["sign_off", "close_root", "park_child", "rerun_child"]) {
+    await expect(run(worker, { op, issue: "LEGION-208" })).resolves.toMatchObject({
+      isError: true,
+    });
+  }
+  // The controller's operations belong to no claim, and nothing schedules a worker.
+  for (const session of [architect, worker]) {
+    await expect(run(session, { op: "read_state" })).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: `read_state is not available to a ${session.kind} session` }],
+    });
+    await expect(
+      run(session, { op: "set_status", issue: "LEGION-208", status: "todo" })
+    ).resolves.toMatchObject({ isError: true });
+  }
+  await expect(run(architect, { op: "spawn_worker", issue: "LEGION-208" })).resolves.toMatchObject({
+    isError: true,
+  });
+});
+
+// The records the production check of a deployment's idle release counts, read by the pod's own
+// claim: the daemon takes the claim token and the claim's secret, which stay in this process.
+test("read_release_records reads the window with this session's claim, and reports a refusal as read_record does", async () => {
+  const records = {
+    releases: [
+      {
+        id: 1,
+        issue: "LEGION-208",
+        generation: 2,
+        roles: ["tester"],
+        at: "2026-11-01T12:00:00Z",
+        bundleBytes: 64,
+      },
+    ],
+    resumes: [
+      {
+        id: 1,
+        release: 1,
+        issue: "LEGION-208",
+        role: "tester",
+        kind: "task",
+        at: "2026-11-01T12:30:00Z",
+        podReadyAt: "2026-11-01T12:31:00Z",
+        firstTurnAt: "2026-11-01T12:32:00Z",
+        stuck: false,
+      },
+    ],
+    holds: [],
+  };
+  const { calls, daemon } = recordingDaemon({ answers: { releaseRecords: records } });
+  const toolFor = (session: LegionToolSession, answering = daemon) =>
+    createLegionTool({
+      pi,
+      daemon: answering,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    });
+  const window = { op: "read_release_records", since: "2026-11-01T00:00:00Z" };
+
+  for (const session of [claimSession("tester"), claimSession("architect")]) {
+    await expect(
+      toolFor(session).execute("", window, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      details: {
+        counts: { releases: 1, resumes: 1, resumesByKind: { task: 1 }, holds: 0 },
+        wokenWithinTenMinutes: { releases: 0, share: 0 },
+        wakeToFirstTurnSeconds: { measured: 1, median: 120, p90: 120, max: 120 },
+      },
+    });
+    expect(calls.at(-1)).toEqual([
+      "releaseRecords",
+      {
+        claimToken: roleToken(
+          "omp",
+          "LEGION-208",
+          session.kind === "architect" ? "architect" : "tester"
+        ),
+        secret: "claim-secret",
+        since: "2026-11-01T00:00:00Z",
+      },
+    ]);
+  }
+
+  // A window the route could not read is refused here, before the request, as a field problem of
+  // any other op is; a refusal from the daemon reaches the agent as its own sentence.
+  const before = calls.length;
+  await expect(
+    toolFor(claimSession("tester")).execute(
+      "",
+      { op: "read_release_records", since: "yesterday" },
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: "read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
+      },
+    ],
+  });
+  expect(calls).toHaveLength(before);
+  const refusing = recordingDaemon({
+    answers: { releaseRecords: new Error("the daemon keeps no release records") },
+  });
+  await expect(
+    toolFor(claimSession("tester"), refusing.daemon).execute(
+      "",
+      window,
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: "the daemon keeps no release records" }],
+  });
+});
+
+// Every role reads one description, and the daemon accepts a verdict from the tester alone
+// (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer from its own instructions that
+// it reports one.
+test("the legion tool's description gives a verdict to the tester alone", () => {
+  const tool = createLegionTool({
+    pi,
+    daemon: recordingDaemon({}).daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("reviewer"),
+  });
+  expect(tool.description).toContain("`verdict` pass|fail from the tester alone");
+  expect(tool.description).not.toContain("when your role's instructions require one");
+});
+
+test("a workflow refusal tells the agent both its code and message", async () => {
+  const refusal = Object.assign(
+    new Error(
+      "POST /legion/v1/signoff failed with 409 SIGNOFF_OUTSIDE_ACCEPTING: LEGION-208 is in phase reviewing, not accepting; this sign-off changed nothing"
+    ),
+    {
+      code: "SIGNOFF_OUTSIDE_ACCEPTING",
+      detail: "LEGION-208 is in phase reviewing, not accepting; this sign-off changed nothing",
+    }
+  );
+  const tool = createLegionTool({
+    pi,
+    daemon: (() => ({
+      grant: async () => ({ grantId: "grant-208" }),
+      signOff: async () => Promise.reject(refusal),
+    })) as never,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("architect"),
+  });
+
+  await expect(
+    tool.execute("", { op: "sign_off", issue: "LEGION-208" }, undefined, undefined, context())
+  ).resolves.toMatchObject({
+    content: [{ type: "text", text: expect.stringContaining("SIGNOFF_OUTSIDE_ACCEPTING") }],
+    isError: true,
+    details: {},
+  });
+});
+
+test("register_gate takes the document reference the Dispatch tools take, and registers its id", async () => {
+  const spec = "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093";
+  const registered: unknown[] = [];
+  const resolved: Array<readonly [string, string]> = [];
+  const daemon = () =>
+    ({
+      grant: async () => ({ grantId: "grant-208" }),
+      gateRegister: async (input: object) => {
+        registered.push(input);
+        return {};
+      },
+    }) as never;
+  const run = (artifactId: string, issue = "LEGION-208", sessionIssue = "LEGION-208") =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: async (issue: string, reference: string) => {
+        resolved.push([issue, reference]);
+        if (reference === "notes") throw new Error(`No document "notes" on ${issue}`);
+        return spec;
+      },
+      session: () => claimSession("architect", sessionIssue),
+    }).execute(
+      "",
+      { op: "register_gate", issue, artifactId, version: 2 },
+      undefined,
+      undefined,
+      context()
+    );
+  const registration = { grantId: "grant-208", issue: "LEGION-208", artifactId: spec, version: 2 };
+
+  // A reference is looked up and its id registered; an id goes to the daemon as it is.
+  await expect(run("spec")).resolves.toMatchObject({ details: {} });
+  await expect(run(spec)).resolves.toMatchObject({ details: {} });
+  expect(registered).toEqual([registration, registration]);
+  expect(resolved).toEqual([["LEGION-208", "spec"]]);
+
+  // A reference the lookup refuses registers nothing. So does a call from anyone but the tree
+  // root's own architect, refused before any lookup: a sub-architect, or the root architect
+  // naming another issue.
+  const root = "the design gate belongs to the tree root LEGION-208";
+  const refusals = [
+    [await run("notes"), 'No document \\"notes\\" on LEGION-208'],
+    [await run("spec", "LEGION-208", "LEGION-209"), `${root}; its root architect registers it`],
+    [await run("spec", "LEGION-209"), `${root}; register it there`],
+  ] as const;
+  for (const [result, message] of refusals) {
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(message);
+  }
+  expect(registered).toHaveLength(2);
+  expect(resolved).toEqual([
+    ["LEGION-208", "spec"],
+    ["LEGION-208", "notes"],
+  ]);
+});
+
+/** The pane a completion runs in: its workspace and issue. */
+const paneEnv = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: "LEGION-208" };
+const TIP = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
+const STANDING = "c0de0000000000000000000000000000000000ff";
+/** The newest handoff record the pane's Dispatch holds for the phase. */
+const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 2 };
+
+/** A jj whose `@-` is on `legion/LEGION-208@origin`, whose tip is `TIP`, unless `pushed` is false. */
+function paneJj(pushed = true): JjRunner {
+  return async (args) => {
+    const revision = args[2] ?? "";
+    if (revision === "@-") return STANDING;
+    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & ${STANDING}::`)) {
+      return pushed ? TIP : "";
+    }
+    throw new Error(`unexpected jj ${args.join(" ")}`);
+  };
+}
+
+/** A Dispatch answering `answer` for every phase's newest record, recording each read in `reads`. */
+function paneDispatch(
+  reads: string[] = [],
+  answer: () => Promise<{ id: string; version: number }> = async () => RECORD
+): LatestHandoff {
+  return async (issue, word) => {
+    reads.push(`${issue} ${word}`);
+    return answer();
+  };
+}
+
+/** A daemon state with LEGION-208 at `phase` (and LEGION-209, a sub-architect's issue, admitted). */
+const stateAt = (phase: LegionPhase) => ({
+  issues: {
+    "LEGION-208": { key: "LEGION-208", phase },
+    "LEGION-209": { key: "LEGION-209", phase: "admitted" },
+  },
+});
+
+test("handoff_complete finds the phase's handoff record and the pushed tip, posts them with a fresh grant, closes the phase on success, and answers the daemon's note", async () => {
+  const completed: string[] = [];
+  const reads: string[] = [];
+  const { calls, daemon } = recordingDaemon({
+    state: stateAt("implementing"),
+    answers: {
+      handoffComplete: {
+        note: "pull request #312 is already merged, so READY was published without reading its head's handoffs",
+      },
+    },
+  });
+  const run = (
+    session: LegionToolSession,
+    parameters: Record<string, unknown>,
+    jj: JjRunner = paneJj(),
+    latestHandoff: LatestHandoff = paneDispatch(reads)
+  ) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
+      onUpdateAnswered: () => undefined,
+      handoffReport: (phase, role) =>
+        findHandoffReport({ phase, role, env: paneEnv, jj, latestHandoff }),
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", parameters, undefined, undefined, context());
+
+  // The implementer at implementing: the issue's phase is read from the daemon's state, the newest
+  // implement record is read from the pane's Dispatch and the pushed tip from its jj, and the
+  // request carries both with the wire's zero values for the verdict and READY.
+  await expect(
+    run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." })
+  ).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: '{"note":"pull request #312 is already merged, so READY was published without reading its head\'s handoffs"}',
+      },
+    ],
+    details: {
+      note: "pull request #312 is already merged, so READY was published without reading its head's handoffs",
+    },
+  });
+  expect(calls).toEqual([
+    ["state", undefined],
+    [
+      "grant",
+      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    [
+      "handoffComplete",
+      {
+        grantId: "grant-208",
+        summary: "Done.",
+        verdict: "",
+        ready: false,
+        commit: TIP,
+        handoffId: RECORD.id,
+        handoffVersion: RECORD.version,
+      },
+    ],
+  ]);
+  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(completed).toEqual(["ses_208"]);
+
+  // A role that does not work the issue's phase reports the commit the workspace stands on and no
+  // record, and the daemon refuses it naming whose phase it is: the tester at implementing, the
+  // merger's READY, and a sub-architect, each posting @-. The verdict and READY travel as given.
+  await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    { grantId: "grant-208", summary: "Red.", verdict: "fail", ready: false, commit: STANDING },
+  ]);
+  await run(claimSession("merger"), { op: "handoff_complete", summary: "READY", ready: true });
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    { grantId: "grant-208", summary: "READY", verdict: "", ready: true, commit: STANDING },
+  ]);
+  await run(claimSession("architect", "LEGION-209"), {
+    op: "handoff_complete",
+    summary: "Children released.",
+  });
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Children released.",
+      verdict: "",
+      ready: false,
+      commit: STANDING,
+    },
+  ]);
+  expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
+  expect(reads).toEqual(["LEGION-208 implement"]);
+
+  // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
+  // verdict or a ready of the wrong shape; and a phase, which the daemon knows from the grant.
+  const before = calls.length;
+  const refusals = [
+    [claimSession("architect"), { summary: "Done." }, "root architect session"],
+    [claimSession("implementer"), {}, "handoff_complete requires summary"],
+    [
+      claimSession("tester"),
+      { summary: "x", verdict: "maybe" },
+      "verdict is pass, pending or fail",
+    ],
+    [claimSession("merger"), { summary: "x", ready: "yes" }, "ready is true or false"],
+    [claimSession("planner"), { summary: "x", phase: "plan" }, 'does not accept field "phase"'],
+  ] as const;
+  for (const [session, parameters, message] of refusals) {
+    const result = await run(session, { op: "handoff_complete", ...parameters });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(before);
+  expect(completed).toHaveLength(4);
+
+  // `pending` is a production check's verdict: on a phase completion it is refused once the record
+  // says the completion is a phase's, with nothing minted or posted.
+  const pendingOnPhase = await run(claimSession("tester"), {
+    op: "handoff_complete",
+    summary: "Waiting on the deploy.",
+    verdict: "pending",
+  });
+  expect(pendingOnPhase.isError).toBe(true);
+  expect(pendingOnPhase.content).toEqual([
+    {
+      type: "text",
+      text: "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's",
+    },
+  ]);
+  expect(calls.at(-1)).toEqual(["state", undefined]);
+  expect(completed).toHaveLength(4);
+
+  // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
+  // then nothing is minted or posted, and the phase stays open.
+  const reportRefusals = [
+    [
+      paneJj(),
+      paneDispatch([], async () => {
+        throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, "no implement handoff");
+      }),
+      "LEGION-208 has no implement handoff in Dispatch: write it with `dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`, then complete again",
+    ],
+    [
+      paneJj(),
+      paneDispatch([], async () => {
+        throw new DispatchServiceError("UNAVAILABLE", 503, "database is starting");
+      }),
+      "handoff_complete could not read LEGION-208's newest implement handoff from Dispatch: 503 UNAVAILABLE: database is starting; complete again once Dispatch answers",
+    ],
+    [
+      paneJj(false),
+      paneDispatch(),
+      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`, then complete again`,
+    ],
+  ] as const;
+  for (const [jj, latestHandoff, message] of reportRefusals) {
+    const result = await run(
+      claimSession("implementer"),
+      { op: "handoff_complete", summary: "Done." },
+      jj,
+      latestHandoff
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: message }]);
+    expect(calls.at(-1)).toEqual(["state", undefined]);
+  }
+  expect(completed).toHaveLength(4);
+});
+
+test("the planner, the tester and the reviewer post their phase's handoff record and no commit", async () => {
+  for (const [phase, role, word] of [
+    ["planning", "planner", "plan"],
+    ["testing", "tester", "test"],
+    ["reviewing", "reviewer", "review"],
+  ] as const) {
+    const reads: string[] = [];
+    const { calls, daemon } = recordingDaemon({ state: stateAt(phase) });
+    const result = await createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: (issuePhase, claimRole) =>
+        findHandoffReport({
+          phase: issuePhase,
+          role: claimRole,
+          env: paneEnv,
+          jj: async (args) => {
+            throw new Error(`no jj expected for the ${role}: ${args.join(" ")}`);
+          },
+          latestHandoff: paneDispatch(reads),
+        }),
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession(role),
+    }).execute(
+      "",
+      {
+        op: "handoff_complete",
+        summary: "Done.",
+        ...(role === "tester" ? { verdict: "pass" } : {}),
+      },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result.isError).toBeUndefined();
+    expect(reads).toEqual([`LEGION-208 ${word}`]);
+    expect(calls.at(-1)).toEqual([
+      "handoffComplete",
+      {
+        grantId: "grant-208",
+        summary: "Done.",
+        verdict: role === "tester" ? "pass" : "",
+        ready: false,
+        handoffId: RECORD.id,
+        handoffVersion: RECORD.version,
+      },
+    ]);
+  }
+});
+
+/** LEGION-208 closed by its merge, with its production check open on its second look: `role` is
+ * the role the check records as the one that works it, and `last` false says a look follows. */
+const openCheck = {
+  repo: "acme/widgets",
+  pullRequest: 1239,
+  mergeCommit: "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
+  openedAt: "2026-09-22T08:40:12Z",
+  role: "implementer",
+  looks: 2,
+  lookOpen: true,
+  lastWake: {
+    kind: "issue.deployed",
+    detail: "run 38230245571 completed 2026-09-22T09:10:44Z",
+    at: "2026-09-22T09:10:51Z",
+  },
+  nextWakeAt: "2026-10-06T08:40:12Z",
+  last: false,
+};
+
+/** The time a pending report names for its next look. */
+const NEXT_LOOK = "2026-09-29T09:00:00Z";
+
+test("a report on its closed issue's production check carries a verdict and no commit, and a pending its next look", async () => {
+  const completed: string[] = [];
+  const { calls, daemon } = recordingDaemon({
+    state: {
+      issues: {
+        "LEGION-208": { key: "LEGION-208", phase: "done", check: openCheck },
+      },
+    },
+  });
+  const run = (session: LegionToolSession, parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
+      onUpdateAnswered: () => undefined,
+      // A check report resolves no record and no commit: the report is never asked.
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", parameters, undefined, undefined, context());
+
+  // Each of the three verdicts is posted with a fresh grant, the summary and no commit, and the
+  // check task's turn is closed as a phase's would be. The pending names its next look, which
+  // travels as the daemon's own `wakeAt`.
+  for (const verdict of ["pending", "pass", "fail"]) {
+    const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
+    await expect(
+      run(claimSession("implementer"), {
+        op: "handoff_complete",
+        summary: `Look 2: ${verdict}.`,
+        verdict,
+        ...wake,
+      })
+    ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+    expect(calls.slice(-3)).toEqual([
+      ["state", undefined],
+      [
+        "grant",
+        { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      ],
+      [
+        "handoffComplete",
+        {
+          grantId: "grant-208",
+          summary: `Look 2: ${verdict}.`,
+          verdict,
+          ready: false,
+          ...(verdict === "pending" ? { wakeAt: NEXT_LOOK } : {}),
+        },
+      ],
+    ]);
+  }
+  expect(completed).toEqual(["ses_208", "ses_208", "ses_208"]);
+
+  // Refused after the record is read, with nothing minted or posted: a report with no verdict,
+  // and one sent as READY.
+  const refusals = [
+    [
+      { summary: "Looked." },
+      "handoff_complete on a production check names a verdict of pass, pending or fail",
+    ],
+    [
+      { summary: "Looked.", verdict: "pass", ready: true },
+      "handoff_complete on a production check is no READY: leave ready out",
+    ],
+  ] as const;
+  for (const [parameters, message] of refusals) {
+    const result = await run(claimSession("implementer"), {
+      op: "handoff_complete",
+      ...parameters,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: message }]);
+    expect(calls.at(-1)).toEqual(["state", undefined]);
+  }
+  expect(completed).toHaveLength(3);
+
+  // A completion on a done issue carries what a check report carries, whatever role sends it, and
+  // the daemon decides which it is: the tester's report on a check the tester's role works is
+  // posted, with the wake its pending named.
+  const { calls: testerCalls, daemon: testerDaemon } = recordingDaemon({
+    state: {
+      issues: {
+        "LEGION-208": {
+          key: "LEGION-208",
+          phase: "done",
+          check: { ...openCheck, role: "tester" },
+        },
+      },
+    },
+  });
+  const testerAtDone = await createLegionTool({
+    pi,
+    daemon: testerDaemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("tester"),
+  }).execute(
+    "",
+    { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: NEXT_LOOK },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(testerAtDone.isError).toBeUndefined();
+  expect(testerCalls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Looked.",
+      verdict: "pending",
+      ready: false,
+      wakeAt: NEXT_LOOK,
+    },
+  ]);
+
+  // The implementer's completion on a done issue carries what a check report carries whatever the
+  // record shows: once the check closed, or when none opened, no commit is looked up and the
+  // report is posted as given, for the daemon to answer (api/handoff.go): CHECK_NOT_OPEN for a
+  // session working a look, and CHECK_LOOK_NOT_SERVED for one that works none.
+  const { calls: closedCalls, daemon: closedDaemon } = recordingDaemon({
+    state: { issues: { "LEGION-208": { key: "LEGION-208", phase: "done" } } },
+  });
+  const implementerAtDone = await createLegionTool({
+    pi,
+    daemon: closedDaemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  }).execute("", { op: "handoff_complete", summary: "Looked." }, undefined, undefined, context());
+  expect(implementerAtDone.isError).toBeUndefined();
+  expect(closedCalls.at(-1)).toEqual([
+    "handoffComplete",
+    { grantId: "grant-208", summary: "Looked.", verdict: "", ready: false },
+  ]);
+});
+
+test("a refused completion surfaces the daemon's code and leaves the phase open", async () => {
+  const refusal = Object.assign(
+    new Error(
+      `POST /legion/v1/handoff/complete failed with 409 HANDOFF_NOT_NEW: the implementer named handoff record ${RECORD.id} for its previous phase of LEGION-208; write this phase's handoff with \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\` before completing`
+    ),
+    { code: "HANDOFF_NOT_NEW" }
+  );
+  const completed: string[] = [];
+  const { daemon } = recordingDaemon({
+    state: stateAt("implementing"),
+    answers: { handoffComplete: refusal },
+  });
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: paneJj(),
+        latestHandoff: paneDispatch(),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  });
+
+  await expect(
+    tool.execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context())
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: expect.stringContaining("HANDOFF_NOT_NEW") }],
+  });
+  expect(completed).toEqual([]);
+});
+
+test("the controller reads the whole state without a grant and sets an issue's status with its own", async () => {
+  const state = {
+    daemon: { project: "OMP" },
+    admission: { cap: 2, active: ["LEGION-208"], waiting: [], trees: ["LEGION-208"] },
+    issues: { "LEGION-208": { key: "LEGION-208", phase: "held", holdReason: "escalated" } },
+    capabilities: [],
+  };
+  const minted: string[] = [];
+  // What the daemon answers a fresh session whose phase restart the workflow refused: the claim
+  // came back, and this is the one thing about it the controller can read nowhere else.
+  const notRestarted = {
+    phaseNotRestarted:
+      "legion-omp-legion-209-implementer is back in a new session owing no task, and nothing restarted its phase: " +
+      "LEGION-209 is still held after the retry of its phase implementing",
+  };
+  const { calls, daemon } = recordingDaemon({ state, answers: { freshSession: notRestarted } });
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: async (sessionId) => {
+      minted.push(sessionId);
+      return { grantId: "controller-grant-1", expiresAt: "2099-01-01T00:00:00Z" };
+    },
+    onPhaseCompleted: () => {
+      throw new Error("a controller completes no phase");
+    },
+    onUpdateAnswered: () => {
+      throw new Error("a controller answers no update task");
+    },
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => ({ kind: "controller", sessionID: "ses_controller" }),
+  });
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  // read_state is the state verbatim: the skill reads `issues.<KEY>.phase|holdReason`,
+  // `admission` and `capabilities` from it.
+  await expect(run({ op: "read_state" })).resolves.toEqual({
+    content: [{ type: "text", text: JSON.stringify(state) }],
+    details: state,
+  });
+  expect(calls).toEqual([["state", undefined]]);
+  expect(minted).toEqual([]);
+
+  await expect(run({ op: "set_status", issue: "LEGION-208", status: "backlog" })).resolves.toEqual({
+    content: [{ type: "text", text: "{}" }],
+    details: {},
+  });
+  expect(minted).toEqual(["ses_controller"]);
+  expect(calls.at(-1)).toEqual([
+    "issueStatus",
+    { grantId: "controller-grant-1", issue: "LEGION-208", status: "backlog" },
+  ]);
+
+  // fresh_session names the claim by its issue and role, and mints the controller's grant as
+  // set_status does: the daemon decides which claims it reaches. Its answer is the daemon's own,
+  // so the controller reads why nothing restarted the claim's phase; nothing else records it.
+  await expect(
+    run({ op: "fresh_session", issue: "LEGION-209", role: "implementer" })
+  ).resolves.toEqual({
+    content: [{ type: "text", text: JSON.stringify(notRestarted) }],
+    details: notRestarted,
+  });
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+  expect(calls.at(-1)).toEqual([
+    "freshSession",
+    { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
+  ]);
+
+  // compact names the claim the same way and returns the daemon's own answer: a compaction Oh
+  // My Pi refused or skipped says so and names why, and the claim is back either way.
+  await expect(run({ op: "compact", issue: "LEGION-209", role: "implementer" })).resolves.toEqual({
+    content: [{ type: "text", text: "{}" }],
+    details: {},
+  });
+  expect(calls.at(-1)).toEqual([
+    "compact",
+    { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
+  ]);
+  // Refused before any mint: a status the board does not have, a missing issue, a role no claim
+  // is on — the controller's own among them — and every operation of a claim.
+  const before = calls.length;
+  const refusals = [
+    [{ op: "set_status", issue: "LEGION-208", status: "done" }, "todo, backlog, icebox"],
+    [{ op: "set_status", status: "todo" }, "set_status requires issue"],
+    [{ op: "fresh_session", issue: "LEGION-209" }, "fresh_session requires role architect"],
+    [
+      { op: "fresh_session", issue: "LEGION-209", role: "controller" },
+      "fresh_session requires role architect",
+    ],
+    [{ op: "fresh_session", role: "implementer" }, "fresh_session requires issue"],
+    [
+      { op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" },
+      'fresh_session does not accept field "status"',
+    ],
+    [{ op: "read_state", issue: "LEGION-208" }, 'read_state does not accept field "issue"'],
+    [{ op: "read_record", issue: "LEGION-208" }, "not available to a controller session"],
+    [
+      { op: "read_release_records", since: "2026-11-01T00:00:00Z" },
+      "not available to a controller session",
+    ],
+    [{ op: "handoff_complete", summary: "Done." }, "not available to a controller session"],
+    [{ op: "sign_off", issue: "LEGION-208" }, "not available to a controller session"],
+  ] as const;
+  for (const [parameters, message] of refusals) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});

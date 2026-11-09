@@ -1,0 +1,600 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+)
+
+type assigneeIssue struct {
+	Key      string  `json:"key"`
+	Parent   *string `json:"parent"`
+	Assignee *string `json:"assignee"`
+}
+
+func createAssigneeProject(t *testing.T, handler http.Handler) {
+	t.Helper()
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func expectAssignee(t *testing.T, got *string, want string) {
+	t.Helper()
+	if want == "" {
+		if got != nil {
+			t.Fatalf("assignee = %q, want null", *got)
+		}
+		return
+	}
+	if got == nil || *got != want {
+		t.Fatalf("assignee = %v, want %q", got, want)
+	}
+}
+
+// A human who creates an issue is its assignee. Every identity names a person by lowercase
+// email, so the assignee is lowercase even when the identity header that named them was not.
+func TestCreateIssueByHumanAssignsCreatorLowercased(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Mine",
+	}, "Alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, response).Assignee, "alice")
+}
+
+// A personal token acts for its owner: an issue it creates is assigned to that human.
+func TestCreateIssueByPersonalTokenAssignsOwner(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	minted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "planner"}, "Bob")
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("mint token: status=%d body=%s", minted.Code, minted.Body.String())
+	}
+	token := decodeBody[agentTokenResponse](t, minted).Token
+	response := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "For Bob", "actor": sessionActor(),
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create issue with personal token: status=%d body=%s", response.Code, response.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, response).Assignee, "bob")
+}
+
+// The shared token has no owner: a child inherits its parent's assignee (null included) and a
+// root issue is unassigned; an explicit assignee always wins.
+func TestCreateIssueBySharedTokenInheritsParentOrStaysUnassigned(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	root := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Root", "actor": sessionActor(),
+	}, "agent-token")
+	if root.Code != http.StatusCreated {
+		t.Fatalf("create root: status=%d body=%s", root.Code, root.Body.String())
+	}
+	rootIssue := decodeBody[assigneeIssue](t, root)
+	expectAssignee(t, rootIssue.Assignee, "")
+
+	orphanChild := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Child of unassigned", "parent": rootIssue.Key, "actor": sessionActor(),
+	}, "agent-token")
+	if orphanChild.Code != http.StatusCreated {
+		t.Fatalf("create child: status=%d body=%s", orphanChild.Code, orphanChild.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, orphanChild).Assignee, "")
+
+	explicit := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Explicit", "assignee": " Bob ", "actor": sessionActor(),
+	}, "agent-token")
+	if explicit.Code != http.StatusCreated {
+		t.Fatalf("create explicit: status=%d body=%s", explicit.Code, explicit.Body.String())
+	}
+	explicitIssue := decodeBody[assigneeIssue](t, explicit)
+	expectAssignee(t, explicitIssue.Assignee, "bob")
+
+	child := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Child of Bob", "parent": explicitIssue.Key, "actor": sessionActor(),
+	}, "agent-token")
+	if child.Code != http.StatusCreated {
+		t.Fatalf("create child of bob: status=%d body=%s", child.Code, child.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, child).Assignee, "bob")
+
+	humanOverride := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Alice files for Bob", "assignee": "bob",
+	}, "alice")
+	if humanOverride.Code != http.StatusCreated {
+		t.Fatalf("create with explicit assignee as human: status=%d body=%s", humanOverride.Code, humanOverride.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, humanOverride).Assignee, "bob")
+}
+
+func TestIssueAssigneeRejectsUnlistedAndMalformedLogins(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Target",
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	key := decodeBody[assigneeIssue](t, created).Key
+
+	for _, test := range []struct {
+		name   string
+		method string
+		target string
+		body   map[string]any
+		code   string
+	}{
+		{name: "create unlisted", method: http.MethodPost, target: "/api/v1/issues", body: map[string]any{"project": "CORE", "title": "X", "assignee": "mallory"}, code: "ASSIGNEE_NOT_ALLOWED"},
+		{name: "patch unlisted", method: http.MethodPatch, target: "/api/v1/issues/" + key, body: map[string]any{"assignee": "mallory"}, code: "ASSIGNEE_NOT_ALLOWED"},
+		{name: "patch blank", method: http.MethodPatch, target: "/api/v1/issues/" + key, body: map[string]any{"assignee": "  "}, code: "ASSIGNEE_NOT_ALLOWED"},
+		{name: "patch number", method: http.MethodPatch, target: "/api/v1/issues/" + key, body: map[string]any{"assignee": 7}, code: "INVALID_ISSUE"},
+		{name: "create object", method: http.MethodPost, target: "/api/v1/issues", body: map[string]any{"project": "CORE", "title": "X", "assignee": map[string]any{"login": "bob"}}, code: "INVALID_ISSUE"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := dispatchRequest(t, handler, test.method, test.target, test.body, "alice")
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
+				t.Fatalf("status=%d body=%s, want 400 %s", response.Code, response.Body.String(), test.code)
+			}
+			if test.code == "ASSIGNEE_NOT_ALLOWED" && test.name != "patch blank" && !strings.Contains(response.Body.String(), "mallory") {
+				t.Fatalf("refusal does not name the login: %s", response.Body.String())
+			}
+		})
+	}
+	unchanged := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+	expectAssignee(t, decodeBody[assigneeIssue](t, unchanged).Assignee, "alice")
+}
+
+// Anyone who has signed in may reassign; the update event carries the new assignee and PATCH
+// null clears it. A PATCH that does not mention assignee (the daemon's status writes) leaves it.
+// An assignee move names both logins in thread_logins, since the Inbox lists an open ask on an
+// open issue only to the person it is assigned to; a write that moves neither the status nor the
+// assignee carries no thread_logins at all.
+func TestPatchIssueReassignsClearsAndLeavesAssigneeAlone(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createAssigneeProject(t, handler)
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Handoff",
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	key := decodeBody[assigneeIssue](t, created).Key
+
+	reassigned := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		"assignee": "Bob",
+	}, "bob")
+	if reassigned.Code != http.StatusOK {
+		t.Fatalf("reassign: status=%d body=%s", reassigned.Code, reassigned.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, reassigned).Assignee, "bob")
+
+	statusOnly := agentRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		"status": "in_progress", "actor": sessionActor(),
+	}, "agent-token")
+	if statusOnly.Code != http.StatusOK {
+		t.Fatalf("status patch: status=%d body=%s", statusOnly.Code, statusOnly.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, statusOnly).Assignee, "bob")
+	titleOnly := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		"title": "Handoff, renamed",
+	}, "alice")
+	if titleOnly.Code != http.StatusOK {
+		t.Fatalf("title patch: status=%d body=%s", titleOnly.Code, titleOnly.Body.String())
+	}
+
+	eventsResponse := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/events", nil, "alice")
+	if eventsResponse.Code != http.StatusOK {
+		t.Fatalf("list events: status=%d body=%s", eventsResponse.Code, eventsResponse.Body.String())
+	}
+	var events []struct {
+		Type    string `json:"type"`
+		Actor   model.Actor
+		Payload struct {
+			Assignee     *string  `json:"assignee"`
+			Changed      []string `json:"changed"`
+			ThreadLogins []string `json:"thread_logins"`
+		} `json:"payload"`
+	}
+	if err := json.NewDecoder(eventsResponse.Body).Decode(&events); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	sawReassign, sawStatus, sawTitle := false, false, false
+	for _, event := range events {
+		if event.Type == "issue.updated" && event.Actor.Kind == "user" && event.Actor.ID == "bob" {
+			sawReassign = true
+			expectAssignee(t, event.Payload.Assignee, "bob")
+			// The issue moved from alice to bob, so an open ask on it leaves alice's Replies
+			// list and enters bob's; the event names both, sorted.
+			if !slices.Equal(event.Payload.Changed, []string{"assignee"}) || !slices.Equal(event.Payload.ThreadLogins, []string{"alice", "bob"}) {
+				t.Fatalf("reassignment's issue.updated changed = %#v, thread_logins %#v; want [assignee] and [alice bob]", event.Payload.Changed, event.Payload.ThreadLogins)
+			}
+		}
+		if event.Type == "issue.updated" && event.Actor.Kind == "user" && event.Actor.ID == "alice" {
+			sawTitle = true
+			if !slices.Equal(event.Payload.Changed, []string{"title"}) || event.Payload.ThreadLogins != nil {
+				t.Fatalf("retitle's issue.updated changed = %#v, thread_logins %#v; want [title] and none", event.Payload.Changed, event.Payload.ThreadLogins)
+			}
+		}
+		if event.Type == "issue.updated" && event.Actor.Kind == "session" {
+			sawStatus = true
+			// Nobody has written in the issue's threads, so the status move names nobody, as [].
+			if !slices.Equal(event.Payload.Changed, []string{"status"}) || event.Payload.ThreadLogins == nil || len(event.Payload.ThreadLogins) != 0 {
+				t.Fatalf("status write's issue.updated changed = %#v, thread_logins %#v; want [status] and []", event.Payload.Changed, event.Payload.ThreadLogins)
+			}
+		}
+		if event.Type == "issue.created" {
+			expectAssignee(t, event.Payload.Assignee, "alice")
+			if !slices.Contains(event.Payload.Changed, "assignee") {
+				t.Fatalf("issue.created changed = %#v, want the defaulted assignee among them", event.Payload.Changed)
+			}
+		}
+	}
+	if !sawStatus {
+		t.Fatalf("the status write did not emit issue.updated by its session: %#v", events)
+	}
+	if !sawReassign {
+		t.Fatalf("reassignment did not emit issue.updated by bob: %#v", events)
+	}
+	if !sawTitle {
+		t.Fatalf("the retitle did not emit issue.updated by alice: %#v", events)
+	}
+
+	cleared := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		"assignee": nil,
+	}, "alice")
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear: status=%d body=%s", cleared.Code, cleared.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, cleared).Assignee, "")
+	// A clear takes the issue from bob and gives it to nobody, so it names bob alone.
+	clearedPayload := newestEventPayload[issueEventFields](t, database, "issue.updated", key)
+	if !slices.Equal(clearedPayload.ThreadLogins, []string{"bob"}) {
+		t.Fatalf("the clear's thread_logins = %#v, want [bob]", clearedPayload.ThreadLogins)
+	}
+}
+
+// One PATCH that moves the status and the assignee together names the union of both sets,
+// sorted. Through a request the status half is empty whenever an assignee rides with it: only a
+// close or a reopen names anybody, a close withdraws the issue's open asks before this read, and
+// a closed issue refuses an assignee, so a reopen carries none. The union of two sets that both
+// have members is pinned on issueWriteThreadLogins itself, over an issue whose open ask alice
+// holds a Replies row on: alice is in both sets and is named once.
+func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Handed over", "A spec")
+	ask := createAnswerListAsk(t, handler, issue.Key, "Still needed?")
+	createThreadComment(t, handler, issue.Key, map[string]any{"body": "Is this still needed?", "ask_id": ask.ID}, "alice")
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
+		"status": "in_progress", "assignee": "bob",
+	}, "bob"); response.Code != http.StatusOK {
+		t.Fatalf("start and reassign: status=%d body=%s", response.Code, response.Body.String())
+	}
+	handed := newestEventPayload[issueEventFields](t, database, "issue.updated", issue.Key)
+	if want := []string{"status", "assignee"}; !slices.Equal(handed.Changed, want) {
+		t.Fatalf("the write's changed = %#v, want %#v", handed.Changed, want)
+	}
+	if want := []string{"alice", "bob"}; !slices.Equal(handed.ThreadLogins, want) {
+		t.Fatalf("the write's thread_logins = %#v, want %#v: the status move names nobody and the issue went from alice to bob", handed.ThreadLogins, want)
+	}
+
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+	logins, err := issueWriteThreadLogins(context.Background(), tx, issue.Key, true, true, []*string{new("alice"), new("carol")})
+	if err != nil {
+		t.Fatalf("read the write's logins: %v", err)
+	}
+	if want := []string{"alice", "carol"}; !slices.Equal(logins, want) {
+		t.Fatalf("a close that left the ask open, handing the issue from alice to carol, names %#v; want %#v, alice once", logins, want)
+	}
+}
+
+func TestListIssuesSummariesCarryAssignee(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Listed",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Nobody's", "actor": sessionActor(),
+	}, "agent-token"); response.Code != http.StatusCreated {
+		t.Fatalf("create unassigned issue: status=%d body=%s", response.Code, response.Body.String())
+	}
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=CORE", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list issues: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	summaries := decodeBody[[]struct {
+		Title    string  `json:"title"`
+		Assignee *string `json:"assignee"`
+	}](t, listed)
+	byTitle := map[string]*string{}
+	for _, summary := range summaries {
+		byTitle[summary.Title] = summary.Assignee
+	}
+	expectAssignee(t, byTitle["Listed"], "alice")
+	if _, present := byTitle["Nobody's"]; !present {
+		t.Fatalf("unassigned issue missing from listing: %#v", summaries)
+	}
+	expectAssignee(t, byTitle["Nobody's"], "")
+}
+
+// GET /users is the picker's option list: everyone who has signed in (`people`), sorted. It needs
+// the person scope, so the deployment's shared token is turned away and a person's own token
+// reads the same list their browser reads.
+func TestListUsersReturnsSignedInPeopleToThePersonScope(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/users", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list users: status=%d body=%s", response.Code, response.Body.String())
+	}
+	users := decodeBody[struct {
+		Users []struct {
+			Login string `json:"login"`
+		} `json:"users"`
+	}](t, response)
+	if len(users.Users) != 2 || users.Users[0].Login != "alice" || users.Users[1].Login != "bob" {
+		t.Fatalf("users = %#v, want alice then bob", users)
+	}
+	denied := agentRequest(t, handler, http.MethodGet, "/api/v1/users", nil, "agent-token")
+	if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+		t.Fatalf("the shared token lists users: status=%d body=%s, want 403 %s", denied.Code, denied.Body.String(), codeScopeRequired)
+	}
+	own := agentRequest(t, handler, http.MethodGet, "/api/v1/users", nil,
+		personalTokenHolding(t, database, model.ScopePerson))
+	if own.Code != http.StatusOK || !strings.Contains(own.Body.String(), `"login":"alice"`) {
+		t.Fatalf("a person's own token lists users: status=%d body=%s", own.Code, own.Body.String())
+	}
+}
+
+// With nobody in `people`, GET /users is an empty list, never null: the picker maps over it.
+func TestListUsersAnswersAnEmptyListWhenNobodyHasSignedIn(t *testing.T) {
+	mux := http.NewServeMux()
+	t.Cleanup(Register(mux, t.Context(), Deps{
+		Store:    storetest.Open(t),
+		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
+	}).Wait)
+	response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/users", nil, "alice")
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"users":[]}` {
+		t.Fatalf("list users with nobody signed in: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// GET /whoami tells a caller who the server takes it for: a human by lowercase email, whatever
+// casing the identity header carried, a personal token by its owner, the shared token by a null
+// owner.
+func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
+	handler := newTestHandler(t)
+	type whoami struct {
+		Kind  string  `json:"kind"`
+		Login string  `json:"login"`
+		Owner *string `json:"owner"`
+	}
+	human := dispatchRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, "Alice")
+	if human.Code != http.StatusOK {
+		t.Fatalf("human whoami: status=%d body=%s", human.Code, human.Body.String())
+	}
+	if got := decodeBody[whoami](t, human); got.Kind != "user" || got.Login != "alice" {
+		t.Fatalf("human whoami = %#v", got)
+	}
+	minted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "planner"}, "Bob")
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("mint token: status=%d body=%s", minted.Code, minted.Body.String())
+	}
+	personal := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, decodeBody[agentTokenResponse](t, minted).Token)
+	if personal.Code != http.StatusOK {
+		t.Fatalf("personal whoami: status=%d body=%s", personal.Code, personal.Body.String())
+	}
+	if got := decodeBody[whoami](t, personal); got.Kind != "agent" || got.Owner == nil || *got.Owner != "bob" {
+		t.Fatalf("personal-token whoami = %#v, want agent owned by bob", got)
+	}
+	shared := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, "agent-token")
+	if shared.Code != http.StatusOK {
+		t.Fatalf("shared whoami: status=%d body=%s", shared.Code, shared.Body.String())
+	}
+	if got := decodeBody[whoami](t, shared); got.Kind != "agent" || got.Owner != nil {
+		t.Fatalf("shared-token whoami = %#v, want agent with null owner", got)
+	}
+	if anonymous := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, "wrong"); anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown bearer whoami: status=%d body=%s", anonymous.Code, anonymous.Body.String())
+	}
+}
+
+// GET /whoami answers every caller the OAuth scopes its own credential holds, which is what
+// decides the routes it may call (gateRouteScopes): both for a person at a browser, the set its own
+// row names for a personal token, and none at all for the two credentials a deployment
+// configures rather than a person. A credential holding none is answered an empty array and
+// never null, so a reader need not tell "this credential holds no scope" from "this build does
+// not say". A personal token holding the person scope is still kind `agent`, since the kind
+// names the credential and the owner names the person it acts for.
+func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
+	issuer := newServiceTokenIssuer(t)
+	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
+	for _, test := range []struct {
+		name   string
+		call   func() *httptest.ResponseRecorder
+		kind   string
+		scopes []string
+	}{
+		{
+			name: "a person signed in at a browser",
+			call: func() *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, "alice")
+			},
+			kind:   "user",
+			scopes: []string{model.ScopePerson, model.ScopeApprove},
+		},
+		{
+			name: "a personal token holding both scopes",
+			call: func() *httptest.ResponseRecorder {
+				token := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
+				return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
+			},
+			kind:   "agent",
+			scopes: []string{model.ScopePerson, model.ScopeApprove},
+		},
+		{
+			name: "a personal token holding the person scope alone",
+			call: func() *httptest.ResponseRecorder {
+				token := personalTokenHolding(t, database, model.ScopePerson)
+				return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
+			},
+			kind:   "agent",
+			scopes: []string{model.ScopePerson},
+		},
+		{
+			name: "the deployment's shared token",
+			call: func() *httptest.ResponseRecorder {
+				return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, "agent-token")
+			},
+			kind:   "agent",
+			scopes: []string{},
+		},
+		{
+			name: "a verified service-account token",
+			call: func() *httptest.ResponseRecorder {
+				return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, issuer.mint(t, serviceTokenAudience))
+			},
+			kind:   "agent",
+			scopes: []string{},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := test.call()
+			if response.Code != http.StatusOK {
+				t.Fatalf("whoami as %s: status=%d body=%s", test.name, response.Code, response.Body.String())
+			}
+			got := decodeBody[struct {
+				Kind string `json:"kind"`
+				// A pointer, so a null reads differently from the empty array the answer owes a
+				// credential that holds no scope.
+				Scopes *[]string `json:"scopes"`
+			}](t, response)
+			if got.Kind != test.kind {
+				t.Fatalf("whoami as %s = kind %q, want %q: %s", test.name, got.Kind, test.kind, response.Body.String())
+			}
+			if got.Scopes == nil {
+				t.Fatalf("whoami as %s answered no scopes array: %s", test.name, response.Body.String())
+			}
+			if !slices.Equal(*got.Scopes, test.scopes) {
+				t.Fatalf("whoami as %s = scopes %v, want %v", test.name, *got.Scopes, test.scopes)
+			}
+		})
+	}
+}
+
+// createSharedTokenIssue creates an issue as the shared token, which acts for nobody: the chain
+// then rests on the parent and the project's default.
+func createSharedTokenIssue(t *testing.T, handler http.Handler, body map[string]any) assigneeIssue {
+	t.Helper()
+	body["actor"] = sessionActor()
+	response := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "agent-token")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create issue %v: status=%d body=%s", body["title"], response.Code, response.Body.String())
+	}
+	return decodeBody[assigneeIssue](t, response)
+}
+
+// The project's default is the chain's last step: an issue the shared token creates with no
+// assignee, under no parent, goes to it. A parent created with an explicit null assignee has
+// nobody on it, so its child reaches the default too.
+func TestCreateIssueFallsBackToProjectDefaultAssignee(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	putDefaultAssignee(t, handler, "CORE", "Bob")
+
+	root := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Root"})
+	expectAssignee(t, root.Assignee, "bob")
+
+	unowned := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Nobody's parent", "assignee": nil,
+	})
+	expectAssignee(t, unowned.Assignee, "")
+	child := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Child of nobody", "parent": unowned.Key,
+	})
+	expectAssignee(t, child.Assignee, "bob")
+}
+
+// Every earlier step of the chain wins over the project's default, in order, and an explicit
+// null still means nobody.
+func TestProjectDefaultAssigneeYieldsToEveryEarlierChainStep(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	putDefaultAssignee(t, handler, "CORE", "bob")
+
+	explicit := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Naming someone wins", "assignee": "alice",
+	})
+	expectAssignee(t, explicit.Assignee, "alice")
+
+	byHuman := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Filing it yourself",
+	}, "alice")
+	if byHuman.Code != http.StatusCreated {
+		t.Fatalf("create as human: status=%d body=%s", byHuman.Code, byHuman.Body.String())
+	}
+	expectAssignee(t, decodeBody[assigneeIssue](t, byHuman).Assignee, "alice")
+
+	parent := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "A parent with somebody", "assignee": "alice",
+	})
+	child := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Inheriting from above", "parent": parent.Key,
+	})
+	expectAssignee(t, child.Assignee, "alice")
+
+	nobody := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Nobody at all", "assignee": nil,
+	})
+	expectAssignee(t, nobody.Assignee, "")
+}
+
+// A project that names no default leaves such an issue unassigned, as it did before the column.
+func TestCreateIssueWithoutProjectDefaultAssigneeStaysUnassigned(t *testing.T) {
+	handler := newTestHandler(t)
+	createAssigneeProject(t, handler)
+	issue := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Nobody's"})
+	expectAssignee(t, issue.Assignee, "")
+}
+
+// A default left stale by a restore or a direct write — an address no longer in `people` — is
+// ignored rather than refused: the create succeeds with nobody. The same address present makes
+// it the assignee again.
+func TestStaleProjectDefaultAssigneeFallsThroughToNobody(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createAssigneeProject(t, handler)
+	if _, err := database.Pool.Exec(context.Background(),
+		`update projects set default_assignee = 'carol' where key = 'CORE'`); err != nil {
+		t.Fatalf("set stale default: %v", err)
+	}
+	stale := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Stale default"})
+	expectAssignee(t, stale.Assignee, "")
+
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into people (email) values ('carol')`); err != nil {
+		t.Fatalf("record carol: %v", err)
+	}
+	live := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Live default"})
+	expectAssignee(t, live.Assignee, "carol")
+}

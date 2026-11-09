@@ -1,0 +1,1259 @@
+import { decodeBlockId, isIdPrefix } from "@legion/contracts";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
+import { Link, useLocation } from "react-router-dom";
+import {
+  api,
+  isArtifactNotFound,
+  isDocumentSchemaError,
+  isDocumentUnloadable,
+} from "../../api/client";
+import { artifactBlocksQuery } from "../../api/queries";
+import type { Artifact, AuthenticatedUser, BlockSchema, Version } from "../../api/types";
+import { TruncatedText } from "../../components/TruncatedText";
+import { copyText } from "../../lib/clipboard";
+import {
+  badgeMed,
+  dangerText,
+  linkHoverText,
+  linkText,
+  secondaryButtonBorder,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
+  textSecondaryOnCanvas,
+} from "../../theme/classes";
+import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
+import {
+  ArtifactDropZone,
+  ArtifactUploadRow,
+  CLOSED_ISSUE_UPLOAD_REFUSAL,
+  useArtifactUpload,
+} from "../artifacts/ArtifactUpload";
+import { useMargin } from "../margin/margin-context";
+import type { MarginOwner } from "../margin/useMarginItems";
+import { blockFragment } from "../refs/block-reference";
+import { watchPicturePath } from "../refs/reference-target";
+import {
+  buildDispatchReference,
+  buildIssuePath,
+  buildProjectPath,
+  documentRoute,
+} from "../refs/routes";
+import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
+import { importWhenOnline } from "../shell/DeploymentResilience";
+import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { AskBlockCard } from "./AskBlockCard";
+import type { AnchoredBlockHost } from "./ask-block";
+import { ChangeView } from "./ChangeView";
+import type { ConnectionState, DocumentConnection } from "./connection";
+import { colorForLogin } from "./connection";
+import { DocumentReferences, useReferenceClick } from "./document-references";
+import type { EditorHandle, EditorOptions } from "./editor";
+import { bindRemoteMarks } from "./editor";
+import type { Highlight } from "./highlight";
+import {
+  blockOffsets,
+  blockPlacements as collectBlockPlacements,
+  composerKindFor,
+  markPlacements,
+  selectionBarKindFor,
+} from "./marks";
+import { NameVersionDialog } from "./NameVersionDialog";
+import type { PendingState } from "./pending-sync";
+import { createPendingWaiter } from "./pending-waiter";
+import { quoteAnchor } from "./quote-anchor";
+import { refocusWhenSettled } from "./refocus-when-settled";
+import { FRAGMENT_NAME } from "./roots";
+import { DocumentRuntime } from "./runtime";
+import { loadBlockSchema } from "./schema";
+import { readLineText, useSpecMarks } from "./spec-marks";
+import type { AskBlockHost } from "./typed-block-drawing";
+import { VersionView } from "./VersionView";
+
+/** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
+ *  or more do (`uniquePrefixMatch`). The editor's own rendered blocks are the answer, the same
+ *  `[data-block-id]` elements `focusBlock` looks a whole id up in, so a block link written short
+ *  costs no read; a block the editor draws twice carries its id twice, which is that one block. */
+function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
+  const ids: string[] = [];
+  for (const element of root.querySelectorAll<HTMLElement>("[data-block-id]")) {
+    ids.push(element.getAttribute("data-block-id") ?? "");
+  }
+  return uniquePrefixMatch(ids, prefix);
+}
+
+const CONTROL_CHARACTERS = /\p{Cc}/gu;
+
+/** The live document's text as the server reads it now. A read of it decides whether the editor
+ * may connect: the server answers `409 DOC_SCHEMA` for a stored tree outside the Proof schema. */
+export const liveTextQueryOptions = (artifactId: string) =>
+  queryOptions({
+    queryKey: ["artifact", artifactId, "text"],
+    queryFn: () => api.getArtifactText(artifactId),
+  });
+
+/** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
+ * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
+ * offers to rebuild, or any other failure. */
+interface AdmissionBlock {
+  readonly kind: "repair" | "rebuild" | "failed";
+  readonly message: string;
+}
+
+function admissionBlock(error: unknown): AdmissionBlock {
+  const message = error instanceof Error ? error.message : String(error);
+  if (isDocumentSchemaError(error)) {
+    return { kind: "repair", message };
+  }
+  if (isDocumentUnloadable(error)) {
+    return { kind: "rebuild", message };
+  }
+  return { kind: "failed", message };
+}
+
+/** How long a socket the server refused as outside the Proof schema waits before its admission
+ * reads `/text` again, by how many refusals in a row precede it. Past the last the editor stops
+ * reconnecting: the server refuses a socket exactly when that read answers `409 DOC_SCHEMA`, so a
+ * refusal is normally followed by the repair message, never by an endless reconnect. */
+const SCHEMA_REFUSAL_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000] as const;
+
+/** What the live editor lets the reader do. A closed issue's document takes comments by quote (the
+ * bar's Comment alone): the server admits every socket on a closed issue read-only, so its
+ * admission cannot say whether this editor's schema is outdated too. On an open issue a read-only
+ * admission means it is, and the document takes nothing until a reload, since this editor's
+ * reading of it may not be the server's. A reading column (`page` false) takes neither edits nor
+ * comments: a reader who clicks into the text beside a list is only reading. */
+function editorAccess(
+  page: boolean,
+  isClosed: boolean,
+  schemaReadOnly: boolean
+): NonNullable<EditorOptions["access"]> {
+  if (!page) {
+    return "read";
+  }
+  if (isClosed) {
+    return "comment";
+  }
+  return schemaReadOnly ? "read" : "edit";
+}
+
+/** The document chrome reports its state upward so an issue can place its controls in the active
+ * Spec tab row. Project document pages retain their artifact-header toolbar. */
+export interface DocumentToolbar {
+  connection: ConnectionState;
+  pending: PendingState | undefined;
+  isNamingVersion: boolean;
+  requestNamedVersion(): void;
+  copyBlockLink(): Promise<boolean>;
+  versions: Version[];
+}
+
+export interface ProofDocumentProps {
+  /** A thread drawn inside the document column, directly below the block it is anchored to, and
+   *  the document mark whose quote is highlighted while it is shown: what the Inbox's reading
+   *  pane does with the comment thread it selected (`surface="pane"`). The thread reaches the
+   *  block through a node view's slot, never injected DOM (`installTypedBlocks`), so it is drawn
+   *  only once the editor has drawn that block; a `blockId` the document does not hold draws
+   *  nothing, which is what the pane falls back from. Changing the block reopens the editor, so a
+   *  host that follows a selection settles it first, as the pane does. */
+  anchoredThread?: {
+    readonly blockId: string;
+    readonly children: ReactNode;
+    readonly markId: string | null;
+  };
+  artifact: Artifact;
+  highlight: Highlight | undefined;
+  highlightTerm?: string;
+  isClosed: boolean;
+  owner: MarginOwner;
+  showDiff: boolean;
+  /** Called beside the document's own refresh once the server has recorded an answer written in
+   *  one of its decision blocks, so a host that selected the question learns it was answered. */
+  onAskAnswered?(askId: string): void;
+  onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
+  /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
+   *  outside the Proof schema, a history that cannot load, or any other failed admission. The
+   *  page offers a repair or a rebuild for those; a column beside a list offers neither, so it
+   *  tells its host, which shows the question's card instead. */
+  onUnavailable?(reason: string): void;
+  onVersionChange(version: number | null): void;
+  /** Where this document is drawn. `page` (default) is the document's own page, which claims the
+   *  page-level singletons: the margin's document registration, the `document` keymap scope, the
+   *  `dispatch-search` highlight registry, the Open-decisions navigator, the version toolbar and
+   *  the block link in `window.location.hash`. `pane` is a reading column beside something else
+   *  (the Inbox's), which claims none of them, publishes no presence and takes no edits; its
+   *  decision blocks still host their answer form. Fixed for the life of a mount. */
+  surface?: "page" | "pane";
+  user: AuthenticatedUser;
+  version?: number;
+}
+
+interface SearchHighlightSupport {
+  readonly CSS?: {
+    readonly highlights?: {
+      set(name: string, highlight: unknown): void;
+    };
+  };
+  readonly Highlight?: new (...ranges: Range[]) => unknown;
+}
+
+function setSearchHighlights(root: HTMLElement, query: string): void {
+  const { CSS, Highlight } = window as unknown as SearchHighlightSupport;
+  if (CSS?.highlights === undefined || Highlight === undefined) {
+    return;
+  }
+  const ranges: Range[] = [];
+  if (query !== "") {
+    const lowerQuery = query.toLowerCase();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = node.nodeValue ?? "";
+      const lowerText = text.toLowerCase();
+      for (let start = lowerText.indexOf(lowerQuery); start !== -1; ) {
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + query.length);
+        ranges.push(range);
+        start = lowerText.indexOf(lowerQuery, start + query.length);
+      }
+    }
+  }
+  CSS.highlights.set("dispatch-search", new Highlight(...ranges));
+}
+
+export function ProofDocument({
+  anchoredThread,
+  artifact,
+  highlight,
+  highlightTerm = "",
+  isClosed,
+  owner,
+  onAskAnswered,
+  onToolbarChange,
+  onUnavailable,
+  onVersionChange,
+  showDiff,
+  surface = "page",
+  user,
+  version,
+}: ProofDocumentProps): ReactNode {
+  const root = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<EditorHandle | undefined>(undefined);
+  // The handle this document's references are drawn through, beside the ref the callbacks reach
+  // it by: the titles are a render of their own, so the surface that draws them re-renders with
+  // the editor it draws into.
+  const [editorHandle, setEditorHandle] = useState<EditorHandle | undefined>(undefined);
+  // The dispose of the latest focus's re-run after the diagrams draw (`focusInEditor`).
+  const disposeRefocusRef = useRef<(() => void) | undefined>(undefined);
+  /** The live editor's connection, for a reopened issue's re-admission (`readmit`). */
+  const connectionRef = useRef<DocumentConnection | undefined>(undefined);
+  const isClosedRef = useRef(isClosed);
+  /** Whether the issue was closed when the access effect last ran, so it sees a reopen. */
+  const wasClosedRef = useRef(isClosed);
+  const schemaReadOnlyRef = useRef(false);
+  const userRef = useRef(user);
+  const highlightTermRef = useRef(highlightTerm);
+  // The thread the host draws below one block, and the mark it highlights: both are read through
+  // refs by the editor's own effects, so a host that re-renders rebuilds nothing.
+  const [anchoredHost, setAnchoredHost] = useState<AnchoredBlockHost | undefined>(undefined);
+  const anchoredBlockId = anchoredThread?.blockId;
+  const activeMarkId = anchoredThread?.markId ?? undefined;
+  const activeMarkIdRef = useRef(activeMarkId);
+  activeMarkIdRef.current = activeMarkId;
+  const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [pending, setPending] = useState<PendingState | undefined>(undefined);
+  // Whoever waits for this browser's edits of this document to reach the server
+  // (`DocumentBridge.whenSent`), beside the state the toolbar renders: the margin asks from a
+  // callback the editor holds for the document's lifetime, and the pending reports below answer
+  // it. One waiter serves every document this page shows, since each report and each wait names
+  // the document it is about.
+  const pendingWaiter = useMemo(() => createPendingWaiter(), []);
+  const [loadError, setLoadError] = useState<string | undefined>(undefined);
+  const [schemaReadOnly, setSchemaReadOnly] = useState(false);
+  /** Why the closed document's last Comment opened no composer, for the reader. */
+  const [quoteRefusal, setQuoteRefusal] = useState<string | undefined>(undefined);
+  const [openDecisionIndex, setOpenDecisionIndex] = useState(0);
+  const {
+    blockSchema: runtimeBlockSchema,
+    createEditor,
+    loadTransport,
+  } = useContext(DocumentRuntime);
+  const margin = useMargin();
+  const { blockPlacements } = margin;
+  // The editor effect and its callbacks reach the margin's latest functions through this ref
+  // rather than listing them as dependencies, so a margin re-render never rebuilds the editor.
+  const marginRef = useRef(margin);
+  marginRef.current = margin;
+  highlightTermRef.current = highlightTerm;
+  const queryClient = useQueryClient();
+  // Where a `#id` in this document's text resolves: this document, whose question blocks
+  // declare the asks it names (`refs.ScopeOf` of a document version is the document).
+  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const followReference = useReferenceClick();
+  // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
+  // block of this document changes it in place, firing no event of the browser's own.
+  const { hash: routedHash } = useLocation();
+  const documentRef = buildDispatchReference(documentRoute(artifact));
+  const blockSchemaQuery = useQuery({
+    queryFn: loadBlockSchema,
+    queryKey: ["block-schema"],
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const artifactQuery = useQuery({
+    queryKey: ["artifact", artifact.id],
+    queryFn: () => api.getArtifact(artifact.id),
+  });
+  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  // The repair replaces this document, so it uploads under the document's own name whatever the
+  // picked file is called; a closed issue takes none.
+  const repairUpload = useArtifactUpload(
+    owner.kind === "issue" ? { issue: owner.key } : { project: owner.project },
+    { name: artifact.name, refusal: isClosed ? CLOSED_ISSUE_UPLOAD_REFUSAL : null }
+  );
+  const [admission, setAdmission] = useState<AdmissionBlock | undefined>(undefined);
+  // Set while an admission is blocked: admits again, once the next read of the text succeeds.
+  const readmitRef = useRef<(() => void) | undefined>(undefined);
+  /** Has this document admitted again, the one way in: a blocked admission has no connection to
+   *  readmit, so it re-reads the text and connects (`readmitRef`, set only while it is blocked);
+   *  a live one closes its socket, which the provider reconnects, and the server decides that
+   *  socket's admission afresh - which is what a reopened issue needs, since the admission of the
+   *  socket it has is the closed issue's. The new admission reaches `onAdmission` and the pending
+   *  sync alike, so the rows the read-only admission kept are restored and sent. */
+  const readmit = useCallback(() => {
+    const blocked = readmitRef.current;
+    if (blocked !== undefined) {
+      blocked();
+      return;
+    }
+    connectionRef.current?.readmit();
+  }, []);
+  // A reading column offers no repair and no rebuild: it is not the document's page, and a
+  // reader beside a list of questions has not come to mend a document. A blocked admission is
+  // reported upward instead (`onUnavailable`), and the host - the Inbox's pane - falls back to
+  // the question's own card. The callback is reached through a ref so a host that re-renders
+  // with a new closure never re-reports the same block.
+  const onUnavailableRef = useRef(onUnavailable);
+  onUnavailableRef.current = onUnavailable;
+  /** The document's own page, as against the Inbox's reading column: the page claims the
+   *  page-level singletons (the keymap scope, the margin, the search highlights and the
+   *  toolbar), takes edits, and offers the repair and rebuild prompts. `surface` is fixed for
+   *  the life of a mount, so every effect below lists this and none is rebuilt for it. */
+  const page = surface === "page";
+  useEffect(() => {
+    if (page || admission === undefined) {
+      return;
+    }
+    onUnavailableRef.current?.(admission.message);
+  }, [admission, page]);
+  const repairError = page && admission?.kind === "repair" ? admission : undefined;
+  const rebuildError = page && admission?.kind === "rebuild" ? admission : undefined;
+  const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
+  const blockReferencesQuery = useQuery({
+    ...artifactBlocksQuery(artifact.id),
+    enabled: version === undefined,
+  });
+  const versionQuery = useQuery({
+    enabled: version !== undefined,
+    queryKey: ["artifact", artifact.id, "version", version],
+    queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
+  });
+  const asksQuery = useQuery({
+    queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
+    queryFn: () =>
+      owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
+  });
+  /** Every ask indexed from a typed block of this document, in every state — the rendered blocks
+   * read who asked from these, and an answered block still names its asker. */
+  const blockAsks = useMemo(
+    () =>
+      (asksQuery.data ?? []).filter(
+        (ask) => typeof ask.block_id === "string" && ask.block_artifact?.id === artifact.id
+      ),
+    [asksQuery.data, artifact.id]
+  );
+  const blocksReadOnly = isClosed || schemaReadOnly;
+  const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
+  // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
+  // its own beside its button.
+  const nameVersion = useKeyedWrite({
+    // `write` comes first: `onSuccess` reads its answer.
+    write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
+    inline: true,
+    label: () => `New version of ${artifact.name}`,
+    onSuccess: (created) => {
+      // Made either way, so the dialog closes and a second press names nothing twice; with no
+      // answer to give, the store has read the document again.
+      setIsNameDialogOpen(false);
+      if (created === null) return;
+      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+        const source = current ?? artifact;
+        return {
+          ...source,
+          versions: [
+            ...(source.versions ?? []).filter(({ number }) => number !== created.number),
+            created,
+          ],
+        };
+      });
+      onVersionChange(created.number);
+    },
+  });
+  const rebuild = useKeyedWrite({
+    inline: true,
+    label: () => `Rebuild of ${artifact.name}`,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+    },
+    write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
+  });
+  const liveMarkdown = liveTextQuery.data?.markdown ?? "";
+  const versionMarkdown =
+    versionQuery.data !== undefined && "markdown" in versionQuery.data
+      ? versionQuery.data.markdown
+      : undefined;
+  const versions = useMemo(
+    () => versionsNewestFirst(artifactQuery.data?.versions ?? artifact.versions),
+    [artifactQuery.data?.versions, artifact.versions]
+  );
+  // An issue's live spec on its own page marks the blocks its decisions and the person's last
+  // read call out, and records what it shows as read.
+  const specMarks = useSpecMarks({
+    artifact,
+    enabled: page && version === undefined && artifact.primary && owner.kind === "issue",
+    issueKey: owner.kind === "issue" ? owner.key : "",
+    shownVersion: versions[0]?.number,
+  });
+  // The editor takes the marks when it binds, and every set after that, through its handle:
+  // a class Dispatch wrote into the editor's DOM would be read back as an edit.
+  const blockMarksRef = useRef(specMarks.marks);
+  blockMarksRef.current = specMarks.marks;
+  useEffect(() => {
+    editorRef.current?.setBlockMarks(specMarks.marks);
+  }, [specMarks.marks]);
+  isClosedRef.current = isClosed;
+  const blockSchema: BlockSchema | undefined = runtimeBlockSchema ?? blockSchemaQuery.data;
+  userRef.current = user;
+
+  const requestNamedVersion = useCallback(() => {
+    setIsNameDialogOpen(true);
+  }, []);
+  // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
+  // versions) refresh once it lands, since the server writes the outcome into the block, and a
+  // host that selected the question hears of its answer too.
+  const blockAnswered = useCallback(
+    (askId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      onAskAnswered?.(askId);
+    },
+    [queryClient, artifact.id, onAskAnswered]
+  );
+  const openBlockAsks = useMemo(
+    () =>
+      blockAsks
+        .filter((ask) => ask.state === "open")
+        .map((ask) => ({
+          ...ask,
+          question: ask.question.replace(CONTROL_CHARACTERS, ""),
+        })),
+    [blockAsks]
+  );
+
+  const copyBlockLink = useCallback(async (): Promise<boolean> => {
+    const blockId = editorRef.current?.blockIdAtSelection();
+    if (blockId === null || blockId === undefined) {
+      return false;
+    }
+    return copyText(
+      `${window.location.origin}${window.location.pathname}${blockFragment(blockId)}`
+    );
+  }, []);
+  // Whether this browser holds no edit of this document the server has still to take: the margin
+  // waits on it after it has marked the words a comment is to anchor to again, so the mark it
+  // sends is one the server can already see. That mark is an edit of its own, so the wait is for
+  // a report taken after it (`pending-waiter.ts`); the count is every tab's, so a row another
+  // tab cannot send keeps it waiting, and the bound is what ends the wait there. The margin
+  // retries either way.
+  const whenSent = useCallback(
+    (timeoutMs: number): Promise<void> => pendingWaiter.whenSent(artifact.id, timeoutMs),
+    [artifact.id, pendingWaiter]
+  );
+  // Every focus in the live editor - a block link, the margin's mark and block focus, a reader's
+  // click to a block - runs `focus` now and `refocus` once more after the drawing around its
+  // target has settled (`refocusWhenSettled`): the page's mermaid diagrams, and this editor's own
+  // blocks, whose hosted cards and pictures draw after it opened and push a target below them
+  // down. The editor's drawn root is what grows, so it is what is watched. One re-run waits at a
+  // time: a newer focus drops an older one's, and so does the editor unbinding.
+  const focusInEditor = useCallback((focus: () => void, refocus: () => void = focus) => {
+    disposeRefocusRef.current?.();
+    focus();
+    disposeRefocusRef.current = refocusWhenSettled(refocus, editorRef.current?.view.dom);
+  }, []);
+  // The fragment the block focus last followed, which the focus of a short id rewrites to the
+  // whole block's: an address this document wrote itself is no change for it to follow again.
+  const followedHashRef = useRef<string | undefined>(undefined);
+  // The block the address names, focused in `handle`: a `#b-` hash names a block of the
+  // document the reader is on, written whole or short, and an id written short names the one
+  // block of this document it starts. A hash naming no block of it focuses nothing.
+  const followBlockHash = useCallback(
+    (handle: EditorHandle) => {
+      const blockLink = window.location.hash;
+      if (!blockLink.startsWith("#b-") || blockLink === followedHashRef.current) {
+        return;
+      }
+      followedHashRef.current = blockLink;
+      const linkedBlockId = decodeBlockId(blockLink.slice(3));
+      if (linkedBlockId === undefined) {
+        return;
+      }
+      // The hash the address holds: the one the reader followed until a short id resolves, the
+      // whole block's from then on.
+      let linkHash = blockLink;
+      const focusLinked = () => {
+        // An id written short names the one block of this document it starts; a whole id is
+        // the block's own, with nothing to resolve and no read to make.
+        const whole = isIdPrefix(linkedBlockId)
+          ? wholeBlockId(handle.view.dom, linkedBlockId)
+          : linkedBlockId;
+        if (whole === undefined) {
+          return;
+        }
+        if (whole !== linkedBlockId) {
+          // The address carries the whole id from here on, so one copied off the page names
+          // the block outright; replacing it leaves no history entry behind, as the rewrite
+          // of an item address does.
+          linkHash = blockFragment(whole);
+          followedHashRef.current = linkHash;
+          window.history.replaceState(null, "", linkHash);
+        }
+        handle.focusBlock(whole);
+      };
+      // The re-run lands only while the hash still names this block.
+      focusInEditor(focusLinked, () => {
+        if (window.location.hash === linkHash) focusLinked();
+      });
+    },
+    [focusInEditor]
+  );
+  // A `#id` names a question of the text's own document, so a reader who follows one from the
+  // margin, or any other `#b-` link of the document already open, stays on this page: the
+  // editor is bound already and binds no second time. The focus follows the address instead -
+  // the dashboard's own navigation, which changes the hash with no event of its own
+  // (`routedHash`), and an assignment to `location.hash`, which fires one.
+  useEffect(() => {
+    if (!page) {
+      return;
+    }
+    const follow = () => {
+      const handle = editorRef.current;
+      if (handle !== undefined) {
+        followBlockHash(handle);
+      }
+    };
+    // A fragment the dashboard navigated to is a change with no event of its own; the address
+    // the browser holds is what `follow` then reads.
+    if (routedHash !== "") {
+      follow();
+    }
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
+  }, [followBlockHash, page, routedHash]);
+  // Google Docs' chord for the selection bar's Comment button, on the button's own path. It is
+  // offered while this editor has focus, holds a selection and takes edits; anywhere else - a
+  // comment composer, an ask card's field, a read-only or historical document, which cannot hold
+  // focus - the chord does nothing. `inEditable` because the editor is where it is pressed. A
+  // document is its own scope, since the issue page and a project's document page both render
+  // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
+  // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  useKeymapScope(page ? "document" : null);
+  useKeymap(
+    "document",
+    page
+      ? [
+          {
+            id: "comment-on-selection",
+            inEditable: true,
+            keys: "$mod+Alt+m",
+            label: "Comment on selection",
+            run: () => editorRef.current?.commentOnSelection(),
+            when: () => {
+              const view = editorRef.current?.view;
+              return view?.editable === true && view.hasFocus() && !view.state.selection.empty;
+            },
+          },
+        ]
+      : []
+  );
+  useEffect(() => {
+    setOpenDecisionIndex((current) => Math.min(current, Math.max(openBlockAsks.length - 1, 0)));
+  }, [openBlockAsks.length]);
+
+  const openDecision = openBlockAsks[Math.min(openDecisionIndex, openBlockAsks.length - 1)];
+
+  // A pane reports no toolbar: the version controls, the connection dot and the block-link copy
+  // belong to the page the document is the page of, never to a column beside a list.
+  useEffect(() => {
+    if (!page) {
+      return;
+    }
+    onToolbarChange?.({
+      connection,
+      pending,
+      copyBlockLink,
+      isNamingVersion: nameVersion.isPending,
+      requestNamedVersion,
+      versions,
+    });
+  }, [
+    connection,
+    pending,
+    copyBlockLink,
+    nameVersion.isPending,
+    onToolbarChange,
+    page,
+    requestNamedVersion,
+    versions,
+  ]);
+
+  // Separate from the reporting effect above (whose cleanup would otherwise fire — and
+  // transiently clear the parent's toolbar — on every dependency change, not just on unmount).
+  // This one's only job is telling the parent there is no longer a toolbar to show once this
+  // artifact's instance is gone, so switching documents can't leave the header holding a stale
+  // `requestNamedVersion` that would name a version on the artifact the user navigated away from.
+  useEffect(() => {
+    if (!page) {
+      return;
+    }
+    return () => onToolbarChange?.(undefined);
+  }, [onToolbarChange, page]);
+
+  useEffect(() => {
+    if (blockSchema === undefined) {
+      return;
+    }
+    const parent = root.current;
+    if (parent === null) {
+      return;
+    }
+
+    let mounted = true;
+    let document: DocumentConnection | undefined;
+    let editor: EditorHandle | undefined;
+    let disposeEditorBindings: (() => void) | undefined;
+    // Sockets the server refused in a row, since this editor last synced or a repair re-admitted it.
+    let refusals = 0;
+    let refusalTimer: number | undefined;
+    setConnection("connecting");
+    setPending(undefined);
+    setLoadError(undefined);
+    setAdmission(undefined);
+    schemaReadOnlyRef.current = false;
+    setSchemaReadOnly(false);
+    // A transport or editor chunk that fails while online (after `DeploymentResilience` has
+    // spent its reload) would otherwise leave the document "connecting" forever. Once failed,
+    // the live provider's later status events must not repaint the dot over the alert.
+    let failed = false;
+    const reportLoadFailure = (error: unknown) => {
+      if (!mounted) {
+        return;
+      }
+      failed = true;
+      setConnection("failed");
+      setLoadError(error instanceof Error ? error.message : String(error));
+    };
+    const teardown = () => {
+      disposeEditorBindings?.();
+      editor?.destroy();
+      document?.destroy();
+      if (editorRef.current === editor) {
+        editorRef.current = undefined;
+      }
+      if (connectionRef.current === document) {
+        connectionRef.current = undefined;
+      }
+      setEditorHandle((current) => (current === editor ? undefined : current));
+      disposeEditorBindings = undefined;
+      editor = undefined;
+      document = undefined;
+    };
+    // The editor's place in the page - the margin, search highlights, a block link - for as long
+    // as it is this effect's editor. It returns what undoes it. The typed-block node views are
+    // installed by `createEditor`, with the editor library they are written against.
+    const bindEditor = (handle: EditorHandle, connection: DocumentConnection) => {
+      // The quote the host highlights is drawn as soon as the editor is there, whether the host
+      // named its mark before this editor or while it was being built.
+      handle.setActiveMarks(activeMarkIdRef.current === undefined ? [] : [activeMarkIdRef.current]);
+      handle.setBlockMarks(blockMarksRef.current);
+      // False once this editor unbinds, so a focus a frame late never reaches a destroyed editor
+      // or leaves a re-run behind for it.
+      let bound = true;
+      // The hash names a block of the page the reader is on, never one of a document beside its
+      // list, so a pane never follows it. A newly bound editor follows the address whatever the
+      // editor before it followed: its blocks are drawn again, and the reader is at the link.
+      if (page) {
+        followedHashRef.current = undefined;
+        followBlockHash(handle);
+      }
+      // `CSS.highlights["dispatch-search"]` and the margin's open document are one apiece for the
+      // whole page; a pane writes neither.
+      if (page) {
+        setSearchHighlights(handle.view.dom, highlightTermRef.current);
+        marginRef.current.registerDocument({
+          artifactId: artifact.id,
+          focusBlock: (blockId) => {
+            requestAnimationFrame(() => {
+              if (bound) focusInEditor(() => handle.focusBlock(blockId));
+            });
+          },
+          focusMark: (markId) => focusInEditor(() => handle.focusMark(markId)),
+          removeMark: (markId) => handle.removeMark(markId),
+          // The composer keeps the placement it was opened over, or nothing where the editor had
+          // none to give; the editor reads an absent one as null. This is where the two meet, so
+          // no caller of the bridge has to.
+          remarkMark: (markId, kind, quote, placement) =>
+            handle.remarkMark(markId, selectionBarKindFor(kind), quote, placement ?? null),
+          retypeMark: (markId, kind) => handle.retypeMark(markId, selectionBarKindFor(kind)),
+          setActiveBlocks: (blockIds) => handle.setActiveBlocks(blockIds),
+          setActiveMarks: (markIds) => handle.setActiveMarks(markIds),
+          whenSent,
+        });
+      }
+      const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
+      const fragment = connection.doc.getXmlFragment(FRAGMENT_NAME);
+      let searchFrame = 0;
+      const refreshSearchHighlights = () => {
+        cancelAnimationFrame(searchFrame);
+        searchFrame = requestAnimationFrame(() => {
+          setSearchHighlights(handle.view.dom, highlightTermRef.current);
+        });
+      };
+      if (page) {
+        refreshSearchHighlights();
+        fragment.observeDeep(refreshSearchHighlights);
+      }
+      let frame = 0;
+      const publishPlacements = () => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          // A hidden editor has no layout. Reporting its zero offsets would make the
+          // link hold read a press after the panel is shown again as a placed landing.
+          if (handle.view.dom.getClientRects().length === 0) {
+            marginRef.current.withdrawPlacements();
+            return;
+          }
+          marginRef.current.setMarkPlacements(
+            markPlacements(handle.view.state.doc, handle.markOffsets())
+          );
+          marginRef.current.setBlockPlacements(
+            collectBlockPlacements(handle.view.state.doc, blockOffsets(handle.view.dom))
+          );
+        });
+      };
+      const resizeObserver = new ResizeObserver(publishPlacements);
+      resizeObserver.observe(handle.view.dom);
+      publishPlacements();
+      fragment.observeDeep(publishPlacements);
+      return () => {
+        bound = false;
+        disposeRefocusRef.current?.();
+        disposeRefocusRef.current = undefined;
+        cancelAnimationFrame(frame);
+        cancelAnimationFrame(searchFrame);
+        resizeObserver.disconnect();
+        unbindRemoteMarks();
+        fragment.unobserveDeep(publishPlacements);
+        if (page) {
+          fragment.unobserveDeep(refreshSearchHighlights);
+          marginRef.current.registerDocument(undefined);
+        }
+      };
+    };
+    // Each admission - this mount, a socket the server refused as outside the Proof schema, and a
+    // blocked admission's re-admission - opens a connection only once its own fresh `/text` read
+    // succeeds, and that read alone decides: a browser editor normalizes a tree it cannot
+    // represent and writes the result back. A read that fails closes nothing already open, since
+    // only an admission opens anything, so a later refetch that fails - an outage during an
+    // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
+    // A blocked admission waits for the next successful read of the text, which a repair upload
+    // or a rebuild brings about, and is admitted again (`readmitRef`).
+    const admit = () => {
+      const textRead = queryClient
+        .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
+        .then(
+          () => undefined,
+          async (error: unknown) => {
+            if (isArtifactNotFound(error)) {
+              try {
+                const { deletePendingEdits } = await importWhenOnline(
+                  () => import("./pending-edits")
+                );
+                await deletePendingEdits(artifact.id);
+              } catch (deleteError) {
+                console.error(
+                  "Could not delete pending browser edits for a removed document",
+                  deleteError
+                );
+              }
+            }
+            return admissionBlock(error);
+          }
+        );
+      void Promise.all([textRead, loadTransport()])
+        .then(([block, connect]) => {
+          if (!mounted) {
+            return;
+          }
+          if (block !== undefined) {
+            setConnection("failed");
+            setAdmission(block);
+            readmitRef.current = () => {
+              readmitRef.current = undefined;
+              refusals = 0;
+              setAdmission(undefined);
+              setConnection("connecting");
+              admit();
+            };
+            return;
+          }
+          const connection = connect(artifact.id, {
+            schemaVersion: blockSchema.version,
+            onAdmission: (readOnly) => {
+              schemaReadOnlyRef.current = readOnly;
+              setSchemaReadOnly(readOnly);
+              editor?.setAccess(editorAccess(page, isClosedRef.current, readOnly));
+            },
+            onOutsideSchema: () => {
+              if (!mounted) {
+                return;
+              }
+              teardown();
+              const delay = SCHEMA_REFUSAL_DELAYS_MS[refusals];
+              refusals += 1;
+              if (delay === undefined) {
+                reportLoadFailure(
+                  new Error(
+                    "the server keeps refusing its connection; reload the page to try again"
+                  )
+                );
+                return;
+              }
+              setConnection("connecting");
+              refusalTimer = window.setTimeout(admit, delay);
+            },
+            onStatus: (status) => {
+              if (!failed) {
+                setConnection(status);
+              }
+            },
+            onPending: (state) => {
+              if (mounted) {
+                setPending(state);
+                pendingWaiter.report(artifact.id, state);
+              }
+            },
+            onSynced: () => {
+              refusals = 0;
+              void createEditor(parent, {
+                // Cursor labels are outside the compact acceptance bar. Even with inline labels,
+                // yCursor's edge widget disrupts the mobile browser's post-update text selection.
+                // A pane publishes no presence at all: the reader is skimming a document from a
+                // list, not working in it, and the width rule would read the window rather than
+                // the column and send it.
+                awareness:
+                  !page ||
+                  (globalThis.document.documentElement.clientWidth > 0 &&
+                    globalThis.document.documentElement.clientWidth < 1280)
+                    ? null
+                    : connection.awareness,
+                heatMapMode: "hidden",
+                onAskBlockHosts: setAskBlockHosts,
+                onMarkAction: (action) => {
+                  switch (action.kind) {
+                    case "comment":
+                    case "suggest":
+                    case "ask":
+                      // The margin owns the mark from here: it removes it when the composer ends
+                      // unsaved and retypes it when the composer's kind changes.
+                      return marginRef.current.composeForMark({
+                        anchor: {
+                          artifact: artifact.id,
+                          mark_id: action.markId,
+                          placement: action.placement ?? undefined,
+                          quote: action.quote,
+                        },
+                        kind: composerKindFor(action.kind),
+                      });
+                    case "quote-comment": {
+                      // A closed issue's document takes no mark: the comment names its text by
+                      // quote, and the server writes its mark where the reader selected. The bar
+                      // offers Comment only for a selection that holds text; should this reading
+                      // of it still find none, the reader is told why no composer opened.
+                      const doc = editor?.view.state.doc;
+                      const anchor =
+                        doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
+                      if (anchor === undefined) {
+                        setQuoteRefusal(
+                          "This selection holds no text to quote. Select text to comment on it."
+                        );
+                        return;
+                      }
+                      setQuoteRefusal(undefined);
+                      return marginRef.current.composeForMark({
+                        anchor: { artifact: artifact.id, ...anchor },
+                        kind: "comment",
+                      });
+                    }
+                    default:
+                      throw new Error(
+                        `Dispatch renders mark threads in the margin; popover action ${action.kind} cannot fire`
+                      );
+                  }
+                },
+                onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
+                onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
+                // A pane takes no edits and no comments: a reader who clicks into the text from a
+                // list never changes the document they are reading.
+                access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
+                user: {
+                  color: colorForLogin(userRef.current.login),
+                  name: userRef.current.login,
+                },
+                blockSchema,
+                watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+                // The block the pane's thread hangs under: the node view it names publishes the
+                // host slot this page portals the thread into. A document's own page anchors no
+                // thread and passes none.
+                anchoredBlock:
+                  anchoredBlockId === undefined
+                    ? undefined
+                    : { blockId: anchoredBlockId, onHostChange: setAnchoredHost },
+                // The open document's own reference, never a version's: a pointer names a block
+                // of the document by it, so the editor refuses one to a block of a type the
+                // pointer's attribute does not allow.
+                documentRef,
+                ydoc: connection.doc,
+              })
+                .then((handle) => {
+                  // An editor created for a connection a refusal has since torn down, or for an
+                  // unmounted page, belongs to nothing.
+                  if (!mounted || document !== connection) {
+                    handle.destroy();
+                    return;
+                  }
+                  editor = handle;
+                  editorRef.current = handle;
+                  setEditorHandle(handle);
+                  disposeEditorBindings = bindEditor(handle, connection);
+                })
+                .catch(reportLoadFailure);
+            },
+          });
+          document = connection;
+          connectionRef.current = connection;
+        })
+        .catch(reportLoadFailure);
+    };
+    admit();
+
+    return () => {
+      mounted = false;
+      window.clearTimeout(refusalTimer);
+      readmitRef.current = undefined;
+      teardown();
+    };
+  }, [
+    anchoredBlockId,
+    artifact.id,
+    blockSchema,
+    createEditor,
+    documentRef,
+    focusInEditor,
+    followBlockHash,
+    loadTransport,
+    page,
+    pendingWaiter,
+    queryClient,
+    whenSent,
+  ]);
+
+  // A blocked admission is admitted again by the next successful read of the document's text: the
+  // refetch a repair upload's or a rebuild's invalidation makes, or any other. Each successful read
+  // moves `dataUpdatedAt`, which is what reruns this.
+  const textReadAt = liveTextQuery.isSuccess ? liveTextQuery.dataUpdatedAt : undefined;
+  useEffect(() => {
+    if (textReadAt !== undefined) {
+      readmitRef.current?.();
+    }
+  }, [textReadAt]);
+
+  // The server admits every socket on a closed issue's document read-only, and decides a socket's
+  // admission once, as it connects. A reopened issue's document takes edits again, so the page has
+  // its connection admitted again: until the new admission (`onAdmission`) replaces the closed
+  // one's, the socket is still read-only, and so is the editor. The reopen closes the issue's
+  // rooms itself, which readmits every browser on them, but only on the process that served the
+  // PATCH (`SetIssueClosed`); this covers the two sockets that close never reaches: one whose
+  // room another process holds, and one whose room the close could not close, each of which
+  // keeps the read-only admission it was given.
+  useEffect(() => {
+    setQuoteRefusal(undefined);
+    editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
+    if (wasClosedRef.current && !isClosed) {
+      readmit();
+    }
+    wasClosedRef.current = isClosed;
+  }, [isClosed, page, readmit]);
+
+  // The quote the host asked for, highlighted without changing the document; naming no mark
+  // clears whatever the last one highlighted.
+  useEffect(() => {
+    editorRef.current?.setActiveMarks(activeMarkId === undefined ? [] : [activeMarkId]);
+  }, [activeMarkId]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor !== undefined && page) {
+      setSearchHighlights(editor.view.dom, highlightTerm);
+    }
+  }, [highlightTerm, page]);
+
+  return (
+    <section aria-label="Document editor" className="space-y-4">
+      <NameVersionDialog
+        error={nameVersion.isError}
+        onClose={() => {
+          nameVersion.reset();
+          setIsNameDialogOpen(false);
+        }}
+        onSave={(summary) => nameVersion.mutate(summary)}
+        open={isNameDialogOpen}
+        saving={nameVersion.isPending}
+      />
+      {nameVersion.unanswered === undefined ? null : (
+        <LandedWithoutAnswer what={`The version “${nameVersion.unanswered.variables}”`} />
+      )}
+      {isClosed ? <p>This issue is closed. Its document is read-only.</p> : null}
+      {quoteRefusal === undefined ? null : <p role="status">{quoteRefusal}</p>}
+      {repairError === undefined ? null : (
+        <div className="space-y-3" role="alert">
+          <p className={dangerText}>{repairError.message}</p>
+          <p>Upload markdown to replace and repair this document.</p>
+          <ArtifactDropZone upload={repairUpload}>
+            <ArtifactUploadRow upload={repairUpload} />
+          </ArtifactDropZone>
+        </div>
+      )}
+      {rebuildError === undefined ? null : (
+        <div className="space-y-3" role="alert">
+          <p className={dangerText}>{rebuildError.message}</p>
+          <p>
+            Rebuilding discards the unreadable document history and restores its latest saved
+            version.
+          </p>
+          <button
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+            disabled={rebuild.isPending}
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Rebuild this document from its latest version? This discards its unreadable history."
+                )
+              ) {
+                rebuild.mutate();
+              }
+            }}
+            type="button"
+          >
+            {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}
+          </button>
+          {rebuild.isError ? (
+            <p className={dangerText}>
+              {rebuild.error instanceof Error
+                ? rebuild.error.message
+                : "Could not rebuild this document."}
+            </p>
+          ) : null}
+        </div>
+      )}
+      {/* The server admits a socket read-only for a closed issue as it does for a schema version
+          it does not serve, so the admission alone cannot say whether a reload would help. The
+          close state the page holds now decides: while the issue is open, a reload opens a new
+          socket the server admits on the issue as it stands, so a reload makes the document
+          editable again. A closed issue shows its own line above instead, and a socket that is
+          not connected shows nothing: its reconnect's admission decides. A block schema that
+          could not load leaves the page no editor to bind at all, and only a reload fixes that
+          too. */}
+      {blockSchemaQuery.isError || (schemaReadOnly && !isClosed && connection === "connected") ? (
+        <p>Reload to edit.</p>
+      ) : null}
+      {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
+          list beside it. */}
+      {page && version === undefined && openDecision !== undefined ? (
+        <nav
+          aria-label="Open decisions"
+          className="flex min-h-11 items-center gap-2 md:h-7 md:min-h-0"
+        >
+          <span
+            className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${badgeMed.bg} ${badgeMed.text}`}
+          >
+            {openBlockAsks.length === 1
+              ? "1 open decision"
+              : `${openBlockAsks.length} open decisions`}
+          </span>
+          <a
+            className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${linkText} ${linkHoverText}`}
+            href={blockFragment(openDecision.block_id ?? "")}
+            onClick={(event) => {
+              event.preventDefault();
+              const blockID = openDecision.block_id;
+              if (blockID === undefined || blockID === null) {
+                return;
+              }
+              window.location.hash = blockFragment(blockID);
+              focusInEditor(() => editorRef.current?.focusBlock(blockID));
+            }}
+            title={openDecision.question}
+          >
+            <TruncatedText>{openDecision.question}</TruncatedText>
+          </a>
+          {openBlockAsks.length > 1 ? (
+            <button
+              aria-label="Next open decision"
+              className={`ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonText}`}
+              onClick={() =>
+                setOpenDecisionIndex((current) => (current + 1) % openBlockAsks.length)
+              }
+              type="button"
+            >
+              <svg aria-hidden="true" className="h-3 w-3" fill="none" viewBox="0 0 16 16">
+                <path d="m6 3 5 5-5 5" stroke="currentColor" strokeWidth="1.5" />
+              </svg>
+            </button>
+          ) : null}
+        </nav>
+      ) : null}
+      {specMarks.changed === undefined ? null : (
+        <p className={`text-sm ${textSecondaryOnCanvas}`} role="status">
+          {readLineText(specMarks.changed)}
+        </p>
+      )}
+      {shownLoadError === undefined ||
+      repairError !== undefined ||
+      rebuildError !== undefined ? null : (
+        <p className={dangerText} role="alert">
+          This document could not load: {shownLoadError}
+        </p>
+      )}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
+      editor already handles keyboard activation of its own links. */}
+      <article
+        aria-label="Document"
+        className="dispatch-doc relative"
+        data-read-only={isClosed || schemaReadOnly}
+        hidden={version !== undefined || repairError !== undefined || rebuildError !== undefined}
+        onClick={followReference}
+      >
+        <div ref={root} />
+        {anchoredThread === undefined || anchoredHost === undefined
+          ? null
+          : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        <DocumentReferences editor={editorHandle} source={textSource} />
+        {askBlockHosts.map((host) => {
+          const blockId = String(host.node.attrs.blockId);
+          return (
+            <AskBlockCard
+              ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
+              host={host}
+              key={host.key}
+              onAnswered={blockAnswered}
+              owner={owner.kind === "document" ? owner : undefined}
+              readOnly={blocksReadOnly}
+              rowResolution={isClosed}
+            />
+          );
+        })}
+        {blockReferencesQuery.data?.some(
+          (block) => block.references.comments + block.references.asks > 0
+        ) ? (
+          <aside
+            aria-label="Block references"
+            className="pointer-events-none absolute top-0 right-0 z-10 w-8"
+          >
+            {blockReferencesQuery.data
+              .filter((block) => block.references.comments + block.references.asks > 0)
+              .map((block) => {
+                const count = block.references.comments + block.references.asks;
+                return (
+                  <button
+                    aria-label={`${count} references on block`}
+                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${badgeMed.bg} ${badgeMed.text}`}
+                    key={block.id}
+                    onClick={() => {
+                      marginRef.current.filterToBlock(block.id);
+                      focusInEditor(() => editorRef.current?.focusBlock(block.id));
+                    }}
+                    style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
+                    type="button"
+                  >
+                    {count}
+                  </button>
+                );
+              })}
+          </aside>
+        ) : null}
+      </article>
+      {version === undefined ? null : versionQuery.isError ? (
+        <section aria-label={`Document version ${version}`} className="space-y-3">
+          <p>
+            No version {version} of {artifact.name}.
+          </p>
+          <Link
+            to={
+              owner.kind === "document"
+                ? buildProjectPath({
+                    kind: "document",
+                    project: owner.project,
+                    slug: owner.slug,
+                  })
+                : artifact.primary
+                  ? buildIssuePath({ key: owner.key, kind: "spec" })
+                  : buildIssuePath({
+                      key: owner.key,
+                      kind: "artifact",
+                      slug: artifact.slug,
+                    })
+            }
+          >
+            View current version
+          </Link>
+        </section>
+      ) : versionMarkdown === undefined ? (
+        <p>Loading version…</p>
+      ) : showDiff ? (
+        <ChangeView after={liveMarkdown} before={versionMarkdown} />
+      ) : (
+        <div data-testid="version-view">
+          <VersionView
+            artifactId={artifact.id}
+            asks={blockAsks}
+            blockSchema={blockSchema}
+            createdAt={versions.find((item) => item.number === version)?.created_at}
+            highlight={highlight}
+            owner={owner.kind === "document" ? owner : undefined}
+            version={version}
+          />
+        </div>
+      )}
+    </section>
+  );
+}

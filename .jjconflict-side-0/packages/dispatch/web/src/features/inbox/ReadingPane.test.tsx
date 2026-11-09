@@ -1,0 +1,878 @@
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import type { ChangeDecorations } from "@legion/proof-editor";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { Node as ProseMirrorNode } from "prosemirror-model";
+import { MemoryRouter } from "react-router-dom";
+
+import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { ApiError, api } from "../../api/client";
+import type {
+  Anchor,
+  Artifact,
+  AskSnooze,
+  InboxRow,
+  IssueDetails,
+  MyReplyRow,
+  MyReplyThreadRow,
+  Version,
+} from "../../api/types";
+import { CHANGED_BLOCK_CLASS, changeMarksAgainst } from "../doc/change-marks";
+import type { CreateEditor, EditorHandle } from "../doc/editor";
+import { DocumentRuntime } from "../doc/runtime";
+import { MarginProvider } from "../margin/margin-context";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { plannerAgentRow } from "../threads/replies-fixture";
+import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import { ReadingPane } from "./ReadingPane";
+
+installInboxApiMocks();
+
+/** The pane waits this long after the last change of the selected question before it opens
+ *  another document (`DOCUMENT_SETTLE_MS` in `PaneDocument.tsx`). */
+const SETTLE_MS = 200;
+
+let getArtifact: Mock<typeof api.getArtifact>;
+let getArtifactText: Mock<typeof api.getArtifactText>;
+let getIssue: Mock<typeof api.getIssue>;
+
+beforeEach(() => {
+  getArtifact = spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded"));
+  getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "",
+    token: "",
+    version: null,
+  });
+  // The pane reads one field of the issue: whether it is closed, which it hands the document.
+  getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    closed_at: null,
+  } as unknown as IssueDetails);
+});
+
+afterEach(() => {
+  getArtifact.mockRestore();
+  getArtifactText.mockRestore();
+  getIssue.mockRestore();
+});
+
+function version(number: number): Version {
+  return {
+    authors: [{ id: "alice", kind: "user" }],
+    created_at: "2026-10-02T00:00:00Z",
+    named: false,
+    number,
+    summary: null,
+  };
+}
+
+function document(overrides: Partial<Artifact> = {}): Artifact {
+  return {
+    created_at: "2026-10-01T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "artifact-1",
+    issue_key: "CORE-1",
+    kind: "doc",
+    name: "spec.md",
+    primary: true,
+    project: "CORE",
+    ref_key: "CORE-1/spec",
+    session_id: null,
+    slug: "spec",
+    versions: [],
+    ...overrides,
+  };
+}
+
+function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+}
+
+/** Every read the pane and the document make of one artifact, answered from the cache under the
+ *  document page's own keys, so a test's render reaches the network for nothing. */
+function seedDocument(
+  client: QueryClient,
+  artifact: Artifact,
+  versions: Readonly<Record<number, string>> = {}
+): void {
+  client.setQueryData(["artifact", artifact.id], artifact);
+  client.setQueryData(["artifact", artifact.id, "text"], { markdown: "", version: null });
+  client.setQueryData(["artifact", artifact.id, "blocks"], []);
+  client.setQueryData(["artifact", artifact.id, "asks"], []);
+  if (artifact.issue_key !== null) {
+    client.setQueryData(["asks", artifact.issue_key], []);
+  }
+  for (const [number, markdown] of Object.entries(versions)) {
+    client.setQueryData(["artifact", artifact.id, "version", Number(number)], {
+      authors: [{ id: "alice", kind: "user" }],
+      created_at: "2026-10-02T00:00:00Z",
+      markdown,
+      named: false,
+      number: Number(number),
+      summary: null,
+    });
+  }
+}
+
+/** The document the headless engine builds for `markdown`: what the editor would hold, which is
+ *  what the version marks its baseline against. */
+function renderedDocument(markdown: string): ProseMirrorNode {
+  const parsed = loadedEngine()?.parse(markdown);
+  if (parsed === undefined) throw new Error(`the engine rendered nothing for "${markdown}"`);
+  return parsed;
+}
+
+/** Records what the version draws over its rendered document, and gives the fake handle the
+ *  document the real editor would hold: the fake view's state carries none (`VersionView.test`).
+ *  With `paintMarks`, it also puts a marked block into the editor's root where the version drew
+ *  any, as the real editor's decorations would: the head reads the drawn document to decide
+ *  whether there is a change to step to. */
+function recordMarks(
+  markdown: string,
+  drawn: ChangeDecorations[],
+  { paintMarks = false }: { paintMarks?: boolean } = {}
+): (inner: CreateEditor) => CreateEditor {
+  return (inner) => async (root, options) => {
+    const handle: EditorHandle = await inner(root, options);
+    const state = handle.view.state as unknown as { doc: ProseMirrorNode };
+    state.doc = renderedDocument(markdown);
+    handle.setChangeDecorations = (decorations) => {
+      drawn.push(decorations);
+      if (!paintMarks || decorations.text.length === 0) return;
+      const block = globalThis.document.createElement("p");
+      block.className = CHANGED_BLOCK_CLASS;
+      block.textContent = "The plan ships behind a canary today.";
+      root.append(block);
+    };
+    return handle;
+  };
+}
+
+/** Gives the fake editor the blocks a real one would draw, each stamped with its block id as
+ *  `@legion/proof-editor` stamps them: the pane reads its section off the drawn document. */
+function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
+  return (inner) => async (root, options) => {
+    const handle: EditorHandle = await inner(root, options);
+    root.innerHTML = blocks;
+    return handle;
+  };
+}
+
+function renderPane({
+  ask,
+  createEditor,
+  seed = () => {},
+}: {
+  ask: InboxRow;
+  createEditor?: (inner: CreateEditor) => CreateEditor;
+  seed?: (client: QueryClient) => void;
+}) {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  /** Each document the column opened a room for, in the order it opened them. */
+  const opened: string[] = [];
+  const runtime = {
+    ...fake.runtime,
+    createEditor:
+      createEditor === undefined
+        ? fake.runtime.createEditor
+        : createEditor(fake.runtime.createEditor),
+    loadTransport: async () => {
+      const connect = await fake.runtime.loadTransport();
+      return (artifactId: string, callbacks: Parameters<typeof connect>[1]) => {
+        opened.push(artifactId);
+        return connect(artifactId, callbacks);
+      };
+    },
+  };
+  const client = createQueryClient();
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  seed(client);
+  const answered: string[] = [];
+  /** Every registration the head's Snooze made, in order: `[askId, live]`. */
+  const snoozeLiveness: (readonly [string, boolean])[] = [];
+  const tree = (row: InboxRow) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <DocumentRuntime.Provider value={runtime}>
+          <MarginProvider>
+            <ReadingPane
+              onAnswered={(id) => answered.push(id)}
+              onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
+              row={{ ask: row, kind: "ask" }}
+              viewer="alice"
+            />
+          </MarginProvider>
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(ask));
+  return {
+    answered,
+    client,
+    opened,
+    rerender: (row: InboxRow) => view.rerender(tree(row)),
+    runtime: fake,
+    snoozeLiveness,
+    view,
+  };
+}
+
+function decisionAsk(overrides: Partial<InboxRow> = {}): InboxRow {
+  return issueAsk({
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: "ship_it",
+    question: "Ship behind a flag?",
+    ...overrides,
+  });
+}
+
+/** The approval request for `spec.md` at version 4; `approved` is the approval it follows, which
+ *  a first request has none of. */
+function approvalAsk(approved?: {
+  at: string;
+  by: { id: string; kind: "user" };
+  version: number;
+}): InboxRow {
+  return issueAsk({
+    approval: {
+      approved,
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "spec.md",
+      requested_version: 4,
+      version: 4,
+    },
+    approval_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
+    kind: "approval",
+    question: "Approve spec.md at version 4?",
+  });
+}
+
+const EARLIER_APPROVAL = {
+  at: "2026-10-01T00:00:00Z",
+  by: { id: "alice", kind: "user" as const },
+  version: 3,
+};
+
+test("a decision block draws the document in pane mode, with Skip to the answer at the head", async () => {
+  const { opened, runtime, view } = renderPane({
+    ask: decisionAsk(),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    expect(opened).toEqual(["artifact-1"]);
+    runtime.sync();
+    await waitFor(() => expect(runtime.editors).toHaveLength(1));
+    // What `surface="pane"` means where the editor is built: no presence, and no edits.
+    expect(runtime.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
+    expect(await screen.findByRole("button", { name: "Skip to the answer" })).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a decision block's column marks the section from its heading down to the block", async () => {
+  const { runtime, view } = renderPane({
+    ask: decisionAsk(),
+    createEditor: drawBlocks(
+      '<h1 data-block-id="title">Plan</h1><h2 data-block-id="rollout">Rollout</h2>' +
+        '<p data-block-id="context">How it goes out.</p>' +
+        '<section data-block-id="ship_it">Ship behind a flag?</section>'
+    ),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    expect(await screen.findByTestId("pane-section-bar")).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a decision block before any heading sits in no section, so no bar is drawn", async () => {
+  const { runtime, view } = renderPane({
+    ask: decisionAsk(),
+    createEditor: drawBlocks(
+      '<p data-block-id="context">How it goes out.</p>' +
+        '<section data-block-id="ship_it">Ship behind a flag?</section>' +
+        '<h2 data-block-id="rollout">Rollout</h2>'
+    ),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    await waitFor(() => expect(runtime.editors).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("inbox-pane")).toHaveTextContent("Ship behind a flag?")
+    );
+    expect(screen.queryByTestId("pane-section-bar")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval draws the latest version marked against the version it follows", async () => {
+  await warmMarkdownRenderer();
+  const baseline = "# Plan\n\nThe plan ships behind a flag today.\n\nThe old note.\n";
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const drawn: ChangeDecorations[] = [];
+  const { view } = renderPane({
+    ask: approvalAsk(EARLIER_APPROVAL),
+    createEditor: recordMarks(latest, drawn),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({
+          approval: { latest_version: 4, state: "awaiting", version: 3 },
+          versions: [version(3), version(4)],
+        }),
+        { 3: baseline, 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Request changes" })).toBeDefined();
+    // The latest version, which is the version Approve approves.
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    await waitFor(() => expect(drawn).toHaveLength(1));
+    const marks = changeMarksAgainst(baseline, renderedDocument(latest));
+    expect(marks.text.length).toBeGreaterThan(0);
+    expect(drawn[0]).toEqual(marks);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval of a document nobody has approved marks nothing and offers no Next change", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const drawn: ChangeDecorations[] = [];
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    createEditor: recordMarks(latest, drawn),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({
+          approval: { latest_version: 4, state: "awaiting" },
+          versions: [version(4)],
+        }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    await waitFor(() => expect(screen.queryByText("Loading version…")).not.toBeInTheDocument());
+    expect(drawn).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Next change" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+// "Next change" steps the blocks the version marked. The marks are drawn only once the headless
+// markdown engine has warmed; an engine that never warms, or one that refuses the baseline,
+// leaves `changeMarksAgainst` marking nothing (`change-marks.ts`), and the button then had
+// nothing to step and did nothing. These two rows pin the offer on the marks that were drawn
+// rather than on a baseline that merely loaded.
+test("an approval whose version drew marks offers Next change", async () => {
+  await warmMarkdownRenderer();
+  const baseline = "# Plan\n\nThe plan ships behind a flag today.\n";
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const drawn: ChangeDecorations[] = [];
+  const { view } = renderPane({
+    ask: approvalAsk(EARLIER_APPROVAL),
+    createEditor: recordMarks(latest, drawn, { paintMarks: true }),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({
+          approval: { latest_version: 4, state: "awaiting", version: 3 },
+          versions: [version(3), version(4)],
+        }),
+        { 3: baseline, 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByRole("button", { name: "Next change" })).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval whose baseline loaded but whose marks never drew offers no Next change", async () => {
+  await warmMarkdownRenderer();
+  const baseline = "# Plan\n\nThe plan ships behind a flag today.\n";
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const drawn: ChangeDecorations[] = [];
+  const { view } = renderPane({
+    ask: approvalAsk(EARLIER_APPROVAL),
+    // The marks are computed and handed over, and nothing of them reaches the drawn document.
+    createEditor: recordMarks(latest, drawn),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({
+          approval: { latest_version: 4, state: "awaiting", version: 3 },
+          versions: [version(3), version(4)],
+        }),
+        { 3: baseline, 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    await waitFor(() => expect(drawn).toHaveLength(1));
+    expect(drawn[0]?.text.length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Next change" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approved document shows the approval it follows in place of the actions, and its version", async () => {
+  await warmMarkdownRenderer();
+  const baseline = "# Plan\n\nThe plan ships behind a flag today.\n";
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const drawn: ChangeDecorations[] = [];
+  const { view } = renderPane({
+    ask: approvalAsk(EARLIER_APPROVAL),
+    createEditor: recordMarks(latest, drawn),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({
+          approval: { latest_version: 4, state: "approved", version: 4 },
+          versions: [version(3), version(4)],
+        }),
+        { 3: baseline, 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Approved at version 3 on/)).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval draws the request's own question above the document, inside the scroller", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    // The block is drawn before the document's own reads land, so it is on screen beside the
+    // skeleton as well as beside the version.
+    const block = await screen.findByTestId("pane-approval-question");
+    expect(block).toHaveTextContent("Approve spec.md at version 4?");
+    const drawn = await screen.findByLabelText("Document version 4");
+    expect(block.compareDocumentPosition(drawn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(
+      0
+    );
+    // Inside the one scroller, so the document holds the whole column again once the reader
+    // has scrolled past the question.
+    expect(screen.getByTestId("inbox-pane-scroller").contains(block)).toBe(true);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval that falls back to the card draws the question once, as the card's own", async () => {
+  const { view } = renderPane({ ask: approvalAsk() });
+
+  try {
+    // `getArtifact` is refused by default, so the column never reads a version to show.
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(screen.queryByTestId("pane-approval-question")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Approve spec.md at version 4?")).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an anchored question is today's card", async () => {
+  const { opened, view } = renderPane({
+    ask: issueAsk({
+      anchor: {
+        artifact_id: "artifact-1",
+        block_id: "ship_it",
+        mark_id: "mark-1",
+        orphaned: false,
+        quote: "behind a flag",
+        version: 4,
+      },
+      anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
+    }),
+  });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(opened).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a question in no document is today's card", async () => {
+  const { opened, view } = renderPane({ ask: issueAsk() });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(opened).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<AskSnooze>();
+  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
+  const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
+
+  try {
+    await user.selectOptions(
+      await screen.findByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    // The optimistic snooze folds the row into Later and the column follows the list, so a
+    // head that kept its write to itself would be unmounted with the row it wrote about.
+    await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
+  } finally {
+    held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
+    view.unmount();
+    snoozeAsk.mockRestore();
+  }
+});
+
+test("a project document's head names the project and the document, and opens it at the section", async () => {
+  const { runtime, view } = renderPane({
+    ask: decisionAsk({
+      document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+      issue: undefined,
+      issue_key: null,
+    }),
+    createEditor: drawBlocks(
+      '<h2 data-block-id="rollout">Rollout</h2>' +
+        '<section data-block-id="ship_it">Ship behind a flag?</section>'
+    ),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ issue_key: null, name: "Design notes", primary: false, slug: "design-notes" })
+      ),
+  });
+
+  try {
+    expect(await screen.findByText("CORE · Design notes")).toBeDefined();
+    // Neither applies to a project document: it has no priority and nobody is assigned to it.
+    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "Open page" })).toHaveAttribute(
+        "href",
+        "/projects/CORE/documents/design-notes#b-rollout"
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a document that cannot be read falls back to the card, with Open page at the head", async () => {
+  getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
+  const { opened, view } = renderPane({ ask: decisionAsk() });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
+    // Never the document page's own repair or rebuild prompt: the column opened no document.
+    expect(opened).toEqual([]);
+    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a document the editor is refused admission to leaves the column on the card, with no prompt", async () => {
+  // The column's own read of the text was answered from the cache (seeded below) and the read
+  // the document makes for its own admission is the one the server refuses. Two things then say
+  // the document cannot be opened: the document's report (`onUnavailable`, which
+  // `ProofDocument.admission.test.tsx` covers on its own) and the error that refusal leaves on
+  // the text query both columns share. Either way the column ends on the card and draws neither
+  // of the page's prompts, which is what this test pins.
+  getArtifactText.mockRejectedValue(
+    new ApiError(409, { code: "DOC_SCHEMA", error: "This document is outside the Proof schema." })
+  );
+  const { opened, view } = renderPane({
+    ask: decisionAsk(),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
+    expect(
+      screen.queryByText(/Upload markdown to replace and repair this document/)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/This document is outside the Proof schema/)).not.toBeInTheDocument();
+    // The refusal is what closed the editor: no room was ever opened.
+    expect(opened).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a selection changed twice inside the settle opens the second document alone", async () => {
+  // On the fake clock from the first render, so the settle of the first selection is a timer this
+  // test moves the clock past rather than a wait of its own.
+  jest.useFakeTimers();
+  const { opened, rerender, runtime, view } = renderPane({
+    ask: decisionAsk({ id: "ask-1" }),
+    seed: (client) => {
+      seedDocument(client, document());
+      seedDocument(client, document({ id: "artifact-2", name: "notes.md", slug: "notes" }));
+    },
+  });
+
+  try {
+    rerender(
+      decisionAsk({
+        block_artifact: { id: "artifact-2", primary: false, slug: "notes" },
+        block_id: "later",
+        id: "ask-2",
+      })
+    );
+    await waitFor(() => expect(opened).toEqual(["artifact-2"]));
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    // Long past the settle, the first selection has still opened nothing.
+    await tick(SETTLE_MS * 2);
+    expect(opened).toEqual(["artifact-2"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The four thread bodies: what the column shows for a Reply or an Agent row.
+// ---------------------------------------------------------------------------------------------
+
+function threadRow(overrides: Partial<MyReplyThreadRow>): MyReplyThreadRow {
+  return {
+    kind: "comment",
+    read_through: "2026-10-12T00:30:00Z",
+    ref: "/issues/CORE-1?comment=comment-1",
+    reply: {
+      author: { id: "bob", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      first_line: "Agreed.",
+      id: "comment-2",
+      kind: "reply",
+    },
+    subject: "The retry budget",
+    thread_id: "comment-1",
+    unread: true,
+    unread_count: 1,
+    version: 1,
+    ...overrides,
+  };
+}
+
+/** The anchor a comment thread in a project document carries. */
+function anchor(overrides: Partial<Anchor> = {}): Anchor {
+  return {
+    artifact_id: "artifact-1",
+    block_id: "b-1",
+    mark_id: "mark-1",
+    orphaned: false,
+    quote: "three attempts",
+    version: 2,
+    ...overrides,
+  };
+}
+
+function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = () => {}) {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const client = createQueryClient();
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  seed(client);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <DocumentRuntime.Provider value={fake.runtime}>
+          <MarginProvider>
+            <ReadingPane
+              onAnswered={() => {}}
+              onSnoozeLive={() => {}}
+              row={{ kind: "thread", thread }}
+              viewer="alice"
+            />
+          </MarginProvider>
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { client, runtime: fake, view };
+}
+
+/** Which of the column's four thread bodies is drawn. */
+async function paneBody(): Promise<HTMLElement> {
+  const pane = await screen.findByTestId("inbox-pane");
+  const body = pane.querySelector<HTMLElement>("[data-inbox-pane-body]");
+  if (body === null) throw new Error("the column drew no thread body");
+  return body;
+}
+
+test("a comment thread on an issue shows the issue and the thread, with no document", async () => {
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const { view } = renderThread(threadRow({ issue: { key: "CORE-1", title: "Fix the thing" } }));
+  try {
+    const body = await paneBody();
+    expect(body).toHaveAttribute("data-inbox-pane-body", "issue");
+    // The head names the owner and opens the thread's own page.
+    const pane = screen.getByTestId("inbox-pane");
+    expect(within(pane).getByText("CORE-1")).toBeTruthy();
+    expect(within(pane).getByRole("link", { name: "Open page" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1?comment=comment-1"
+    );
+    await waitFor(() => expect(listComments).toHaveBeenCalled());
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+  }
+});
+
+test("an issue message conversation reads the issue's messages", async () => {
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
+  const { view } = renderThread(
+    threadRow({
+      issue: { key: "CORE-1", title: "Fix the thing" },
+      kind: "message",
+      thread_id: "message-1",
+    })
+  );
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "issue");
+    await waitFor(() => expect(listIssueMessages).toHaveBeenCalledWith("CORE-1"));
+  } finally {
+    view.unmount();
+    listIssueMessages.mockRestore();
+  }
+});
+
+test("an Agent row shows the session's name and reads that session's messages", async () => {
+  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([]);
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const { view } = renderThread(plannerAgentRow());
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "agent");
+    const pane = screen.getByTestId("inbox-pane");
+    expect(within(pane).getByText("Planner")).toBeTruthy();
+    // An Agent row has no reference, so the head draws no copy control at all.
+    expect(pane.querySelector("[data-copy-ref]")).toBeNull();
+    expect(within(pane).getByRole("link", { name: "Open page" })).toHaveAttribute(
+      "href",
+      "/agents/planner/live"
+    );
+    await waitFor(() => expect(listAgentMessages).toHaveBeenCalledWith("planner"));
+  } finally {
+    view.unmount();
+    listAgentMessages.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
+test("an ask's thread shows the ask's own card", async () => {
+  const row = issueAsk({ id: "ask-a" });
+  const getAsk = mockAskReads([row]);
+  const { view } = renderThread(
+    threadRow({
+      issue: { key: "CORE-1", title: "Fix the thing" },
+      kind: "ask",
+      ref: "/issues/CORE-1/asks/ask-a",
+      thread_id: "ask-a",
+    })
+  );
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "ask");
+    await waitFor(() => expect(screen.getByTestId("ask-ask-a")).toBeTruthy());
+    expect(getAsk).toHaveBeenCalledWith("ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("a comment thread in a document opens that document at its block", async () => {
+  const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
+  const thread = threadRow({
+    anchor: anchor(),
+    document: { name: "spec.md", project: "CORE", slug: "spec" },
+    ref: "/projects/CORE/documents/spec?comment=comment-1",
+  });
+  const { runtime, view } = renderThread(thread, (client) => {
+    seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
+  });
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "document");
+    // The live document is opened, not a card: the column connects a room for it.
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    expect(screen.getByTestId("inbox-pane").querySelector("[data-inbox-pane-fallback]")).toBeNull();
+  } finally {
+    view.unmount();
+    listArtifactComments.mockRestore();
+  }
+});
+
+test("an orphaned anchor falls back to the thread alone, with its quote", async () => {
+  const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
+  const thread = threadRow({
+    anchor: anchor({ orphaned: true }),
+    document: { name: "spec.md", project: "CORE", slug: "spec" },
+    ref: "/projects/CORE/documents/spec?comment=comment-1",
+  });
+  const { runtime, view } = renderThread(thread, (client) => {
+    seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
+  });
+  try {
+    const body = await paneBody();
+    expect(body).toHaveAttribute("data-inbox-pane-body", "document");
+    expect(body.hasAttribute("data-inbox-pane-fallback")).toBe(true);
+    expect(body.querySelector("[data-inbox-thread-quote]")?.textContent).toBe("three attempts");
+    // Nothing opened the document: an anchor nothing can be placed at opens no room.
+    await Bun.sleep(SETTLE_MS * 2);
+    expect(runtime.connections).toHaveLength(0);
+  } finally {
+    view.unmount();
+    listArtifactComments.mockRestore();
+  }
+});

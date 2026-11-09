@@ -1,0 +1,170 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
+)
+
+// unreadableRoleClaims are role claim records the bus holds and no read can decode
+// (store.ErrMalformedRoleClaim), each with the detail its answer names.
+var unreadableRoleClaims = []struct {
+	name, record, detail string
+}{
+	{name: "a claim naming no holder", record: `{"holder_session_id":""}`, detail: "malformed role claim: it names no holder"},
+	{name: "JSON that is not a claim", record: `{"holder_session_id":7}`, detail: "malformed role claim: json: "},
+	{name: "a legacy record with no holder", record: "  ", detail: "malformed role claim: a legacy record with an empty holder"},
+}
+
+// openUnreadableRoleClaim stores record raw in the role bucket as role's claim, past every writer
+// that would refuse it, and returns the listener state that resolves it, wired for the publish
+// route as main wires it (withPublishRoute).
+func openUnreadableRoleClaim(t *testing.T, role, record string) (*listenerDeps, *store.Registry) {
+	t.Helper()
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if _, err := registryRoleKV(t, registry).Put(role, []byte(record)); err != nil {
+		t.Fatalf("store the claim record %q: %v", record, err)
+	}
+	return withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions}), registry
+}
+
+// assertUnreadableRoleClaimAnswer holds the answer both role routes give a claim record no read can
+// decode: the bus answered, and will answer the same record again, so it is a 500 with no
+// Retry-After - which would only send the client (packages/envoy-client/src/transport.ts retries
+// every 5xx) back for the same record - and not the bus-unavailable 503, whose prefix would send an
+// operator after an outage that never happened. The record itself is left as it was: nothing
+// releases a claim no one can read the holder of.
+func assertUnreadableRoleClaimAnswer(t *testing.T, recorder *httptest.ResponseRecorder, registry *store.Registry, role, record, detail string) {
+	t.Helper()
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, body %s; want 500", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want none: a retry reads the same record", got)
+	}
+	var refusal apiError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
+	}
+	head := "envoy: the claim record of role " + role + " is unreadable: "
+	if !strings.HasPrefix(refusal.Error, head) || !strings.Contains(refusal.Error, detail) {
+		t.Fatalf("the refusal reads %q, want it to begin %q and name %q", refusal.Error, head, detail)
+	}
+	if strings.Contains(refusal.Error, busUnansweredPrefix) {
+		t.Fatalf("the refusal reads %q: the bus answered, so it must not say the bus did not", refusal.Error)
+	}
+	entry, err := registryRoleKV(t, registry).Get(role)
+	if err != nil {
+		t.Fatalf("read the claim record after the request: %v", err)
+	}
+	if !bytes.Equal(entry.Value(), []byte(record)) {
+		t.Fatalf("the claim record after the request = %q, want %q, untouched", entry.Value(), record)
+	}
+}
+
+func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
+	const role = "reviewer"
+	for _, tc := range unreadableRoleClaims {
+		t.Run(tc.name, func(t *testing.T) {
+			state, registry := openUnreadableRoleClaim(t, role, tc.record)
+			recorder := httptest.NewRecorder()
+			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+			assertUnreadableRoleClaimAnswer(t, recorder, registry, role, tc.record, tc.detail)
+		})
+	}
+}
+
+// A role send through the publish route answers the same record as the lookup does, and records it under its own
+// outcome rather than bus_unavailable, at WARN as every refusal is. It also raises no role-lane
+// exception: only a refusal that establishes the role has no live holder (unclaimed,
+// holder_lapsed) reports one, and an unreadable claim establishes nothing about the holder, so a
+// consumer of the lane is told nothing it would act on.
+func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
+	const role = "reviewer"
+	topic := contracts.RoleTopicPrefix + role
+	for _, tc := range unreadableRoleClaims {
+		t.Run(tc.name, func(t *testing.T) {
+			state, registry := openUnreadableRoleClaim(t, role, tc.record)
+			exceptionProbe, err := state.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + topic)
+			if err != nil {
+				t.Fatalf("subscribe to the role's exception lane: %v", err)
+			}
+			t.Cleanup(func() { _ = exceptionProbe.Unsubscribe() })
+			if err := state.client.Conn.Flush(); err != nil {
+				t.Fatalf("flush the exception subscription: %v", err)
+			}
+			recorder, record := serveRecorded(t,
+				func(logger *logging.Logger) http.HandlerFunc { return publishHandler(state, logger) },
+				postJSON("/v1/messages/publish", sendBody(map[string]any{
+					"topic":          topic,
+					"source":         "agent",
+					"source_session": "ses_unreadable_claim_publisher",
+					"message":        "who holds this role?",
+				})))
+			assertUnreadableRoleClaimAnswer(t, recorder, registry, role, tc.record, tc.detail)
+			assertRecordFields(t, record, map[string]any{
+				"msg":     "listener publish",
+				"level":   "WARN",
+				"outcome": "role_claim_unreadable",
+				"status":  float64(http.StatusInternalServerError),
+				"topic":   topic,
+			})
+			if message, err := exceptionProbe.NextMsg(250 * time.Millisecond); err == nil {
+				t.Fatalf("an unreadable claim raised an exception: %s", message.Data)
+			} else if !errors.Is(err, nats.ErrTimeout) {
+				t.Fatalf("wait for an exception: %v", err)
+			}
+		})
+	}
+}
+
+// A record that carries no client instance id and no renewal is one an earlier build wrote, not
+// one this build cannot read: the lookup answers the holder it names, with none of the server
+// error above, and so does the bare session id that build also stored. A missing field is never
+// store.ErrMalformedRoleClaim.
+func TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	claimed := time.Now().UnixMilli()
+	for name, older := range map[string]struct{ role, holder, record string }{
+		"a structured claim an earlier build wrote": {
+			role:   "older-structured",
+			holder: "ses_older_structured",
+			record: fmt.Sprintf(`{"holder_session_id":"ses_older_structured","claimed_at":%d,"previous_session_id":""}`, claimed),
+		},
+		"the bare session id an earlier build stored": {
+			role:   "older-legacy",
+			holder: "ses_older_legacy",
+			record: "ses_older_legacy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := sessions.Put(older.holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+				t.Fatalf("register %s: %v", older.holder, err)
+			}
+			if _, err := registryRoleKV(t, registry).Put(older.role, []byte(older.record)); err != nil {
+				t.Fatalf("store the claim record %q: %v", older.record, err)
+			}
+			recorder := httptest.NewRecorder()
+			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+older.role, nil))
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"holder":"`+older.holder+`"`) {
+				t.Fatalf("GET /v1/roles/%s on the record %q: status %d %s, want 200 naming %s", older.role, older.record, recorder.Code, recorder.Body.String(), older.holder)
+			}
+		})
+	}
+}

@@ -1,0 +1,1230 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2317 # Bun code uses literal template syntax; cleanup is trap-invoked
+# e2e-local.sh — Runs the local Envoy webhook, delivery, and renderer acceptance path.
+#
+# Builds and starts a NATS server of its own (internal/testnats/cmd/natsd) and the
+# listener, then leaves evidence in out/e2e/.
+# ENVOY_CI_DEBOUNCE=250ms keeps this bounded acceptance run responsive while retaining the
+# production settle logic.
+#
+# Role messages: the run proves the listener's kept lane end to end. A publish to a role nobody
+# holds is kept rather than refused and answered 202 with kept_reason unclaimed; that kept message
+# then reaches the session stand-in that claims the role exactly once, as a frame of its own
+# consumer carrying kept_at. A publish to a role whose holder's registration is gone keeps
+# nothing, since that claim stands, and is refused 404 holder_lapsed naming the holder. A publish
+# to a role that live session holds still answers 200 naming the holder, with no kept field.
+#
+# Ports: the OS chooses each one, and each URL is built from the port its own process reports
+# (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
+# addr). E2E_NATS_PORT and E2E_PORT set a port explicitly; it is used as given, and one already in
+# use fails with "address already in use". The session opens no port of its own: it takes its
+# messages from its session consumer over NATS, as every shipped plugin does.
+set -euo pipefail
+# This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
+# no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
+# NATS_NKEY_SEED or NATS_NKEY_SEED_FILE.
+unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
+
+usage() {
+  cat <<'EOF'
+Usage: e2e-local.sh [--help]
+
+Boot a throwaway NATS and the local Envoy listener, submit signed public GitHub
+fixtures plus three direct messages to a session that takes them from its own
+NATS consumer — two of them spelling "no reply wanted" the two ways the wire
+allows, the JSON literal false and the old string "none" — prove that a
+registration naming a port is refused and how a send to an unknown session and
+a send whose bus is gone are refused, prove the kept lane — a role message
+nobody holds is kept and answered 202 and reaches the session that claims the
+role next exactly once, carrying kept_at, while a role whose holder's claim has
+lapsed keeps nothing and is refused 404 and a role a live session holds still
+answers 200 — and write raw and rendered acceptance evidence to
+packages/envoy/out/e2e/. NATS is a server of this checkout's own build
+(internal/testnats/cmd/natsd), so no container runtime is needed.
+EOF
+}
+
+case "${1:-}" in
+  "") ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  *)
+    printf 'ERR: unknown option: %s\n' "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+envoy_dir="$(cd "${script_dir}/.." && pwd)"
+readonly envoy_dir
+repo_root="$(cd "${envoy_dir}/../.." && pwd)"
+readonly repo_root
+fixture_dir="${script_dir}/fixtures/github"
+readonly fixture_dir
+out_dir="${envoy_dir}/out/e2e"
+readonly out_dir
+
+webhook_secret="e2e-local"
+readonly webhook_secret
+session_id="ses_e2e_local"
+readonly session_id
+# The destination of the refused send: an id nothing registers in this run, so the store cannot
+# hold it however late the assertion runs.
+absent_session_id="ses_e2e_local_absent"
+readonly absent_session_id
+
+readonly envelopes_file="${out_dir}/envelopes.jsonl"
+readonly session_frames_file="${out_dir}/session-frames.jsonl"
+readonly rendered_ts_file="${out_dir}/rendered-ts.txt"
+readonly direct_response_file="${out_dir}/direct-send-response.json"
+# The two sends that carry an expects_reply. Each is answered in its sender's own dialect, so the
+# two answers are kept apart rather than read from one file.
+readonly no_reply_false_response_file="${out_dir}/no-reply-false-send-response.json"
+readonly no_reply_none_response_file="${out_dir}/no-reply-none-send-response.json"
+readonly registry_session_response_file="${out_dir}/registry-session-response.json"
+readonly registry_missing_response_file="${out_dir}/registry-missing-response.json"
+readonly subscribe_response_file="${out_dir}/subscribe-response.json"
+readonly unwired_response_file="${out_dir}/unwired-subscribe-response.json"
+readonly port_registration_response_file="${out_dir}/port-registration-response.json"
+readonly unheld_role_response_file="${out_dir}/unheld-role-response.json"
+readonly role_claim_response_file="${out_dir}/role-claim-response.json"
+readonly held_role_response_file="${out_dir}/held-role-response.json"
+readonly lapsed_role_claim_response_file="${out_dir}/lapsed-role-claim-response.json"
+readonly lapsed_registry_response_file="${out_dir}/lapsed-registry-response.json"
+readonly lapsed_role_response_file="${out_dir}/lapsed-role-response.json"
+readonly lapsed_role_reclaim_response_file="${out_dir}/lapsed-role-reclaim-response.json"
+readonly keep_false_role_response_file="${out_dir}/keep-false-role-response.json"
+readonly listener_log_file="${out_dir}/listener.log"
+readonly session_log_file="${out_dir}/session.log"
+readonly subscriber_log_file="${out_dir}/subscriber.log"
+readonly nats_log_file="${out_dir}/nats.log"
+readonly listener_binary="${out_dir}/listener"
+readonly nats_binary="${out_dir}/natsd"
+readonly nats_store_dir="${out_dir}/nats-store"
+readonly lock_file="${out_dir}/run.lock"
+readonly session_ready_fifo="${out_dir}/session-ready.fifo"
+readonly subscriber_ready_fifo="${out_dir}/subscriber-ready.fifo"
+readonly absent_session_response_file="${out_dir}/absent-session-response.json"
+readonly bus_down_response_file="${out_dir}/bus-down-send-response.json"
+readonly bus_down_headers_file="${out_dir}/bus-down-send-headers.txt"
+readonly bus_down_result_file="${out_dir}/bus-down-send-result.txt"
+readonly bus_down_client_file="${out_dir}/bus-down-client-error.json"
+
+listener_pid=""
+session_pid=""
+subscriber_pid=""
+nats_pid=""
+
+# cleanup stops what this run started and exits with rc, the status the trap that ran it passes:
+# the script's own for EXIT, and the conventional 128 plus the signal's number for INT and TERM, so
+# a run that was interrupted never reports success: inside a signal's trap, $? is the status of the
+# last command that finished, usually 0, not the signal's.
+#
+# It ends every job of this shell, not only the four recorded pids: each server is started with
+# `… &` and its pid recorded on the next command, and a trap runs between commands, so a signal
+# delivered in that gap leaves a child unrecorded. An unrecorded child holds the inherited lock
+# descriptor (below) for as long as it lives, which left out/e2e locked after a run stopped with
+# TERM. A pid that appears in both lists is killed once; the second kill -0 finds it gone.
+cleanup() {
+  local rc=$1
+  trap - EXIT INT TERM
+  set +e
+  for pid in $(jobs -p) "$subscriber_pid" "$session_pid" "$listener_pid" "$nats_pid"; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$session_ready_fifo" "$subscriber_ready_fifo" "$nats_store_dir"
+  exit "$rc"
+}
+
+for command in bun curl flock go jq openssl; do
+  command -v "$command" >/dev/null || {
+    printf 'ERR: required command is unavailable: %s\n' "$command" >&2
+    exit 3
+  }
+done
+
+# out/e2e belongs to one run at a time. Everything below removes what is in it — the evidence, the
+# logs, the binaries and the JetStream store — so this run claims it first, and a second run of this
+# script in the same checkout is refused before it touches anything a running first run is using.
+# The lock is held by this shell, and the servers it starts, for as long as they live, and needs no
+# cleanup of its own; a directory left by a run that is gone holds no lock and is cleaned as usual.
+# After a SIGKILL of this script, which runs no cleanup, the natsd and listener it started inherit
+# the lock's descriptor and outlive it, so a later run is refused until they are gone.
+
+mkdir -p "$out_dir"
+exec {lock_fd}>"$lock_file"
+flock -n "$lock_fd" || {
+  printf 'ERR: another run of e2e-local.sh is using %s; this run removed nothing.\n' "$out_dir" >&2
+  exit 3
+}
+trap 'cleanup "$?"' EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+
+rm -f "$envelopes_file" "$session_frames_file" "$rendered_ts_file" \
+  "$direct_response_file" "$subscribe_response_file" "$unwired_response_file" "$port_registration_response_file" "$unheld_role_response_file" "$role_claim_response_file" "$held_role_response_file" \
+  "$no_reply_false_response_file" "$no_reply_none_response_file" \
+  "$lapsed_role_claim_response_file" "$lapsed_registry_response_file" "$lapsed_role_response_file" "$lapsed_role_reclaim_response_file" \
+  "$keep_false_role_response_file" \
+  "$absent_session_response_file" "$bus_down_response_file" "$bus_down_headers_file" "$bus_down_result_file" "$bus_down_client_file" \
+  "$registry_session_response_file" "$registry_missing_response_file" \
+  "$listener_log_file" "$session_log_file" "$subscriber_log_file" "$nats_log_file" \
+  "$listener_binary" "$nats_binary" "$session_ready_fifo" "$subscriber_ready_fifo"
+rm -rf "$nats_store_dir"
+: >"$envelopes_file"
+: >"$session_frames_file"
+# Every log file is created before the process that writes it, so a wait that reads one cannot
+# race the redirect that creates it: wait_for_listener's jq and wait_for_nats's grep would
+# otherwise read a file that is not there yet — jq exits non-zero on it, which under set -e ends
+# the whole run at "waiting for the listener address". The waits themselves are untouched: each
+# still fails the moment its own process is gone, and still fails on its own deadline.
+: >"$nats_log_file"
+: >"$listener_log_file"
+: >"$session_log_file"
+: >"$subscriber_log_file"
+mkfifo "$session_ready_fifo" "$subscriber_ready_fifo"
+
+printf 'building listener and NATS server\n'
+(
+  cd "$envoy_dir"
+  go build -o "$listener_binary" ./cmd/listener
+  go build -o "$nats_binary" ./internal/testnats/cmd/natsd
+)
+
+printf 'starting NATS\n'
+"$nats_binary" -p "${E2E_NATS_PORT:--1}" -store_dir "$nats_store_dir" >"$nats_log_file" 2>&1 &
+nats_pid=$!
+
+# stop_nats ends this run's NATS, and is the one way it is ended: the bus-down step below calls it,
+# and the cleanup trap kills the same pid, which is a no-op once this has run. The in-process
+# server (internal/testnats/cmd/natsd) is this script's own child, so a signal is the whole of it.
+stop_nats() {
+  if [[ -n "$nats_pid" ]] && kill -0 "$nats_pid" 2>/dev/null; then
+    kill "$nats_pid" 2>/dev/null || true
+    wait "$nats_pid" 2>/dev/null || true
+  fi
+  nats_pid=""
+}
+
+# wait_for_nats returns once the server this script started is answering, and sets nats_port to the
+# port that server reports; it fails otherwise. It must never pass on another server: something
+# already holding an E2E_NATS_PORT — a run left behind, or another program — greets a connection
+# exactly as ours would, while ours exits with "address already in use". So the port is read from
+# our own server's log once it says it is ready, and the wait ends the moment our own process is
+# gone.
+wait_for_nats() {
+  local deadline=$((SECONDS + 30))
+  local banner port
+  while ((SECONDS < deadline)); do
+    if ! kill -0 "$nats_pid" 2>/dev/null; then
+      printf 'ERR: the NATS server this script started ended before it was ready.\n' >&2
+      cat "$nats_log_file" >&2
+      return 1
+    fi
+    if grep -q 'Server is ready' "$nats_log_file"; then
+      port="$(sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$nats_log_file")"
+      if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        printf 'ERR: the NATS server this script started is ready but named no client port.\n' >&2
+        cat "$nats_log_file" >&2
+        return 1
+      fi
+      # A NATS server greets every connection it accepts with its INFO line; curl's telnet
+      # scheme reads that greeting, then waits out its own --max-time, so only the text proves
+      # the port answers.
+      banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${port}" </dev/null 2>/dev/null || true)"
+      if [[ "$banner" == 'INFO '* ]]; then
+        nats_port="$port"
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: the NATS server this script started did not accept connections within 30 seconds.\n' >&2
+  cat "$nats_log_file" >&2
+  return 1
+}
+
+printf 'waiting for NATS\n'
+wait_for_nats
+readonly nats_port
+nats_url="nats://127.0.0.1:${nats_port}"
+readonly nats_url
+printf 'NATS: %s\n' "$nats_url"
+
+printf 'starting listener\n'
+PORT="${E2E_PORT:-0}" \
+  ENVOY_MACHINE_ID=e2e-local \
+  NATS_URLS="$nats_url" \
+  ENVOY_WEBHOOKS=github \
+  ENVOY_GITHUB_WEBHOOK_SECRET="$webhook_secret" \
+  ENVOY_REVIEWER_APP_ID=1 \
+  ENVOY_CI_DEBOUNCE=250ms \
+  "$listener_binary" >"$listener_log_file" 2>&1 &
+listener_pid=$!
+
+# wait_for_listener returns once the listener this script started logs the address it is bound to,
+# and sets listener_url from it; it fails the moment that process is gone, as it is when E2E_PORT
+# is already in use.
+wait_for_listener() {
+  local deadline=$((SECONDS + 30))
+  local addr
+  while ((SECONDS < deadline)); do
+    addr="$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$listener_log_file")"
+    if [[ -n "$addr" ]]; then
+      listener_url="http://${addr}"
+      return 0
+    fi
+    if ! kill -0 "$listener_pid" 2>/dev/null; then
+      printf 'ERR: the listener this script started ended before it was listening.\n' >&2
+      cat "$listener_log_file" >&2
+      return 1
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: the listener did not report its address within 30 seconds.\n' >&2
+  cat "$listener_log_file" >&2
+  return 1
+}
+
+printf 'waiting for the listener address\n'
+wait_for_listener
+readonly listener_url
+printf 'listener: %s\n' "$listener_url"
+
+wait_for_health() {
+  local deadline=$((SECONDS + 30))
+  local body
+  while ((SECONDS < deadline)); do
+    if body="$(curl -fsS "${listener_url}/healthz" 2>/dev/null)" && [[ "$body" == *'"status":"healthy"'* ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: listener did not become healthy within 30 seconds.\n' >&2
+  cat "$listener_log_file" >&2
+  return 1
+}
+
+printf 'waiting for listener health\n'
+wait_for_health
+
+# The session: a NATS consumer stand-in, which is what every shipped plugin is. The listener opens
+# no connection to a session at all, so the session takes each stored message of its agent subject
+# and its followed topics as a relay frame of its own durable consumer, on the deliver subject
+# (bus.DeliverSubjectPrefix; packages/envoy-client/src/consumer-delivery.ts and
+# packages/envoy/loadtest/relay.go are the two clients this follows). Each frame is answered
+# `received` at once, its data — the stored envelope — is appended to the frames file, and it is
+# answered `done`, which is what acks the message and moves the resume point.
+#
+# The stand-in holds that NATS connection, so it also holds its own agent subject, where the role
+# lane forwards a role message and waits for its holder's receipt; the capture subscriber below
+# answers no receipt of its own.
+(
+  cd "$repo_root"
+  exec env E2E_NATS_URL="$nats_url" E2E_SESSION_FRAMES_FILE="$session_frames_file" \
+    E2E_SESSION_ID="$session_id" bun -e '
+    import { appendFileSync } from "node:fs";
+    import { connect, StringCodec } from "nats";
+
+    const url = process.env.E2E_NATS_URL;
+    const output = process.env.E2E_SESSION_FRAMES_FILE;
+    const sessionID = process.env.E2E_SESSION_ID;
+    if ([url, output, sessionID].some((value) => value === undefined)) {
+      throw new Error("session stand-in configuration is invalid");
+    }
+    const codec = StringCodec();
+    const connection = await connect({ servers: url, name: "envoy-e2e-session" });
+    const agent = connection.subscribe(`notifications.agent.${sessionID}`);
+    const frames = connection.subscribe(`notifications.envoy.deliver.${sessionID}`);
+    // Every relay frame carries these; Envoy-Gap is left out because it marks only the first
+    // frame after a retention gap, which a run that creates its own stream never has.
+    const headers = ["Envoy-Subject", "Envoy-Stream-Seq", "Envoy-Stream-Id", "Envoy-Delivered", "Envoy-Stored-At"];
+    void (async () => {
+      for await (const message of agent) {
+        // A role forward: an envelope naming another topic, sent to this subject and asking for a
+        // reply, which the publish route waits for before it answers the sender (envoy-client
+        // expectsLaneReceipt). Messages this session sends arrive here too, from the publish into
+        // the stream, and name this subject; that reply belongs to the sender, not to a receipt.
+        if (!message.reply) continue;
+        let topic;
+        try {
+          topic = JSON.parse(codec.decode(message.data)).topic;
+        } catch {}
+        if (topic !== undefined && topic !== message.subject) message.respond();
+      }
+    })();
+    await connection.flush();
+    process.stdout.write("ready\n");
+    for await (const message of frames) {
+      if (!message.reply) throw new Error("a relay frame carries no reply subject");
+      for (const header of headers) {
+        if (!message.headers?.get(header)) throw new Error(`a relay frame carries no ${header} header`);
+      }
+      message.respond(codec.encode("received"));
+      appendFileSync(output, `${codec.decode(message.data)}\n`);
+      message.respond(codec.encode("done"));
+    }
+  ' >"$session_ready_fifo" 2>"$session_log_file"
+) &
+session_pid=$!
+
+if ! IFS= read -r -t 10 session_ready <"$session_ready_fifo" || [[ "$session_ready" != "ready" ]]; then
+  printf 'ERR: the session consumer stand-in did not become ready.\n' >&2
+  cat "$session_log_file" >&2
+  exit 3
+fi
+
+(
+  cd "$repo_root"
+  exec env E2E_NATS_URL="$nats_url" E2E_ENVELOPES_FILE="$envelopes_file" bun -e '
+    import { appendFileSync } from "node:fs";
+    import { connect, StringCodec } from "nats";
+
+    const url = process.env.E2E_NATS_URL;
+    const output = process.env.E2E_ENVELOPES_FILE;
+    if (url === undefined || output === undefined) throw new Error("capture configuration is invalid");
+    const codec = StringCodec();
+    const connection = await connect({ servers: url, name: "envoy-e2e-capture" });
+    // Everything the listener publishes, except the relay frames of the session above: a frame
+    // carries a copy of a stored envelope, on notifications.envoy.deliver.<session id>, so
+    // counting one here would count its message twice. The frames are evidence of their own, and
+    // the stand-in that writes them also answers the role-forward receipts answered here before.
+    const subscription = connection.subscribe("notifications.>");
+    process.stdout.write("ready\n");
+    for await (const message of subscription) {
+      // The listener keeps a role message nobody can take on a kept lane of that role, and records
+      // how far it has drained that lane on a cursor subject beside it. The kept copy is an
+      // envelope and is captured; the cursor is bookkeeping of the listener alone, which carries
+      // no envelope and reaches no session, so this capture of envelopes skips it.
+      if (message.subject.startsWith("notifications.envoy.kept.cursor.")) continue;
+      if (message.subject.startsWith("notifications.envoy.deliver.")) continue;
+      appendFileSync(output, `${codec.decode(message.data)}\n`);
+    }
+  ' >"$subscriber_ready_fifo" 2>"$subscriber_log_file"
+) &
+subscriber_pid=$!
+
+if ! IFS= read -r -t 5 subscriber_ready <"$subscriber_ready_fifo" || [[ "$subscriber_ready" != "ready" ]]; then
+  printf 'ERR: NATS capture subscriber did not become ready.\n' >&2
+  cat "$subscriber_log_file" >&2
+  exit 3
+fi
+
+# The registration every shipped plugin sends: no port — one above 0 is refused below — and a
+# consumer delivery carrying the epoch of the NATS connection the stand-in above holds.
+session_epoch="$(openssl rand -hex 6)"
+readonly session_epoch
+subscribe_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg dir "/tmp/envoy-e2e-local" \
+  --arg title "Envoy local acceptance" \
+  --arg topic "notifications.github.example-org.example-repo.>" \
+  --arg epoch "$session_epoch" \
+  '{session_id:$session_id,dir:$dir,title:$title,topics:[$topic],driving:true,self_subscribed:true,delivery:{consumer:true,epoch:$epoch}}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/interests/subscribe" -d "$subscribe_body" >"$subscribe_response_file"
+jq -e '.delivery.mode == "consumer"' "$subscribe_response_file" >/dev/null || {
+  printf 'ERR: the registration was not answered a consumer delivery, so the session has nothing to receive on.\n' >&2
+  cat "$subscribe_response_file" >&2
+  exit 1
+}
+
+# The run's negative control. This listener opens no connection to a session, so a registration
+# naming a port is refused by name rather than stored: were it accepted, a session could still ask
+# to be pushed to and then wait forever, and every consumer assertion below would prove nothing
+# about what such a session receives.
+printf 'posting a registration that names a port\n'
+port_registration_body="$(jq -nc --arg session_id "ses_e2e_local_ported" \
+  '{session_id:$session_id,topics:[],port:1}')"
+port_registration_status="$(curl -sS -o "$port_registration_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/interests/subscribe" -d "$port_registration_body")"
+if [[ "$port_registration_status" != 400 ]] || ! jq -e '.expected == ["port"]' "$port_registration_response_file" >/dev/null; then
+  printf 'ERR: a registration naming port 1 was answered HTTP %s, want 400 naming port: this listener still takes a port it will never deliver to.\n' "$port_registration_status" >&2
+  cat "$port_registration_response_file" >&2
+  exit 1
+fi
+printf 'port registration: HTTP %s %s (expected %s)\n' "$port_registration_status" \
+  "$(jq -r '.error' "$port_registration_response_file")" "$(jq -rc '.expected' "$port_registration_response_file")"
+
+unwired_subscribe_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg topic "notifications.github.never-seen.e2e-repository.>" \
+  '{session_id:$session_id,topics:[$topic]}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/interests/subscribe" -d "$unwired_subscribe_body" >"$unwired_response_file"
+jq -e \
+  '.warnings | length == 1 and .[0] == "no GitHub event for never-seen/e2e-repository in the stream'\''s retention window; is the App installed there?"' \
+  "$unwired_response_file" >/dev/null || {
+  printf 'ERR: never-seen repository did not produce exactly one wiring warning.\n' >&2
+  exit 1
+}
+
+post_github() {
+  local event=$1
+  local fixture=$2
+  local delivery
+  delivery="e2e-${event}-$(basename "$fixture" .json)"
+  local signature
+  local status
+
+  signature="sha256=$(openssl dgst -sha256 -hmac "$webhook_secret" <"$fixture" | cut -d ' ' -f 2)"
+  status="$(curl -sS -o "${out_dir}/response-${delivery}.txt" -w '%{http_code}' \
+    -X POST "${listener_url}/webhook/github" \
+    -H 'Content-Type: application/json' \
+    -H "X-GitHub-Event: ${event}" \
+    -H "X-GitHub-Delivery: ${delivery}" \
+    -H "X-Hub-Signature-256: ${signature}" \
+    --data-binary "@${fixture}")"
+  if [[ "$status" != 200 ]]; then
+    printf 'ERR: %s fixture was rejected with HTTP %s.\n' "$(basename "$fixture")" "$status" >&2
+    cat "${out_dir}/response-${delivery}.txt" >&2
+    return 1
+  fi
+}
+
+wait_for_topic_count() {
+  local topic=$1
+  local expected=$2
+  local deadline=$((SECONDS + 20))
+  local count
+  while ((SECONDS < deadline)); do
+    count="$(jq -rs --arg topic "$topic" '[.[] | select(.topic == $topic)] | length' "$envelopes_file")"
+    if ((count >= expected)); then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: expected %s captures on %s within 20 seconds.\n' "$expected" "$topic" >&2
+  return 1
+}
+
+# wait_for_consumer_frame_count returns once the session has taken at least expected frames of its
+# consumer: one line of the frames file per frame it answered done.
+wait_for_consumer_frame_count() {
+  local expected=$1
+  local deadline=$((SECONDS + 20))
+  local count
+  while ((SECONDS < deadline)); do
+    count="$(wc -l <"$session_frames_file")"
+    if ((count >= expected)); then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: expected %s consumer frames at the session within 20 seconds.\n' "$expected" >&2
+  return 1
+}
+
+direct_message=$'Direct acceptance summary.\n\nDirect second paragraph.\n\nDirect third paragraph.'
+direct_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg message "$direct_message" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message}')"
+printf 'posting direct message\n'
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$direct_body" >"$direct_response_file"
+jq -e --arg recipient "$session_id" --arg message "$direct_message" \
+  '.recipient == $recipient and .topic == ("notifications.agent." + $recipient) and .payload_summary == "Direct acceptance summary." and .payload == $message' \
+  "$direct_response_file" >/dev/null || {
+  printf 'ERR: direct send response did not retain the three-paragraph message contract.\n' >&2
+  exit 1
+}
+
+# The two spellings of "no reply wanted", sent one after the other to the session already
+# registered above. The envelope's expects_reply is the JSON literal false; a plugin build older
+# than that change writes the string "none" for the same thing and cannot parse the literal back.
+# Nothing else in this repository proves the three claims that split apart against a real
+# listener, a real bus and the renderer a session reads: the listener answers each sender in the
+# dialect it spoke, it puts one vocabulary on the bus whichever arrived, and a session is shown
+# one spelling.
+printf 'posting the two spellings of a message that wants no reply\n'
+no_reply_false_message="No-reply direct message written false."
+no_reply_false_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg message "$no_reply_false_message" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message,expects_reply:false}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$no_reply_false_body" >"$no_reply_false_response_file"
+# jq's == tells the literal false from the string "false", so this fails on an answer that quotes
+# it as surely as on one that writes the old word back to a sender that never used it.
+jq -e --arg message "$no_reply_false_message" \
+  '.payload_summary == $message and .expects_reply == false' \
+  "$no_reply_false_response_file" >/dev/null || {
+  printf 'ERR: a send writing expects_reply false was not answered the JSON literal false.\n' >&2
+  cat "$no_reply_false_response_file" >&2
+  exit 1
+}
+
+no_reply_none_message="No-reply direct message written none."
+no_reply_none_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg message "$no_reply_none_message" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message,expects_reply:"none"}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$no_reply_none_body" >"$no_reply_none_response_file"
+# The older sender gets its own word back. Its envelope schema holds the three-word enum and
+# refuses the literal, so an answer written false is one it cannot parse: its send would be
+# reported unconfirmed and sent again, and its publish would throw.
+jq -e --arg message "$no_reply_none_message" \
+  '.payload_summary == $message and .expects_reply == "none"' \
+  "$no_reply_none_response_file" >/dev/null || {
+  printf 'ERR: a send writing the old expects_reply "none" was not answered that same word.\n' >&2
+  cat "$no_reply_none_response_file" >&2
+  exit 1
+}
+
+# A send to a session id nothing registered. The store holds no key for it, so the listener refuses
+# the send by name instead of publishing into a topic no one reads: the sender is told which
+# session is gone, and can route around that pane. `curl -fsS` cannot assert a refusal (it prints
+# no body and exits non-zero), so this takes the status from -w as the unheld-role publish above does.
+printf 'posting a direct message to an unregistered session\n'
+absent_summary="Absent session acceptance summary."
+absent_body="$(jq -nc \
+  --arg session_id "$absent_session_id" \
+  --arg message "$absent_summary" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message}')"
+absent_status="$(curl -sS -o "$absent_session_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$absent_body")"
+if [[ "$absent_status" != 404 ]] || ! jq -e --arg session_id "$absent_session_id" \
+  '.error | startswith("no live session " + $session_id)' "$absent_session_response_file" >/dev/null; then
+  printf 'ERR: a send to the unregistered session %s answered HTTP %s, not a 404 naming it.\n' \
+    "$absent_session_id" "$absent_status" >&2
+  cat "$absent_session_response_file" >&2
+  exit 1
+fi
+
+# Why this step reads the listener's own log, which nothing in this script read before: a refused
+# send publishes nothing at all, so no envelope, no stream entry and no "listener received" line
+# will ever name it, and this record is the only server-side trace it leaves. The issue exists
+# because that trace did not: a send never attempted, one lost on the way and one refused by name
+# all left the same silence in the log.
+count_listener_records() {
+  local selector=$1
+  # The records are JSON lines, but the log also carries the Go standard logger's plain lines
+  # ("2026/10/25 03:19:15 github sender login=..."), and jq's fromjson reads the leading 2026 of
+  # one of those as a number rather than refusing it. Keeping only the objects drops both shapes
+  # of non-record line instead of failing the whole read over them.
+  jq -R 'fromjson? // empty | select(type == "object")' "$listener_log_file" \
+    | jq -s --arg session_id "$session_id" --arg absent_session_id "$absent_session_id" \
+      "[.[] | select(${selector})] | length"
+}
+
+# Each record is written after its response is sent, so the assertion can reach the log a moment
+# before the line lands: wait for the first match rather than racing it, and fail on anything but
+# exactly one, a second line being as wrong as none.
+wait_for_listener_record() {
+  local description=$1
+  local selector=$2
+  local deadline=$((SECONDS + 10))
+  local count=0
+  while ((SECONDS < deadline)); do
+    count="$(count_listener_records "$selector")"
+    if ((count != 0)); then
+      break
+    fi
+    sleep 0.25
+  done
+  if ((count != 1)); then
+    printf 'ERR: expected exactly one %s record in the listener log; found %s.\n' "$description" "$count" >&2
+    return 1
+  fi
+}
+
+printf 'asserting the listener request records\n'
+wait_for_listener_record 'accepted send' \
+  '.msg == "listener send" and .level == "INFO" and .outcome == "accepted" and .status == 200
+   and .target_session == $session_id and .source == "agent" and .source_session == "octocat"
+   and .payload_summary == "Direct acceptance summary." and (.event_id | length) > 0'
+wait_for_listener_record 'refused send' \
+  '.msg == "listener send" and .level == "WARN" and .outcome == "no_live_session" and .status == 404
+   and .target_session == $absent_session_id and .source == "agent" and .source_session == "octocat"
+   and .payload_summary == "Absent session acceptance summary." and (.event_id | length) > 0'
+
+# The one question a caller holding a session id asks before it addresses that session: is this
+# session live? The per-session registry read answers with the row GET /v1/sessions would carry,
+# and an id that never registered is refused with the exact reason Dispatch classifies on.
+# dispatch://INFRA-392 gives that refusal the state it was decided on beside the kept "no live
+# session <id>" prefix (noLiveSessionRefusal, cmd/listener/api.go), and a last_seen only when the
+# listener still remembers a registration: an id nothing ever registered is "gone" with none, so
+# the whole body is the error and that state.
+registry_status="$(curl -sS -o "$registry_session_response_file" -w '%{http_code}' \
+  "${listener_url}/v1/registry/${session_id}")"
+if [[ "$registry_status" != 200 ]] || ! jq -e --arg session_id "$session_id" \
+  '.session_id == $session_id and (.title | length > 0) and (.capabilities | type == "array")' \
+  "$registry_session_response_file" >/dev/null; then
+  printf 'ERR: the registry read of the live session did not answer its own session row.\n' >&2
+  exit 1
+fi
+
+missing_session_id="ses_e2e_local_never_registered"
+missing_status="$(curl -sS -o "$registry_missing_response_file" -w '%{http_code}' \
+  "${listener_url}/v1/registry/${missing_session_id}")"
+if [[ "$missing_status" != 404 ]] || ! jq -e --arg session_id "$missing_session_id" \
+  '. == {error: ("no live session " + $session_id + "; this listener does not know when it last registered"), state: "gone"}' "$registry_missing_response_file" >/dev/null; then
+  printf 'ERR: an unregistered session id was not refused 404 with "no live session <id>", state gone and the listener saying it cannot name the last registration.\n' >&2
+  exit 1
+fi
+
+# The kept lane. A role message no claim holds is not lost and the sender is not left to queue
+# it: the listener keeps the message and hands it to whoever claims the role within the hour.
+# Both windows a give-up reaches are proved here, each on a role of its own: (i) nobody holds the
+# role, where the session stand-in then claims the role and must be handed the kept message
+# exactly once, carrying kept_at, the time the listener took it in; and (ii) a holder whose
+# registration is gone, its claim lapsed, which keeps nothing, since that claim stands until the
+# role-claim reaper releases it and a copy kept for it would wait for a claim that never comes.
+
+# count_session_frames reports how many frames of its own consumer the session took that carry
+# event_id. The drain forwards a kept copy to the holder's agent subject, which the stream stores
+# and the session's consumer delivers, so this counts the session's own deliveries of one message,
+# which is what exactly once is about: the bus holds two copies of a kept message — the one on the
+# kept lane and the forward the drain made of it — and only the second reaches the session.
+count_session_frames() {
+  local event_id=$1
+  jq -rs --arg event_id "$event_id" \
+    '[.[] | select(.event_id == $event_id)] | length' \
+    "$session_frames_file"
+}
+
+# count_kept_forwards reports how many captured frames are the drain's forward of event_id: the
+# copy handed to the role's new holder carries kept_at, the time the stream stored the kept copy,
+# under the role arbiter's forward dedupe key, while the copy on the kept lane itself carries no
+# kept_at and keeps the key the publish gave it.
+count_kept_forwards() {
+  local event_id=$1
+  jq -rs --arg event_id "$event_id" \
+    '[.[] | select(.event_id == $event_id and .kept_at != null and ((.dedupe_key // "") | startswith("envoy.role.forward.")))] | length' \
+    "$envelopes_file"
+}
+
+# wait_for_kept_delivery proves one window of the kept lane: the message the kept answer named
+# reaches the session that has just claimed the role, exactly once and carrying kept_at. The
+# capture of the forward and the session's own frame are written by two processes of their own, so
+# this waits for both to arrive rather than racing either, and then fails on any count but one — a
+# control notice delivered twice is as wrong as one never delivered.
+wait_for_kept_delivery() {
+  local window=$1
+  local event_id=$2
+  local deadline=$((SECONDS + 20))
+  local frames=0
+  local forwards=0
+  while ((SECONDS < deadline)); do
+    frames="$(count_session_frames "$event_id")"
+    forwards="$(count_kept_forwards "$event_id")"
+    if ((frames != 0 && forwards != 0)); then
+      break
+    fi
+    sleep 0.25
+  done
+  if ((frames != 1)); then
+    printf 'ERR: the %s kept message %s reached the session %s times within 20 seconds, not exactly once.\n' \
+      "$window" "$event_id" "$frames" >&2
+    return 1
+  fi
+  if ((forwards != 1)); then
+    printf 'ERR: the %s kept message %s was forwarded carrying kept_at %s times within 20 seconds, not exactly once.\n' \
+      "$window" "$event_id" "$forwards" >&2
+    return 1
+  fi
+  printf '%s: kept message %s reached the session exactly once, carrying kept_at\n' "$window" "$event_id"
+}
+
+# wait_for_unregistered returns once the listener reports the session's registration gone.
+# The registry read and the publish route's first resolution of a role's holder read a session the
+# same way (liveSessionEntry, through a cache the delete evicts), so this is the point from which
+# a claim that names that session is a lapsed one rather than a live holder.
+wait_for_unregistered() {
+  local deadline=$((SECONDS + 20))
+  local status=""
+  while ((SECONDS < deadline)); do
+    status="$(curl -sS -o "$lapsed_registry_response_file" -w '%{http_code}' \
+      "${listener_url}/v1/registry/${session_id}")"
+    if [[ "$status" == 404 ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: the listener still answered HTTP %s for the deleted registration of %s after 20 seconds.\n' \
+    "$status" "$session_id" >&2
+  cat "$lapsed_registry_response_file" >&2
+  return 1
+}
+
+# Window (i): nobody holds the role. The publish is answered 202 with the envelope the listener
+# kept, kept true and kept_reason unclaimed, on the role topic it was sent to — not the 404 every
+# sender needed a fallback of its own for.
+printf 'publishing to a role nobody holds\n'
+role="e2e-reviewer"
+unheld_status="$(curl -sS -o "$unheld_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${role}\",\"message\":\"Role delivery.\"}")"
+if [[ "$unheld_status" != 202 ]] || ! jq -e --arg role "$role" \
+  '.kept == true and .kept_reason == "unclaimed" and .topic == ("notifications.role." + $role) and (.event_id | length) > 0' \
+  "$unheld_role_response_file" >/dev/null; then
+  printf 'ERR: a publish to a role nobody holds answered HTTP %s, not a 202 keeping it with kept_reason unclaimed on the role topic.\n' \
+    "$unheld_status" >&2
+  cat "$unheld_role_response_file" >&2
+  exit 1
+fi
+unheld_event_id="$(jq -r '.event_id' "$unheld_role_response_file")"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${role}\"}" >"$role_claim_response_file"
+jq -e --arg session_id "$session_id" '.session_id == $session_id' "$role_claim_response_file" >/dev/null || {
+  printf 'ERR: the session did not claim the role.\n' >&2
+  exit 1
+}
+wait_for_kept_delivery 'unclaimed-role window' "$unheld_event_id"
+
+# The control for the kept window above, on the same route and the same unheld state: a sender
+# that keeps its own queue asks for keep false and gets exactly today's refusal, and the listener
+# stores nothing for the role. The Legion daemon's notice publisher sends this
+# (packages/daemon/internal/notify/notify.go).
+printf 'publishing to a role nobody holds, asking for nothing to be kept\n'
+keep_false_role="e2e-unkept"
+keep_false_status="$(curl -sS -o "$keep_false_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${keep_false_role}\",\"message\":\"Unkept role delivery.\",\"keep\":false}")"
+# The body carries claim_revision as well since sjawhar/legion#2610's conditional role claim:
+# every 404 role answer reports the revision a lookup would, 0 for a role with no claim record
+# at all. The assertion stays an exact object, so a field that appears or goes is seen here.
+if [[ "$keep_false_status" != 404 ]] || ! jq -e --arg role "$keep_false_role" \
+  '. == {error: ("no holder for role " + $role), reason: "unclaimed", claim_revision: 0}' \
+  "$keep_false_role_response_file" >/dev/null; then
+  printf 'ERR: a publish with keep false to a role nobody holds answered HTTP %s, not the 404 naming the role unclaimed.\n' \
+    "$keep_false_status" >&2
+  cat "$keep_false_role_response_file" >&2
+  exit 1
+fi
+# Nothing was kept, so claiming the role hands the claimant nothing. The claim below is the same
+# call the kept window is drained by; the assertion that nothing arrived is made after the
+# consumer's own frame count has settled (wait_for_consumer_frame_count), so the drain this claim
+# started has had its chance and no fixed sleep is needed here.
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${keep_false_role}\"}" >/dev/null
+
+# A role a live session holds answers as it always did, beside the kept answer and the lapsed
+# refusal above, so no one of the three can be read for another: 200 naming the holder, and no
+# kept field at all.
+held_status="$(curl -sS -o "$held_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${role}\",\"message\":\"Role delivery.\"}")"
+if [[ "$held_status" != 200 ]] || ! jq -e --arg session_id "$session_id" \
+  '.holder == $session_id and (has("kept") | not) and (has("kept_reason") | not)' \
+  "$held_role_response_file" >/dev/null; then
+  printf 'ERR: a publish to the role the session holds answered HTTP %s, not a 200 naming the holder with no kept field.\n' \
+    "$held_status" >&2
+  cat "$held_role_response_file" >&2
+  exit 1
+fi
+
+# Window (ii): a claim that lapsed. The session claims a role of its own, and then its
+# registration is removed through the listener, rather than waiting out the window a claim takes
+# to go stale. A registration and a role claim are separate records, and removing the first
+# leaves the second naming a session nothing can reach: the role has a holder on paper and none
+# to deliver to. That claim stands - no resolution of this build releases one, and the role-claim
+# reaper is the one caller that ever does - so nothing is kept for it and the publish is refused
+# 404 holder_lapsed, naming the holder and its retained claim (dispatch://INFRA-392).
+printf 'publishing to a role whose holder has gone\n'
+lapsed_role="e2e-escalation"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${lapsed_role}\"}" >"$lapsed_role_claim_response_file"
+jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_claim_response_file" >/dev/null || {
+  printf 'ERR: the session did not claim the role whose claim is about to lapse.\n' >&2
+  exit 1
+}
+curl -fsS -X DELETE "${listener_url}/v1/sessions/${session_id}" >/dev/null
+wait_for_unregistered
+lapsed_status="$(curl -sS -o "$lapsed_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${lapsed_role}\",\"message\":\"Lapsed-claim role delivery.\"}")"
+if [[ "$lapsed_status" != 404 ]] || ! jq -e --arg session_id "$session_id" \
+  '.reason == "holder_lapsed" and .holder == $session_id and .claim_released == false and (has("kept") | not)' \
+  "$lapsed_role_response_file" >/dev/null; then
+  printf 'ERR: a publish to the role whose holder is gone answered HTTP %s, not a 404 holder_lapsed naming %s with its claim retained and nothing kept.\n' \
+    "$lapsed_status" "$session_id" >&2
+  cat "$lapsed_role_response_file" >&2
+  exit 1
+fi
+printf 'lapsed-claim window: the publish was refused 404 holder_lapsed, the claim stands and nothing was kept\n'
+
+# The session registers again, with the registration it first made, and claims the role again:
+# its own claim never left it, so the claim answers as the same session's.
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/interests/subscribe" -d "$subscribe_body" >/dev/null
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${lapsed_role}\"}" >"$lapsed_role_reclaim_response_file"
+jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_reclaim_response_file" >/dev/null || {
+  printf 'ERR: the re-registered session did not claim the lapsed role again.\n' >&2
+  exit 1
+}
+
+post_github issue_comment "${fixture_dir}/issue-comment-created.json"
+post_github issue_comment "${fixture_dir}/issue-comment-edited.json"
+post_github issue_comment "${fixture_dir}/issue-comment-pr-created.json"
+post_github pull_request "${fixture_dir}/pull-request-opened.json"
+post_github check_suite "${fixture_dir}/check-suite-first.json"
+post_github check_run "${fixture_dir}/check-run-first.json"
+wait_for_topic_count "notifications.github.example-org.example-repo.pr.42.checks" 1
+
+post_github pull_request "${fixture_dir}/pull-request-synchronize.json"
+post_github check_suite "${fixture_dir}/check-suite-second.json"
+post_github check_run "${fixture_dir}/check-run-second.json"
+wait_for_topic_count "notifications.github.example-org.example-repo.pr.42.checks" 2
+
+post_github check_run "${fixture_dir}/check-run-cancelled.json"
+wait_for_topic_count "notifications.github.example-org.example-repo.pr.42.checks" 3
+
+# The pass-6 trace. Before: build 2002 completed 03:17 (the head's latest
+# completion) and integration 2005 cancelled 03:16 (the head's highest run id).
+# A newer build attempt 2004 completed at 03:15 — created after 2002 yet
+# finished earlier — supersedes 2002: the attempt set advances while both the
+# head's highest run id (2005) and its latest completion (03:17 -> 03:16) do
+# not rise. A consumer ordering by the set accepts it; one ordering by scalar
+# maxima would drop it forever.
+post_github check_run "${fixture_dir}/check-run-superseding.json"
+wait_for_topic_count "notifications.github.example-org.example-repo.pr.42.checks" 4
+
+post_github pull_request "${fixture_dir}/pull-request-closed-merged.json"
+post_github workflow_run "${fixture_dir}/workflow-run-with-pr.json"
+post_github workflow_run "${fixture_dir}/workflow-run-without-pr.json"
+post_github check_run "${fixture_dir}/check-run-actions-job-without-pr.json"
+post_github check_run "${fixture_dir}/check-run-actions-job-merge-queue.json"
+post_github push "${fixture_dir}/push.json"
+wait_for_consumer_frame_count 18
+
+# The keep-false control, read now the consumer's frame count has settled: its claim went in
+# before the lapsed window, so a drain of the unkept role would have run by now. The session was
+# handed nothing for it, and the bus holds no copy of it either.
+if grep -q 'Unkept role delivery.' "$session_frames_file"; then
+  printf 'ERR: a message published with keep false reached the role claimant; nothing should have been kept.\n' >&2
+  exit 1
+fi
+if jq -e 'select(.payload_summary == "Unkept role delivery.")' "$envelopes_file" >/dev/null 2>&1; then
+  printf 'ERR: a message published with keep false is on the bus; the listener stored nothing for it.\n' >&2
+  exit 1
+fi
+printf 'keep-false control: the unheld role answered 404, nothing was stored and its claimant was handed nothing\n'
+
+# What the session itself took, which is the whole point of a consumer: every GitHub delivery, the
+# three direct messages and both role forwards reached it as frames of its own consumer, each
+# exactly once, with no connection opened to it from anywhere. Both role forwards are the
+# reviewer role's — the copy kept while nobody held it and the publish its live holder took. The
+# escalation role has none: its holder's claim stood while the holder was gone, so the listener
+# kept nothing for it and refused that publish (dispatch://INFRA-392). The unkept role has no
+# frame either, since its own publish asked for nothing to be kept.
+printf 'consumer frames by topic:\n'
+jq -r '.topic' "$session_frames_file" | sort | uniq -c
+# The two no-reply sends are checked on the bus here rather than at the session's card: whichever
+# spelling a sender wrote, the envelope the stream carries holds the one vocabulary, the literal
+# false. An answer written "none" is the listener's alone and never leaves it.
+jq -es --arg session_id "$session_id" --arg role_topic "notifications.role.${role}" \
+  --arg lapsed_role_topic "notifications.role.${lapsed_role}" \
+  --arg unkept_role_topic "notifications.role.${keep_false_role}" --arg message "$direct_message" \
+  --arg no_reply_false "$no_reply_false_message" --arg no_reply_none "$no_reply_none_message" '
+  (map(select(.topic == "notifications.agent." + $session_id)) | length == 3 and .[0].payload == $message)
+  and ([.[] | select(.payload_summary == $no_reply_false or .payload_summary == $no_reply_none)]
+       | length == 2 and all(.expects_reply == false))
+  and (map(select(.topic == $role_topic)) | length) == 2
+  and (map(select(.topic == $lapsed_role_topic)) | length) == 0
+  and (map(select(.topic == $unkept_role_topic)) | length) == 0
+  and (map(select(.topic | startswith("notifications.github.example-org.example-repo."))) | length) == 13
+' "$session_frames_file" >/dev/null || {
+  printf 'ERR: the session did not take its GitHub deliveries, its three direct messages carrying one expects_reply vocabulary, and its two reviewer-role forwards from its consumer, with nothing for the lapsed role and nothing for the unkept one.\n' >&2
+  exit 1
+}
+
+(
+  cd "$repo_root/packages/envoy-client"
+  E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
+    E2E_SESSION_ID="$session_id" bun -e '
+      import { readFileSync, writeFileSync } from "node:fs";
+      import { renderInbound } from "@legion/envoy-client/delivery";
+
+      const envelopesFile = process.env.E2E_ENVELOPES_FILE;
+      const renderedTSFile = process.env.E2E_RENDERED_TS_FILE;
+      const sessionID = process.env.E2E_SESSION_ID;
+      if ([envelopesFile, renderedTSFile, sessionID].some((value) => value === undefined)) {
+        throw new Error("renderer configuration is invalid");
+      }
+      const envelopes = readFileSync(envelopesFile, "utf8").trim().split("\n").filter(Boolean);
+      const rendered = envelopes.map((raw) => renderInbound(raw, sessionID).content);
+      writeFileSync(renderedTSFile, `${rendered.join("\n\n")}\n`);
+    '
+)
+
+E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
+  E2E_SESSION_ID="$session_id" bun -e '
+    import { readFileSync } from "node:fs";
+
+    const envelopesFile = process.env.E2E_ENVELOPES_FILE;
+    const renderedTSFile = process.env.E2E_RENDERED_TS_FILE;
+    const sessionID = process.env.E2E_SESSION_ID;
+    if ([envelopesFile, renderedTSFile, sessionID].some((value) => value === undefined)) {
+      throw new Error("assertion configuration is invalid");
+    }
+    const envelopes = readFileSync(envelopesFile, "utf8").trim().split("\n").filter(Boolean).map((raw) => JSON.parse(raw));
+    const topic = (suffix) => `notifications.github.example-org.example-repo.${suffix}`;
+    const require = (condition, message) => {
+      if (!condition) throw new Error(message);
+    };
+    const withTopic = (name) => envelopes.filter((item) => item.topic === name);
+    const payload = (item) => JSON.parse(item.payload);
+
+    console.log("topic → summary");
+    for (const item of envelopes) console.log(`${item.topic} → ${item.payload_summary}`);
+
+    const directSummary = "Direct acceptance summary.";
+    const directBody = `${directSummary}\n\nDirect second paragraph.\n\nDirect third paragraph.`;
+    const directTopic = `notifications.agent.${sessionID}`;
+    // Three sends reached this session subject: the three-paragraph message, and the two below
+    // that want no reply. The one read here is the first of them, whose card the renderer
+    // assertions at the end of this block are about.
+    const directAll = withTopic(directTopic);
+    require(directAll.length === 3, `direct envelope count = ${directAll.length}, want 3`);
+    const direct = directAll.filter((item) => item.payload_summary === directSummary);
+    require(direct.length === 1, `three-paragraph direct envelope count = ${direct.length}, want 1`);
+    require(direct[0].source === "agent" && direct[0].source_session === "octocat", "direct envelope loses sender identity");
+    require(direct[0].payload === directBody, "direct envelope loses the three-paragraph body");
+
+    // One vocabulary on the bus. The sender that wrote the literal false and the sender that
+    // wrote the old string "none" are both carried as the literal: the leniency is the listener
+    // taking the old word in, never passing it on to whoever reads the envelope.
+    const noReply = [
+      "No-reply direct message written false.",
+      "No-reply direct message written none.",
+    ].map((summary) => {
+      const found = directAll.filter((item) => item.payload_summary === summary);
+      require(found.length === 1, `no-reply envelope count for ${summary} = ${found.length}, want 1`);
+      return found[0];
+    });
+    for (const item of noReply) {
+      require(item.expects_reply === false, `envelope ${item.payload_summary} carries expects_reply ${JSON.stringify(item.expects_reply)}, want the literal false`);
+    }
+
+    const lifecycle = withTopic(topic("pr.42"));
+    require(lifecycle.length === 3, `pr lifecycle count = ${lifecycle.length}, want 3`);
+    const actions = lifecycle.map(payload).map((item) => item.action);
+    require(actions.join(",") === "opened,synchronize,closed", `pr lifecycle actions = ${actions.join(",")}`);
+    const closed = payload(lifecycle[2]);
+    require(closed.merged === "true" && closed.head_sha === "2222222222222222222222222222222222222222", "closed lifecycle payload loses merged head facts");
+
+    const comments = withTopic(topic("issue.7.comment"));
+    require(comments.length === 2, `issue comment count = ${comments.length}, want 2`);
+    for (const item of comments) {
+      const data = payload(item);
+      require(item.payload_summary.startsWith("comment ") && data.kind === "comment" && data.repo === "example-org/example-repo" && data.number === "7", "issue comment lacks prose or structured payload");
+    }
+
+    const prComments = withTopic(topic("pr.42.comment"));
+    require(prComments.length === 1, `pr comment count = ${prComments.length}, want 1`);
+    const prComment = payload(prComments[0]);
+    require(prComments[0].payload_summary === "comment on example-org/example-repo#42 by octocat: Please review the pull request." && prComment.kind === "comment" && prComment.parent_kind === "pr" && prComment.repo === "example-org/example-repo" && prComment.number === "42", "pr comment lacks prose or structured payload");
+
+    const checks = withTopic(topic("pr.42.checks"));
+    require(checks.length === 4, `checks count = ${checks.length}, want 4`);
+    const checksBySHA = new Map();
+    const attemptSet = (data) => new Map(data.check_runs.map((run) => [run.name, run.id]));
+    for (const item of checks) {
+      const data = payload(item);
+      require(data.kind === "checks", "checks envelope has wrong payload kind");
+      require(Array.isArray(data.check_runs) && data.check_runs.length > 0, "checks payload lacks a non-empty check_runs attempt set");
+      require(data.check_runs.every((run) => typeof run.name === "string" && run.name.length > 0 && Number.isInteger(run.id) && run.id > 0), "check_runs entries need a name and a positive integer id");
+      require(data.check_runs.every((run, index) => index === 0 || data.check_runs[index - 1].name < run.name), "check_runs must be sorted by name with one entry per name");
+      require(data.latest_check_run_id === undefined && data.latest_completed_at === undefined, "checks payload still carries a scalar ordering field");
+      require(Number.isInteger(data.generation) && data.generation >= 0, "checks payload lacks a non-negative integer generation");
+      require(typeof data.snapshot === "string" && data.snapshot.length > 0, "checks payload lacks a snapshot");
+      const forSHA = checksBySHA.get(data.sha) ?? [];
+      forSHA.push(data);
+      checksBySHA.set(data.sha, forSHA);
+    }
+    require(new Set(checks.map((item) => payload(item).snapshot)).size === checks.length, "checks settlements must carry distinct snapshots");
+    const firstSHA = "1111111111111111111111111111111111111111";
+    const secondSHA = "2222222222222222222222222222222222222222";
+    require(checksBySHA.get(firstSHA)?.length === 1, "first head must settle exactly once");
+    require(checksBySHA.get(secondSHA)?.length === 3, "second head must settle once then re-settle twice");
+    // Consumers order settlements of one commit by the attempt set: per-name ids
+    // never decrease, and at an equal set the generation must not decrease.
+    const compareSets = (previous, next) => {
+      let advanced = false;
+      for (const [name, id] of next) {
+        const before = previous.get(name);
+        if (before === undefined || id > before) advanced = true;
+        else if (id < before) return "regressed";
+      }
+      return advanced ? "advanced" : "equal";
+    };
+    for (const [sha, values] of checksBySHA) {
+      require(values.length === 1 || values.slice(1).every((value) => value.superseded_settlement === "true"), `duplicate checks for ${sha} lack superseded_settlement`);
+      for (let index = 1; index < values.length; index += 1) {
+        const order = compareSets(attemptSet(values[index - 1]), attemptSet(values[index]));
+        require(order !== "regressed", `checks attempt set for ${sha} regressed at settlement ${index}`);
+        require(order === "advanced" || values[index].generation > values[index - 1].generation, `checks generation for ${sha} did not advance at an equal attempt set`);
+      }
+    }
+    // The superseding build attempt: exact sets before and after. The set
+    // advances (build 2002 -> 2004) while integration 2005 keeps the highest
+    // id and the latest completion on the head falls (03:17 -> 03:16); the verdict
+    // turns red on the new attempt.
+    const secondHead = checksBySHA.get(secondSHA);
+    const pairs = (data) => data.check_runs.map((run) => `${run.name}=${run.id}`).join(",");
+    require(pairs(secondHead[1]) === "build=2002,integration=2005", `settlement before supersession = ${pairs(secondHead[1])}`);
+    require(pairs(secondHead[2]) === "build=2004,integration=2005", `settlement after supersession = ${pairs(secondHead[2])}`);
+    require(compareSets(attemptSet(secondHead[1]), attemptSet(secondHead[2])) === "advanced", "superseding attempt did not advance the attempt set");
+    require(secondHead[2].failed.checks.join(",") === "build", `superseding settlement failed = ${JSON.stringify(secondHead[2].failed)}`);
+    require(secondHead[1].cancelled.checks.join(",") === "integration" && secondHead[2].cancelled.checks.join(",") === "integration", "integration must stay cancelled across the supersession");
+    require(checksBySHA.get(secondSHA)?.filter((value) => value.superseded_settlement === "true").length === 2, "second head re-settlement flags are missing");
+
+    const workflow = withTopic(topic("workflow.ci_yml.completed"));
+    require(workflow.length === 1 && payload(workflow[0]).run_id === "3002", "only the PR-less workflow run may publish");
+    // A finished Actions job of that PR-less run on main, the default branch, publishes on the job
+    // topic of the run; the same job of a merge queue commit (run 3003) publishes nothing, and the
+    // four check runs above list pull request 42 and publish only through its checks settlement.
+    const jobs = envelopes.filter((item) => item.topic.startsWith(topic("job.")));
+    require(jobs.length === 1 && jobs[0].topic === topic("job.3002.completed"), `job topics = ${jobs.map((item) => item.topic).join(",")}`);
+    const job = payload(jobs[0]);
+    require(job.kind === "job" && job.repo === "example-org/example-repo" && job.run_id === "3002" && job.job_id === "3101" && job.name === "deploy / production" && job.conclusion === "success" && job.completed_at === "2026-09-07T03:24:00Z", `job payload = ${jobs[0].payload}`);
+    require(jobs[0].payload_summary === "job deploy / production run 3002 completed/success", `job summary = ${jobs[0].payload_summary}`);
+    require(withTopic(topic("push.branch.main")).length === 1, "main push topic is missing");
+
+    const obsolete = ["pr.42.check", "pr.42.ci", "pr.42.merged", "pr.42.closed"];
+    for (const suffix of obsolete) require(withTopic(topic(suffix)).length === 0, `obsolete topic was published: ${suffix}`);
+
+    const renderedText = readFileSync(renderedTSFile, "utf8");
+    // One card per envelope, in the order the bus carried them. No card holds a blank line, so
+    // the blank line before the next card opens is the only boundary there is to split on.
+    const cards = renderedText.trimEnd().split(/\n{2,}(?=envoy:\n)/);
+    const tsFirst = cards[0];
+    // The direct summary is the message head, so the renderer drops the separate summary line and
+    // prints the full message once: the summary text appears only where the message opens.
+    const fullMessage = `message: ${JSON.stringify(directBody)}`;
+    require(tsFirst.split(fullMessage).length === 2, "the renderer did not render the full direct message exactly once");
+    require(tsFirst.split(directSummary).length === 2, "the renderer repeats the direct summary outside the message it opens");
+
+    // What the session reads is one spelling, whichever word its sender wrote. The whole evidence
+    // file is read for the old one too: a card that still printed it would be a session shown the
+    // same meaning written two ways.
+    for (const item of noReply) {
+      const card = cards.filter((text) => text.includes(item.payload_summary));
+      require(card.length === 1, `rendered cards naming ${item.payload_summary} = ${card.length}, want 1`);
+      require(card[0].split("\n").includes("  expects_reply: false"), `the card for ${item.payload_summary} carries no expects_reply: false line:\n${card[0]}`);
+      // And it carries no ready-made way to send something. A card that says the sender wants
+      // nothing back while printing a filled-in envoy_send under that line invites the reader to
+      // do what the line says is not wanted, which is the post this issue counts.
+      require(!card[0].includes("reply_with:"), `the card for ${item.payload_summary} wants no reply and still prints a reply_with:\n${card[0]}`);
+      require(!card[0].includes("reply_role:"), `the card for ${item.payload_summary} wants no reply and still prints a reply_role:\n${card[0]}`);
+    }
+    require(!renderedText.includes("expects_reply: none"), "a rendered card still spells wanting no reply as none");
+
+    console.log("PASS: topic set, structured payloads, checks settlement, and what renderInbound shows a session match the local acceptance contract");
+  '
+
+# Last of all, because it ends this rig's NATS and every step above needs the bus. A send the bus
+# cannot serve has to be refused by name inside the sender's own attempt, rather than left to the
+# sender's timeout: a timeout says nothing about whether the message was taken.
+printf 'stopping NATS for the bus-down answers\n'
+stop_nats
+
+# --max-time 5 is the sending client's own per-attempt deadline (LISTENER_CALL_TIMEOUT_MS in
+# packages/contracts/src/envoy-session.ts): an answer that arrives after it is, to that caller, no
+# answer at all. The listener's own budget (sendRequestBudget, 3.5 s) is what keeps it inside.
+printf 'posting a direct message with the bus down\n'
+curl --max-time 5 -sS -o "$bus_down_response_file" -D "$bus_down_headers_file" \
+  -w '%{http_code}\n%{time_total}\n' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$direct_body" >"$bus_down_result_file"
+{ IFS= read -r bus_down_status; IFS= read -r bus_down_seconds; } <"$bus_down_result_file"
+if [[ "$bus_down_status" != 503 ]]; then
+  printf 'ERR: a send with the bus down answered HTTP %s, not 503.\n' "$bus_down_status" >&2
+  cat "$bus_down_response_file" >&2
+  exit 1
+fi
+jq -e '.error | startswith("envoy: the message bus did not answer")' "$bus_down_response_file" >/dev/null || {
+  printf 'ERR: the bus-down body does not name the bus as the reason.\n' >&2
+  cat "$bus_down_response_file" >&2
+  exit 1
+}
+# Retry-After is what separates a bus that did not answer from bytes or a subject NATS refuses
+# however often they are sent: only the first is worth sending down this same route again.
+grep -qiE '^retry-after:[[:space:]]*1[[:space:]]*$' "$bus_down_headers_file" || {
+  printf 'ERR: the bus-down answer carries no Retry-After: 1 header.\n' >&2
+  cat "$bus_down_headers_file" >&2
+  exit 1
+}
+# Whole seconds only: curl prints time_total with a fraction (behind whichever separator the
+# locale asks for), and all that is asserted is that the answer beat the client deadline.
+if ((${bus_down_seconds%%[.,]*} >= 5)); then
+  printf 'ERR: the bus-down answer took %s seconds, past the sending client deadline.\n' "$bus_down_seconds" >&2
+  exit 1
+fi
+printf 'bus-down send: HTTP %s in %s seconds\n' "$bus_down_status" "$bus_down_seconds"
+
+# The same refusal through the client a session actually sends with. It retries a >= 500 answer
+# once, after 250 ms (packages/envoy-client/src/transport.ts), so two refusals and one wait are
+# expected here; what has to hold is that the send ends in a named refusal rather than in a
+# timeout, which is why this asserts what was thrown and never how long it took. A 5xx may follow
+# a stored copy, so the client reports the send as not confirmed delivered, naming the key a resend
+# reuses, with the listener's 503 as its last answer.
+printf 'sending through the real client with the bus down\n'
+(
+  cd "$repo_root/packages/envoy-client"
+  E2E_LISTENER_URL="$listener_url" E2E_SESSION_ID="$session_id" \
+    E2E_BUS_DOWN_CLIENT_FILE="$bus_down_client_file" bun -e '
+      import { writeFileSync } from "node:fs";
+      import {
+        createEnvoyClient,
+        EnvoyApiError,
+        EnvoySendUnconfirmedError,
+      } from "@legion/envoy-client/transport";
+
+      const baseUrl = process.env.E2E_LISTENER_URL;
+      const sessionID = process.env.E2E_SESSION_ID;
+      const output = process.env.E2E_BUS_DOWN_CLIENT_FILE;
+      if ([baseUrl, sessionID, output].some((value) => value === undefined)) {
+        throw new Error("bus-down client configuration is invalid");
+      }
+      const client = createEnvoyClient({ baseUrl, fetch });
+      let thrown;
+      try {
+        await client.send({
+          sourceSessionID: "octocat",
+          targetSessionID: sessionID,
+          message: "Direct send while the message bus is down.",
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      if (!(thrown instanceof EnvoySendUnconfirmedError) || !(thrown.last instanceof EnvoyApiError)) {
+        const what = thrown === undefined ? "nothing: the send was accepted" : String(thrown);
+        throw new Error(`the client threw ${what}, want an EnvoySendUnconfirmedError after an EnvoyApiError`);
+      }
+      const last = thrown.last;
+      const prefix = "envoy: the message bus did not answer";
+      if (last.details.status !== 503 || !last.message.startsWith(prefix)) {
+        throw new Error(`the client threw ${last.details.status}: ${last.message}, want 503 opening with ${JSON.stringify(prefix)}`);
+      }
+      if (!thrown.resendSafe || !thrown.message.includes(`idempotency_key ${thrown.idempotencyKey} within`)) {
+        throw new Error(`the client error names no resend key: ${thrown.message}`);
+      }
+      const record = { name: thrown.name, status: last.details.status, message: thrown.message };
+      writeFileSync(output, `${JSON.stringify(record, null, 2)}\n`);
+      console.log(`client refusal: ${record.name} ${record.status} ${record.message}`);
+    '
+)
+
+printf 'PASS: an absent destination, the listener request records and a bus that did not answer are each refused by name\n'

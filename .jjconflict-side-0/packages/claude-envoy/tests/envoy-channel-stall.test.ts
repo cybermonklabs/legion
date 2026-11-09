@@ -1,0 +1,252 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
+import {
+  type EnvoyStack,
+  envoyStackEnabled,
+  startEnvoyStack,
+  useEnvoyStackDirectory,
+} from "@legion/envoy-client/test/envoy-stack"
+import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
+import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import type { Subprocess } from "bun"
+import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
+import { startFakeMod } from "./fake-mod"
+
+const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+
+/** What one `session.message` the server made carries: the message's own words, which the mod
+ *  writes into the session as the prompt of a new turn or as a row of the turn running
+ *  (INFRA-1026). */
+function shownText(args: ModCallArguments["session.message"]): string {
+  return args.message.text
+}
+
+/** A channel server process, initialized, whose only NATS path goes through `proxy`. */
+interface ChannelServer {
+  readonly server: Subprocess<"pipe", "pipe", "pipe">
+  readonly proxy: StallProxy
+  readonly sessionID: string
+  readonly home: string
+  /** The channel messages Claude Code would be shown, in the order the server sent them. */
+  readonly channel: readonly string[]
+  /** Resolves once `condition` holds; throws when the server exits or `deadline` passes first. */
+  waitFor(
+    condition: () => boolean | Promise<boolean>,
+    deadline: number,
+    what: string,
+  ): Promise<void>
+  /** Stops the server (SIGTERM, then SIGKILL after 10 s), closes the proxy, removes its home. */
+  stop(): Promise<void>
+}
+
+/**
+ * Starts the channel server from this checkout as Claude Code would, for a new session whose
+ * Envoy is `stack`'s listener and whose NATS goes through a stall proxy to `stack`'s natsd, and
+ * sends it the MCP initialize handshake.
+ */
+async function startChannelServer(
+  stack: EnvoyStack,
+  sessionPrefix: string,
+): Promise<ChannelServer> {
+  const proxy = await startStallProxy(stack.natsHostPort)
+  const home = await mkdtemp(join(tmpdir(), "claude-envoy-stall-"))
+  const configDirectory = join(home, "claude-config")
+  await mkdir(configDirectory)
+  await writeFile(
+    join(configDirectory, "envoy.json"),
+    JSON.stringify({ envoy: { enabled: true, url: stack.envoyUrl, natsUrls: [proxy.url] } }),
+  )
+  const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
+  const server = Bun.spawn(["bun", channelEntry], {
+    cwd: home,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: home,
+      CLAUDE_CONFIG_DIR: configDirectory,
+      CLAUDE_CODE_SESSION_ID: sessionID,
+      CLAUDE_PLUGIN_DATA: home,
+      // The base the server and the mod below both resolve the link's socket from.
+      XDG_RUNTIME_DIR: home,
+      // No heartbeat registration runs in the test's window: the reconnect's registration, on a
+      // new epoch, is the only one that restarts the relay.
+      ENVOY_HEARTBEAT_MS: "240000",
+    },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
+  if (socketPath === undefined) throw new Error("the session names no mod socket")
+  // Every delivery reaches the model as the mod's own write - the row of a turn running, or the
+  // prompt of a new turn while the session is idle, which this one is throughout (`show` in
+  // `../src/mod-session`) - so the mod is this test's view of what the session was shown.
+  const channel: string[] = []
+  const mod = await startFakeMod(socketPath, {
+    sessionId: sessionID,
+    answers: {
+      "session.message": (args) => {
+        channel.push(shownText(args))
+        // The prompt an idle session took, which is what answers the frame: a prompt carries
+        // no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
+        return { as: "prompt" }
+      },
+    },
+  })
+  let stderr = ""
+  void (async () => {
+    for await (const chunk of server.stderr.pipeThrough(new TextDecoderStream())) stderr += chunk
+  })()
+  server.stdin.write(
+    `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "test", version: "0" },
+      },
+    })}\n`,
+  )
+  server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
+  return {
+    server,
+    proxy,
+    sessionID,
+    home,
+    channel,
+    // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
+    // polls the real clock until its condition holds or its deadline passes.
+    async waitFor(condition, deadline, what) {
+      while (!(await condition())) {
+        if (server.exitCode !== null) {
+          throw new Error(
+            `the channel server exited ${server.exitCode} waiting for ${what}: ${stderr}`,
+          )
+        }
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}: ${stderr}`)
+        await Bun.sleep(100)
+      }
+    },
+    async stop() {
+      await mod.stop()
+      server.kill("SIGTERM")
+      const killer = setTimeout(() => server.kill("SIGKILL"), 10_000)
+      await server.exited
+      clearTimeout(killer)
+      await proxy.close()
+      await rm(home, { recursive: true, force: true })
+    },
+  }
+}
+
+// Both rollout states: the listener grant of this checkout, where the session registers for a
+// consumer and the listener relays it, and the grant every hub carries until its NATS user is
+// replaced, where the registration is answered core and the session runs on the core path. The
+// SIGTERM test below belongs to neither, so it runs once, with the current grant.
+for (const listenerGrant of ["current", "before-session-consumers"] as const) {
+  const onCorePath = listenerGrant === "before-session-consumers"
+  // Reserved out here, at the file's module scope, one per grant: the file's own `afterAll`
+  // removes it once the `describe` has stopped the stack writing into it.
+  const stackDirectory = useEnvoyStackDirectory()
+  describe.skipIf(!envoyStackEnabled)(
+    onCorePath
+      ? "the channel server against a real natsd and an Envoy listener whose grant predates session consumers"
+      : "the channel server against a real natsd and Envoy listener",
+    () => {
+      let stack: EnvoyStack | undefined
+      beforeAll(async () => {
+        stack = await startEnvoyStack({ work: stackDirectory, listenerGrant })
+      }, 120_000)
+      afterAll(async () => {
+        await stack?.stop()
+      }, 60_000)
+
+      test(onCorePath
+        ? "a session whose NATS path freezes on the core path is shown the message sent during the freeze once, as a replay, within 60 s"
+        : "a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
+        if (stack === undefined) throw new Error("the Envoy stack did not start")
+        const { envoyUrl } = stack
+        const { proxy, sessionID, channel, waitFor, stop } = await startChannelServer(
+          stack,
+          "ses_stall",
+        )
+        try {
+          const started = Date.now()
+          await waitFor(
+            async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
+            started + 30_000,
+            "the session's registration",
+          )
+          // The bundle runs from this checkout, outside Claude Code's plugin cache.
+          const registration = {
+            session_id: sessionID,
+            plugin: "@sjawhar/claude-envoy",
+            plugin_version: "source",
+          }
+          expect(await (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).json()).toMatchObject(
+            registration,
+          )
+          expect(await (await fetch(`${envoyUrl}/v1/sessions`)).json()).toContainEqual(
+            expect.objectContaining(registration),
+          )
+          await runFreezeScenario({
+            label: onCorePath ? "claude-envoy stall (core path)" : "claude-envoy stall",
+            stack,
+            sessionID,
+            proxy,
+            shown: (marker) => channel.filter((content) => content.includes(marker)),
+            waitFor,
+          })
+        } finally {
+          await stop()
+        }
+      }, 120_000)
+
+      if (onCorePath) return
+      test("a session whose redial once hung still exits on SIGTERM", async () => {
+        if (stack === undefined) throw new Error("the Envoy stack did not start")
+        const { envoyUrl } = stack
+        const { server, proxy, sessionID, waitFor, stop } = await startChannelServer(
+          stack,
+          "ses_stall_exit",
+        )
+        try {
+          const started = Date.now()
+          await waitFor(
+            async () =>
+              (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
+              proxy.connections[0]?.subscribedAt !== undefined,
+            started + 30_000,
+            "the session's registration and first subscription",
+          )
+          // The first redial after the freeze hangs (accepted, never answered); the next forwards.
+          proxy.stallNext(1)
+          const frozenAt = proxy.freeze()
+          await waitFor(
+            () =>
+              proxy.connections.some(
+                (opened) => opened.acceptedAt >= frozenAt && opened.subscribedAt !== undefined,
+              ),
+            frozenAt + RECOVERY_BOUND_MS,
+            "the session to subscribe again after the hung redial",
+          )
+          const signalledAt = Date.now()
+          server.kill("SIGTERM")
+          const outcome = await Promise.race([
+            server.exited.then(() => "exited"),
+            Bun.sleep(15_000).then(() => "running"),
+          ])
+          console.log(
+            `claude-envoy stall exit: SIGTERM -> ${outcome} after ${((Date.now() - signalledAt) / 1000).toFixed(1)} s`,
+          )
+          expect(outcome).toBe("exited")
+        } finally {
+          await stop()
+        }
+      }, 120_000)
+    },
+  )
+}
