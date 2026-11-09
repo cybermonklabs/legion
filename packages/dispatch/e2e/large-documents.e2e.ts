@@ -1437,6 +1437,41 @@ function longestWait(served: readonly ServedLate[]): number {
   return served.reduce((worst, task) => Math.max(worst, task.waitedMs), 0);
 }
 
+/** How far the build had got at the first and at the last of the tasks the page was handed
+ *  inside a window: the fewest and the most top-level blocks the editor's own host held at any
+ *  of them. `[0, 0]` where it was handed none. */
+function builtAcross(served: readonly ServedLate[]): [number, number] {
+  const built = served.map((task) => task.builtThen ?? 0);
+  return built.length === 0 ? [0, 0] : [Math.min(...built), Math.max(...built)];
+}
+
+/**
+ * Fails unless the timers the page was handed inside a window show the document being built
+ * across it: two of them at least, and the editor holding more top-level blocks at the last of
+ * them than at the first, which is the build's own batches arriving while they were served.
+ *
+ * This is the one proof in this file that a window a row measures held a build, and both rows
+ * that read such a window use it. It is a reading of the document rather than of the runner:
+ * the same batches carry the same blocks into the editor whatever the machine's speed, so the
+ * rise is there on a loaded runner and on an idle one. A window the document was not built in -
+ * one that ended before the first batch, or opened after the editor did - holds either no timer
+ * at all or timers that all read the same count, and fails here.
+ */
+function theWindowHeldABuild(timers: readonly ServedLate[]): void {
+  const [least, most] = builtAcross(timers);
+  expect(
+    timers.length,
+    "the page served fewer than two of its own timers inside the window, so nothing here " +
+      "shows it held a build at all"
+  ).toBeGreaterThanOrEqual(2);
+  expect(
+    most - least,
+    `the editor held ${least} top-level blocks when the page served its first timer of the ` +
+      `window and ${most} when it served its last: the window did not cover the document ` +
+      "being built"
+  ).toBeGreaterThan(0);
+}
+
 test(`a page timer and a socket message are served while ${documentNames.large}'s editor is built @phone`, async ({
   browser,
 }) => {
@@ -1540,18 +1575,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // machine is now about 1.3 s, and a row that failed because the build was quick would be
     // asserting that the product stays slow.
     expect(ran.firstBatchMs ?? 0).toBeGreaterThan(0);
-    const blocksBuilt = timers.map((timer) => timer.builtThen ?? 0);
-    expect(
-      timers.length,
-      "the page served fewer than two of its own timers inside the build, so nothing here " +
-        "shows the window held a build at all"
-    ).toBeGreaterThanOrEqual(2);
-    expect(
-      Math.max(...blocksBuilt) - Math.min(...blocksBuilt),
-      `the editor held ${Math.min(...blocksBuilt)} top-level blocks when the page served its ` +
-        `first timer of the window and ${Math.max(...blocksBuilt)} when it served its last: ` +
-        "the window did not cover the document being built"
-    ).toBeGreaterThan(0);
+    theWindowHeldABuild(timers);
     // And the page was given both kinds of task inside it, so neither number below is the
     // target met by nothing having happened.
     expect(messages.length, "no socket message arrived while the build ran").toBeGreaterThan(3);
@@ -1642,6 +1666,8 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
 
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const began = ran.firstBatchMs ?? 0;
+    const timers = handedToTheBuild((await page.evaluate(() => window.__servedTimers)) ?? [], ran);
+    const [leastBuilt, mostBuilt] = builtAcross(timers);
     const tasks = ((await page.evaluate(() => window.__largeDocumentLongTasks)) ?? []).filter(
       (task) => task.at >= began && task.at <= (ran.openedMs ?? 0)
     );
@@ -1654,15 +1680,25 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
       `R11 desktop build · a build of ${Math.round((ran.openedMs ?? 0) - began)} ms from its ` +
         `first batch, ${tasks.length} main-thread task(s) over 50 ms inside it, longest ` +
         `${Math.round(longestTask)} ms (guard ${aDesktopBuildTaskAtMostMs} ms). The editor ` +
-        `opened at ${Math.round(openedMs)} ms. Every task of the build, as ` +
+        `opened at ${Math.round(openedMs)} ms, holding ${leastBuilt} top-level block(s) at ` +
+        `the first of ${timers.length} timer(s) the page was handed inside the build and ` +
+        `${mostBuilt} at the last. Every task of the build, as ` +
         `began@from-the-first-batch:held: ${spread}`
     );
 
-    // The window is a real build: its first batch landed, the editor opened after it, and the
-    // page was held for something, so the number below is not a target met by nothing having
-    // happened.
+    // The window is a real build, read from what the build had done rather than from how long
+    // it took: its first batch landed, and the editor's own top-level child count rose between
+    // the first timer the page was handed inside the window and the last, so the batches were
+    // still arriving across it and the number below is not a target met by nothing having
+    // happened. That count is the document's - the same blocks arrive in the same batches
+    // whatever the machine - while the window's length is the runner's, which is why the
+    // 5,000 ms floor that used to stand here was a second reading of the runner beside the one
+    // this row guards: the same build measured 23,061 ms, 41,888 ms and 46,187 ms over three
+    // CI runs four workers wide (42628596511, 42682941869, 42686241170) and 1,640 ms on the
+    // machine of its own this row now has (42697341170), where the floor failed and the guard
+    // it exists for passed at 139 ms of 500.
     expect(began).toBeGreaterThan(0);
-    expect((ran.openedMs ?? 0) - began).toBeGreaterThan(5_000);
+    theWindowHeldABuild(timers);
     expect(tasks.length, "no task of the build held the thread for 50 ms").toBeGreaterThan(3);
 
     expect(
