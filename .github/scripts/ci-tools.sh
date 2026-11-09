@@ -362,23 +362,35 @@ ci_tools__tempfile() {
 # 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
 # .github/workflows/ci.yaml carry `timeout-minutes: 10`.
 #
-# WHAT ONE LADDER COSTS UNDER IT, derived once here and cited without numbers elsewhere.
-# The worst case is not the host that stalls throughout and not the host that fails fast: it is
-# the mixture of the two. A pure staller spends the whole `max_time: 60` every row of
-# .github/ci-tools.yaml carries on each attempt, so the timer passes two minutes inside the
-# second wait and curl starts no attempt after the second — measured against a host that accepts
-# and never answers: attempts at 0 s and 61 s, curl exiting 28 at about 121 s. A host that fails
-# at once spends nothing on its attempts, so all eight are made and the ladder is its waits
-# alone, 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the
-# quick failures carry the timer to just under two minutes, the last wait of 64 s is taken, and
-# the attempt it then starts stalls for its whole bound. That is at most 120 + 64 + 60 = 244 s,
-# which is the ceiling every figure built on this ladder uses, written here as 247 s to leave the
-# three seconds a second's rounding in each of the three terms can add.
+# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound and cited by
+# name elsewhere. The worst case is not the host that stalls throughout and not the host that
+# fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
+# attempt, so the timer passes two minutes inside the second attempt and curl starts none
+# after it — measured at a 60 s bound against a host that accepts and never answers: attempts
+# at 0 s and 61 s, curl exiting 28 at about 121 s. A host that fails at once spends nothing on
+# its attempts, so all eight are made and the ladder is its waits alone,
+# 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the quick
+# failures carry the timer to just under two minutes, the last wait of 64 s is taken, and the
+# attempt it then starts stalls for its whole bound.
+#
+#   ONE LADDER'S CEILING IS 120 + 64 + <the per-attempt bound>, rounded up by the seconds a
+#   second's rounding in each of those three terms can add.
+#
+# At the `max_time: 60` every row of .github/ci-tools.yaml carries that is 244 s, written as
+# 247 s; at the 30 s bound ci.yaml's blob read passes for a HEAD it is 214 s, written as 217 s,
+# which that step's own comment uses and this one does not restate. Both halves of the 30 s
+# shape were driven on this issue's pod against curl 8.14.1 and a loopback server: answering
+# seven delayed 503s and then accepting a connection it never answers gives eight requests,
+# the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
+# bound, exit 28 at 213 s; refusing every connection instead gives the waits alone, eight
+# requests and exit 7 at 127 s. The retry after the seventh is made because the timer stood
+# at 119 s when that attempt began, which is what "just under two minutes" above means.
 #
 # A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull token, the
-# blob — which is what .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this
-# file writes out as one figure, and what ci.yaml's Budgets note and every step comment cite by
-# name rather than restating.
+# blob — which .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this file
+# sums into the one figure rule 8 prices, reading this block for the per-ladder term rather
+# than deriving it again. Every budget comment that holds that sum names it as a
+# `ci_tools_fetch` rather than as a ladder, since three ladders are what it buys.
 # Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it costs
 # nothing at all: the timer stands at 63 s when the last retry is decided, which is inside two
 # minutes, so the ladder is the eight attempts it would make with no such bound, where at 60 it

@@ -2581,21 +2581,19 @@ jobs:
     # The tool copy step is the one term left out of that sum, and it is named here rather
     # than left for a reader to miss. Every request .github/scripts/mirror-ci-tools.sh makes
     # rides the one ladder .github/scripts/ci-tools.sh holds (dispatch://INFRA-1545, R2), and
-    # against a package that accepts the connection and then sends nothing that ladder is the
-    # four attempts `--retry-max-time 120` leaves it, with the 1, 2 and 4 s waits between
-    # them: 4 x 30 + 7 = 127 s for the requests that carry no asset bytes, and
-    # the per-ladder ceiling .github/scripts/ci-tools.sh's `--retry-max-time` block derives.
-    # Those are the readings the DECLARED_LOOPS entry named below derives, and this paragraph
-    # writes no third one. A ghcr-mirror row this run fills costs nine requests — the two
-    # HEADs that read its state, the asset, the layer's POST and PUT, the config's POST and
-    # PUT, the manifest and the read-back, two of them carrying the asset's bytes — which is
-    # 2 x 247 + 7 x 127 = 1383 s, and the four ghcr-mirror rows of that manifest with the one
-    # token request come to 247 + 4 x 1383 = 5779 s. Carrying that term would put this job's
-    # ceiling near two hours for every change the ci_images filter selects, to cover the one
-    # run in which the
-    # package answers no request of four rows until every ladder is exhausted — an outage of
-    # the package this job has to fail in rather than wait out, since the copy it fills is
-    # this repository's own. So the ceiling carries no term for that step.
+    # each of its requests costs the ceiling .github/scripts/ci-tools.sh's `--retry-max-time`
+    # block derives for that request's own bound — 217 s at the 30 s a request carrying no
+    # asset bytes is given, 247 s at the `max_time: 60` of a request that carries them — and
+    # this paragraph derives neither. A ghcr-mirror row this run fills costs nine requests —
+    # the two HEADs that read its state, the asset, the layer's POST and PUT, the config's
+    # POST and PUT, the manifest and the read-back, two of them carrying the asset's bytes —
+    # which is 2 x 247 + 7 x 217 = 2013 s, and the four ghcr-mirror rows of that manifest with
+    # the one token request come to 247 + 4 x 2013 = 8299 s. Carrying that term would put
+    # this job's ceiling past four hours for every change the ci_images filter selects, to
+    # cover the one run in which the package answers no request of four rows until every
+    # ladder is exhausted — an outage of the package this job has to fail in rather than wait
+    # out, since the copy it fills is this repository's own. So the ceiling carries no term
+    # for that step.
     # What a run that does exhaust those ladders ends on is that step's own budget, and that
     # budget is the figure .github/scripts/check-download-retry.sh prices rather than the sum
     # above: the ladder's per-attempt bound is the row's `max_time`, a variable it cannot
@@ -2604,7 +2602,7 @@ jobs:
     # multiplied into it. The step below carries the next whole minute above that figure, and
     # the nine requests a row really makes are why this job's ceiling is not raised to meet
     # them.
-    timeout-minutes: 76
+    timeout-minutes: 113
     # packages: write is the ghcr.io push, which is `crane copy` for an image row and the
     # registry API call .github/scripts/mirror-ci-tools.sh makes for a tool row; actions: read
     # and checks: write are the ci-ok-report step's.
@@ -2642,16 +2640,20 @@ jobs:
       # .github/scripts/check-ci-images.sh retries each read of ghcr.io five times, with the
       # 10, 20, 40 and 80 s waits its own RETRY_WAITS holds, so the fifth attempt starts 150 s
       # after the first. It makes three kinds of read. The anonymous pull token, bounded at
-      # 30 s an attempt, is 5 x 30 + 150 = 300 s. One manifest HEAD per row of
+      # 30 s an attempt - `urlopen(timeout=30)`, which bounds each blocking socket operation
+      # rather than the attempt as a whole, so a resolution that hangs is outside it - is
+      # 5 x 30 + 150 = 300 s. One manifest HEAD per row of
       # .github/ci-images.yaml carries the same bound, 300 s each, and that file holds 14
       # rows: 4200 s. The `crane config` that reads a `built` row's recipe label is bounded at
       # 120 s an attempt, 5 x 120 + 150 = 750 s, and runs for each `built` row the package
       # holds, of which that file has one. 300 + 4200 + 750 = 5250 s -> 88 min, and the row
       # count is what moves it.
       # .github/scripts/check-download-retry.sh prices none of this: those reads are urllib's
-      # and subprocess's, inside the Python that shell script runs, and that check reads a
-      # fetch out of shell and not out of Python. So this budget and the job's ceiling above
-      # are written here by hand.
+      # and subprocess's, inside the Python that shell script runs, and rule 8 puts a figure
+      # on no Python at all. Its rule 6 does read a `urlopen` written in a heredoc of a
+      # `.sh` under .github/scripts, which is what holds these reads to the floor; a `.py`
+      # file is read by no rule of that check, the floor included. So this budget and the
+      # job's ceiling above are written here by hand.
       - name: Check the package holds every row of .github/ci-images.yaml
         timeout-minutes: 88
         run: .github/scripts/check-ci-images.sh package
@@ -2767,16 +2769,16 @@ jobs:
       # Its own retry arithmetic, read off the loop below rather than taken as one ladder: the
       # anonymous pull token, at the 60 s an attempt .github/scripts/ci-tools.sh's token
       # helper defaults to, 247 s; and one HEAD per ghcr-mirror row of .github/ci-tools.yaml,
-      # at the 30 s an attempt this step gives it, 127 s each over the four such rows, 508 s.
-      # Both per-ladder figures are the ones already derived above — 247 s in the
-      # DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl`, and 127 s in the
-      # ci-images job's comment for a request carrying no asset bytes — and neither is
-      # re-derived here. 247 + 508 = 755 s -> 13 min. Rule 8 reads one ladder of 741 s for
-      # this step instead, since a call of a function the sourced file defines is no call of
-      # that file to it and the loop around this one is therefore not multiplied; 13 min
-      # clears the real sum as well.
+      # at the 30 s an attempt this step gives it, 217 s each over the four such rows, 868 s.
+      # Both per-ladder figures come from one place, .github/scripts/ci-tools.sh's own
+      # `--retry-max-time` block, which derives a ladder's ceiling as 120 + 64 + its
+      # per-attempt bound: 247 s at 60 and 217 s at 30. Neither is derived here.
+      # 247 + 868 = 1115 s -> 19 min. Rule 8 reads one `ci_tools_fetch` of 741 s for this step
+      # instead, since a call of a function the sourced file defines is no call of that file
+      # to it and the loop around this one is therefore not multiplied, so 19 min is written
+      # by hand against the sum above and not against what the gate prices.
       - name: Check the package holds the blob of every mirrored row
-        timeout-minutes: 13
+        timeout-minutes: 19
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -6887,10 +6889,14 @@ jobs:
       # each stalled attempt to its own 60 s with curl's 1 s wait between the two of a ladder -
       # and `report` fails on `elapsed < floor` alone, so a slower runner only lengthens what it
       # measures. What trips this floor is a run that ends EARLY: fewer attempts, or attempts
-      # that do not reach their bounds, which is exactly the regression it exists to catch. The
-      # readings sit just above it, as they must: 244 s driving this action's own body on the
-      # issue's pod, 253 s in the pod's whole-step drive and 258 s on the runner in run
-      # 42573254973's job 129015393389.
+      # that do not reach their bounds, which is exactly the regression it exists to catch.
+      # The readings sit just above it, as they must, and they are read on two clocks that must
+      # not be confused: `report` measures from the proxy's own start and so includes the
+      # probe, while a step's own duration does not. On report's clock, which is the one this
+      # floor is compared with, the pod's drive of this action's body read 254 s and the
+      # runner read 258 s in run 42573254973's job 129015393389. The 244 s quoted below is that
+      # same pod drive on the step's clock, ten seconds of probe lower, and is not a reading of
+      # this assertion.
       #
       # An earlier reading of the same run called those four one ladder and asserted 2 with a
       # 123 s floor. That number passes a step whose retry is gone, because the fallback's own

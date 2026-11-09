@@ -246,8 +246,8 @@
 #      `timeout-minutes` is held at GitHub's own default of 360 minutes (JOB_DEFAULT_MINUTES).
 #
 #      A CEILING WRITTEN AS AN EXPRESSION IS A CEILING THIS CHECK DOES NOT READ, and it is
-#      worth stating here rather than leaving for whoever writes the next one. `minutes_of`
-#      takes a whole number and nothing else, so `timeout-minutes: ${{ matrix.timeout_minutes }}`
+#      worth stating here rather than leaving for whoever writes the next one.
+#      `written_minutes` takes a whole number and nothing else, so `timeout-minutes: ${{ matrix.timeout_minutes }}`
 #      reads as a job that wrote none and is judged at the 360-minute default, whatever the
 #      matrix row really allows. The instance in this tree is .github/workflows/e2e.yaml's
 #      `proof` job, whose limits are the rows of .github/e2e-scripts.json: those rows are
@@ -256,6 +256,15 @@
 #      arithmetic has to be written beside it. A step that writes its budget as an expression
 #      is read the same way, which for a step means it is refused as writing none, so no step
 #      of this tree writes one.
+#
+#      PYTHON IS READ IN ONE PLACE ONLY, which is the other gap worth stating here. Rule 6
+#      reads a `urlopen` written in a heredoc of a `.sh` under .github/scripts, so those
+#      reads meet R1's floor; a `.py` file is read by no rule of this check at all — not
+#      rule 8, which puts a figure on none of it, and not rule 1, so a network read written
+#      there gets no floor rather than merely no price. ci.yaml's `Check the package holds
+#      every row of .github/ci-images.yaml` is this tree's instance: its reads are urllib's
+#      inside .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by
+#      hand.
 #      This is the rule ci.yaml's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
@@ -331,8 +340,10 @@
 #      driven at 398ee1e88c83 in a scratch tree as a step around a 300 s call, and each is
 #      priced under its real cost. Every one but the last is absent from this tree: review
 #      round 3 of dispatch://INFRA-1545 read every step and every script of it with this
-#      check's own parser and found no instance of them. The last one this tree does hold,
-#      and the steps it reaches carry budgets written by hand, as that entry says.
+#      check's own parser and found no instance of them, and review round 10 read the same
+#      way for the shape added then. The last one this tree does hold - a call of a function
+#      a sourced file defines - and the steps it reaches carry budgets written by hand, as
+#      that entry says.
 #
 #        * two loops written on one line: a loop is keyed by the line it sits on, so only one
 #          of them is read. In a sequence the later loop's count prices a call in the earlier
@@ -372,13 +383,6 @@
 #          budgets derived by hand beside the figure this rule puts on them. ci.yaml's read
 #          of every mirrored row's blob, a loop of ci_tools_curl_status calls, writes its own
 #          sum out for the same reason.
-##        * a `timeout-minutes` written as an expression rather than as a number, which reads
-#          as a budget nobody wrote: a job with one is judged at the 360-minute default and a
-#          step with one is refused as writing none. .github/workflows/e2e.yaml's `proof` job
-#          is this tree's instance, whose ceiling is `${{ matrix.timeout_minutes }}` and whose
-#          real limits are the rows of .github/e2e-scripts.json, derived there by hand against
-#          the slowest retried step each row's own flags select. Rule 8 above says the same
-#          where it states what a job's ceiling is held to.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
