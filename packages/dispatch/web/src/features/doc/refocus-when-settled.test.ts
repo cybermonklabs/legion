@@ -33,11 +33,19 @@ afterEach(() => {
   document.getSelection()?.removeAllRanges();
 });
 
-/** A drawn document root of a stated height, with the growth a late card gives it. */
-function drawnRoot(): { element: HTMLElement; grow(by: number): void } {
+/** A drawn document root of a stated height standing at a stated place in the page, with the
+ *  growth a late card gives it and the growth a late piece of chrome gives what stands above
+ *  it. Its rectangle is a browser's: where it stands on the reader's screen is where it
+ *  stands in the page less where the page is scrolled to. */
+function drawnRoot(): {
+  element: HTMLElement;
+  grow(by: number): void;
+  growAbove(by: number): void;
+} {
   let height = 100;
+  let inThePage = 0;
   const element = document.createElement("div");
-  element.getBoundingClientRect = () => ({ height }) as DOMRect;
+  element.getBoundingClientRect = () => ({ height, top: inThePage - window.scrollY }) as DOMRect;
   return {
     element,
     grow(by: number) {
@@ -45,6 +53,11 @@ function drawnRoot(): { element: HTMLElement; grow(by: number): void } {
       for (const observer of observers) {
         observer([], undefined as unknown as ResizeObserver);
       }
+    },
+    /** What stands above the document grows, which pushes the document down the page and
+     *  changes the size of nothing the watch is observing. */
+    growAbove(by: number) {
+      inThePage += by;
     },
   };
 }
@@ -261,6 +274,30 @@ test("a scroll the page's own place-keeping made leaves it watching", async () =
     // The browser tells the listeners after the write, so the event reaches the watch with no
     // correction of its own pending: the record `moveTheScroll` left is all that saves it.
     await Bun.sleep(0);
+    drawn.grow(300);
+    await waitFor(() => expect(focused).toBe(1));
+  } finally {
+    stop();
+  }
+});
+
+test("a scroll answering a growth above the document leaves it watching", async () => {
+  const page = pageScroll();
+  const drawn = drawnRoot();
+  let focused = 0;
+  const stop = refocusWhenSettled(() => (focused += 1), drawn.element);
+
+  try {
+    // A version's own heading and the page's chrome land above the document while the diagrams
+    // below are still drawing, and the browser's own scroll anchoring answers that growth by
+    // scrolling the page by exactly what grew. Nothing of it reaches `moveTheScroll` - no
+    // script scrolled at all - and the document is standing on the line of the screen it was
+    // already on, which is the page moving what it draws rather than the reader moving
+    // themselves (`e2e/mermaid.e2e.ts`, "a past version's highlighted mark lands on its block
+    // once a diagram above it draws", where this stop left the mark 10,000 px below the fold).
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    drawn.growAbove(21);
+    await page.to(21);
     drawn.grow(300);
     await waitFor(() => expect(focused).toBe(1));
   } finally {

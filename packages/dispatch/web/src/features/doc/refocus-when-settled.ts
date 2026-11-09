@@ -26,6 +26,14 @@ const LIMIT_MS = 30_000;
  *  document is in the margin's view after a comment link"). */
 const CORRECTION_SCROLL_MS = 250;
 
+/** How far the document may have moved on the reader's screen and still be standing where this
+ *  watch last read it: under one CSS pixel, which is no movement a reader can make and none
+ *  they could see. A browser compensating a growth above the document scrolls by the layout's
+ *  own figure, so the document lands back on the very line it was on and the difference is
+ *  zero; the tolerance is for a page whose scroll offset the browser keeps in fractions of a
+ *  pixel, where that figure and the offset it is written to round apart. */
+const STILL_PX = 1;
+
 /**
  * Runs `refocus` (every focus in the live document, through `ProofDocument`'s `focusInEditor`,
  * and a past version's highlighted mark in `VersionView`) again each time the drawing around its
@@ -65,10 +73,15 @@ const CORRECTION_SCROLL_MS = 250;
  * tool and a scroll made over the automation protocol end it though they fire none of those
  * four events; and a selection change inside the document, a reader working in the page rather
  * than waiting for a link to land. The fourth is the limit. What is not the reader is the page
- * holding the reader still while it draws - `keepTheReadersPlace` and `keepWhatStandsUnder`,
- * which scroll through `moveTheScroll` and are known by what it records there
- * (`thePageLeftItThere`, `readers-place.ts`) - and a growth they answer moves this watch's
- * target too, so it goes on watching from where they left the page.
+ * holding the reader still while it draws, in either of the two ways it does that. The page's
+ * own place-keeping - `keepTheReadersPlace` and `keepWhatStandsUnder`, which scroll through
+ * `moveTheScroll` and are known by what it records there (`thePageLeftItThere`,
+ * `readers-place.ts`) - and the browser's own scroll anchoring, which answers a growth above
+ * the document by scrolling the box by exactly what grew and so leaves the document standing
+ * on the line of the box it was already on, moving nothing on the reader's screen. A growth
+ * either of them answers moves this watch's target too, so it goes on watching from where
+ * they left the page; a reader who moves the page moves what it draws with them, so neither
+ * reading ever excuses one of their moves.
  *
  * Returns the dispose, which removes the listeners and drops any correction still to come;
  * they also go once the limit has passed.
@@ -94,10 +107,29 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
   const carryingBox = (): HTMLElement | null => (root === undefined ? null : whatScrolls(root));
   const offsetOf = (box: HTMLElement | null): number =>
     box === null ? window.scrollY : box.scrollTop;
-  /** Where a scroll this watch owns left that box, so a scroll it does not own is told from
-   *  one it does, and the timer that stands while the movement one started is still arriving. */
+  /** Which line of the box the drawn document stands on: the top of the document in the box's
+   *  own coordinates, which are the viewport's where the page is the box. A reader scrolling
+   *  moves it. A box scrolled by exactly what grew above the document inside it does not,
+   *  which is what the browser's own scroll anchoring does, and is what tells the two apart.
+   *  Zero with no drawn root, which is a caller that watches no scroll at all. */
+  const whereTheDocumentStands = (): number => {
+    if (root === undefined) return 0;
+    const box = carryingBox();
+    return root.getBoundingClientRect().top - (box === null ? 0 : box.getBoundingClientRect().top);
+  };
+  /** Where a scroll this watch owns left that box and the line the document stood on when it
+   *  did, so a scroll it does not own is told from one it does, and the timer that stands
+   *  while the movement one started is still arriving. */
   let left = offsetOf(carryingBox());
+  let stood = whereTheDocumentStands();
   let correcting: number | undefined;
+  /** Reads the box as standing where this watch's own doing left it: `at` is the offset it
+   *  stands at, and the line the document stands on now is the line the next scroll is read
+   *  against. */
+  const remember = (at: number) => {
+    left = at;
+    stood = whereTheDocumentStands();
+  };
   const stop = () => {
     if (done) return;
     done = true;
@@ -115,11 +147,11 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
    *  way there is the same scroll's (`CORRECTION_SCROLL_MS`). Nothing to record with no box. */
   const corrected = (at?: number) => {
     if (root === undefined) return;
-    left = at ?? offsetOf(carryingBox());
+    remember(at ?? offsetOf(carryingBox()));
     window.clearTimeout(correcting);
     correcting = window.setTimeout(() => {
       correcting = undefined;
-      left = offsetOf(carryingBox());
+      remember(offsetOf(carryingBox()));
     }, CORRECTION_SCROLL_MS);
   };
   const scrolled = () => {
@@ -144,7 +176,20 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     // either as that would leave the growth uncorrected, which is the whole of what this
     // module is.
     if (correcting !== undefined || frame !== undefined) {
-      left = at;
+      remember(at);
+      return;
+    }
+    // The page re-laid itself under the reader: what stands above the document grew, and the
+    // browser's own scroll anchoring moved the box by exactly that growth, so the document is
+    // on the line of the box it was already on and nothing moved on the reader's screen. That
+    // is the page moving what it draws, as much as a keeper's correction is, and the growth it
+    // answers is one that moves this watch's target too - the version view's own heading and
+    // chrome land above the document while the diagrams below are still drawing
+    // (`e2e/mermaid.e2e.ts`, "a past version's highlighted mark lands on its block once a
+    // diagram above it draws"). A reader who moves the page moves what it draws with it, so no
+    // move of theirs is excused here.
+    if (Math.abs(whereTheDocumentStands() - stood) < STILL_PX) {
+      remember(at);
       return;
     }
     stop();
