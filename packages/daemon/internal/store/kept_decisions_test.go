@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -228,29 +229,37 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 
 // compose is what a composer of a start or catch-up of tree does in tx (workflow's
 // ParkedDecisionTask, then EnqueueNaming): it reads what tree is owed and nothing claims, enqueues
-// a row naming it and claims it for that row. It returns the refs the row names.
-func (r *keptRig) compose(tx pgx.Tx, tree string) ([]string, error) {
+// a row naming it and claims it for that row. It returns what the row names and the row's own id,
+// which is what a later telling of that row forgets (record.Store.ForgetKeptDecisions).
+func (r *keptRig) compose(tx pgx.Tx, tree string) (record.KeptDecisions, int64, error) {
 	store := record.NewStore()
 	decisions, _, err := store.UnclaimedKept(r.ctx, tx, tree)
 	if err != nil || len(decisions) == 0 {
-		return nil, err
+		return record.KeptDecisions{}, 0, err
 	}
 	var kept record.KeptDecisions
-	var named []string
 	for _, d := range decisions {
 		kept.Decisions = append(kept.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor})
-		named = append(named, d.Ref)
 	}
 	row, err := record.NewOutboxRow(tree, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect,
 		CatchUp: &record.CatchUp{Generation: 1, Launch: 1, Kept: &kept}}, r.at)
 	if err != nil {
-		return nil, err
+		return record.KeptDecisions{}, 0, err
 	}
 	id, err := store.EnqueueID(r.ctx, tx, row)
 	if err != nil {
-		return nil, err
+		return record.KeptDecisions{}, 0, err
 	}
-	return named, store.ClaimKeptDecisions(r.ctx, tx, tree, kept, id)
+	return kept, id, store.ClaimKeptDecisions(r.ctx, tx, tree, kept, id)
+}
+
+// keptRefs is the references a composed row names, for a failure to print.
+func keptRefs(kept record.KeptDecisions) []string {
+	refs := make([]string, 0, len(kept.Decisions))
+	for _, mark := range kept.Decisions {
+		refs = append(refs, mark.Ref)
+	}
+	return refs
 }
 
 // Two composers of one tree's catch-ups run at once over one kept decision: the second reads while
@@ -269,20 +278,20 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = first.Rollback(r.ctx) }()
-	firstNamed, err := r.compose(first, tree)
-	if err != nil || len(firstNamed) != 1 {
-		t.Fatalf("the first composer named %v (%v), want %s", firstNamed, err, ref)
+	firstNamed, _, err := r.compose(first, tree)
+	if err != nil || len(firstNamed.Decisions) != 1 {
+		t.Fatalf("the first composer named %v (%v), want %s", keptRefs(firstNamed), err, ref)
 	}
 
 	read := make(chan struct{})
 	backend := make(chan int32, 1)
 	type composed struct {
-		named []string
+		named record.KeptDecisions
 		err   error
 	}
 	second := make(chan composed, 1)
 	go func() {
-		var named []string
+		var named record.KeptDecisions
 		err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
 			var pid int32
 			if err := tx.QueryRow(r.ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
@@ -290,7 +299,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 			}
 			backend <- pid
 			var err error
-			named, err = r.compose(tx, tree)
+			named, _, err = r.compose(tx, tree)
 			return err
 		})
 		close(read)
@@ -327,8 +336,8 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("the second composer: %v", got.err)
 	}
-	if len(got.named) != 0 {
-		t.Fatalf("the second composer named %v while the first claimed %s; want nothing named twice", got.named, ref)
+	if len(got.named.Decisions) != 0 {
+		t.Fatalf("the second composer named %v while the first claimed %s; want nothing named twice", keptRefs(got.named), ref)
 	}
 	var claimers int
 	if err := r.store.Pool().QueryRow(r.ctx, `select count(*) from outbox where payload->'catch_up'->'kept' is not null`).Scan(&claimers); err != nil {
@@ -336,5 +345,65 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	}
 	if _, claimedBy, _, _ := r.row(ref); claimers != 1 || claimedBy == 0 {
 		t.Fatalf("%s is claimed by %d with %d catch-ups naming decisions; want one catch-up claiming it", ref, claimedBy, claimers)
+	}
+}
+
+// A catch-up of the tree told a person's decision and forgot it (the daemon's settleTold) while a
+// start row's task still named it: that task's delivery was queued, never confirmed, and retired
+// when it reached no claim, which left the row KEPT for the catch-up to name. The start row then
+// runs again — its finish was lost to a crash — and writes that delivery afresh. The write must
+// put nothing back: the architect has been told, and a row standing again is one the tree's next
+// start or catch-up names and tells a second time, which is the fault seed 24 of the daemon's
+// TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild reports at random
+// (dispatch://INFRA-2339). The put-back is for one case alone, which the first test of this file
+// holds: this delivery's own confirmation told the row and the machine took that confirmation
+// back.
+//
+// This package runs in CI's plain test step rather than its race step (.github/workflows/ci.yaml),
+// which is what a row with no schedule of its own asks for.
+func TestADeliveryWrittenAfreshDoesNotPutBackADecisionAnotherRowTold(t *testing.T) {
+	r := newKeptRig(t)
+	const tree, ref = "LEGION-340", "dispatch://LEGION-340/ask/ask-1"
+	r.issue(tree, tree)
+	start := r.startRow(tree)
+	r.keep(tree, ref, start)
+	architect := r.architect(tree, start)
+	task := r.task(fmt.Sprintf("outbox:%d", start), tree, ref)
+	if err := r.store.PutClaimAndDelivery(r.ctx, architect, task); err != nil {
+		t.Fatalf("queue the start's task: %v", err)
+	}
+	if err := r.store.RetireDelivery(r.ctx, architect, task.ID); err != nil {
+		t.Fatalf("retire the task that reached no claim: %v", err)
+	}
+
+	var told record.KeptDecisions
+	var catchUp int64
+	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+		var err error
+		told, catchUp, err = r.compose(tx, tree)
+		return err
+	}); err != nil {
+		t.Fatalf("compose the tree's catch-up: %v", err)
+	}
+	if len(told.Decisions) != 1 {
+		t.Fatalf("the catch-up named %v, want %s: the retired task left it KEPT", keptRefs(told), ref)
+	}
+	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+		return record.NewStore().ForgetKeptDecisions(r.ctx, tx, tree, told, catchUp)
+	}); err != nil {
+		t.Fatalf("tell what the catch-up named: %v", err)
+	}
+	if stands, _, _, _ := r.row(ref); stands {
+		t.Fatalf("%s stands after the catch-up under row %d told it, want it forgotten", ref, catchUp)
+	}
+
+	if err := r.store.PutDelivery(r.ctx, architect.Token, task); err != nil {
+		t.Fatalf("write the start's delivery afresh: %v", err)
+	}
+	if stands, claimedBy, heldBy, heldDelivery := r.row(ref); stands {
+		t.Fatalf("%s stands again (claimed by %d, held by %q/%q) after the start's delivery was written afresh; "+
+			"the catch-up under row %d told the architect that decision and no confirmation of this delivery took it back, "+
+			"so the row must stay gone: one standing again is named and told a second time",
+			ref, claimedBy, heldBy, heldDelivery, catchUp)
 	}
 }
