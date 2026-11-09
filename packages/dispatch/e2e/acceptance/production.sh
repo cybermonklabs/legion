@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # The driver of this issue's one `after_merge` check, `c-production`. It reads what the Dispatch at
 # DISPATCH_URL is running, judges it against the commit this tree merged as, and prints a record:
-# its whole output is what the implementer files as that check's result.
+# its whole output is what the role working the check files as that check's result. That role is
+# the one `projects.<KEY>.production_check` names — `off` or `tester`, and `tester` by default —
+# and the daemon refuses a report from any other with CHECK_ROLE_MISMATCH, so it is not the
+# implementer's unless the check was opened before that setting existed.
 #
 # It does not make the assertions itself. legion/checks/dispatch-production-check.sh, in
 # theorem-labs/agent-infra, makes them and prints one `PASS <text>` or `FAIL <text>` line for each:
