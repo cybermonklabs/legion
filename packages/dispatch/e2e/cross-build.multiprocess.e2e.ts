@@ -229,7 +229,7 @@ for (const pageProcess of dispatchProcesses) {
         card.getByRole("list", { name: "Options" }).locator('li[data-selected="true"]')
       ).toContainText("Ship");
       await expect
-        .poll(async () => (await getAsk(ask.id, { process: pageProcess })).answers.length)
+        .poll(async () => ((await getAsk(ask.id, { process: pageProcess })).answers ?? []).length)
         .toBe(1);
 
       // The issue's document. Where the other build's server admits this page writable

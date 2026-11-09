@@ -10,6 +10,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -62,6 +63,8 @@ const projectDocument: Artifact = {
   name: "Plan",
   primary: false,
   project: "CORE",
+  ref_key: "CORE/plan-md",
+  session_id: null,
   slug: "plan-md",
   versions: [],
 };
@@ -112,7 +115,9 @@ function documentAsk(id: string): Ask {
       version: 1,
     },
     answer: null,
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-10T00:00:00Z",
     edited_at: null,
     id,
@@ -281,7 +286,11 @@ test("a `?comment=` written short resolves, selects the whole-id comment and rep
   const comment = anchoredComment(WHOLE_COMMENT);
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: WHOLE_COMMENT, kind: "comment", ref: `dispatch://CORE-1/comment/${WHOLE_COMMENT}` },
+    node: graphNode({
+      id: WHOLE_COMMENT,
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${WHOLE_COMMENT}`,
+    }),
   });
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const queryClient = documentClient(specArtifact);
@@ -317,7 +326,11 @@ test("a project document's `?ask=` written short reads the ask under its whole i
   const reference = `dispatch://CORE/artifact/plan-md/ask/${SHORT_ASK}`;
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: WHOLE_ASK, kind: "ask", ref: `dispatch://CORE/artifact/plan-md/ask/${WHOLE_ASK}` },
+    node: graphNode({
+      id: WHOLE_ASK,
+      kind: "ask",
+      ref: `dispatch://CORE/artifact/plan-md/ask/${WHOLE_ASK}`,
+    }),
   });
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead(ask));
   const { view } = renderDocument({

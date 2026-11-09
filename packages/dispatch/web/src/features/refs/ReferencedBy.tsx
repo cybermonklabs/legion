@@ -82,13 +82,14 @@ const CLAMP_LINES = 3;
 const CLAMP_CHARACTERS = 240;
 
 /** The ask, comment or message a graph node is a block of: its parent, for a block node naming
- *  no document (`ask/<uuid>#b2`, `comment/<uuid>#b2`, `message/<uuid>#b1`); undefined for any
- *  other node. A part of an ask reads as its ask, as a block of a comment reads as its comment:
- *  one set of item kinds says which (`isBlockItemKind`). */
+ *  no document (`ask/<uuid>#b2`, `comment/<uuid>#b2`, `message/<uuid>#b1`); null for any
+ *  other node, as the read itself carries null for a node with no parent. A part of an ask reads
+ *  as its ask, as a block of a comment reads as its comment: one set of item kinds says which
+ *  (`isBlockItemKind`). */
 function blockItem(node: GraphEdge["node"]): GraphEdge["node"]["parent"] {
   return node.kind === "block" && node.document === undefined && isBlockItemKind(node.parent?.kind)
     ? node.parent
-    : undefined;
+    : null;
 }
 
 function edgeLabel(edge: GraphEdge): string {
@@ -254,7 +255,7 @@ export function ReferencedBy({
   // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
   // end, that this page does not know; the page leaves such an edge out rather than draw it under
   // another edge's label.
-  const edges = query.data?.edges.filter(
+  const edges = query.data?.edges?.filter(
     (edge) =>
       (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
       Object.hasOwn(NODE_LABELS, edge.node.kind)

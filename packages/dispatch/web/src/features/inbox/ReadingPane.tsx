@@ -226,7 +226,8 @@ function ApprovalBody({
             asks={[]}
             changeBaseline={changeBaseline}
             createdAt={
-              artifact.versions.find((version) => version.number === latestVersion)?.created_at
+              (artifact.versions ?? []).find((version) => version.number === latestVersion)
+                ?.created_at
             }
             highlight={undefined}
             owner={

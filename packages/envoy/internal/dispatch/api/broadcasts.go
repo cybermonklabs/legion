@@ -123,6 +123,18 @@ type broadcastTarget struct {
 	reason    string
 }
 
+// createBroadcastInput is the body of POST /api/v1/broadcasts.
+type createBroadcastInput struct {
+	Body       string   `json:"body" required:"true"`
+	Delivery   string   `json:"delivery" required:"true"`
+	SessionIDs []string `json:"session_ids" required:"true"`
+	// `idempotency_key` stays declared, though the key is the Idempotency-Key header now,
+	// so that a body still carrying one - a tab opened before the cutover, which sends the
+	// member and no header - is refused by name rather than ignored: a send whose key was
+	// dropped would be sent a second time by the press that meant to replay the first.
+	IdempotencyKey json.RawMessage `json:"idempotency_key"`
+}
+
 // POST /api/v1/broadcasts. A send under an Idempotency-Key commits its broadcast as the key's
 // recovery point, and a repeat is answered from it (replayBroadcast) before the registry is read:
 // a retry of a send that landed owes nothing to the registry and must not fail because the
@@ -132,16 +144,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var input struct {
-		Body       string   `json:"body"`
-		Delivery   string   `json:"delivery"`
-		SessionIDs []string `json:"session_ids"`
-		// `idempotency_key` stays declared, though the key is the Idempotency-Key header now,
-		// so that a body still carrying one - a tab opened before the cutover, which sends the
-		// member and no header - is refused by name rather than ignored: a send whose key was
-		// dropped would be sent a second time by the press that meant to replay the first.
-		IdempotencyKey json.RawMessage `json:"idempotency_key"`
-	}
+	var input createBroadcastInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
