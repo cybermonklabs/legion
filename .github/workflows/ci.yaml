@@ -2818,7 +2818,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_legion == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # 20 rather than 10: this job's suite ran 6m23s, 9m59s and 10m14s on one branch within eleven
+    # hours of 2026-11-08, and the third was cancelled at the bound, which GitHub reports as a
+    # cancelled job and `ci-ok` as a failure. Four of this package's `-omp` suites take 485 of the
+    # step's 545 seconds (legion-stall-watchdog 235s, controller-start 122s, legion-phase-stall
+    # 100s, legion-session-activity 28s), so the margin is theirs rather than any branch's change.
+    # Shortening or splitting them is dispatch://INFRA-2125; this keeps a required check from
+    # turning on a coin flip until it lands.
+    timeout-minutes: 20
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
