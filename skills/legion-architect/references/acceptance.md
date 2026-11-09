@@ -179,8 +179,8 @@ from its own read of the issue — and writes `done`. An issue that reaches `mer
 request GitHub has already merged closes at once.
 
 - A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `merging`, its workers kept and live and no admission slot held, until the last of them
-  is done or parked. One
+  `merging`, its workers kept and live and its admission slot kept with them, until the last of
+  them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.
 - A child's close reaches you as `child-closed`. Where the project's `production_check` names the
@@ -224,8 +224,8 @@ If you are that child's architect:
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before the merge, register your spec with `register_gate`: the tree's
   work starts on its approval.
-  That registration's approval request waits with the person like any other, but it returns no admission slot: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
-  The slot rule below is for a root of your own at `admitted`, not for this one.
+  That registration's approval request waits with the person like any other, but it starts no wait of the root's own: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
+  The section below is for a root of your own at `admitted`, not for this one.
   When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
   `merging` the work is already through every gate, so register none.
@@ -233,9 +233,11 @@ If you are that child's architect:
 ## Your slot while a person has your spec
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
-A registration that leaves the approval request with the person returns your root's admission slot, and what brings the root back is the answer, not the registration.
-What decides whether your resume waits for a slot is whether the gate has ever opened in this generation, never whether it stands open now: an approval opens your gate, and a root whose gate has ever opened needs no slot to resume, so it resumes however full the cap is.
-The first phase that resume starts takes a slot of its own: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
-A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval; it brings back no need for a slot to resume, and only a root whose gate has never opened has one: then, while every slot is taken, you get one `waiting-for-slot` notice, and your record carries `waitingLine`, your place in the line and its length.
-You get the notice only while this session holds its Envoy role: a session whose pod the daemon released while the root waited is told nothing, and its resume task says what answered the wait.
-Act on neither: the daemon starts you again at the next free slot.
+A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
+Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done or leaves the workflow.
+So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
+The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
+While your answered root stands in the line, your record carries `waitingLine`, your place in the line and its length.
+Nothing is sent to you about that wait, and your resume task says what answered it.
+Act on neither: the daemon starts you again on the pass that reads the answer.

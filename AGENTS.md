@@ -814,6 +814,33 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
 
 **Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
 
+**Admission:** an admission slot is one issue the daemon has started, not one tree.
+Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase — and keeps it until it is done or leaves the workflow.
+So the row goes in three cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; or it belongs to a tree whose root closed or a tree the daemon no longer runs.
+Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `retro`, `merging`, `accepting`, `held` and `awaiting_person` — so an issue waiting on a person, on a blocker, on its children or on its review keeps its place against the cap and wins none back from the line when the wait ends.
+The admission pass that sees one of those three states deletes the slot row.
+`admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
+An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
+A slot change stops no process, claim, session or pod:
+every worker of a waiting issue stays live in the issue's pod and answers questions until the issue closes.
+A transition applies at once — the phase, the Dispatch status, the new assignment and the notices — and only the outbox row that delivers the worker's start waits for a slot;
+when a second transition happens before the slot, its start replaces the first one, so one worker starts and a completion of the earlier assignment is refused.
+The waiting line is a line of issues:
+first the issues whose work came back, oldest first by the time it came back — one owed its worker a start, which holds no row and waits here for one, and two that hold the row they were started with: an answered `awaiting_person` root and a tree's own root at `admitted` whose design gate has opened;
+then the issues whose first phase can start, by the Dispatch rank of their tree's root and then by their own, most of which hold no row; two kinds hold one already, a root another tree handed over with the row it held there and a child the daemon started that a person set back to `todo`.
+An issue holding a row stands in `admission.active` and `admission.waiting` at once until the pass that promotes it, and that promotion takes no second row.
+A tree is live while its lifecycle is open and it does not linger, or while its root waits in the line or on a person, whether or not any issue of it holds a slot.
+`legion state` counts the slot holders against the cap and prints the live trees;
+its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
+
+**Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
+So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that has no open child.
+`sign_off` and `close_root` are refused while an issue beneath is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), and `release_children` and `rerun_child` refuse a child whose ancestor is in `retro` or `merging` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor);
+a person's own move of such a child to `todo` is recorded and held at `admitted` until that ancestor closes, with a `child-status` notice that says so.
+One issue beneath is left out of the `sign_off` refusal, the `close_root` refusal and a merged issue's wait for the issues beneath it: one the daemon itself holds at `admitted` under that same accepted ancestor, since otherwise that hold and those three deadlock.
+When the root that held it closes, the tree's linger hands that child to Legion as a root of its own, so the work a person asked for runs once the ancestor has closed, as the `child-status` notice says it will.
+A parent with children puts the work into them, and its own pull request joins and proves their merged work.
+
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge, and there no worker runs:
 the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with its latest result (`dispatch results`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
@@ -925,6 +952,8 @@ A blocked root keeps its place in the waiting line and takes no slot, so it hide
 it stays the live tree of its children, which are no orphans.
 A child is the same: `release_children` accepts the whole request whatever the links say and answers which children it released, which it started and which it held, each held one with the issues it waits on.
 A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot when the last blocker closes, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the tree's architect with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
+A child the daemon has already started holds a slot while a link holds it, which is the one case that takes capacity: a person's `todo` on such a child re-enters it at `admitted` inside its live tree, and it keeps the slot it took there, since an issue keeps its admission slot from the moment the daemon starts it until it is done or leaves the workflow.
+The state then names it under `admission.active` and under `admission.blocked` at once, and it is in no waiting line until its last blocker closes, which starts its first phase on the slot it already holds, or its tree's close hands it over as a root of its own, which releases that slot and puts it in the line.
 Work already under way is never stopped or re-checked, and those are the two exemptions:
 an issue that carries a run into a tree of its own is admitted whatever its links say, and so is a tree that ran, taken back after it finished and lingered, which starts again at its person's `todo`;
 a blocker added to a running tree's issue changes nothing for it.
@@ -933,11 +962,11 @@ the daemon's boot reads the whole project listing, and its periodic turn (`contr
 `legion state` prints the waits as `blocked on Dispatch links:`, the state's JSON carries them under `admission.blocked`, and the periodic wake to the project's controller carries the same list (the tick notice's `blocked`), for the day's report.
 The mark is a label rather than the issue's `route` because Dispatch publishes every event of a routed issue to the route's topic, where a label only marks the issue; it carries no workflow state.
 
-**Waiting on a person:** an admitted root whose architect asked a person a question, or handed its spec to a person for approval, gives its admission slot back while it waits, in its own `awaiting_person` phase.
+**Waiting on a person:** an admitted root whose architect asked a person a question, or handed its spec to a person for approval, keeps its admission slot while it waits, in its own `awaiting_person` phase.
 The daemon keeps a mirror of Dispatch's state of every ask of a root (`root_asks`:
 open or closed, whose turn, who closed it, the newest person's act on it), written from the ask events, a registration's read of the approval request and the boot catch-up, and decides from the record alone on every admission pass (a live fact, a tick, the boot read), so the same record gives the same decision.
 The mirror is the same whatever order the events arrive in, but a decision acts on the record as each event leaves it, so some orders differ (listed below).
-A root enters `awaiting_person` — gives up its slot at once, and its architect stays live and idle until the answer's task
+A root enters `awaiting_person` — keeping its slot, with its architect live and idle until the answer's task
 — when all of these hold: its architect handed something to the person since the daemon last gave it work (a question a session of its tree opened on the root, a tree session's reply leaving such a question, or an approval request of the closed gate's document, with the person, or a registration of a closed gate whose request waits on the person;
 `declared_seq`, the newest such hand-back, and `declared_at`, Dispatch's time of it);
 something is still with the person (an open tree question on the person's turn, or an approval request of the closed, armed gate's document on the person's turn);
@@ -965,7 +994,7 @@ A boot whose read of such a root Dispatch refused leaves it with no cursor, so i
 A re-admission sets the cursor back to 0, so a new generation never replays the old one's tail.
 A daemon of an earlier release ignores the cursor, so a return to this release after one ran would replay, from the cursor this release left, events that daemon already applied live;
 before such a return, set every cursor to null (`update issues set caught_up_seq = null`), so each root's next catch-up replays nothing again.
-A gate whose document has no approval request in the mirror (one an earlier release registered before the mirror existed) has the request Dispatch shows open on that document mirrored at boot, and when that request waits on the person the boot declares the hand-back as a registration would, so a root already waiting on its approval at the deploy returns its slot.
+A gate whose document has no approval request in the mirror (one an earlier release registered before the mirror existed) has the request Dispatch shows open on that document mirrored at boot, and when that request waits on the person the boot declares the hand-back as a registration would, so a root already waiting on its approval at the deploy is recorded as waiting, keeping the slot it holds.
 A root Dispatch keeps refusing is released after a bounded number of reads and decided on the record as it stands.
 A wait on the gate is answered by the person's approval or changes request of the version it waits on or a later one, and by a newer spec version whoever wrote it once Dispatch shows the approval request waiting on the architect;
 a version the architect wrote before it handed the request back, whose event arrived late, moves the wait to that version and answers nothing, and a registration of another document moves the wait to that document at the version Dispatch shows.
@@ -985,8 +1014,8 @@ A close of an item of the wait — a tree question, or an approval request of th
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
-the resume starts no phase worker, so a root whose design gate has already opened holds no slot and resumes at once however full the cap is, while one whose gate has never opened — its architect still writing the spec, which is work the cap counts — resumes at the next free slot;
-a phase that resume then starts waits for a slot of its own, the root's own first phase among the issues whose work came back, oldest first, by the moment its design gate opened, and a released child of it behind them, by the Dispatch rank of its tree's root;
+the resume takes no further slot, since an answered root holds the one it took when the daemon started it, so it resumes however full the cap is, whether or not its design gate has ever opened;
+the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds, while a child it releases holds none and waits in the line by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.

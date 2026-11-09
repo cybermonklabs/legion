@@ -15,7 +15,7 @@ import (
 // that has still to be promoted. The hand-over mark used to say the tree had never been opened for
 // the whole life of that tree, so the line took it as a root that never ran and promoted it again:
 // a second in_progress write, a second architect start, a new issue branch, and a resume of every
-// mid-phase member, whose ResumePhase moves awaiting_merge to merging — where the merger's claim is
+// mid-phase member, whose ResumePhase leaves merging where it stands — where the merger's claim is
 // live, no task is queued, and the pull request's own merge no longer closes the issue.
 //
 // The promotion clears the mark, so the record says the tree is open and this is a running root.
@@ -24,7 +24,7 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 	admission := quiet(t, 4)
 
 	// The handed-over root as its own promotion left it: the tree opened, the phase it carried
-	// from the tree it left, and no slot, since a worker of it has no work in awaiting_merge.
+	// from the tree it left, and no slot, since the row it holds is the row of the tree it left.
 	const root = "LEGION-300"
 	putIssue(t, pool, record.Issue{Key: root, Tree: root, Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root that ran", Phase: phase.Merging,
@@ -36,7 +36,7 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 	tick(t, pool, admission, "tick")
 
 	if running := issue(t, pool, root); running.Phase != phase.Merging {
-		t.Fatalf("%s stands in %s after the pass, want awaiting_merge: a running root a person set to todo is promoted by nothing", root, running.Phase)
+		t.Fatalf("%s stands in %s after the pass, want merging: a running root a person set to todo is promoted by nothing", root, running.Phase)
 	}
 	if holders := slots(t, pool); len(holders) != 0 {
 		t.Fatalf("slots = %#v, want none: a root waiting for its merge has no worker with work", holders)

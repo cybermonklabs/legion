@@ -44,7 +44,7 @@ export const LegionInstant = timestamp.regex(
 
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
  * the role working it: `workers` is keyed by role (`LEGION_ROLES`). `awaiting_person` is a root
- * that gave its admission slot up while its architect waits on a person's answer (`waitingOn` on
+ * that keeps its admission slot while its architect waits on a person's answer (`waitingOn` on
  * the issue record). `accepting` is the architect's acceptance between the reviewer's approval and
  * retro: no worker runs it. The merger merges in `merging`, and the daemon closes the issue when
  * it reads that merge (`done`); the production check after the close is no phase (`check` on the
@@ -361,8 +361,8 @@ export const LEGION_WAIT_ANSWERS = [
 
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
- * (`answeredBy` names how, not always by a person), when the root waits in admission's waiting
- * line for its slot, among the issues whose work came back, oldest first. */
+ * (`answeredBy` names how, not always by a person), when the answered root stands in admission's
+ * waiting line, among the issues whose work came back, oldest first, until the pass that resumes it. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),
@@ -490,8 +490,8 @@ const legionIssue = z.object({
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 60): present only for an issue that
-   * list names, so a slot holder and every other issue the line does not carry have none, and a
-   * daemon before contract 60 writes none at all, which is why a reader takes it as optional. */
+   * list names, so every issue the line does not carry has none, and a daemon before contract 60
+   * writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
@@ -526,11 +526,18 @@ const legionBlockedIssue = z.object({
 
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
- * the cap counts the issues at work rather than the trees (dispatch://INFRA-980): `active` is
- * every issue holding a slot and `waiting` the admission line, children as much as roots, so one
- * tree with three working children holds three slots and a tree whose issues only wait holds
- * none. `trees` is the root of every live tree, sorted, which a reader needs because a running
- * tree may hold no slot at all — the controller reads it where it read `active` as the running
+ * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
+ * `active` is every issue holding a slot and `waiting` the admission line, children as much as
+ * roots, so one tree with three started children holds three slots. An issue takes its slot when
+ * the daemon starts it and keeps it until it is done or leaves the workflow, so `active` carries
+ * an issue waiting on a person, one in `accepting`, one `held`, a merger at work in `merging`,
+ * one in `merging` whose start a closed design gate holds, and a merged root standing in
+ * `merging` while the rest of its tree runs, while an issue whose phase has left the workflow —
+ * `done`, or a status Dispatch took it out of the workflow with — is in neither list. An issue
+ * holding a slot is in `waiting` as well while its work comes back to it, an answered root until
+ * the pass that resumes it. `trees` is the root of every live tree, sorted, which a reader needs
+ * because a running tree may hold no slot at all — the controller reads it where it read
+ * `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose

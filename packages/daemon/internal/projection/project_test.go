@@ -794,3 +794,41 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 		})
 	}
 }
+
+// admission.active is every issue holding one of the cap's rows, which an issue now keeps from
+// the moment the daemon starts it until it is done or Dispatch takes it out of the workflow
+// (record.KeepsSlot). So a root waiting on a person, an issue in accepting and one in merging are
+// all named there, though no worker of any of them is running this second, and an issue whose
+// phase has left the workflow stands in neither list.
+func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
+	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
+	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
+	store := projectionStore{
+		issues: []record.Issue{
+			waiting,
+			lineIssue("LEGION-11", "LEGION-10", "needs_review", phase.Accepting, "B"),
+			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "C"),
+			lineIssue("LEGION-13", "LEGION-10", "done", phase.Done, "D"),
+		},
+		lifecycles: []string{"LEGION-10"},
+		slots: []record.Slot{
+			{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt},
+			{Issue: "LEGION-11", Index: 1, AdmittedAt: projectedAt},
+			{Issue: "LEGION-12", Index: 2, AdmittedAt: projectedAt},
+		},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+
+	if want := []string{"LEGION-10", "LEGION-11", "LEGION-12"}; !reflect.DeepEqual(got.Admission.Active, want) {
+		t.Fatalf("admission.active = %#v, want %#v: the root waiting on a person, the issue in accepting and the one in merging each hold a row",
+			got.Admission.Active, want)
+	}
+	if len(got.Admission.Waiting) != 0 {
+		t.Fatalf("admission.waiting = %#v, want none: three of the four hold a row already, and the fourth has left the workflow",
+			got.Admission.Waiting)
+	}
+}
