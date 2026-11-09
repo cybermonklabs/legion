@@ -149,10 +149,11 @@
 #   SESSION_DELIVERY_HOLD_S       wait after that for a repeat (default 15)
 #   SESSION_DELIVERY_EVIDENCE_DIR default a fresh directory under TMPDIR; kept and printed
 #
-# No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, LEGION_* or CLAUDE_* variable of the caller reaches
-# anything the run starts. Every service and session gets PATH, what the script sets, and, for the
-# sessions alone, ANTHROPIC_API_KEY (read from SESSION_DELIVERY_MODEL_KEY_FILE), ANTHROPIC_BASE_URL
-# when the caller sets it, and BUN_INSTALL_CACHE_DIR for bunx when the caller sets it.
+# No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, LEGION_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or
+# PGSERVICEFILE variable of the caller reaches anything the run starts. Every service and session
+# gets PATH, what the script sets, and, for the sessions alone, ANTHROPIC_API_KEY (read from
+# SESSION_DELIVERY_MODEL_KEY_FILE), ANTHROPIC_BASE_URL when the caller sets it, and
+# BUN_INSTALL_CACHE_DIR for bunx when the caller sets it.
 # Everything started is stopped on exit by the pid it was started as; the database is dropped; the
 # evidence directory is kept. Manual only, never CI: it needs a model provider.
 #
@@ -161,9 +162,12 @@
 # refused (an input or tool is missing); 130, 143 on SIGINT, SIGTERM.
 # shellcheck disable=SC2317 # cleanup runs from the EXIT trap, the probes from await and wait_until
 set -euo pipefail
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
+# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
 for variable in $(compgen -e); do
-  case $variable in DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | LEGION_* | CLAUDE_*)
-    [ "$variable" = LEGION_TEST_PG_DSN ] || unset "$variable" ;;
+  case $variable in
+    DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | LEGION_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE)
+      [ "$variable" = LEGION_TEST_PG_DSN ] || unset "$variable" ;;
   esac
 done
 model_key_file=${SESSION_DELIVERY_MODEL_KEY_FILE:-/var/run/model-gateway-key/key}
@@ -243,6 +247,8 @@ done
 
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
+# This pattern reads the URL's shape and not its host: it splits the DSN into the server part and
+# the parameters, and the loopback guard further down is what reads the host libpq reads.
 [[ "$LEGION_TEST_PG_DSN" =~ ^(postgres(ql)?://[^/]+)/([^?]*)(\?.*)?$ ]] ||
   refuse "LEGION_TEST_PG_DSN is not a postgres:// URL with a database path"
 pg_server=${BASH_REMATCH[1]}
@@ -284,6 +290,14 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
+# Which host the DSN names, read by libpq itself: the run creates a database there and
+# force-drops it, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py,
+# whose own section of scripts/e2e/README.md says what it reads and what it refuses. It runs
+# after the tool check above, because it is python3 that runs it.
+if ! db_host=$(python3 "$repo_root/scripts/e2e/lib/loopback-dsn.py" \
+  LEGION_TEST_PG_DSN "this run creates and force-drops a database there" 2>&1); then
+  refuse "$db_host"
+fi
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)

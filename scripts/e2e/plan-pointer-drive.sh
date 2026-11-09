@@ -414,8 +414,6 @@ run_attempt() {
     >>"$run_dir/logs/postgres.log" 2>&1 ||
     fail "could not create the database $database on LEGION_TEST_PG_DSN; see $run_dir/logs/postgres.log"
   databases+=("$database")
-  # The run's own database as the `dbname=` of a connection string libpq rebuilds from the
-  # caller's DSN and reads back (run_database_url, lib/rig.sh).
   run_database_url database_url LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
     "this run creates and force-drops databases there"
   note "database $database"

@@ -91,12 +91,9 @@ until_true() {
 # from, and it starts the refusal. WHAT is what the run does on that server, in a few words. The
 # locals' names are ones no caller passes.
 #
-# lib/loopback-dsn.py does the work: it takes the keywords libpq reads from DSN, gives dbname
-# DATABASE, and writes them back as `dbname='…' host='…'`, which libpq and pgx both read
-# wherever they read a URL. libpq reads that string before the helper prints it, and a string
-# libpq reads as another database or another host is refused, naming both. A `?dbname=` appended
-# to the DSN's own text cannot do this: libpq ends the user name at the first `@`, so a `?` in
-# the user name starts no query and the separator a text rule picks there is the wrong one.
+# lib/loopback-dsn.py does the work: it rebuilds the connection string from the keywords libpq
+# reads of DSN, rather than appending a `?dbname=` to the DSN's own text. Its docstring and
+# scripts/e2e/README.md's lib/loopback-dsn.py section say what it refuses and why it rebuilds.
 #
 # The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE first, as every caller of the guard
 # must: scripts/e2e/README.md's lib/loopback-dsn.py section says why. A DSN the helper refuses
@@ -104,7 +101,10 @@ until_true() {
 # libpq read and no other part of the DSN.
 run_database_url() {
   local _url_var=$1 _name=$2 _dsn=$3 _database=$4 _what=$5 _answer
-  _answer=$(env "$_name=$_dsn" python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+  # The DSN goes to the helper through the environment of this command substitution's own
+  # subshell. `env NAME=$DSN python3 …` would put the password in env(1)'s argument list, which
+  # /proc/<pid>/cmdline holds until it execs.
+  _answer=$(export "$_name=$_dsn"; python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
     "$_name" "$_what" --dbname "$_database" 2>&1) || fail "$_answer"
   printf -v "$_url_var" '%s' "$_answer"
 }

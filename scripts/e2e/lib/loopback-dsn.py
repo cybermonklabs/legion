@@ -3,7 +3,6 @@
 
 usage:
   loopback-dsn.py NAME WHAT
-  loopback-dsn.py NAME WHAT --read
   loopback-dsn.py NAME WHAT --dbname DATABASE
 
 NAME is the environment variable that holds the DSN. WHAT is what the run does on that server,
@@ -11,12 +10,12 @@ in a few words, and a refusal that is about the host ends with it. The DSN is re
 environment and never from the command line, so no process list holds its password.
 
 The helper prints the host and exits 0 when libpq reads one loopback host from the DSN:
-127.0.0.1, localhost or ::1. `--read` prints `host=<host>` and `dbname=<database>` instead, one
-per line, which is what libpq reads of the DSN. Every other answer is a refusal: one line on
-stderr that names what libpq read and why, and exit 1. It refuses a DSN with a character that
-does not print, a DSN whose host, hostaddr or service holds one after libpq decodes it, a DSN
-libpq cannot parse, a DSN with no host, a host list of more than one, a `hostaddr` parameter, a
-`service` parameter, and a host that is not one of the three loopback names.
+127.0.0.1, localhost or ::1. Every other answer is a refusal: one line on stderr that names what
+libpq read and why, and exit 1. It refuses a DSN with a character that does not print, a DSN
+that gives a keyword bytes libpq reads as no UTF-8 text, a DSN whose host, hostaddr or service
+holds a character that does not print after libpq decodes it, a DSN libpq cannot parse, a DSN
+with no host, a host list of more than one, a `hostaddr` parameter, a `service` parameter, and a
+host that is not one of the three loopback names.
 
 The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection. This
 helper reads the DSN alone. psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name an
@@ -31,7 +30,10 @@ string is rebuilt and not appended to: a `?dbname=` or `&dbname=` appended to th
 takes its separator from a `?` that can be inside the user name, where it starts no query, and
 it breaks a DSN whose text ends in a `?`. libpq reads the rebuilt string back before the helper
 prints it. libpq must read DATABASE as the database, the same host as the DSN names, and every
-other keyword as the DSN sets it. A refusal names the database and the host libpq read.
+other keyword as the DSN sets it. Every value reaches that string as libpq decoded it, so this
+mode also refuses a value that holds a character that does not print: a newline in a password is
+a line break in a string the caller writes into a file. A refusal names the database, the host,
+and every keyword libpq does not read back as the DSN sets it.
 
 libpq's own parser reads the DSN (PQconninfoParse, through ctypes), because a shell pattern and
 libpq disagree about which text is the host:
@@ -46,7 +48,8 @@ evil.example. libpq also decodes a percent sign in a parameter key, so `%68ost=`
 
 A refusal prints the host, the hostaddr or the service name it read, and prints that value only
 when every character of it prints, so a refusal is one line and writes no escape sequence to the
-terminal. It prints no other part of the DSN, because the user name and the password are in it.
+terminal. A refusal about another keyword names that keyword and prints no value of it. It
+prints no other part of the DSN, because the user name and the password are in it.
 
 This helper needs libpq itself. Where ctypes.util.find_library("pq") finds none, every DSN is
 refused and the refusal names libpq: there is no second, weaker check to fall back on.
@@ -105,7 +108,8 @@ def parsed(library, dsn):
     """Return the keywords libpq reads from dsn, each with the value the DSN gives it.
 
     The parse applies no default and reads no environment variable: what comes back is what the
-    DSN itself says.
+    DSN itself says. A value is decoded strictly: this helper writes every value it reads back
+    into a connection string, and a byte it reads as no UTF-8 text it cannot write back.
     """
     message = ctypes.c_char_p()
     options = library.PQconninfoParse(dsn, ctypes.byref(message))
@@ -115,12 +119,22 @@ def parsed(library, dsn):
         raise Refusal("is no connection string libpq can parse")
     read = {}
     index = 0
-    while options[index].keyword:
-        value = options[index].val
-        if value is not None:
-            read[options[index].keyword.decode()] = value.decode(errors="replace")
-        index += 1
-    library.PQconninfoFree(options)
+    try:
+        while options[index].keyword:
+            value = options[index].val
+            if value is not None:
+                keyword = options[index].keyword.decode()
+                try:
+                    read[keyword] = value.decode()
+                except UnicodeDecodeError:
+                    raise Refusal(
+                        f"gives {keyword} bytes libpq reads as no UTF-8 text: this helper writes"
+                        " every value the DSN sets back into a connection string, a byte it"
+                        " cannot read it cannot write back, and this refusal prints no value"
+                    ) from None
+            index += 1
+    finally:
+        library.PQconninfoFree(options)
     return read
 
 
@@ -204,25 +218,24 @@ def host_and_keywords(dsn, what):
     return host, read
 
 
-def host_of(dsn, what):
-    """Return the one loopback host libpq reads from dsn, or raise the Refusal it earns."""
-    return host_and_keywords(dsn, what)[0]
-
-
 def rewritten(dsn, what, database):
     """Return the connection string that names database on the host dsn names, or raise the
     Refusal it earns. libpq reads the string back: the check is libpq's answer, not the rebuild.
     """
     host, read = host_and_keywords(dsn, what)
+    # Every value the DSN sets reaches the rebuilt string, and libpq decodes a percent sign, so
+    # a value can hold a character that does not print where the DSN's own text holds none.
+    for keyword in sorted(read):
+        code = unprintable_character(read[keyword])
+        if code is not None:
+            raise Refusal(
+                f"gives {keyword} U+{code:04X}, a character that does not print: it reaches the"
+                " rewritten connection string, where a caller writes that string into a file,"
+                " and this refusal prints no value that holds one"
+            )
     want = dict(read, dbname=database)
     string = connection_string(want)
     got = parsed(libpq(), string.encode("utf-8", "surrogateescape"))
-    if got.get("dbname", "") != database or got.get("host", "") != host:
-        raise Refusal(
-            f"cannot be rewritten to name the database {shown(database)} on the host {host}:"
-            f" libpq reads dbname={shown(got.get('dbname', ''))} and"
-            f" host={shown(got.get('host', ''))} from the rewritten connection string"
-        )
     lost = sorted(keyword for keyword in want if got.get(keyword) != want[keyword])
     if lost:
         raise Refusal(
@@ -237,9 +250,7 @@ def main(argv):
         print(__doc__, end="")
         return 0
     mode, database, rest = "host", "", argv
-    if len(argv) == 3 and argv[2] == "--read":
-        mode, rest = "read", argv[:2]
-    elif len(argv) == 4 and argv[2] == "--dbname" and argv[3] != "":
+    if len(argv) == 4 and argv[2] == "--dbname" and argv[3] != "":
         mode, database, rest = "dbname", argv[3], argv[:2]
     if len(rest) != 2:
         print(USAGE, file=sys.stderr)
@@ -252,12 +263,8 @@ def main(argv):
     try:
         if mode == "dbname":
             print(rewritten(dsn, what, database))
-        elif mode == "read":
-            host, read = host_and_keywords(dsn, what)
-            print(f"host={host}")
-            print(f"dbname={shown(read.get('dbname', ''))}")
         else:
-            print(host_of(dsn, what))
+            print(host_and_keywords(dsn, what)[0])
     except Refusal as refusal:
         print(f"{name} {refusal}", file=sys.stderr)
         return 1

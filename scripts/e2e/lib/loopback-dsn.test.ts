@@ -4,8 +4,9 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
-// last block drives lib/rig.sh's run_database_url, which the proofs call, and reads its answer
-// back through the helper. A host with no python3 or no libpq skips them, naming what it lacks.
+// last block drives lib/rig.sh's run_database_url, which the proofs call, and pins the
+// connection string it answers with. A host with no python3 or no libpq skips them, naming what
+// it lacks.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const helper = join(import.meta.dir, "loopback-dsn.py");
@@ -54,23 +55,6 @@ function rewrite(dsn: string, database: string): { code: number; url: string; re
     url: run.stdout.toString().trim(),
     refusal: run.stderr.toString().trim(),
   };
-}
-
-/** The host and the database libpq reads from a connection string (`--read`). */
-function reads(url: string): { host: string; dbname: string } {
-  const run = Bun.spawnSync(["python3", helper, variable, what, "--read"], {
-    env: { ...process.env, [variable]: url },
-    stderr: "pipe",
-    stdout: "pipe",
-  });
-  if (run.exitCode !== 0) {
-    throw new Error(run.stderr.toString().trim());
-  }
-  const read: Record<string, string> = {};
-  for (const line of run.stdout.toString().trim().split("\n")) {
-    read[line.slice(0, line.indexOf("="))] = line.slice(line.indexOf("=") + 1);
-  }
-  return { host: read.host, dbname: read.dbname };
 }
 
 const withoutPython = skipWithout("python3");
@@ -280,9 +264,11 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
 describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own database", () => {
   const database = "ppd_7_head_1_1";
   // Each row is a DSN the guard takes, the connection string the function answers with, and the
-  // host libpq reads from that string. The first two hold a `?` inside the user name, where
-  // libpq starts no query, and the third's text ends in a `?`: a `?dbname=` or `&dbname=`
-  // appended to the text of any of the three names another database or parses no more.
+  // host the DSN names. The first two hold a `?` inside the user name, where libpq starts no
+  // query, and the third's text ends in a `?`: a `?dbname=` or `&dbname=` appended to the text
+  // of any of the three names another database or parses no more. The helper reads the string
+  // back with libpq before it prints it, so a row that passes is a string libpq reads as the
+  // DSN's own keywords with this database.
   const rows: [string, string, string][] = [
     [
       "postgres://u?x:p@localhost:5433/db",
@@ -303,9 +289,7 @@ describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own databas
   ];
   for (const [dsn, string, host] of rows) {
     test(`${dsn} is rewritten to that database on ${host}`, () => {
-      const answer = rewrite(dsn, database);
-      expect(answer).toEqual({ code: 0, url: string, refusal: "" });
-      expect(reads(answer.url)).toEqual({ host, dbname: database });
+      expect(rewrite(dsn, database)).toEqual({ code: 0, url: string, refusal: "" });
     });
   }
 
@@ -316,6 +300,32 @@ describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own databas
     expect(answer.refusal).toBe(
       `${variable} must name 127.0.0.1, localhost or ::1: libpq reads the host db.prod.example,` +
         ` and ${what}`
+    );
+  });
+
+  // libpq decodes a percent sign, so each of these two reaches the rewrite as a password the
+  // rebuilt string cannot carry: the first as bytes that are no UTF-8 text, which a decode that
+  // replaces them would change before psql ever saw them, and the second as a line break, which
+  // a caller's configuration file reads as the end of the value.
+  test("a password libpq reads as no UTF-8 text is refused by its keyword", () => {
+    const answer = rewrite("postgres://u:p%ffq@localhost/db", database);
+    expect(answer.code).toBe(1);
+    expect(answer.url).toBe("");
+    expect(answer.refusal).toBe(
+      `${variable} gives password bytes libpq reads as no UTF-8 text: this helper writes every` +
+        " value the DSN sets back into a connection string, a byte it cannot read it cannot" +
+        " write back, and this refusal prints no value"
+    );
+  });
+
+  test("a percent-encoded newline in the password is refused by its keyword", () => {
+    const answer = rewrite("postgres://u:p%0aq@localhost/db", database);
+    expect(answer.code).toBe(1);
+    expect(answer.url).toBe("");
+    expect(answer.refusal).toBe(
+      `${variable} gives password U+000A, a character that does not print: it reaches the` +
+        " rewritten connection string, where a caller writes that string into a file, and this" +
+        " refusal prints no value that holds one"
     );
   });
 });

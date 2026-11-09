@@ -753,8 +753,6 @@ if [ -n "$needs_dispatch" ]; then
   database=envoy_session_states_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
   psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
     fail "could not create database $database in ENVOY_SESSION_STATES_PG_DSN"
-  # The run's own database as the `dbname=` of a connection string libpq rebuilds from the
-  # caller's DSN and reads back (run_database_url, lib/rig.sh).
   run_database_url database_url ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
     "the run creates and drops a database there"
   psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||

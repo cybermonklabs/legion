@@ -40,12 +40,16 @@
 # Everything the run starts is its own and goes on any exit, by the exact pid it was started as: the
 # nats-server, the listener, Dispatch, the process holding the broken provider's port closed, and
 # every Oh My Pi the driver started (it records each pid in $work/omp.pids). Its database is dropped
-# and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP* or PI_*
-# variable of the caller's shell reaches any process of the run: the rig talks only to its own
-# loopback stack.
+# and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*,
+# PGHOSTADDR, PGSERVICE or PGSERVICEFILE variable of the caller's shell reaches any process of
+# the run: the rig talks only to its own loopback stack.
 set -euo pipefail
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: the three variables a caller of the
+# loopback guard clears, and why, are in scripts/e2e/README.md's lib/loopback-dsn.py section.
 for variable in $(compgen -e); do
-  case $variable in DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_*) unset "$variable" ;; esac
+  case $variable in
+    DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
+  esac
 done
 
 # The provider keys leave the environment before anything starts, so no process of the run inherits
@@ -126,6 +130,14 @@ echo "== setup"
 for tool in go bun jq curl tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
+# Which host the DSN names, read by libpq itself: the driver creates a database there and drops
+# it on any exit, so it must be this machine's. The guard is scripts/e2e/lib/loopback-dsn.py,
+# whose own section of scripts/e2e/README.md says what it reads and what it refuses. It runs
+# after the tool check above, because it is python3 that runs it.
+if ! db_host=$(python3 "$root/scripts/e2e/lib/loopback-dsn.py" \
+  LEGION_TEST_PG_DSN "the run creates and drops a database there" 2>&1); then
+  fail "$db_host"
+fi
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"

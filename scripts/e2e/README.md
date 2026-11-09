@@ -3256,14 +3256,15 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 
 - **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`merged-root-waits.sh`](#merged-root-waitssh).
   The rig creates a database of its own in it and drops it on any exit.
+  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, which it calls before the driver creates that database.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
 - **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.10.22, which the rig installs once with `go install`.
   In an issue pod it installs into `/legion/scratch/bin`, on the issue's volume, and otherwise into the run's own directory.
   The server starts with JetStream on a port the kernel picks, as `merged-root-waits.sh` starts it.
 
-- **No variable of the caller's shell named `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*` or `PI_*` reaches any process of the run.**
-  A Legion pane's own Dispatch, Envoy and profile stay out of it.
+- **No variable of the caller's shell named `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` reaches any process of the run.**
+  A Legion pane's own Dispatch, Envoy and profile stay out of it, and the three `PG` variables stay out of every psql and every client the run starts.
 
 **The model list `picker-refusal` picks from is injected, not reported by the session.**
 The check makes the session refuse a model because it has no key for that model's provider.
@@ -3289,7 +3290,7 @@ Each item below names an input and its default, then what it means.
 
 - `LEGION_TEST_PG_DSN` — required
 
-  a loopback PostgreSQL with pgvector; the run makes and drops its own database there
+  a loopback PostgreSQL with pgvector; the run makes and drops its own database there, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it
 
 - `LEGION_E2E_NATS_BIN` — the pinned `nats-server` v2.10.22, installed as above
 
@@ -4655,7 +4656,7 @@ The role lane falls back to the machine groups, since that grant carries no shar
 
 | input | default | meaning |
 | :--- | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and drops a database of its own |
+| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and drops a database of its own, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it |
 | `SESSION_DELIVERY_MODEL_KEY_FILE` | `/var/run/model-gateway-key/key` | the file holding the sessions' model key, handed to Oh My Pi and Claude Code alone as their `ANTHROPIC_API_KEY` and never printed; the default is where every role pod mounts its model gateway's key |
 | `ANTHROPIC_BASE_URL` | unset | when set, passed to Oh My Pi and Claude Code only, beside the key: a model gateway whose key the key file holds; an issue pod has no Anthropic key of its own; its `ANTHROPIC_BASE_URL` names its model gateway, and `/var/run/model-gateway-key/key` holds that gateway's key |
 | `SESSION_DELIVERY_OMP` | `omp` on `PATH`, else `/opt/omp/bin/omp` | the Oh My Pi to run |
@@ -4665,7 +4666,7 @@ The role lane falls back to the machine groups, since that grant carries no shar
 | `SESSION_DELIVERY_SETTLE_S`, `SESSION_DELIVERY_HOLD_S` | `60`, `15` | the per-window waits above; window e waits 60 s longer, the outbox's claim window |
 | `SESSION_DELIVERY_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `table.txt`, `events.jsonl` (each event's marker, window, kind, the publisher's answer and the expected count), `logs/` (the builds, natsd, both listeners, Dispatch, the proxies and each port's keeper, `keep-<server>.log`), `ports/` (the keepers' port files and sockets) and `sessions/<pi\|cc>/` (each launch's RPC output and stderr, and the transcripts) |
 
-No `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `LEGION_*` or `CLAUDE_*` variable of the caller reaches anything the run starts.
+No `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `LEGION_*`, `CLAUDE_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` variable of the caller reaches anything the run starts.
 `ANTHROPIC_BASE_URL` reaches the sessions alone, and `BUN_INSTALL_CACHE_DIR`, when the caller sets it, reaches `bunx`.
 On any exit the run stops everything it started by the pid it was started as (a session or proxy by its process group, and each keeper after the servers) and drops its database.
 Exit status: 0 pass, or the negative control holds;
@@ -4676,8 +4677,8 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Six proofs call it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names:
-[`plan-pointer-drive.sh`](#plan-pointer-drivesh), `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh` and `envoy-session-states.sh`.
+Eight proofs call it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names:
+[`plan-pointer-drive.sh`](#plan-pointer-drivesh), `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 
 ```sh
 if ! db_host=$(DATABASE_URL=$database_url python3 scripts/e2e/lib/loopback-dsn.py \
@@ -4689,7 +4690,7 @@ fi
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
-Each of the six proofs drops the three with the rest of the environment it does not inherit.
+Each of the eight proofs drops the three before its first connection: seven in the sweep of the environment it does not inherit, and `plan-pointer-drive.sh` in an `unset` of its own.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -4707,18 +4708,20 @@ The string is the keywords libpq reads from the DSN, with DATABASE as `dbname`, 
 It is rebuilt and not appended to.
 A `?dbname=` or `&dbname=` appended to the DSN's own text takes its separator from a `?` that can be inside the user name, where it starts no query, and it breaks a DSN whose text ends in a `?`.
 libpq reads the rebuilt string back before the helper prints it: libpq must read DATABASE as the database, the same host as the DSN names, and every other keyword as the DSN sets it.
-A refusal names the database and the host libpq read.
-`loopback-dsn.py NAME WHAT --read` prints `host=<host>` and `dbname=<database>`, one per line, which is what libpq reads of the DSN.
+Every value reaches that string as libpq decoded it, so this mode also refuses a value that holds a character that does not print: a newline in a password is a line break in a string the caller writes into a file.
+A refusal names the database, the host, and every keyword libpq does not read back as the DSN sets it.
 
-The refusals are a character that does not print in the DSN (`str.isprintable()` is false for the C0 controls, DEL, the C1 controls and the bidirectional format characters), a host, `hostaddr` or `service` holding one after libpq decodes it, a DSN libpq cannot parse, a DSN with no host, a host list of more than one (libpq connects to the next host when the first does not answer), a `hostaddr` parameter, a `service` parameter (whose entry in `~/.pg_service.conf` can set `hostaddr`, which sends the connection to another address), and a host that is none of the three loopback names.
-Each refusal names what libpq read — the host, the hostaddr or the service — and prints no other part of the DSN, because the user name and the password are in it.
-It prints that value only where every character of the value prints, so a refusal is one line and writes no escape sequence to the terminal.
+The refusals are a character that does not print in the DSN (`str.isprintable()` is false for the C0 controls, DEL, the C1 controls and the bidirectional format characters), a keyword whose value libpq reads as no UTF-8 text, a host, `hostaddr` or `service` holding a character that does not print after libpq decodes it, a DSN libpq cannot parse, a DSN with no host, a host list of more than one (libpq connects to the next host when the first does not answer), a `hostaddr` parameter, a `service` parameter (whose entry in `~/.pg_service.conf` can set `hostaddr`, which sends the connection to another address), and a host that is none of the three loopback names.
+Each refusal names what libpq read — the host, the hostaddr or the service, or else the keyword alone — and prints no other part of the DSN, because the user name and the password are in it.
+It prints a value only where every character of the value prints, so a refusal is one line and writes no escape sequence to the terminal.
+A value libpq reads as no UTF-8 text is refused without decoding it: this helper writes every value it reads back into the rebuilt string, and a byte it cannot read it cannot write back, so a decode that replaced that byte would change what psql then authenticates with.
 Where `ctypes.util.find_library("pq")` finds no libpq, every DSN is refused and the refusal names libpq.
 There is no second, weaker check to fall back on.
 
 `loopback-dsn.test.ts` drives the helper with this host's own libpq and asserts the answer it gave, never a pattern of the DSN:
 the DSN a run is given, `localhost` and `::1`, a `host=` parameter, a host name inside the user name, an empty `hostaddr=`, the two forms with a `?` inside the user name, a `%68ost=` key, a Unix-socket directory, a newline before an `&host=`, a percent-encoded newline, a percent-encoded escape sequence and a percent-encoded C1 control in the host, two hosts, a `hostaddr`, a `service`, a remote host, a DSN with no host, a DSN libpq cannot parse, and an unset variable.
-It drives `run_database_url` over four DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, and the DSN a run is given — and reads each answer back through `--read`, so the suite pins the string the rewrite produces and the database and host libpq reads of it.
+It drives `run_database_url` over four DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, and the DSN a run is given — and pins the string the rewrite answers with, which libpq has read back inside the helper.
+Two more cases pin a refusal of that mode: a password of bytes libpq reads as no UTF-8 text, and a percent-encoded newline in a password.
 
 ## lib/held-port.py
 
@@ -5342,8 +5345,7 @@ Each item below names a function, then what it does.
 
   assigns VAR the connection string that names the run's own database DATABASE on the server DSN names, so nothing the run starts writes the database the caller's DSN itself names.
   [`lib/loopback-dsn.py`](#libloopback-dsnpy) rebuilds that string from the keywords libpq reads and reads it back before it prints it, and NAME, the variable the caller read DSN from, starts the refusal a DSN it will not take earns.
-  WHAT is what the run does on that server, in a few words.
-  `plan-pointer-drive.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` call it, once apiece
+  WHAT is what the run does on that server, in a few words
 
 - `start_process NAME CMD…`
 
