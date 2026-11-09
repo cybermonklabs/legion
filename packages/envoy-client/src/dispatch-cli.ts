@@ -564,7 +564,11 @@ export async function runDispatchCli(
           readonly mode: AskgateMode;
           readonly why: string;
           readonly reason: string;
-          readonly advice: { readonly refused: Advice; readonly posted: Advice };
+          /**
+           * `refused` is absent only for `none`, which never refuses: the condition below
+           * fails both halves for it, so an advice object there would be written, never read.
+           */
+          readonly advice: { readonly refused?: Advice; readonly posted: Advice };
         }
       | undefined;
     try {
@@ -716,11 +720,15 @@ export async function runDispatchCli(
                       posted: { lead: LITERAL_FORM, anywhere: "Send the next one in that form." },
                     }
                   : {
+                      // A subagent is held here, and reasoning about its own marker said
+                      // otherwise: `changed` is raised by **any** marker of this argv in the
+                      // store, and a task subagent shares its parent's process and so its
+                      // store. A main agent's bound marker, left behind because a refusal
+                      // consumes nothing, reports the change against every later call of that
+                      // argv, and only a bound marker of its own gets a subagent past it.
                       refused: {
                         lead: SAME_MESSAGE,
-                        // A marker that binds no files never reports a changed one, so a
-                        // subagent is not held here at all and needs no caveat.
-                        anywhere:
+                        viaMarker:
                           "Send the call again in a later message than the one that changes the file.",
                       },
                       posted: {
@@ -758,11 +766,9 @@ export async function runDispatchCli(
                     mode: gate.mode,
                     why: spent.why,
                     reason: `AskGate is on for this session, and ${spent.why}`,
+                    // Nothing holds this write: it posts, and a subagent's posts too, so it
+                    // has no refusal rendering at all.
                     advice: {
-                      refused: {
-                        lead: LITERAL_FORM,
-                        viaMarker: "Send the write again in that form, as a bash call of its own.",
-                      },
                       posted: { lead: LITERAL_FORM, anywhere: "Send the next one in that form." },
                     },
                   };
@@ -782,7 +788,13 @@ export async function runDispatchCli(
     // where the identical bytes in `plan.md` were refused — the same one-shell-word hole, one
     // arm over, reached through a session that had merely lost a verdict. Only `none` and
     // `stale` are dropped for such a call, which leave it exactly as it was.
-    const answered = finding?.verdict === "refused" || finding?.verdict === "unknown";
+    // Everything but `none`. Admitting only `refused` and `unknown` left `stale` to be dropped,
+    // and `stale` outranks `lost` in the chain above — so one expired argv-only marker of that
+    // argv, which the gate mints for every subagent `dispatch` call, turned a held upload back
+    // into a silent post in a session that had lost a verdict. For a call no review would be
+    // asked for, a stale marker is not "the review does not cover this": the call was never
+    // reviewable, so the only answer that leaves it as it was is `none`.
+    const answered = finding !== undefined && finding.verdict !== "none";
     if (finding !== undefined && (reviewed || answered)) {
       // The asks this write would open for a person, counted from the write's own text: the
       // one number pi-envoy's record of an unmarked write carries, so a session holding a
@@ -803,7 +815,7 @@ export async function runDispatchCli(
       // store read whole and holding nothing lets the write out.
       if (finding.verdict === "refused" || (finding.verdict !== "none" && finding.mode === "block"))
         return refuse(
-          `${notCalled} ${finding.reason}. ${advise(finding.advice.refused, true)}`,
+          `${notCalled} ${finding.reason}. ${advise(finding.advice.refused ?? finding.advice.posted, true)}`,
           REFUSED,
           parsed.tool,
           {

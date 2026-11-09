@@ -42,9 +42,12 @@ interface Fixture {
   /** Makes every later review allow, so only the marker it mints decides. */
   readonly allow: () => void;
   /** The gate reading one literal call, as the host would hand it over. */
-  readonly gate: (who: "main" | "sub") => Promise<{ block?: boolean } | undefined>;
+  readonly gate: (
+    who: "main" | "sub",
+    command?: string
+  ) => Promise<{ block?: boolean } | undefined>;
   /** The real CLI, against the fake Dispatch. */
-  readonly cli: () => Promise<{ code: number; out: string; posts: number }>;
+  readonly cli: (argv?: readonly string[]) => Promise<{ code: number; out: string; posts: number }>;
 }
 
 function session(answer: "allow" | "revise" = "revise"): Fixture {
@@ -136,21 +139,21 @@ function session(answer: "allow" | "revise" = "revise"): Fixture {
       verdict = "allow";
     },
     /** The gate reading one literal call, as the host would hand it over. */
-    gate: (who: "main" | "sub") =>
+    gate: (who: "main" | "sub", command: string = COMMAND) =>
       handlers.get("tool_call")?.(
         {
           type: "tool_call",
           toolName: "bash",
           toolCallId: `t-${Math.random()}`,
-          input: { command: COMMAND },
+          input: { command },
         },
         who === "main" ? main : sub
       ) as Promise<{ block?: boolean } | undefined>,
     /** The real CLI, against the fake Dispatch. */
-    cli: async () => {
+    cli: async (argv: readonly string[] = BASE) => {
       let out = "";
       const before = sent.length;
-      const code = await runDispatchCli(BASE, env, {
+      const code = await runDispatchCli([...argv], env, {
         stdout: (text: string) => {
           out += text;
         },
@@ -166,10 +169,14 @@ function session(answer: "allow" | "revise" = "revise"): Fixture {
 }
 
 /** The advice, followed: the gate reads the resend, then the CLI runs the same argv. */
-async function resend(s: Fixture, who: "main" | "sub") {
-  const hook = await s.gate(who);
+async function resend(
+  s: Fixture,
+  who: "main" | "sub",
+  call: { command: string; argv: readonly string[] } = { command: COMMAND, argv: BASE }
+) {
+  const hook = await s.gate(who, call.command);
   if (hook?.block === true) return { code: 1, out: "held at the gate", posts: 0 };
-  return s.cli();
+  return s.cli(call.argv);
 }
 
 describe("every remedy the CLI prints, followed", () => {
@@ -182,6 +189,8 @@ describe("every remedy the CLI prints, followed", () => {
   const states: Array<{
     readonly name: string;
     readonly arrange: (s: Fixture) => void;
+    /** The call this state is reached by, where it is not the default one. */
+    readonly call?: (s: Fixture) => { command: string; argv: readonly string[] };
     readonly repair?: (s: Fixture) => void;
     /** Whether the state holds the write at all; `false` means it posts with a warning. */
     readonly holds: boolean;
@@ -279,24 +288,34 @@ describe("every remedy the CLI prints, followed", () => {
       holds: false,
     },
     {
+      // Reached only by running the argv the marker is keyed to: minting under one argv and
+      // running another leaves `consumeMarker` never opening the marker, so the row printed
+      // the previous row's message byte for byte and passed because both posted.
       name: "a file changed after the review",
+      call: () => ({
+        command: "dispatch comment --issue DSP-1 --body-file body.md",
+        argv: ["comment", "--issue", "DSP-1", "--body-file", "body.md"],
+      }),
       arrange: (s) => {
         clearVerdict(s.dir(), identity());
-        const body = join(s.work, "body.md");
-        writeFileSync(body, "reviewed");
+        // The argv the CLI runs, word for word: the marker is keyed by those words, and an
+        // absolute path here against a relative one there is a different key.
+        writeFileSync(join(s.work, "body.md"), "reviewed");
         mintMarker(
           s.store,
           {
-            argv: ["comment", "--issue", "DSP-1", "--body-file", body],
+            argv: ["comment", "--issue", "DSP-1", "--body-file", "body.md"],
             args: { issue: "DSP-1", body: "reviewed" },
-            files: [{ flag: "--body-file", operand: body, sha256: "0".repeat(64) }],
+            // A digest of bytes the file no longer holds, which is the state: AskGate read it
+            // before the change.
+            files: [{ flag: "--body-file", operand: "body.md", sha256: "0".repeat(64) }],
             toolCallId: "x",
             outcome: "verdict",
           },
           Date.now()
         );
       },
-      holds: false,
+      holds: true,
     },
   ];
 
@@ -305,29 +324,37 @@ describe("every remedy the CLI prints, followed", () => {
   // Asserting the caveat is simply *present* is what let it spread to four states where it is
   // false — including the unreviewed-post warning, which tells the population this change
   // exists to unblock to route every write through its parent.
-  for (const { name, arrange, repair, holds } of states) {
+  for (const { name, arrange, repair, holds, call } of states) {
     test(`${name}: the caveat is there exactly where a subagent's resend is refused`, async () => {
-      const s = session();
-      try {
-        expect((await s.gate("main"))?.block).toBe(true);
-        expect(readVerdict(s.dir(), identity()).kind).toBe("refused");
-        arrange(s);
-        const printed = await s.cli();
-        expect({ name, holds: printed.code === 1 }).toEqual({ name, holds });
-        const caveat = printed.out.includes("a task subagent's literal write");
-        repair?.(s);
-        // From here the review allows, so only what the resend's marker binds decides.
-        s.allow();
-        const again = await resend(s, "sub");
-        expect({ name, caveat, refused: again.posts === 0 }).toEqual({
-          name,
-          caveat: again.posts === 0,
-          refused: again.posts === 0,
-        });
-      } finally {
-        s.stop();
-      }
-    }, 30_000);
+      // A fresh session per agent kind. Running main first in one session repairs some states
+      // under the subagent that follows — `no verdict capability` among them — so a shared
+      // session can hide a real refusal behind an ordering.
+      const followed = async (who: "main" | "sub") => {
+        const s = session();
+        try {
+          expect((await s.gate("main"))?.block).toBe(true);
+          expect(readVerdict(s.dir(), identity()).kind).toBe("refused");
+          arrange(s);
+          const made = call?.(s) ?? { command: COMMAND, argv: BASE };
+          const printed = await s.cli(made.argv);
+          expect({ name, who, holds: printed.code === 1 }).toEqual({ name, who, holds });
+          const caveat = printed.out.includes("a task subagent's literal write");
+          repair?.(s);
+          // From here the review allows, so only what the resend's marker binds decides.
+          s.allow();
+          const again = await resend(s, who, made);
+          return { caveat, posted: again.posts === 1 };
+        } finally {
+          s.stop();
+        }
+      };
+      // The main agent's resend is reviewed afresh and gets a bound marker, so it posts from
+      // every one of these states; that is the control that makes the subagent row mean
+      // something.
+      expect({ name, main: (await followed("main")).posted }).toEqual({ name, main: true });
+      const sub = await followed("sub");
+      expect({ name, caveat: sub.caveat }).toEqual({ name, caveat: !sub.posted });
+    }, 60_000);
   }
 
   // The one state no resend clears, for either kind, and the reason it is worse than a refusal:

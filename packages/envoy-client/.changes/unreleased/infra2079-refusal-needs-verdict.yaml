@@ -60,7 +60,10 @@ body: |-
   other, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
   argv-only marker and an argv-only marker answers no uncertainty. Advice is a lead and an
   optional resend clause, and the renderer appends that caveat to any advice carrying one, so a
-  refusal added later cannot describe a resend a subagent cannot make. A message announcing that
+  refusal added later cannot describe a resend a subagent cannot make. A changed file is one of
+  those: `consumeMarker` reads every marker of that argv in the store, and a task subagent
+  shares its parent's, so a bound marker the parent left behind reports the change against the
+  subagent's call and only a bound marker of its own would get it past. A message announcing that
   the write posted never carries it, since nothing was refused and the resend it would forbid is
   the one that works; nor does a clause that works whatever ran the call, such as sending a
   corrected write, or resending after the advice's own repair has removed the unreadable marker. The record-recovery
