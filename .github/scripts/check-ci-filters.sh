@@ -278,11 +278,11 @@
 #      declares its filters in two paths-filter steps rather than one, and this rule is what
 #      keeps the next filter from growing one of
 #      them back over the cap: it fails here, on the pull request that writes it, rather than
-#      on a runner. The margin is a quarter of the cap, and what each step measures against it
-#      is printed by the run that writes them, so no size is kept here either; the 14 bytes of
-#      `INPUT_FILTERS=` the kernel counts beside the value are many times over inside that
-#      margin. Every rule above reads the filters of all those steps as
-#      one set, since that is what the job's outputs hand on; a group an anchor names that
+#      on a runner. The margin is a quarter of the cap. No step's size is kept here, since every
+#      filter edit moves it, and the check prints a size only in the refusal of a step that
+#      reaches the margin; the 14 bytes of `INPUT_FILTERS=` the kernel counts beside the value
+#      are many times over inside that margin. Every rule above reads the filters of all those
+#      steps as one set, since that is what the job's outputs hand on; a group an anchor names that
 #      filters of both steps share is written out in both, because a YAML anchor reaches no
 #      further than the string it is in, and the two copies must be the same patterns under the
 #      same quantifier or this rule's own refusal names both steps,

@@ -141,11 +141,13 @@ itself, whose tests import its sources by relative path.
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
   cache that exists to be shared by both languages and either fills for the other. The Go build and
-  module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane`
+  module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
-  `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed
-  `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
-  scripts/e2e/lib` (`.github/workflows/ci.yaml`). The condition is the rename: `fillNativesCache` in
+  `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
+  `go-daemon-<runner os>-go<version>`, before it runs that scenario
+  (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
+  there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
+  suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in
   `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
   directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
@@ -223,12 +225,14 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test
-job now runs it only under the race detector, in its race step, once per job; the plain step
-("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still
-compiles it without the detector. On CI's runners, while the plain step still ran it, it took
-at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
-733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
+`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
+detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+figures below were measured while these steps were the `test` job's. On CI's runners, while the
+plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
+2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
+125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
 job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it

@@ -544,9 +544,9 @@ def flatten(value) -> list:
 # Rule 18's numbers. Linux caps one environment variable's whole `NAME=value` string at
 # MAX_ARG_STRLEN, 131,072 bytes, and Actions hands a step's `filters` input to the action as
 # INPUT_FILTERS, so a filters string near that is a `changes` job that cannot start at all.
-# The margin is a quarter of the cap: what each step of ci.yaml measures against it is printed
-# by the run that writes the blocks rather than kept here, where every filter edit would move
-# it, and the 14 bytes of the `INPUT_FILTERS=` the kernel counts beside the value are inside
+# The margin is a quarter of the cap. No step's size is kept here, since every filter edit
+# would move it, and the check prints a size only in the refusal of a step that reaches the
+# margin; the 14 bytes of the `INPUT_FILTERS=` the kernel counts beside the value are inside
 # that margin many times over.
 ARG_STRLEN = 131072
 FILTERS_MARGIN = 32768
