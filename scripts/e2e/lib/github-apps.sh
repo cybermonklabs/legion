@@ -34,7 +34,8 @@
 #                                      stdout to the run's own key file. The input itself may
 #                                      hold a key even so — a one-line `printf` of a PEM is a
 #                                      command, and runs — so it is in app_key_unsets, and no
-#                                      process the run starts inherits it.
+#                                      process a proof starts with that list (the listener,
+#                                      Dispatch, the daemon, the bridge) inherits it.
 # LEGION_E2E_REVIEW_APP_SECRET is retired, and a run that still exports it is refused when the
 # review role is read: that App's tokens no longer come from the broker.
 # write_github_apps writes the `github_apps` block of legion.yaml from them, one credential field
@@ -154,12 +155,14 @@ require_app_inputs() {
       # itself where its command goes and takes every other value: one that is a PEM, one that is
       # base64 of a PEM, and one with three or more lines that are 40 or more base64 characters
       # alone. Each test reads its text with the whitespace, the surrounding quotes and a leading
-      # byte-order mark taken out, and the line test a leading `>` as well, so an indented paste,
+      # byte-order mark taken out, and the line test one leading `>` as well, so an indented paste,
       # a quoted one, one a mail client quoted line by line, one behind a mark an editor left and
       # a key wrapped at the 76 columns base64 prints by default are the same value here. The `>`
       # earns its own strip: `sh` reads a line that starts with one as a redirection and creates
       # an empty file named after the line in the working directory, so a quoted paste is turned
-      # back here rather than written to disk under names no relay can mask.
+      # back here rather than written to disk under names no relay can mask. One `>` is taken off,
+      # not every one: a paste quoted twice (`>> ` before each line) still starts each line with a
+      # `>` here, is taken, and writes its lines to disk the same way.
       # A command that names a PEM marker is still a command (`awk '/-----BEGIN/,/-----END/'
       # <file>`), and so is one carrying a long base64 word: a PEM body line is 64 base64
       # characters and a base64 line 76, and no realistic command has three such lines. A paste
@@ -355,17 +358,20 @@ app_token_redact() {
 # body line is 4*ceil((DER length mod 48)/3) characters, so a key whose DER length leaves 12 bytes
 # or fewer in its last group ends in a line of 16 characters or fewer, which this relay passes.
 # Measured, the RSA-2048 keys GitHub issues end in 24 characters (PKCS#8) to 56 (PKCS#1), RSA-3072
-# the same, RSA-4096 32 and 60, an EC P-256 key 36, and an RSA-1024 PKCS#8 key ended in 12; a key
-# of its own carries a DER length of its own, which moves each of these a few characters. A key
-# re-wrapped below 20 columns, or broken up every 16 characters, passes line by line for the same
-# reason. A fragment that short rebuilds no key, and the bound stays at 20 rather than dropping
-# lower, where the mask would take the ordinary words of a message instead.
+# the same, RSA-4096 32 and 60, an EC P-256 key 36 (SEC1) or 56 (PKCS#8), and RSA-1024 PKCS#8 keys
+# ended in 12 and in 16; a key of its own carries a DER length of its own, which moves each of
+# these a few characters. A key re-wrapped below 20 columns, or broken up every 16 characters,
+# passes line by line for the same reason. A fragment that short rebuilds no key, and the bound
+# stays at 20 rather than dropping lower, where the mask would take the ordinary words of a message
+# instead.
 #
 # The armour goes first, in one gsub: no other rule here can match a `-`, so no match of theirs
 # overlaps one of its. What is left is walked by its runs of credential characters — one split for
 # the runs, one for the text between them, which together are the line — so the work is linear in
-# the line's length rather than quadratic in it, and a run holding no `_` is one base64 run and is
-# judged whole. The lengths are counted rather than written as regex bounds: mawk, which is awk on
+# the line's length for every run holding no `_`, which is one base64 run and is judged whole. A
+# run holding a `_` is walked match by match for the token forms in it, which is quadratic in that
+# run's length; the 1 MiB bound on the stream caps it, at minutes for one megabyte-long run of
+# `a_`. The lengths are counted rather than written as regex bounds: mawk, which is awk on
 # a Debian devbox, matches a bracket range followed by {n,} as though the bound were a `+`.
 app_token_redact_key() {
   LC_ALL=C awk '

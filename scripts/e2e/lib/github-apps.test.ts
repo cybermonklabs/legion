@@ -1347,7 +1347,7 @@ echo minted`
     expect(minted.stderr.split("\n")).toContain(approval);
     holdsNoToken(minted.stdout + minted.stderr);
     // The key command's own stderr is the other channel, the one a key can be pasted into, and
-    // there the same run of characters is masked.
+    // there a key's body line is masked.
     const body = reviewKey.trimEnd().split("\n")[1];
     const relayed = await githubApps(
       { ...appInputs, PASTED: `printf '%s\\n' '${body}' >&2; exit 7` },
