@@ -317,9 +317,10 @@
 #      function is no refusal: the call is counted once, the budget is judged against that one
 #      figure, and a step whose real cost is several ladders passes. Each shape below was
 #      driven at 398ee1e88c83 in a scratch tree as a step around a 300 s call, and each is
-#      priced under its real cost; none of them is in this tree: review round 3 of
-#      dispatch://INFRA-1545 read every step and every script of it with this check's own
-#      parser and found no instance.
+#      priced under its real cost. Every one but the last is absent from this tree: review
+#      round 3 of dispatch://INFRA-1545 read every step and every script of it with this
+#      check's own parser and found no instance of them. The last one this tree does hold,
+#      and the steps it reaches carry budgets written by hand, as that entry says.
 #
 #        * two loops written on one line: a loop is keyed by the line it sits on, so only one
 #          of them is read. In a sequence the later loop's count prices a call in the earlier
@@ -347,6 +348,18 @@
 #        * one script that two of a step's paths reach, counted once, because the `seen` set
 #          is shared across a step's scripts. That set exists to stop a cycle, and this is the
 #          same mechanism read from the other side.
+#        * a call of a function that a sourced file defines, which is read as a call of that
+#          function and never as a call of the file defining it. A step that sources
+#          .github/scripts/ci-tools.sh is charged that file's sites once, however many times
+#          it then calls ci_tools_fetch, and a loop around such a call multiplies nothing:
+#          the loop is read, and what it would multiply is a site of the sourced file, which
+#          this check has already counted for the step. .github/scripts/ci-tools-proof.sh's
+#          `stage` is this tree's instance — its loop over STAGED_ROWS calls ci_tools_fetch
+#          once per row, and those five rows make twelve ladders where this rule prices
+#          three — so ci.yaml's staging step and the ceiling of the job holding it carry
+#          budgets derived by hand beside the figure this rule puts on them. ci.yaml's read
+#          of every mirrored row's blob, a loop of ci_tools_curl_status calls, writes its own
+#          sum out for the same reason.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
@@ -1547,7 +1560,7 @@ def one_call(site: Site) -> int | None:
     that retries nothing, and a loop whose passes this check cannot read around a call of it
     was dropped rather than refused. uncounted_of below asks the same of a site written in the
     body itself: it keeps the sites answering None, which are waits of unread length, and
-    drops the ones answering 0, which are waits of no length at all (R8)."""
+    drops the ones answering 0, which are waits of no length at all (review round 8 of dispatch://INFRA-1545)."""
     if site.silent:
         return 0
     if site.retry == "retry_fetch":
@@ -1666,15 +1679,15 @@ def carried(call: Call, cost: int | None) -> int | None:
 
     A script that costs nothing costs nothing however often it is run, so a call of it answers
     0 even where the loops around that call are ones this check cannot count: the figure those
-    passes would multiply is zero either way (dispatch://INFRA-1545, R5).
+    passes would multiply is zero either way (review round 5 of dispatch://INFRA-1545).
 
     What that line does today is keep a priced script priced. A script holding a 450 s ladder
     and, beside it, a loop this check cannot count around a costless script of its own keeps
     its 450 s and is held under the budget of the step running it; without the line the
     costless call would answer None, the whole script's arithmetic with it, and that step
-    would be compared with nothing and pass in silence. The shape R5 wrote it for — a loop
+    would be compared with nothing and pass in silence. The shape review round 5 wrote it for — a loop
     this check cannot count around a script that only calls a costless script — is answered by
-    waits_for_nothing below as well, which drops the item rather than pricing it (R6)."""
+    waits_for_nothing below as well, which drops the item rather than pricing it (review round 6 of dispatch://INFRA-1545)."""
     if cost == 0:
         return 0
     if cost is None or call.factor is None:
@@ -1811,8 +1824,8 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
     either, so both halves of the step's wait are unreadable; with the passes read it is still
     one wait nobody can price, and pricing it at 0 is what let every tool install of
     .github/scripts/ci-tools.sh sit under a budget of one minute (review round 8 of dispatch://INFRA-1545
-    and R9). Dropping it inside a loop priced the step's whole wait at 0 and refused nobody
-    for it (R8). A site rule 4 refuses for writing no bound at all is left to rule 4, which
+    and review round 9 of dispatch://INFRA-1545). Dropping it inside a loop priced the step's whole wait at 0 and refused nobody
+    for it (review round 8 of dispatch://INFRA-1545). A site rule 4 refuses for writing no bound at all is left to rule 4, which
     is the bound_written question above: what rule 8 would ask its author for is the figure
     rule 4 is already asking them to write. The refusals below read the kind field, not
     `one`, to tell these items from blocked_calls's script calls, so a None written here
@@ -1964,11 +1977,6 @@ EXEMPTIONS = [
               "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
-    # Exception (c)'s entry stood here, for the apt phase of
-    # .github/scripts/playwright-install.sh, and went with that file
-    # (cybermonklabs/legion#2938). A script site is read with no job and no step, which is
-    # what an entry for one has to say of itself: the call at the `for path in scripts:` loop
-    # below passes job=None and step=None.
 ]
 
 
@@ -2110,18 +2118,12 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "with a release asset of its own makes: the asset, then the anonymous "
                        "pull token and then the blob of the copy (ci_tools_fetch, "
                        "ci_tools_ghcr_token, ci_tools__fetch_ghcr). What one of those ladders "
-                       "costs is decided by `--retry-max-time 120`, which this file writes "
-                       "beside `--retry 7`, and the two faults cost differently under it. "
-                       "Against a host that answers at once the attempts themselves take no "
-                       "time, so the ladder's eight are all made and the whole of it is its "
-                       "waits, 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. Against a host that "
-                       "accepts and then sends nothing every attempt spends the whole "
-                       "`max_time: 60` every row of .github/ci-tools.yaml carries, so the "
-                       "ladder's timer passes two minutes inside the third attempt and curl "
-                       "starts no attempt after the fourth: at most 4 x 60 s of attempts and "
-                       "the 1, 2 and 4 s waits between them, 247 s, which is the shape run "
-                       "42573254973's job 129015393389 read at 258 s for two of these ladders "
-                       "and a 10 s probe. 247 s is the larger of the two, and 3 x 247 = 741 s. "
+                       "costs is decided by `--retry-max-time 120`, which that file writes "
+                       "beside `--retry 7`, and its own block on that option is where the "
+                       "per-ladder ceiling is derived: a mixture of quick failures and one "
+                       "stalled attempt is the expensive shape, and 247 s is the ceiling it "
+                       "reaches. This entry reads that figure rather than deriving it again, "
+                       "and 3 x 247 = 741 s. "
                        "One figure cannot be true of every caller of one helper, and this one "
                        "is written for the worst of the installs: .github/actions/install-crane "
                        "and .github/actions/install-changie each fetch such a row, and "
@@ -2129,11 +2131,17 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "way. A row whose `primary` is empty costs the second source alone - "
                        "2 x 247 = 494 s for the jj row's token and blob, and one npm tarball, "
                        "247 s, for a bun row - and a step that sources this file twice is "
-                       "charged this figure twice, so those callers are over-priced rather "
-                       "than under-priced. The caller this figure is under is "
-                       ".github/scripts/mirror-ci-tools.sh, which makes nine of these requests "
-                       "for each ghcr-mirror row it fills; ci.yaml's ci-images job writes that "
-                       "run out and says there why its ceiling does not carry it"),
+                       "charged this figure twice, so an install of one row is over-priced. "
+                       "Two callers are under-priced, and this figure is written knowing it. "
+                       ".github/scripts/mirror-ci-tools.sh makes nine of these requests for "
+                       "each ghcr-mirror row it fills; ci.yaml's ci-images job writes that "
+                       "run out and says there why its ceiling does not carry it. "
+                       ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch once "
+                       "per row of its STAGED_ROWS, which is a call of a function this file "
+                       "defines and not a call of this file, so the loop around it multiplies "
+                       "nothing (WHAT IT COUNTS ONCE OR MISCOUNTS, in rule 8 above): the "
+                       "twelve ladders those five rows make are budgeted by hand on ci.yaml's "
+                       "staging step, which derives them from this entry's figures"),
 ]
 
 
@@ -2692,12 +2700,13 @@ def waits_for_nothing(item: Uncounted) -> bool:
     It is asked of every script the item's script reaches, too, and not of that one body: a
     loop around a script that loops, uncounted, over a costless script holds no attempt
     either, and reading only the first body left that shape refused with the `0 s` sentence
-    R5 wrote this filter to retire (R6).
+    review round 5 wrote this filter to retire (review round 6 of dispatch://INFRA-1545).
 
     Rule 8 exists to compare a step's budget with the attempts it waits for. A loop around a
     script that makes none is a loop with no attempt under it, so there is nothing to compare
     and no pass count to ask the author for: refusing it told a step holding no retry to write
-    one, and the refusal priced the run it was refusing at `0 s` (dispatch://INFRA-1545, R5).
+    one, and the refusal priced the run it was refusing at `0 s` (review round 5 of
+    dispatch://INFRA-1545).
 
     The item is recognised by its kind and not by `one is None`. That inference read a site
     whose bound is written as a variable as one of blocked_calls's script calls, and then
@@ -2791,7 +2800,7 @@ for budget in budgets:
         # bounds the attempt where this check cannot read the bound. Then both halves of what
         # the step waits for are unread — what one call takes, and how many calls the loop
         # makes — so no number is printed for it either. Its advice is a site's all the same,
-        # because the verb is there for a declaration to name (R8).
+        # because the verb is there for a declaration to name (review round 8 of dispatch://INFRA-1545).
         script_call = blocking[0].kind == UNCOUNTED_SCRIPT_CALL
         unread_bound = not script_call and blocking[0].one is None
         one = (script_arithmetic(blocking[0].what, set()) if script_call
@@ -2839,7 +2848,7 @@ for budget in budgets:
             # this site whole, as it answers the ordinary one: arithmetic_of asks
             # DECLARED_LOOPS for the seconds of a site one_call puts no figure on, before it
             # answers anything else about it, so an entry pointed here is counted and the
-            # site is priced at that entry's figure (R9).
+            # site is priced at that entry's figure (review round 9 of dispatch://INFRA-1545).
             instead = (
                 "write that bound as a number, which is the figure this check multiplies by "
                 "the passes it reads, or declare that site in DECLARED_LOOPS in "

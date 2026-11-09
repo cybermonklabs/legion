@@ -11,9 +11,18 @@
     "its evidence directory (empty where it takes none and keeps its work directory instead), and",
     "`timeout_minutes` the job's limit: the script's own measured duration with headroom, as its",
     "header gives it, plus the retry arithmetic of the slowest retried step the row selects, as",
-    "ci.yaml's Budgets note sets it out. A row with `apt` carries the apt steps' 625 + 775 = 1400 s,",
-    "and every row carries install-jj's 607 + 450 = 1057 s, so a budget under them would cut a retry",
-    "part way rather than let the step fail naming itself."
+    "ci.yaml's Budgets note sets it out. Which retried step that is, is the row's own: a row",
+    "whose `jj` is true carries install-jj's two `ci_tools_curl` ladders and its `mise install`",
+    "of the jj release, 1482 + 450 = 1932 s; a row whose `jj` is false and whose `bun` is true",
+    "carries setup-bun's two `ci_tools_curl` ladders, 2 x 741 = 1482 s; and a row with neither,",
+    "which is a row carrying `apt` alone, carries the apt steps' 625 + 775 = 1400 s. The",
+    "workspace install a `bun` row also runs, 5 x 180 + 150 = 1050 s, is under all three, so it",
+    "sizes no row. Each figure is the one e2e.yaml writes beside that step's own",
+    "`timeout-minutes`. A budget under the step its row selects would cut a retry part way",
+    "rather than let the step fail naming itself, and .github/scripts/check-download-retry.sh's",
+    "rule 8 cannot say so for these rows: the proof job's limit is the expression",
+    "`matrix.timeout_minutes`, which that check reads no number out of, so every row here is",
+    "derived by hand and moves when one of those steps is re-priced."
   ],
   "hosted": [
     {
@@ -22,7 +31,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
-      "timeout_minutes": 43,
+      "timeout_minutes": 58,
       "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
@@ -32,7 +41,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "CI_RED_NO_TAKEOVER_EVIDENCE_DIR",
-      "timeout_minutes": 43,
+      "timeout_minutes": 58,
       "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/ci-red-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -42,7 +51,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 49,
+      "timeout_minutes": 50,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     },
@@ -52,7 +61,7 @@
       "apt": [],
       "bun": true,
       "evidence_variable": "HANDOFF_RECORDS_EVIDENCE_DIR",
-      "timeout_minutes": 43,
+      "timeout_minutes": 58,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install) and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/handoff-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to four minutes",
       "jj": true
     },
@@ -62,7 +71,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "MERGED_ROOT_WAITS_EVIDENCE_DIR",
-      "timeout_minutes": 43,
+      "timeout_minutes": 58,
       "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merged-root-waits.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
@@ -72,7 +81,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "NO_REQUIRED_CHECKS_EVIDENCE_DIR",
-      "timeout_minutes": 48,
+      "timeout_minutes": 63,
       "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/no-required-checks.sh; the proof waits for three reads of what each base requires, so a run takes about seven minutes",
       "jj": true
     },
@@ -92,7 +101,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 44,
+      "timeout_minutes": 45,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     }

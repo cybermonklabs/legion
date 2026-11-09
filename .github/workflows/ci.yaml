@@ -148,10 +148,10 @@ name: CI
 # `ci_tools_curl` passes `--max-time "$max_time"`, the manifest row's own field, so one call
 # of it is priced by the DeclaredArithmetic entry for .github/scripts/ci-tools.sh `curl` in
 # DECLARED_LOOPS of .github/scripts/check-download-retry.sh. That entry writes 741 s and
-# derives it there: three ladders — the release asset, then the ghcr token and the blob — of
-# at most 4 x 60 + 7 = 247 s each, since the `--retry-max-time 120` that file writes lets curl
-# start no attempt after the fourth against a host that spends every attempt's whole
-# `max_time: 60`. A reader checks that arithmetic in the entry; no site below repeats it.
+# derives it there as three ladders — the release asset, then the ghcr token and the blob —
+# each priced at the ceiling .github/scripts/ci-tools.sh's own `--retry-max-time` block
+# derives, which is the one place that per-ladder figure is worked out. A reader checks the
+# arithmetic in those two places; no site below repeats either.
 #
 # Two terms follow from that one, and every step below that holds one names which it holds and
 # its sum rather than deriving either again. A `uses:` step of an action that sources the
@@ -2570,12 +2570,13 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the header's Budgets note): 1500 s, the 25 minutes this job carried once the tool
     # copy joined the image copy, above its 25 s measured maximum of the image half alone, plus
-    # its slowest retried step alone — the image copy step, whose mirror-ci-images.sh makes two
-    # `crane config` ladders at 5 x 60 + 150 = 450 s each, a `crane copy` at 5 x 300 + 150 =
-    # 1650 s and a `crane digest` at 450 s, 3000 s together, above install-crane's one
-    # `ci_tools_curl` ladder of 741 s and above the ci-ok report's 600 s. 3000 s is a whole
-    # number of minutes, so that step's own budget takes one more and this job takes it too.
-    # 1500 + 3060 = 4560 s -> 76 min.
+    # its slowest retried step alone — the package read, whose check-ci-images.sh asks ghcr.io
+    # for a pull token, for one manifest HEAD per row and for the recipe label of the one
+    # `built` row, 300 + 4200 + 750 = 5250 s, as that step's own comment derives it. That is
+    # above the image copy step, whose mirror-ci-images.sh makes two `crane config` ladders at
+    # 5 x 60 + 150 = 450 s each, a `crane copy` at 5 x 300 + 150 = 1650 s and a `crane digest`
+    # at 450 s, 3000 s together; above install-crane's one `ci_tools_curl` ladder of 741 s; and
+    # above the ci-ok report's 600 s. 1500 + 5250 = 6750 s -> 113 min.
     #
     # The tool copy step is the one term left out of that sum, and it is named here rather
     # than left for a reader to miss. Every request .github/scripts/mirror-ci-tools.sh makes
@@ -2583,7 +2584,7 @@ jobs:
     # against a package that accepts the connection and then sends nothing that ladder is the
     # four attempts `--retry-max-time 120` leaves it, with the 1, 2 and 4 s waits between
     # them: 4 x 30 + 7 = 127 s for the requests that carry no asset bytes, and
-    # 4 x 60 + 7 = 247 s at the `max_time` of 60 every row of .github/ci-tools.yaml carries.
+    # the per-ladder ceiling .github/scripts/ci-tools.sh's `--retry-max-time` block derives.
     # Those are the readings the DECLARED_LOOPS entry named below derives, and this paragraph
     # writes no third one. A ghcr-mirror row this run fills costs nine requests — the two
     # HEADs that read its state, the asset, the layer's POST and PUT, the config's POST and
@@ -2594,7 +2595,7 @@ jobs:
     # run in which the
     # package answers no request of four rows until every ladder is exhausted — an outage of
     # the package this job has to fail in rather than wait out, since the copy it fills is
-    # this repository's own. So the ceiling stays at the image copy's.
+    # this repository's own. So the ceiling carries no term for that step.
     # What a run that does exhaust those ladders ends on is that step's own budget, and that
     # budget is the figure .github/scripts/check-download-retry.sh prices rather than the sum
     # above: the ladder's per-attempt bound is the row's `max_time`, a variable it cannot
@@ -2637,7 +2638,22 @@ jobs:
         timeout-minutes: 51
         run: .github/scripts/mirror-ci-images.sh
 
+      # Its own retry arithmetic, which is the script's: the package mode of
+      # .github/scripts/check-ci-images.sh retries each read of ghcr.io five times, with the
+      # 10, 20, 40 and 80 s waits its own RETRY_WAITS holds, so the fifth attempt starts 150 s
+      # after the first. It makes three kinds of read. The anonymous pull token, bounded at
+      # 30 s an attempt, is 5 x 30 + 150 = 300 s. One manifest HEAD per row of
+      # .github/ci-images.yaml carries the same bound, 300 s each, and that file holds 14
+      # rows: 4200 s. The `crane config` that reads a `built` row's recipe label is bounded at
+      # 120 s an attempt, 5 x 120 + 150 = 750 s, and runs for each `built` row the package
+      # holds, of which that file has one. 300 + 4200 + 750 = 5250 s -> 88 min, and the row
+      # count is what moves it.
+      # .github/scripts/check-download-retry.sh prices none of this: those reads are urllib's
+      # and subprocess's, inside the Python that shell script runs, and that check reads a
+      # fetch out of shell and not out of Python. So this budget and the job's ceiling above
+      # are written here by hand.
       - name: Check the package holds every row of .github/ci-images.yaml
+        timeout-minutes: 88
         run: .github/scripts/check-ci-images.sh package
 
       # The figure rule 8 prices for this step, and not what a cold fill of four rows costs:
@@ -2711,7 +2727,12 @@ jobs:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Budget (the header's Budgets note): 2700 s, the 45 minutes this job carried, plus its
+    # slowest retried step alone — the staging step, whose twelve `ci_tools_curl` ladders are
+    # 2964 s, as that step's own comment derives them, above install-jj's
+    # 1482 + 450 = 1932 s, either setup-bun step's 1482 s, the blob read's 755 s and the ci-ok
+    # report's 600 s. 2700 + 2964 = 5664 s -> 95 min.
+    timeout-minutes: 95
     # contents: read is the two checkouts'; actions: read and checks: write are the
     # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
     # so this job needs no packages scope at all.
@@ -2743,8 +2764,17 @@ jobs:
       # exists to survive and a red ci-ok during that outage helps nobody. Here a cold row is a
       # refusal, because this job records a pass for a fallback it drove, and a pass recorded for
       # a row whose second source does not exist yet is a pass for nothing.
-      # One `ci_tools_curl` ladder, 741 s, from the .github/scripts/ci-tools.sh this step
-      # sources (the header's Budgets note) -> 13 min.
+      # Its own retry arithmetic, read off the loop below rather than taken as one ladder: the
+      # anonymous pull token, at the 60 s an attempt .github/scripts/ci-tools.sh's token
+      # helper defaults to, 247 s; and one HEAD per ghcr-mirror row of .github/ci-tools.yaml,
+      # at the 30 s an attempt this step gives it, 127 s each over the four such rows, 508 s.
+      # Both per-ladder figures are the ones already derived above — 247 s in the
+      # DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl`, and 127 s in the
+      # ci-images job's comment for a request carrying no asset bytes — and neither is
+      # re-derived here. 247 + 508 = 755 s -> 13 min. Rule 8 reads one ladder of 741 s for
+      # this step instead, since a call of a function the sourced file defines is no call of
+      # that file to it and the loop around this one is therefore not multiplied; 13 min
+      # clears the real sum as well.
       - name: Check the package holds the blob of every mirrored row
         timeout-minutes: 13
         run: |
@@ -2819,9 +2849,22 @@ jobs:
             exit 1
           fi
 
-      # The rig's one `ci_tools_curl` ladder, 741 s (the header's Budgets note) -> 13 min.
+      # Its own retry arithmetic, counted over the rows the rig stages rather than taken as
+      # one ladder: `stage` loops over its own STAGED_ROWS — crane, changie, mise, jj and
+      # bun-linux-x64 — and calls ci_tools_fetch once for each of the five. A row whose
+      # primary is a release asset of its own costs the three ladders the DECLARED_LOOPS entry
+      # for .github/scripts/ci-tools.sh prices at 741 s, which is crane, changie and mise; the
+      # jj row's `primary` is empty, so it costs the token and the blob alone, 494 s; and
+      # bun-linux-x64 costs its one npm tarball, 247 s. Those last two are that same entry's
+      # own figures for a row with no primary. 3 x 741 + 494 + 247 = 2964 s, which is twelve
+      # ladders of at most 247 s -> 50 min.
+      # Rule 8 prices this step at one ladder of 741 s: it reads a call of ci_tools_fetch as a
+      # call of that function and not as a call of the file defining it, so the loop around
+      # this one is not multiplied, and this budget is written by hand for that reason — the
+      # miscount list in .github/scripts/check-download-retry.sh says so where the reading is
+      # described.
       - name: Stage the correct bytes of every row a case serves, before the fault
-        timeout-minutes: 13
+        timeout-minutes: 50
         run: .github/scripts/ci-tools-proof.sh stage
 
       # The rig's one `ci_tools_curl` ladder, 741 s (the header's Budgets note) -> 13 min.
@@ -3840,15 +3883,12 @@ jobs:
       # same runner image and the same indexes: five attempts, the last starting 150 s after the
       # first. What bounds an attempt is the inner `sudo timeout`, not `timeout sudo`, so the
       # signal reaches apt-get itself rather than a sudo holding it; retry_fetch's own bound sits
-      # five seconds above it and backstops the sudo alone. 90 s for the index read, derived
-      # from the reading e2e.yaml's package step writes out for this same runner image and
-      # these same indexes: the slowest green `apt-get update` measured in that window fetched
-      # 10.5 MB at 233 kB/s, so 12.9 MB of indexes need 55.4 s there, and the bound leaves over
-      # 60 per cent above that need. 120 s for one package of a few megabytes. That derivation
-      # was .github/scripts/playwright-install.sh's head until the browser suite moved into an
-      # image this repository builds and took the script with it
-      # (cybermonklabs/legion#2938); it is written out here and in e2e.yaml, which are the two
-      # steps left that read these indexes.
+      # five seconds above it and backstops the sudo alone. 90 s for the index read and 120 s
+      # for one package of a few megabytes, both derived in .github/workflows/e2e.yaml's own
+      # apt step, which names the jobs those rates were measured in; that derivation was
+      # .github/scripts/playwright-install.sh's head until the browser suite moved into an
+      # image this repository builds and took the script with it (cybermonklabs/legion#2938),
+      # and e2e.yaml is where it lives now. This step cites it rather than repeating it.
       # The unpack after the download takes no network
       # and stays bare, so an attempt the bound kills never stops a dpkg run part way. The index
       # read carries `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the
@@ -6611,10 +6651,11 @@ jobs:
       - id: recover-changie
         continue-on-error: true
         # install-changie's own retry arithmetic, which rule 8 reads from the declaration for
-        # .github/scripts/ci-tools.sh: one call of `ci_tools_curl`, 741 s (the header's Budgets
-        # note) -> 13 min. What this fault costs is less, and the report below derives it: two
-        # of that figure's three ladders run here, each ending where `--retry-max-time 120`
-        # stops it.
+        # .github/scripts/ci-tools.sh: one `ci_tools_fetch`, three ladders, 741 s (the header's
+        # Budgets note) -> 13 min. What this fault costs is far less, and the report below reads
+        # it: this proxy answers 504 at once and then serves, so the release asset's own ladder
+        # makes its attempts for nothing but their waits and one of them lands inside the
+        # recovery window - the second source is never reached, and the step succeeds.
         timeout-minutes: 13
         uses: ./.github/actions/install-changie
         env:
@@ -6839,6 +6880,17 @@ jobs:
       # second source starting. One ladder of four would have read 61/62/64 s, since the waits
       # double. So the count asserted is 4 and the floor 252 s: the 10 s probe and two ladders
       # of (60 + 1 + 60) s.
+      #
+      # 252 s is the mechanism's own minimum and not a measurement, which is why it sits a few
+      # seconds under the readings and is no timing bet. Every term of it is a bound this fault
+      # forces to be spent in full - the probe's faulted request to its 10 s PROBE_BOUND, then
+      # each stalled attempt to its own 60 s with curl's 1 s wait between the two of a ladder -
+      # and `report` fails on `elapsed < floor` alone, so a slower runner only lengthens what it
+      # measures. What trips this floor is a run that ends EARLY: fewer attempts, or attempts
+      # that do not reach their bounds, which is exactly the regression it exists to catch. The
+      # readings sit just above it, as they must: 244 s driving this action's own body on the
+      # issue's pod, 253 s in the pod's whole-step drive and 258 s on the runner in run
+      # 42573254973's job 129015393389.
       #
       # An earlier reading of the same run called those four one ladder and asserted 2 with a
       # 123 s floor. That number passes a step whose retry is gone, because the fallback's own

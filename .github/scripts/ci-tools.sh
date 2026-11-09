@@ -362,16 +362,23 @@ ci_tools__tempfile() {
 # 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
 # .github/workflows/ci.yaml carry `timeout-minutes: 10`.
 #
-# WHAT ONE LADDER COSTS UNDER IT, derived once here and cited rather than re-derived elsewhere.
-# Against a host that stalls, every attempt spends the whole `max_time: 60` every row of
-# .github/ci-tools.yaml carries, so the timer passes two minutes inside the third attempt and
-# curl starts none after the fourth: at most 4 x 60 s of attempts and the 1, 2 and 4 s waits
-# between them, 247 s. Measured on this issue's pod with one such ladder faulted: four attempts
-# reaching the proxy 61 s apart and the call ending at 244 s. Against a host that answers at
-# once the attempts take no time, so all eight are made and the whole of the ladder is its
-# waits, 127 s. A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull
-# token, the blob — which is the figure .github/scripts/check-download-retry.sh's DECLARED_LOOPS
-# entry for this file writes out, and which ci.yaml's Budgets note cites rather than restates.
+# WHAT ONE LADDER COSTS UNDER IT, derived once here and cited without numbers elsewhere.
+# The worst case is not the host that stalls throughout and not the host that fails fast: it is
+# the mixture of the two. A pure staller spends the whole `max_time: 60` every row of
+# .github/ci-tools.yaml carries on each attempt, so the timer passes two minutes inside the
+# second wait and curl starts no attempt after the second — measured against a host that accepts
+# and never answers: attempts at 0 s and 61 s, curl exiting 28 at about 121 s. A host that fails
+# at once spends nothing on its attempts, so all eight are made and the ladder is its waits
+# alone, 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the
+# quick failures carry the timer to just under two minutes, the last wait of 64 s is taken, and
+# the attempt it then starts stalls for its whole bound. That is at most 120 + 64 + 60 = 244 s,
+# which is the ceiling every figure built on this ladder uses, written here as 247 s to leave the
+# three seconds a second's rounding in each of the three terms can add.
+#
+# A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull token, the
+# blob — which is what .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this
+# file writes out as one figure, and what ci.yaml's Budgets note and every step comment cite by
+# name rather than restating.
 # Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it costs
 # nothing at all: the timer stands at 63 s when the last retry is decided, which is inside two
 # minutes, so the ladder is the eight attempts it would make with no such bound, where at 60 it

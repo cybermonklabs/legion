@@ -127,14 +127,11 @@ runs:
 
     # oven-sh/setup-bun reports a cache hit for two different things: a Bun this action's
     # restore above put at ~/.bun/bin/bun, and a Bun of the pinned version that was already
-    # there, both of which it keeps rather than downloading. Which sentence it logs for that
-    # depends on where the bytes came from, and the two are worth naming exactly, because a
-    # check that greps for the wrong one reads a green run as a failure: its own cache prints
-    # `Cache hit for: <key>`, `Cache restored successfully` and `Using a cached version of Bun:
-    # <version>+<revision>`, measured in run 42386757116's lint job 128445718260 on main, where
-    # that cache is on; a Bun already at that path, which is what this action's own restore
-    # leaves and what a second call in one job finds, prints `Using existing Bun installation`.
-    # Only a step that runs before it can tell the two apart, which is what this one is for: the word the
+    # there, both of which it keeps rather than downloading. In this action it logs one sentence
+    # for both, `Using existing Bun installation`, because `no-cache: true` below turns its own
+    # cache off on every ref, so the only bytes it ever adopts are bytes already at that path -
+    # the restore above put them there, or an earlier call of this action in the same job did.
+    # Only a step that runs before it can tell those two apart, which is what this one is for: the word the
     # bun-second-source step writes, and the word a refusal of the last step names, are read
     # from what it finds. Without it a second call of this action in one job says `cache` over
     # bytes no cache served — job 128864748583 of run 42524376194 refused the npm install of an

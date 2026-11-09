@@ -1293,7 +1293,7 @@ check "prices no run of that script at nothing" \
 # One layer deeper: the loop sits in a script the step runs, around a call of the costless
 # one, so the item blocked_calls lists is that inner call rather than the step's own. The one
 # reading drops it there too, because the step's list and the lists of every script and
-# action it reaches take the same filter (dispatch://INFRA-1545, R5). What leaves the step
+# action it reaches take the same filter (review round 5 of dispatch://INFRA-1545). What leaves the step
 # with a figure rather than none is carried(), which answers 0 for a call of a script that
 # costs nothing however many passes are above it; the case below holding a priced script
 # beside such a loop is the one that pins that answer.

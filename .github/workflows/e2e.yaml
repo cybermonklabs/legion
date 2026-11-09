@@ -85,9 +85,16 @@ jobs:
           REQUESTED: ${{ inputs.script }}
         run: .github/scripts/select-e2e-proofs.sh
 
-  # One job per proof. Its limit is the script's own row, measured from that script's header with
-  # headroom: no-required-checks waits for three reads of what each base requires, so a run takes
-  # about seven minutes, and every proof builds its driver first.
+  # One job per proof. Its limit is the script's own row of .github/e2e-scripts.json: that
+  # script's measured duration with headroom — no-required-checks waits for three reads of what
+  # each base requires, so a run takes about seven minutes, and every proof builds its driver
+  # first — plus the retry arithmetic of the slowest retried step the row selects. That is
+  # install-jj's 1482 + 450 = 1932 s for a row whose `jj` is true, setup-bun's 2 x 741 = 1482 s
+  # for a `bun` row that installs no jj, and the apt steps' 625 + 775 = 1400 s for a row that
+  # takes neither, each the figure written beside that step below, so a step re-priced here
+  # moves every row selecting it. .github/scripts/check-download-retry.sh's rule 8 reads no
+  # number out of the expression below, so it says nothing about these rows at all: that list's
+  # own comment holds the arithmetic, and holds it by hand.
   proof:
     needs: select
     name: ${{ matrix.proof }}
@@ -153,12 +160,12 @@ jobs:
           #
           # 90 s for the index read, derived for this same runner image and these same
           # indexes and now held here rather than in the deleted script: the slowest green
-          # `apt-get update` of the window that figure was measured over fetched 10.5 MB at
-          # 233 kB/s, so 12.9 MB of indexes need 55.4 s there.
+          # `apt-get update` of the window it was measured over, job 127357441704, fetched
+          # 10.5 MB at 233 kB/s, so 12.9 MB of indexes need 55.4 s there.
           # 120 s for the package download: a proof installs one package of
-          # .github/e2e-scripts.json (postgresql-client or tmux), a few MB against that script's
-          # 51.4 MB, and at the slowest green package rate of the same window, 186 kB/s, even
-          # 10 MB needs 54 s. The index read carries `-o APT::Update::Error-Mode=any`, which
+          # .github/e2e-scripts.json (postgresql-client or tmux), a few MB against the 51.4 MB
+          # the deleted script's own set came to, and at the slowest green package rate of the
+          # same window, 186 kB/s, measured in job 127238648049, even 10 MB needs 54 s. The index read carries `-o APT::Update::Error-Mode=any`, which
           # makes a failed index read fail the command instead of warning and exiting 0: without
           # it retry_fetch has nothing to retry
           # (.github/scripts/check-download-retry.sh's rule 5 is the whole reason).
