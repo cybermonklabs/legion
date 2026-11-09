@@ -78,7 +78,8 @@ github_apps_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 # line before a slow read of a deployment's own store, reaches nobody until it exits:
 #   awk        mawk, which is awk on a Debian devbox and in this pod (mawk 1.3.4), reads a pipe a
 #              block at a time unless it is given `-W interactive`, which has it read a line at a
-#              time and write each line out as it goes.
+#              time and write each line out as it goes. gawk and busybox awk read a pipe a line
+#              at a time already, flag or no flag.
 #   head, tr   each writes its stdout through stdio, which is fully buffered on a pipe, so it
 #              holds the first line until 4 KiB have gone by or its input ends, unless it is run
 #              under `stdbuf -o0`.
@@ -94,19 +95,21 @@ github_apps_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 # with a warning, and `stdbuf` works by preloading a libc shim, so on a host whose libc it cannot
 # preload into (musl) it runs the program, exits 0, says nothing and leaves it buffered as
 # before, where the prefix is useless rather than wrong. A warning is the answer that must be
-# refused: it would be a line of noise in the run's transcript for every line a relay passes, the
-# channel these relays exist to keep readable. So app_token_flag_taken runs the flag exactly as
-# the pipeline runs it and takes it only when that run exits 0 and writes nothing at all to
-# stderr. Both probes run once, here where the lib is sourced, rather than per relay call, since
-# neither answer can change within a run. A tool that refuses its flag leaves its array empty and
-# is run bare, buffering as plain awk and head do, with nothing said about it. The refusal is
-# locked by the row of github-apps.test.ts that reads the relay's own silence ("the relay writes
-# nothing of its own"), which puts first on PATH a stand-in awk that warns on `-W` and otherwise
-# runs the real one: on a host whose awk takes the flag silently, as this pod's mawk and a Debian
-# devbox's do, a probe that wrongly accepted a warning would show up nowhere but as warning lines
-# in the transcript, and that stand-in is what puts them in front of the row. The probes write
-# nothing anywhere and read nothing of the caller's: their input is /dev/null, their output goes
-# to /dev/null, and what they would have written to stderr is what they judge themselves by.
+# refused: it would be a line of noise in the run's transcript once for each awk stage of every
+# mint — one in release mode, two in key mode — the channel these relays exist to keep readable.
+# So app_token_flag_taken runs the flag exactly as the pipeline runs it and takes it only when that
+# run exits 0 and writes nothing at all to stderr. Both probes run once, here where the lib is
+# sourced, rather than per relay call, since neither answer can change within a run. A tool that
+# refuses its flag leaves its array empty and is run bare, with nothing said about it: an awk that
+# refuses `-W interactive` (gawk, busybox awk) reads a line at a time already, and a `head` or `tr`
+# left buffered holds a line until the stage holding it fills its own buffer or the command exits.
+# The refusal is locked by the row of github-apps.test.ts that reads the relay's own silence ("the
+# relay writes nothing of its own"), which puts first on PATH a stand-in awk that warns on `-W` and
+# otherwise runs the real one: on a host whose awk takes the flag silently, as this pod's mawk and a
+# Debian devbox's do, a probe that wrongly accepted a warning would show up nowhere but as warning
+# lines in the transcript, and that stand-in is what puts them in front of the row. The probes
+# write nothing anywhere and read nothing of the caller's: their input is /dev/null, their output
+# goes to /dev/null, and what they would have written to stderr is what they judge themselves by.
 # app_token_flag_taken COMMAND... is that probe: it returns 0 when COMMAND, run as the relay
 # pipeline runs it, exits 0 and writes nothing to stderr.
 app_token_flag_taken() {
@@ -420,15 +423,16 @@ app_token_redact() {
 #
 # The armour goes first, in one gsub: no other rule here can match a `-`, so no match of theirs
 # overlaps one of its. What is left is walked by its runs of credential characters — one split for
-# the runs, one for the text between them, which together are the line — so the work is linear in
-# the line's length for every run holding no `_`, which is one base64 run and is judged whole. A
-# run holding a `_` is walked match by match for the token forms in it, which is quadratic in that
-# run's length; the 1 MiB bound on the stream caps it, at minutes for one megabyte-long run of
-# `a_`. The lengths are counted rather than written as regex bounds: mawk, which is awk on
-# a Debian devbox, matches a bracket range followed by {n,} as though the bound were a `+`. The
-# masked line is built whole and printed once, because `-W interactive` leaves mawk's output
-# unbuffered as well as its input: a printf per piece of a line would be a write per piece, and
-# a line of ordinary words is dozens of pieces.
+# the runs, one for the text between them, which together are the line — and a run holding no `_`
+# is one base64 run and is judged whole. A run holding a `_` is walked match by match for the token
+# forms in it, which is quadratic in that run's length. The masked line is built whole and printed
+# once, because `-W interactive` leaves mawk's output unbuffered as well as its input: a printf
+# per piece of a line would be a write per piece, and a line of ordinary words is dozens of
+# pieces. Building it is quadratic in the line's length too, since each piece copies what is
+# already built: an ordinary line costs nothing, and a single line near the stream's 1 MiB bound
+# costs up to minutes, as one megabyte-long run of `a_` does; the bound caps both. The lengths
+# are counted rather than written as regex bounds: mawk, which is awk on a Debian devbox, matches
+# a bracket range followed by {n,} as though the bound were a `+`.
 app_token_redact_key() {
   LC_ALL=C awk "${app_token_awk_interactive[@]}" '
     function masked(run) {
@@ -478,10 +482,11 @@ app_token_stderr_bound() {
 # app_token_release_limit bytes: app_token_redact, which masks GitHub token forms alone, or, when
 # MODE is `key`, app_token_redact_key, which masks key material too. Only the key command is given
 # that mode, since it is the only COMMAND an operator can paste a key into. Each line reaches the
-# run's stderr as it is written where the probes above took their flags, and when the stage
-# before it fills or the command exits where a tool refused one. It returns COMMAND's
-# non-zero status (124 when it timed out), 126 when it printed more than the limit, 123 when it
-# wrote more than the limit to stderr, or 125 when it succeeded and printed nothing; either way it
+# run's stderr as it is written where every stage is prompt — the probes above took their flags,
+# or the awk refused one and reads a line at a time anyway — and otherwise when the stage holding
+# it fills its own buffer or the command exits. It returns COMMAND's non-zero status (124 when it
+# timed out), 126 when it printed more than the limit, 123 when it wrote more than the limit to
+# stderr, or 125 when it succeeded and printed nothing; either way it
 # leaves no temporary file and FILE as it was. What COMMAND prints passes from its stdout to the
 # file and enters no shell variable and no argv.
 #

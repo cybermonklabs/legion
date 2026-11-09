@@ -1463,7 +1463,8 @@ echo done`
     expect(existsSync(join(work, "app-key", "review", "key.pem"))).toBe(false);
     expect(stderr).not.toContain("\0");
     // The lines that fitted were relayed, masked, and the token after them was not relayed at
-    // all: it is in the line the bound drops.
+    // all: it is in the line the bound drops. The cut leaves only the token's first byte past the
+    // limit, so this absence cannot fail by itself; the row's lock is the status 123 above.
     expect(stderr.split("\n")).toContain("?[redacted key]");
     expect(stdout + stderr).not.toContain("ghp_ABCDEFGHIJKLMNO");
     holdsNoToken(stdout + stderr);
