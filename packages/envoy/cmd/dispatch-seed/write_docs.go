@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -88,9 +89,14 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// No block pointers: a typed block's `block[]` attribute is what carries one, and every
 	// document this tool writes is plain markdown with no typed block in it, so the list the
 	// server builds from a document's block tree is empty here.
-	moved, _, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil)
+	moved, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil)
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
+	}
+	// The seed records no event of a document's version, so what the index stated in the node
+	// and tuple store carries the sentinel, the cause of a write no event recorded.
+	if err := blockWrite.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+		return fmt.Errorf("record what the block index stated: %w", err)
 	}
 	// ReplaceDocumentCounted stores each mention's excerpt at this version number, which is the
 	// document's highest: refs.MarkStaleExcerpts re-owes a mention whose excerpt_version is

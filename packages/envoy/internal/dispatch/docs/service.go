@@ -256,6 +256,11 @@ type Service struct {
 	// that version's own event. Nil outside tests; tests return an error from it to force the
 	// settlement to abandon after its version write, before its commit.
 	afterSettleVersionWrite func(room string) error
+	// afterBlockIndexWrite runs inside the block-index tick's transaction once that tick has
+	// written one document's node, its tuples and its projection rows, and before its commit.
+	// Nil outside tests; tests return an error from it to kill that transaction and find that
+	// none of the three survived it.
+	afterBlockIndexWrite func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -2345,6 +2350,12 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 			versionEvent.ArtifactID = &room
 		}
 		if err := appendEvents([]model.Event{versionEvent}); err != nil {
+			return abandon(err)
+		}
+		// What this settlement's block index stated waits for that event: its id is the cause
+		// every node and tuple of the pass carries, and it exists only now
+		// (refs.BlockIndexWrite.Caused). published's last entry is the event just appended.
+		if err := result.blocks.Caused(ctx, tx, published[len(published)-1].ID); err != nil {
 			return abandon(err)
 		}
 	}

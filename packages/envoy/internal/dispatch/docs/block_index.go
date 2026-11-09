@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -962,11 +963,29 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		}
 		markdown, blocks = held, heldBlocks
 	}
-	if _, err := s.indexRenderedVersion(ctx, tx, document.id, version, versionAt, markdown, blocks, nil); err != nil {
+	// The event that recorded this version is read before the index pass: it is the cause every
+	// node and tuple of the pass carries, and on this path it already exists, while on the
+	// request path it does not and the pass's facts travel to the caller instead
+	// (refs.BlockIndexWrite). A version no event recorded leaves the sentinel, and the rows the
+	// pass writes keep no source_seq either.
+	eventID, err := versionEventID(ctx, tx, owner, document.id, version)
+	if err != nil {
 		return false, false, err
 	}
-	if err := stampVersionEvent(ctx, tx, owner, document.id, version, versionAt); err != nil {
+	_, write, err := s.indexRenderedVersion(ctx, tx, document.id, version, versionAt, markdown, blocks, nil)
+	if err != nil {
 		return false, false, err
+	}
+	if err := write.Caused(ctx, tx, eventID); err != nil {
+		return false, false, err
+	}
+	if err := stampVersionEvent(ctx, tx, document.id, version, versionAt, eventID); err != nil {
+		return false, false, err
+	}
+	if s.afterBlockIndexWrite != nil {
+		if err := s.afterBlockIndexWrite(document.id); err != nil {
+			return false, false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, false, err
@@ -974,15 +993,16 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	return true, false, nil
 }
 
-// stampVersionEvent gives the edges a re-index of version inserted the source_seq of the event
-// that recorded that version: its artifact.version, or for version 1 the document's
-// artifact.created, or the issue.created of the issue whose spec it seeded. A version write stamps
-// its own edges once it appends its event (refs.Stamp);
-// this is that stamp for a version a build without the block index wrote. It stamps only what the
-// re-index inserted - the block pairs it created at this version, and the document's references
-// it dated versionAt - so an edge rebuild-refs inserted keeps no source_seq. With no such event
-// the edges keep none.
-func stampVersionEvent(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifactID string, version int, versionAt time.Time) error {
+// versionEventID is the id of the event that recorded version: its artifact.version, or for
+// version 1 the document's artifact.created, or the issue.created of the issue whose spec it
+// seeded. graphstore.NoEvent, the sentinel, where no event recorded it - a version a build
+// without the block index wrote and nothing else named.
+//
+// It is read before the index pass rather than after it, because what that pass states in the
+// node and tuple store carries this event as its cause and no tuple may be updated once it is
+// appended. The stamp it feeds still runs after the pass: it fills the source_seq of the rows
+// the pass has just written.
+func versionEventID(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifactID string, version int) (int64, error) {
 	var eventID int64
 	err := tx.QueryRow(ctx, `
 		select id from events
@@ -995,10 +1015,23 @@ func stampVersionEvent(ctx context.Context, tx pgx.Tx, owner artifactOwner, arti
 		limit 1
 	`, owner.IssueKey, artifactID, artifactID, strconv.Itoa(version), version == 1).Scan(&eventID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return graphstore.NoEvent, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the event that recorded version %d of %s: %w", version, artifactID, err)
+		return graphstore.NoEvent, fmt.Errorf("read the event that recorded version %d of %s: %w", version, artifactID, err)
+	}
+	return eventID, nil
+}
+
+// stampVersionEvent gives the edges a re-index of version inserted the source_seq of eventID,
+// the event that recorded that version (versionEventID). A version write stamps its own edges
+// once it appends its event (refs.Stamp); this is that stamp for a version a build without the
+// block index wrote. It stamps only what the re-index inserted - the block pairs it created at
+// this version, and the document's references it dated versionAt - so an edge rebuild-refs
+// inserted keeps no source_seq. With no such event the edges keep none.
+func stampVersionEvent(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, eventID int64) error {
+	if eventID == graphstore.NoEvent {
+		return nil
 	}
 	if _, err := tx.Exec(ctx, `
 		update block_refs set source_seq = $3

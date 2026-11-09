@@ -1511,6 +1511,15 @@ A mention starts at the innermost block holding its start: a list item's paragra
 A new pair takes the version and its time, and `refs.Stamp` gives it the version event's id;
 on a document's first indexing, a pair takes the `created_at` and `source_seq` of the document's own `refs` row for that target when there is one.
 
+Each of those blocks is a node of the node and tuple store beside its row, and both `document_blocks` and `block_refs` are the projection of that node's tuples (`store/migrations/20261109022248_graph_projections.up.sql`).
+`refs.IndexBlocks` writes the node first, because the foreign key on `(node_kind, node_address)` is checked inside the statement that writes the projection row, and states one `part_of` tuple per block to the innermost block that holds it — the document's own artifact address for a block no block holds — which `document_blocks.parent_block_id` projects in a statement of its own, so a block that only moved keeps its `changed_version` and `changed_at`.
+Beside it an `in_document` tuple carries the membership of each row the pass inserts afresh, dated that row's `created_at`, and a block a version no longer holds has its node's `state` stated `gone`.
+Each `block_refs` row the pass inserts or drops states one tuple under that pair's own kind, told apart from a surviving pair by `xmax = 0` in the statement's `returning` list.
+Nothing here updates or deletes a tuple, so the pass appends only where the render disagrees with what the store asserts, and a re-index of a document nothing moved appends nothing at all.
+The cause every one of them carries is the event that recorded the version, which on the request path does not exist while the pass runs: the pass returns the facts (`refs.BlockIndexWrite`) and the caller appends them under that event in the same transaction, where `refs.Stamp` already runs (`api`'s `commitArtifactVersionEvent`, its upload path and `issue_create.go`, and the settlement's own version event);
+the block-index reconciliation reads the event before the pass instead (`docs.versionEventID`) and appends them itself, and a version no event recorded takes the `source_event` sentinel 0.
+A pass whose `document_block_versions` row did not move forward writes neither a projection row nor a tuple: the fence is that row's conditional write, the first write the pass makes (`refs.standsAtVersion`).
+
 The document keeps its own `refs` rows, which the closure and the older `GET /api/v1/artifacts/{id}/references` read, but a document's mention of a target that one of its blocks holds a link of any kind to, listed or not, is listed and counted from that block alone (`heldByABlock`, in `refs.Edges` and `refs.BacklinkCounts`), so a node is counted once for each block link to it and each link shows once, where its block holds it.
 A document's own read (`?to=` or `?from=` a document reference) also lists the edges at its current blocks, each naming that block as the edge's `block`;
 its `part_of` edges are left out unless `?kind=` names them.

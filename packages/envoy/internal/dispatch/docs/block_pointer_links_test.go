@@ -47,7 +47,7 @@ func writeIndexedDocument(t *testing.T, database *store.Store, service *Service,
 		`, id, written); err != nil {
 			return err
 		}
-		_, err = service.IndexDocumentReferences(ctx, id, 1, written)
+		_, _, err = service.IndexDocumentReferences(ctx, id, 1, written)
 		return err
 	}); err != nil {
 		t.Fatalf("write document %s: %v", slug, err)

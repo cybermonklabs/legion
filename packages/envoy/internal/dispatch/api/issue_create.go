@@ -412,7 +412,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -442,6 +442,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "artifact", artifactID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the spec's block index stated waits for the issue's own event: it is the cause every
+	// node and tuple of that pass carries (refs.BlockIndexWrite.Caused).
+	if err := specBlocks.Caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

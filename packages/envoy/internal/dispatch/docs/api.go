@@ -12,13 +12,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // API is the live document operation surface used by Dispatch's HTTP handlers.
 type API interface {
 	SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
 	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
-	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error)
+	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, refs.BlockIndexWrite, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
 	Text(ctx context.Context, artifactID string) (string, error)
@@ -54,10 +55,16 @@ type API interface {
 // batched backlink counts it changed. Wrote is false when the operation recorded nothing:
 // SnapshotVersion found the live document already matched the newest version, or RebuildDocument
 // restored the latest version or was given its markdown.
+//
+// Blocks is what the version's block index stated in the node and tuple store. The index runs
+// before the event that records the version exists, and no tuple may be updated afterwards, so
+// the facts travel here and the caller appends them under that event, in the same transaction
+// (refs.BlockIndexWrite.Caused).
 type VersionResult struct {
 	Version model.Version
 	Wrote   bool
 	Changes model.ReferenceChanges
+	Blocks  refs.BlockIndexWrite
 }
 
 // EditOutcome is what one batch of document edit operations did. Changed compares the document's

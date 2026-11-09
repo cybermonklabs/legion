@@ -236,5 +236,5 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, err
 	}
 	report.SourceVersion = written.version.Number
-	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes}, nil
+	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks}, nil
 }

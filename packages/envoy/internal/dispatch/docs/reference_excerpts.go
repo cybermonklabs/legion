@@ -53,15 +53,19 @@ const deferBlockIndexBlocks = 2000
 // from applyLive's render only when the two agree. A document of more blocks than a write indexes
 // in its own request leaves them to the block-index reconciliation (deferBlockIndexBlocks). It
 // refuses a context that was not joined.
-func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error) {
+//
+// Its second result is what the block index stated in the node and tuple store, which the
+// caller appends under the event it goes on to record for this version
+// (refs.BlockIndexWrite.Caused), in this same transaction.
+func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, refs.BlockIndexWrite, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
-		return model.ReferenceChanges{}, errUnjoined
+		return model.ReferenceChanges{}, refs.BlockIndexWrite{}, errUnjoined
 	}
 	var versionAt time.Time
 	if err := tx.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1 and number = $2`,
 		artifactID, version).Scan(&versionAt); err != nil {
-		return model.ReferenceChanges{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
+		return model.ReferenceChanges{}, refs.BlockIndexWrite{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
 	}
 	rendered := ledgerFrom(ctx).writtenRendering(artifactID)
 	if rendered.tree != nil && rendered.markdown != markdown {
@@ -90,9 +94,10 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // or one whose blocks the write deferred (deferBlockIndexBlocks) - is indexUnrenderedVersion,
 // which indexes no blocks: migration 0122's trigger left the document owed when the version's row
 // was inserted, for the block-index reconciliation, which reads the document itself.
-func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, error) {
+func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, refs.BlockIndexWrite, error) {
 	if rendered.tree == nil {
-		return s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
+		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
+		return changes, refs.BlockIndexWrite{}, err
 	}
 	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
 }
@@ -115,16 +120,22 @@ func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 // was rendered from, and nil otherwise. The event the caller appends names the counted targets
 // the document's references and their excerpts, its blocks and its blocks' links moved
 // (refs.ReplaceDocumentCounted), since a node is counted once for each block citing it.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, error) {
+//
+// Its second result is what the pass states in the node and tuple store, which the caller
+// appends under that same event (refs.BlockIndexWrite.Caused): the pass writes the block nodes
+// itself, because the foreign key on the projection rows needs them, and holds its tuples back
+// because on the request path the event does not exist yet.
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, refs.BlockIndexWrite, error) {
 	located := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL).Mentions(markdown)
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, _, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
+	moved, _, write, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, refs.BlockIndexWrite{}, err
 	}
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	return changes, write, err
 }
 
 // blockPointers is each `block[]` value of the version (pmdoc.BlockPointers) as the block index
