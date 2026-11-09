@@ -95,21 +95,26 @@ type attributionFacts struct {
 // same repository. Both are read out of running text, so both have a left boundary.
 //
 // A citation is `github.com/<owner>/<repo>/issues/<n>` as the host of its own URL, with a scheme
-// or without: the expression takes the scheme itself, so the `/` that ends it is no boundary
-// character of its own. Everything else that can carry those bytes is not a citation, and the
-// class refuses each. The tail of another host's name (`evilgithub.com`, `pages.github.com`,
-// `www.github.com`) is refused after a word character, `.` or `-`. The same string standing
-// inside another URL — its path, query, fragment or userinfo, as in
-// `https://example.test/github.com/acme/widgets/issues/7`, `?u=github.com/…`, `#github.com/…` or
-// `user@github.com/…` — is refused after `/`, `?`, `=`, `&`, `#`, `%`, `@` or `:`. citedIssues
-// would otherwise rebuild each of them as a citation of the real github.com issue of that
-// number, which is wrong about what the body says. It is no way past a permission: whoever
-// writes the body may cite the real URL outright.
+// or without, and in whatever case the writer spelled either: a URL scheme and a host are both
+// case-insensitive (RFC 3986) and github.com answers `HTTPS://GITHUB.COM/…`, so a body cites the
+// same issue however it writes them. The expression takes the scheme itself, so the `/` that ends
+// it is no boundary character of its own, and reads scheme and host without regard to case.
+//
+// Everything else that can carry those bytes is not a citation, in either case, and the class
+// refuses each. The tail of another host's name (`evilgithub.com`, `pages.github.com`,
+// `www.github.com`) is refused after a word character, `.` or `-`, and `github.com.evil.test` is
+// no citation because the `/` must follow the host. The same string standing inside another URL
+// — its path, query, fragment or userinfo, as in
+// `https://example.test/github.com/acme/widgets/issues/7`, `?u=github.com/…`, `#github.com/…`,
+// `%2Fgithub.com/…` or `user@github.com/…` — is refused after `/`, `?`, `=`, `&`, `#`, `%`, `@`
+// or `:`. citedIssues would otherwise rebuild each of them as a citation of the real github.com
+// issue of that number, which is wrong about what the body says. It is no way past a permission:
+// whoever writes the body may cite the real URL outright.
 //
 // A # after a word character, `&` (an HTML character reference), `/` (a URL fragment) or another
 // # (a heading) is not a reference.
 var (
-	githubIssueURL      = regexp.MustCompile(`(?:^|[^\w.\-/?=&#%@:])(?:https?://)?github\.com/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
+	githubIssueURL      = regexp.MustCompile(`(?:^|[^\w.\-/?=&#%@:])(?:(?i:https?)://)?(?i:github\.com)/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
 	githubBareReference = regexp.MustCompile(`(?:^|[^\w&/#])#([1-9][0-9]{1,5})\b`)
 )
 

@@ -1,5 +1,5 @@
 kind: Fixed
-body: 'Delivery attribution credits a GitHub issue URL only where github.com is the host of that URL: a pull-request body naming a host whose name merely ends in github.com (evilgithub.com), a subdomain of it (www.github.com), or github.com inside another URL''s path, query, fragment or userinfo is no longer credited to the real issue of that number.'
+body: 'Delivery attribution credits a GitHub issue URL only where github.com is the host of that URL, and credits it however the body spells the scheme and the host, both of which are case-insensitive: a host whose name merely ends in github.com (evilgithub.com), a subdomain of it (www.github.com), a host whose name starts with it (github.com.evil.test) and github.com inside another URL''s path, query, fragment or userinfo are credited to nobody, in either case.'
 time: 2026-11-09T11:21:14.916410515Z
 custom:
     Issue: pr3279
