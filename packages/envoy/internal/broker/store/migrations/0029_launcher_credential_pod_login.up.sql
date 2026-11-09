@@ -36,18 +36,15 @@
 -- enrollments running to their leases with nothing able to revoke them.
 --
 -- The release-scoped fact -- that while 0015's launcher_credentials_live_subject is here, two
--- pods of one account share one credential row, so a login of either moves it -- is also
--- written wherever the staging itself is described: enroll.Service.IssueTokenLoginTx's doc,
--- packages/envoy/AGENTS.md's section on the two schemas, store/storetest.PerPodLoginSchema,
--- and the prose of the tests below. No guard's reason rests on the fact: the prose on the
--- guards named below states only what holds on either schema, so the drop leaves none of it
--- false.
+-- pods of one account share one credential row, so a login of either moves it -- is written
+-- wherever the staging is described as well as here, and the drop falsifies every sentence
+-- that rests on it.
 --
--- The drop's first act is to run the broker suite and read what fails. The tests are the one
--- record of this fact that says by itself where it is, and the list below is a guide beside
--- them, not a census: every search of this prose made while writing it was widened by the next
--- reader who found a site, so take it as what to re-read in addition to what the suite tells
--- you, and not as the whole of it. What to re-read, with what to check in each:
+-- The drop's first act is to run the broker suite and read what fails. The tests are the record
+-- of this fact that says by itself where it is: the suite names what has to move, and what
+-- follows is a pointer list beside it, naming sites by symbol and saying what to check in each.
+-- It counts nothing and asserts the absence of nothing, because each earlier version of it that
+-- did was refuted by the next reader who found a member it missed.
 --
 --   - enroll.Service.CredentialForKey's doc and api's authLauncher comment. The read by id and
 --     thumbprint stays right afterwards: a login bound to no pod takes one row per subject on
@@ -63,28 +60,37 @@
 --     drop, which the claim update makes under the row's own key. So re-read whether that doc
 --     still says why both tests are needed. Put no time limit on how long such an enrollment
 --     lasts: a pod that keeps renewing one holds it.
---   - the two paragraphs of packages/envoy/AGENTS.md on those two, which must go on saying only
+--   - the paragraphs of packages/envoy/AGENTS.md on those two, which must go on saying only
 --     what holds on either schema.
 --   - enroll.Service.IssueTokenLoginTx's conflict target and legacySubjectIndex, which read at
 --     run time which of the two schemas they are on. The drop is what makes that constant, so
 --     the read, the branch it feeds and the prose on both go with it.
+--   - the row-exclusive lock IssueTokenLoginTx takes before that read, whose stated reason is
+--     this drop itself: it is what keeps the drop from landing between the schema read and the
+--     upsert, which would name a conflict target the schema no longer has. Once the drop has
+--     run, read whether that reason still describes what the lock does.
+--   - enroll.Service.testSchemaReadHook, which exists to reproduce that race deterministically,
+--     and the test that uses it, enroll/pod_self_enroll_test.go's
+--     TestTheNextReleasesIndexDropWaitsForALoginInFlight: it runs `drop index` without
+--     `if exists`, so once the migration has dropped the index that statement errors.
+--   - in enroll/pod_self_enroll_test.go,
+--     TestThePreviousBrokersTokenLoginStillRunsOnTheMigratedSchema,
+--     which runs the previous broker's upsert against this migration's schema. Neither index
+--     added here implies that statement's conflict target, so after the drop it is 42P10, which
+--     is the whole point of the staging and of that test.
 --   - store/storetest.PerPodLoginSchema, the rig that applies this drop by hand today, which
---     the drop turns into a statement the migration already ran, and its four call sites:
---     api/token_login_test.go:332 and :417, enroll/pod_self_enroll_test.go:65, and
---     cmd/agent-secrets/pod_concurrent_e2e_test.go:52.
---   - the three tests whose assertions this drop makes fail, which is how the suite reports it:
---     api/token_login_test.go's TestOneSubjectHoldsOneLoginOnThisReleasesSchema, which takes no
---     PerPodLoginSchema and asserts the two pods share a credential id and the account holds one
---     live row; api/launcher_key_race_test.go, whose subject is a sibling's login moving the
---     caller's row, which after the drop makes a row of its own; and, in
---     enroll/pod_self_enroll_test.go,
+--     the drop turns into a statement the migration already ran, and the tests that call it,
+--     which a grep for the symbol names.
+--   - the tests whose assertions this drop makes fail, which is how the suite reports it, among
+--     them api/token_login_test.go's TestOneSubjectHoldsOneLoginOnThisReleasesSchema, which
+--     takes no PerPodLoginSchema and asserts the two pods share a credential id and the account
+--     holds one live row; api/launcher_key_race_test.go, whose subject is a sibling's login
+--     moving the caller's row, which after the drop makes a row of its own; and
+--     enroll/pod_self_enroll_test.go's
 --     TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount.
---     All three state the shipped schema in their prose, and the first and the third in their
---     names as well; the race test's name,
---     TestALauncherProofEndsNothingUnderAKeyTheRowNoLongerHolds, does not.
---   - two that state the fact and the drop leaves passing, so the suite will not raise them:
---     enroll/machine_credential_test.go, where the login is a machine's and so bound to no pod,
---     which keeps one row per subject on either schema, and
+--   - tests that state the fact and the drop leaves passing, so the suite does not raise them,
+--     among them enroll/machine_credential_test.go, where the login is a machine's and so bound
+--     to no pod, which keeps one row per subject on either schema, and
 --     cmd/agent-secrets/pod_concurrent_e2e_test.go, which already drives the schema this drop
 --     leaves.
 create unique index launcher_credentials_live_account_login on launcher_credentials (subject)

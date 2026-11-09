@@ -226,11 +226,14 @@ name it writes under, including a name a sibling pod holds. The refusal reads th
 token, so it never holds a caller whose token names no pod, such as one
 `kubectl create token` mints: whoever mints one for a listed account registers every pod of it
 whose token they hold, the pod they run in included. So listing a session account, which the
-paragraph above describes, does not in itself give its pods that authority over one another: each
-holds one token, its own, which names it, and that is the pod the refusal takes away. The
-authority goes no wider than the cluster's own rights to mint or read a pod's token — the same
-kind of access over that pod's account as the paragraph below names over a listed one — and it
-stops short of them: the caller needs a `BROKER_SERVICE_LOGINS` token of its own, and the pod's
+paragraph above describes, does not in itself give its pods that authority over one another:
+the authority follows the token, so a pod reaches another only while it holds that pod's own
+token, and a pod holding its own alone reaches nothing here, since its own is the one the
+refusal takes away. A pod that does hold a sibling's registers it, which is how one generation
+of a rollout registers the next. The authority goes no wider than the cluster's own rights to
+mint or read a pod's token — the same kind of access over that pod's account as the paragraph
+below names over a listed one — and it stops short of them: the caller needs a
+`BROKER_SERVICE_LOGINS` token of its own, and the pod's
 account must be one `BROKER_EXCHANGE_ACCOUNTS` lists, `403 POD_ACCOUNT_NOT_LISTED`. A
 deployment that does not want that lists no such account.
 A daemon that stops registering costs its pods their writes within the registration's own retention
