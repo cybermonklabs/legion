@@ -415,6 +415,36 @@ export async function seedNoSummary(): Promise<PlainIssueSeed> {
   return await seedPlainIssue(false, "This spec carries no summary node");
 }
 
+/** The unbroken run a requirement's own words can hold: one file path, 118 characters with no
+ *  space in it, which is wider than the card that draws it at 390 px and at 1440 px alike. A
+ *  person writes one whenever a requirement names a path, a key or an address. */
+export const UNBROKEN_PATH =
+  "packages/dispatch/web/src/features/issue/useIssueHeaderWrites.ts/and/one/more/segment/to/pass/one/hundred.ts";
+
+/** An issue whose spec marks one requirement whose words hold that run (R17). */
+export async function seedUnbrokenWords(): Promise<PlainIssueSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    spec: [
+      "# A requirement of this issue names a path",
+      "",
+      ":::requirement{#r-unbroken}",
+      `The page reads ${UNBROKEN_PATH} at load.`,
+      ":::",
+      "",
+    ].join("\n"),
+    title: "A requirement of this issue names a long path",
+  });
+  return {
+    key: issue.key,
+    requirements: ["r-unbroken"],
+    specArtifactId: issue.primary_artifact_id ?? "",
+    summaryBlockId: null,
+  };
+}
+
 export interface BaselineSeed {
   readonly checks: readonly string[];
   readonly children: { readonly blocked: string; readonly done: string; readonly keys: string[] };

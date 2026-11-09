@@ -42,7 +42,9 @@ import {
   seedRequestBaseline,
   seedSpineCases,
   seedTwiceTheNodes,
+  seedUnbrokenWords,
   seedWholeIssue,
+  UNBROKEN_PATH,
 } from "./issue-layout-seed";
 import { asPlanner } from "./issue-layout-seed-support";
 import {
@@ -1453,6 +1455,32 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
         await nodeBodies(page).count(),
         `the zoomed tree draws more than the one node's body at ${width} px`
       ).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+// c-reflow, on words the seeded issue does not carry. R17 binds the page a reader opens, not one
+// seed's text: a requirement whose words name a file path holds a run of 118 characters with no
+// space in it, which is longer than the card that draws it at every width this reads. Found by
+// the tester on 2026-11-09 at 39649c0f269d, where the Spec preset's requirement list draws that
+// run in a span that neither wraps it nor gives it its own line, and the whole page scrolls
+// sideways: 884 px of page in a 390 px viewport, and 3,644 px in a 1,440 px one for a 300
+// character run.
+test("a requirement whose words hold an unbroken run keeps the page inside its viewport @phone", async ({
+  browser,
+}) => {
+  await phase(browser, seedUnbrokenWords, async (page, seeded) => {
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
+      await gotoIssue(page, presetAddress(seeded.key, "spec"));
+      await expectIssuePageDrawn(page);
+      // The words are on the page before it is measured, so a fit read before the list draws
+      // cannot pass for the fit of a page that holds them.
+      await expect(
+        page.getByText(UNBROKEN_PATH, { exact: false }).first(),
+        `the Spec preset draws none of the requirement's words at ${width} px`
+      ).toBeVisible();
+      await assertPageFits(page);
     }
   });
 });
