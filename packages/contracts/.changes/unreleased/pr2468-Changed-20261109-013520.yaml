@@ -1,5 +1,6 @@
 kind: Changed
-body: The `POST /api/v1/issues/{key}/results` contract declares `409 CHECK_CONTENDED`, the refusal of a result whose check a document version rewords at each of the write's two attempts. It carries `Retry-After: 1` and records nothing, so a caller reads the check and sends the result again.
+body: |-
+    The `POST /api/v1/issues/{key}/results` contract declares `409 CHECK_CONTENDED`, the refusal of a result whose check a document version rewords at each of the write's two attempts. It carries `Retry-After: 1` and records nothing, so a caller reads the check and sends the result again.
 time: 2026-11-09T01:35:20.956905585Z
 custom:
     Issue: pr2468
