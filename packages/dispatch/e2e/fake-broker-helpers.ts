@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 
-import type { FakeMachineLogin, FakePendingRequest, FakeSignIn } from "./fake-broker";
+import type { FakeGrant, FakeMachineLogin, FakePendingRequest, FakeSignIn } from "./fake-broker";
 import { usesFakeBroker } from "./harness-broker";
 import { harnessPorts } from "./harness-ports";
 
@@ -23,6 +23,14 @@ export async function setPendingCredentialRequests(
 ): Promise<void> {
   test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
   await fixtureRequest("/__fixture/pending", requests);
+}
+
+/** Replaces the live grants the fake broker lists wholesale, each beside the login whose list
+ *  holds it, which for a grant the model judge approved is not the grant's own approver.
+ *  Skipped the same way `setPendingCredentialRequests` is. */
+export async function setCredentialGrants(grants: readonly FakeGrant[]): Promise<void> {
+  test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
+  await fixtureRequest("/__fixture/grants", grants);
 }
 
 /** Replaces the machine logins a typed code selects on the fake broker, each the code its
