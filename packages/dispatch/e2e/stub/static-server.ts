@@ -17,7 +17,7 @@
  *  the recording has none of is aborted by the fixture rather than answered here. */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import { basename, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { stubPort } from "./origin";
@@ -47,8 +47,8 @@ if (!existsSync(join(dist, "index.html"))) {
   );
 }
 
-/** The file `path` names under `dist`, or undefined where the path names none: a directory, a
- *  path that climbs out of `dist`, or a route of the SPA, all of which take `index.html`. */
+/** The file `path` names under `dist`, or undefined where the path names none: a directory, or a
+ *  path that climbs out of `dist`. */
 function fileFor(path: string): string | undefined {
   const within = normalize(path);
   if (within.includes("..")) return undefined;
@@ -58,14 +58,41 @@ function fileFor(path: string): string | undefined {
   return file;
 }
 
+/** Whether a path the build holds no file for takes the SPA's own document, which is the Go
+ *  router's rule (`isBrowserRoute`, packages/envoy/internal/dispatch/routes/router.go): never
+ *  under `/assets`, always under `/issues`, which carries slugs and ids that hold a dot, and
+ *  otherwise only where the last segment holds no dot.
+ *
+ *  It is the rule and not the fallback a file server usually writes, because the difference is
+ *  what several rows assert: a page whose entry chunk 404s recovers by reloading
+ *  (web/src/features/shell/DeploymentResilience.tsx), and a server that answered that chunk
+ *  with the document would load an HTML file as a script and start no recovery at all. */
+function takesTheDocument(path: string): boolean {
+  if (path === "/assets" || path.startsWith("/assets/")) return false;
+  if (path === "/issues" || path.startsWith("/issues/")) return true;
+  return !basename(path).includes(".");
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: stubPort(),
   fetch(request) {
-    const file = fileFor(new URL(request.url).pathname) ?? join(dist, "index.html");
+    const path = new URL(request.url).pathname;
+    const found = path === "/" ? join(dist, "index.html") : fileFor(path);
+    if (found === undefined && !takesTheDocument(path)) {
+      return new Response("not found\n", {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+        status: 404,
+      });
+    }
+    const file = found ?? join(dist, "index.html");
     const bytes = readFileSync(file);
     return new Response(bytes, {
       headers: {
+        // The Go router's two: a page is revalidated before it runs, since it names the hashed
+        // assets of the build that wrote it, and a hashed asset is kept for a year.
+        "cache-control":
+          extname(file) === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
         "content-type": contentTypes[extname(file)] ?? "application/octet-stream",
         etag: `"${createHash("sha256").update(bytes).digest("hex").slice(0, 32)}"`,
       },

@@ -2,94 +2,22 @@ import { expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
-import { needsYouCards } from "./editor";
-import { filterPicker, pickFilterOption } from "./filters";
 import { resetDatabase } from "./seed";
-import { navigateInApp } from "./sends";
 import { asUser } from "./users";
 
-const session = { actor: { id: "e2e-polish", kind: "session" as const }, as: "agent" as const };
+/**
+ * The two rows of this family that need the real stack. The collapsed project filters and the
+ * margin ask's compact composer are a stubbed row, in `polish.stub.e2e.ts`.
+ */
 
 test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("project filters stay collapsed until needed and margin asks use the compact composer", async ({
-  browser,
-}, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Polish the queue" });
-  await patchIssue(issue.key, { labels: ["frontend"], status: "todo" });
-  const ask = await createAsk(
-    issue.key,
-    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Which option should ship?" },
-    session
-  );
-
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
-  await page.setViewportSize({ height: 800, width: 1280 });
-
-  try {
-    await page.goto("/projects/CORE");
-    const filters = page.getByRole("button", { name: "Filters · 0 active" });
-    await expect(filters).toHaveAttribute("aria-expanded", "false");
-    await expect(filterPicker(page, "Status")).toHaveCount(0);
-    await page.screenshot({
-      path: testInfo.outputPath("polish-project-list-1280.png"),
-      fullPage: true,
-    });
-
-    await filters.click();
-    await pickFilterOption(page, "Status", "Todo");
-    await expect(page.getByRole("button", { name: "Remove Status: Todo filter" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    await page.getByRole("button", { name: "Board" }).click();
-    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
-    const boardCard = page.getByRole("article", { name: `${issue.key} Polish the queue` });
-    await boardCard.scrollIntoViewIfNeeded();
-    await expect(boardCard).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath("polish-project-board-1280.png"),
-      fullPage: true,
-    });
-
-    await navigateInApp(page, "/");
-    const inboxCard = page.getByTestId(`ask-${ask.id}`);
-    await expect(inboxCard.getByRole("radio", { name: "Ship" })).toBeVisible();
-    await expect(inboxCard.getByLabel("Your answer")).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath("polish-inbox-1280.png"),
-      fullPage: true,
-    });
-
-    await navigateInApp(page, `/issues/${issue.key}`);
-    const marginCard = needsYouCards(page).getByTestId(`ask-${ask.id}`);
-    await expect(marginCard.getByRole("radio", { name: "Ship" })).toBeVisible();
-    await expect(marginCard.getByLabel("Your answer")).toBeHidden();
-    await marginCard.getByText("Add a note or answer in your own words", { exact: true }).click();
-    await expect(marginCard.getByLabel("Your answer")).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath("polish-margin-1280.png"),
-      fullPage: true,
-    });
-    await navigateInApp(page, "/agents");
-    await expect(page.getByRole("region", { name: "Agents empty state" })).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath("polish-agents-1280.png"),
-      fullPage: true,
-    });
-  } finally {
-    await context.close();
-  }
-});
-
-// The narrow-screen half of the row above. The board lays its columns out side by side, so it is
-// the page a phone's width can push sideways; the row above walks the same board at 1280 px,
-// where there is room for them.
+// The narrow-screen half of the stubbed row. The board lays its columns out side by side, so it
+// is the page a phone's width can push sideways; the stubbed row walks the same board at
+// 1280 px, where there is room for them. It carries `@phone`, which is why it is not a stubbed
+// row of its own: the `iphone` project runs none.
 test("the project board's columns stay inside the screen @phone", async ({ browser }, testInfo) => {
   test.skip(testInfo.project.name !== "iphone", "only a phone screen is narrower than the columns");
   await createProject({ key: "CORE", name: "Core" });
@@ -119,6 +47,11 @@ test("the project board's columns stay inside the screen @phone", async ({ brows
   }
 });
 
+// It is no stubbed row: the Agents page folds a session unseen for ten minutes under `Inactive`
+// (`partitionAgents`, `web/src/features/agents/AgentsPage.tsx`), read from `Date.now()` against
+// the `last_seen` the registry reported. A recording freezes that timestamp, so this session
+// would be folded away in every replay taken more than ten minutes after the recording and the
+// heading below would not be on the page at all.
 test("an untitled session reads the same on the Agents page, the ask card, its followers, and the Conversation", async ({
   browser,
 }) => {

@@ -16,8 +16,8 @@
     "e2e": "bun run build:contracts && bun run build:web && bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts",
     "e2e:multiprocess": "bun run build:contracts && bun run build:web && DISPATCH_BUILD=e2e-b vite build --config web/vite.config.ts --outDir dist-b && DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_EMBEDDER=1 DISPATCH_E2E_WEB_DIST_B=../dispatch/web/dist-b bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts",
     "e2e:deployed": "bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts",
-    "e2e:stub": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=stub",
-    "e2e:stub:record": "bun run build:contracts && bun run build:web && DISPATCH_E2E_STUB_RECORD=1 bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts --project=stub",
+    "e2e:stub": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=stub --project=stub-phone",
+    "e2e:stub:record": "bun run build:contracts && bun run build:web && DISPATCH_E2E_STUB_RECORD=1 bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts --project=stub --project=stub-phone",
     "e2e:install": "playwright install chromium webkit firefox",
     "typecheck": "bunx tsc --noEmit",
     "lint": "bunx biome check web/src e2e"

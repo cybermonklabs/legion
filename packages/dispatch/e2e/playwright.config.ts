@@ -109,6 +109,7 @@ function isListMode(argv: readonly string[]): boolean {
 // the harness still gets the line that fixes it. The reading lives here rather than in
 // e2e/run.ts because a stub-only run never goes through that wrapper, and because
 // dispatch://INFRA-1410 deletes it.
+const stubProjectNames = ["stub", "stub-phone"];
 function onlyStubProject(argv: readonly string[]): boolean {
   const separator = argv.indexOf("--");
   const scanned = separator === -1 ? argv : argv.slice(0, separator);
@@ -117,7 +118,7 @@ function onlyStubProject(argv: readonly string[]): boolean {
     if (argument === "--project") named.push(scanned[index + 1] ?? "");
     else if (argument.startsWith("--project=")) named.push(argument.slice("--project=".length));
   }
-  return named.length > 0 && named.every((project) => project === "stub");
+  return named.length > 0 && named.every((project) => stubProjectNames.includes(project));
 }
 
 // How many workers the command line asks for, if it does: `--workers <n>`, `--workers=<n>`,
@@ -625,8 +626,27 @@ const stubProjects = [
     name: "stub",
     testMatch: stubSpecs,
     testIgnore: [],
+    grepInvert: phoneTagged,
     use: {
       ...devices["Desktop Chrome"],
+      baseURL: stubRecording() ? baseUrl : stubOrigin(),
+    },
+  },
+  // The phone half, which `iphone` is to `chromium`: a `@phone` row asserts what the page draws
+  // at a phone's width, and that project ignores a stub spec, so without this one a row that
+  // moved here would lose its phone run altogether. The two split the stub specs by the tag -
+  // this one greps it and `stub` inverts it - so every stubbed row runs under exactly one of
+  // them and each configuration holds it once, which is what
+  // e2e/__tests__/row-configurations.test.ts reads. A row that must run at both widths is a row
+  // written twice, as it is in the real-stack projects.
+  {
+    name: "stub-phone",
+    testMatch: stubSpecs,
+    testIgnore: [],
+    grep: phoneTagged,
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
       baseURL: stubRecording() ? baseUrl : stubOrigin(),
     },
   },
