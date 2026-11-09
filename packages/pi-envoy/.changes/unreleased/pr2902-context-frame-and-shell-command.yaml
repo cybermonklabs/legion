@@ -36,3 +36,6 @@ body: |-
   nowhere; and a delivery the moved host cannot write to that session's transcript is reported
   in the log rather than dropped without a word, as is the entry for an attempt it handled, which
   only the conversation the host is on can be written to.
+  A card for a session the host has left - one whose turn Dispatch did not accept, a late BTW, a
+  replayed card or a failure notice - is shown to no other conversation: it goes back to the
+  listener, or is logged, rather than being handed to the conversation the host moved to.

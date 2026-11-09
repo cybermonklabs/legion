@@ -136,7 +136,9 @@ state at any age. A write carries the state only when it changed; a sweep that h
 and only moved its cursors to the stream's end goes with the next write, or once the state last
 written is an hour old (`REPLAY_STATE_REFRESH_MS`). A frame the host fails to show is retried, and
 on its third failure the host shows a notice naming it instead (`showFailureNotice`); a host whose
-live path failed a frame calls `liveFailed(followed, envelope, error, receivedAt)`, which shows
+live path failed a frame calls `liveFailed(sessionID, followed, envelope, error, receivedAt)`, naming the
+session the frame was addressed to, which shows nothing and records nothing once the host no longer
+serves that session, and otherwise shows
 that notice at once unless a sweep will show the stream's copy, which it will not for a frame
 received before its subject's cursor started (a new follow, a new session, or a reset after a
 stream recreation), since that cursor can start past it. A host stamps `receivedAt` when the

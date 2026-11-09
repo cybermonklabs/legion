@@ -90,7 +90,7 @@ export interface UnwrittenFramesHost {
    * handed back what an interrupt withdrew.
    */
   settled(): boolean;
-  /** Records a frame the host wrote in the replay ledger (`ReplayEngine.recordDelivered`). */
+  /** Records a frame the host wrote in the replay ledger (`ReplayEngine.recordDeliveredFor`). */
   recordDelivered(identity: DedupeIdentity): Promise<void>;
   /** Hands the host a card (`pi.sendMessage`); a throw means it was not handed. */
   handCard(

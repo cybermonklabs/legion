@@ -1,6 +1,5 @@
-kind: Fixed
+kind: Changed
 body: |-
-  The notice a frame that failed to be delivered leaves names the session the frame was
-  addressed to, rather than whichever session the host has open when the failure lands. This
-  process serves one session, so the two agree here today; the call now says so rather than
-  leaving it to the clock.
+  The notice for a frame that failed to be delivered is asked for this process's one session by
+  name, read when the failure lands, as `ReplayEngine.liveFailed` now requires. What the notice
+  says and where it goes are unchanged.

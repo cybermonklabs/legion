@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `ReplayEngine.liveFailed` takes the session the failed frame was addressed to as its first
+  argument, and shows the notice and writes its record only while the host still serves that
+  session: a host that has moved to another conversation is shown nothing and records nothing
+  for it. Every caller passes the session now; one that passed none no longer typechecks.
