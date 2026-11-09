@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  AskGate's enforcement at the `dispatch` CLI no longer refuses a write no review ran for. A
+  gated write that reaches the CLI with no marker — one the gate never read, from a subagent, a
+  script, an eval cell or any `bash` call outside the literal grammar — posts with the CLI's
+  warning in every mode, and pi-envoy records it as an `unmarked` entry with `decision: allow`
+  and `verdictMode: warn`, where a session that chose `block` used to see `revise` and a refusal.
+  The in-process gate is unchanged: a review that runs and returns a revise still blocks the call
+  in block mode, a rules match still refuses in either mode, and a call given up without a
+  verdict is still held back in block mode. dispatch://INFRA-2079, row 3.5.

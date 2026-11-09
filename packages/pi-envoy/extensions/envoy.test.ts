@@ -4844,7 +4844,10 @@ console.log(JSON.stringify(args));
       await run.shutdown();
     }, 30_000);
 
-    test("an unmarked dispatch ask in block mode publishes one record of it too: the ask was refused, not sent", async () => {
+    // A session that chose block changes nothing here: the CLI refuses no write a review never
+    // ran for, so the write goes out and its record reads the same as warn mode's
+    // (INFRA-2079, row 3.5). The choice still stands for a write AskGate did review.
+    test("an unmarked dispatch ask publishes the same record in a session that chose block", async () => {
       process.env.OMP_ASKGATE = "block";
       try {
         gateOn();
@@ -4854,8 +4857,8 @@ console.log(JSON.stringify(args));
           {
             tool: "dispatch_ask",
             outcome: "unmarked",
-            decision: "revise",
-            verdictMode: "block",
+            decision: "allow",
+            verdictMode: "warn",
             asksCarried: 1,
           },
         ]);
@@ -5307,7 +5310,7 @@ console.log(JSON.stringify(args));
       }
     });
 
-    test("a session that chose OMP_ASKGATE=block keeps the CLI's checks at block when its gate does not load", async () => {
+    test("a session that chose OMP_ASKGATE=block records that choice, and a write the gate never saw still posts with its warning", async () => {
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
@@ -5320,8 +5323,9 @@ console.log(JSON.stringify(args));
         const fixture = createPi();
         envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
-        // The gate did not load, so it records no mode; the record carries the session's choice,
-        // and a gated write the gate never saw is refused by the CLI, not posted with a warning.
+        // The gate did not load, so it records no mode; the record carries the session's choice.
+        // A gated write the gate never saw carries no marker and no review of any kind, so the
+        // CLI posts it with the warning that says so rather than refusing it (INFRA-2079, 3.5).
         const sent: string[] = [];
         let stdout = "";
         const code = await runDispatchCli(
@@ -5340,9 +5344,11 @@ console.log(JSON.stringify(args));
             }) as typeof fetch,
           }
         );
-        expect(stdout).toContain("dispatch comment was not called: AskGate is on for this session");
-        expect(code).toBe(1);
-        expect(sent).toEqual([]);
+        expect(stdout).toContain(
+          "dispatch: warning: dispatch comment posted without review: AskGate is on for this session, and this call carries no AskGate marker."
+        );
+        expect(code).toBe(0);
+        expect(sent).not.toEqual([]);
         await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
       } finally {
         delete process.env.OMP_ASKGATE;

@@ -4752,13 +4752,15 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     });
   });
 
-  /** What the CLI prints for a gated write with no marker, built on consumeMarker's own reason. */
-  const unmarked = (mode: "block" | "warn") => {
+  /**
+   * What the CLI prints for a gated write with no marker, built on consumeMarker's own reason.
+   * The gate never read the command that ran such a write, so no review stands behind it: the
+   * CLI posts it with this warning in either mode and refuses nothing (INFRA-2079, row 3.5).
+   */
+  const unmarked = () => {
     const spent = consumeMarker([], ["comment"], {}, [], Date.now());
     if (spent.ok) throw new Error("an empty store gave a marker");
-    return mode === "block"
-      ? `dispatch comment was not called: AskGate is on for this session, and ${spent.why}. Send the write again in that form.`
-      : `dispatch: warning: AskGate is on for this session in warn mode, and ${spent.why}, so this write posts unreviewed.`;
+    return `dispatch: warning: dispatch comment posted without review: AskGate is on for this session, and ${spent.why}. No review ran for this call, so AskGate refused nothing.`;
   };
   const textOf = (result: Result) =>
     (result?.content ?? []).map((block) => (typeof block.text === "string" ? block.text : ""));
@@ -4773,7 +4775,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       expect(await g.bash("c1", command)).toBeUndefined();
       expect(g.entries).toHaveLength(0);
       expect(g.calls).toHaveLength(0);
-      const refusal = { type: "text", text: unmarked(mode === "block" ? "block" : "warn") };
+      const refusal = { type: "text", text: unmarked() };
       const result = await g.event("tool_result", { toolCallId: "c1", content: [refusal] });
       const [first, note] = textOf(result);
       expect(first).toBe(refusal.text);
@@ -4803,7 +4805,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       });
       expect(g.entries).toHaveLength(0);
       expect(markersIn(g.store)).toEqual([]);
-      const refusal = { type: "text", text: unmarked("block") };
+      const refusal = { type: "text", text: unmarked() };
       const [, note] = textOf(
         await g.event("tool_result", { toolCallId: "c1", content: [refusal] })
       );
@@ -4830,7 +4832,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     expect(
       await sub.event("tool_result", {
         toolCallId: "literal",
-        content: [{ type: "text", text: unmarked("block") }],
+        content: [{ type: "text", text: unmarked() }],
       })
     ).toBeUndefined();
   });
@@ -5986,8 +5988,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.stdout).not.toContain("was not called");
     expect(posted.code).toBe(0);
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
-    // The marker is spent: the same call again is refused.
-    expect((await post(command, g.store)).code).toBe(1);
+    // The marker is spent: the same call again carries none, and posts with AskGate's warning
+    // rather than being refused, since no review stands behind that second write either.
+    const again = await post(command, g.store);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toContain("posted without review");
   }, 30_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the

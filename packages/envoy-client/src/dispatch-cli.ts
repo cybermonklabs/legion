@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import {
+  type AskgateMode,
   askgateState,
   bytesDigest,
   consumeMarker,
@@ -78,6 +79,14 @@ const STATE_WRITE_FAILED = "dispatch: Dispatch took the call, but this session's
 function stateWriteFailed(problem: string): string {
   return `${STATE_WRITE_FAILED} could not be written: ${problem}`;
 }
+
+/**
+ * What the agent reads about a gated write AskGate's own state in this session let through: its
+ * record cannot be read, or the marker check threw. Nothing of the call is wrong, and no review
+ * refused it, so the write posts and the fault is named instead.
+ */
+const GATE_STATE_BROKEN =
+  "Nothing of the call is at fault: this is AskGate's own state in this session. Tell whoever owns the session, and send the next write as one bash call of literal words so AskGate reviews it.";
 
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
 const LITERAL_FORM =
@@ -337,20 +346,44 @@ export async function runDispatchCli(
   // AskGate: a session a live Oh My Pi process records with its gate bound (its AskGate record in
   // this directory) posts a gated write only with one marker the gate minted for this exact argv,
   // whatever ran the CLI. A session no live process records needs none.
+  //
+  // One decision point, and one invariant: a refusal here is only ever the verdict of a review
+  // that ran (dispatch://INFRA-2079, row 3.5). `finding.reviewed` is that decision, and nothing
+  // else may refuse. A write no review stands behind — the gate never read the command that ran
+  // this call, the record cannot be read, the check itself threw, the session's ledger cannot
+  // take the line that records it — posts with a warning that names the call and why no review
+  // ran. Three conditions used to refuse on their own here, and a check that never happened was
+  // stopping work no reviewer had ever looked at.
   let uploadBytes: Uint8Array | undefined;
   if (gatedWrite(parsed.tool, parsed.args)) {
-    const notCalled = `dispatch ${commandName(parsed.tool)} was not called:`;
+    const command = commandName(parsed.tool);
+    const notCalled = `dispatch ${command} was not called:`;
+    /**
+     * What this call's marker check found, where it found anything to say. `reviewed` is the one
+     * decision above: true only where AskGate reviewed this call and this write is not what its
+     * verdict covers. `why` is the short clause the session's ledger carries, `reason` the one
+     * the agent reads, and `kind` chooses what the agent is told to do about it.
+     */
+    let finding:
+      | {
+          readonly kind: "no-marker" | "changed" | "state";
+          readonly reviewed: boolean;
+          readonly mode: AskgateMode;
+          readonly why: string;
+          readonly reason: string;
+        }
+      | undefined;
     try {
       const gate = askgateState(dir);
       if (gate.kind === "broken") {
-        return refuse(
-          `${notCalled} AskGate's record for this session, ${gate.problem}, so whether AskGate reviewed this write cannot be told.`,
-          REFUSED,
-          parsed.tool,
-          { mode: "block", why: gate.problem }
-        );
-      }
-      if (gate.kind === "on") {
+        finding = {
+          kind: "state",
+          reviewed: false,
+          mode: "warn",
+          why: gate.problem,
+          reason: `AskGate's record for this session, ${gate.problem}, so whether AskGate reviewed this write cannot be told`,
+        };
+      } else if (gate.kind === "on") {
         // Each file the argv names, read once: its digest for the check, and an upload's bytes,
         // which are then the bytes the upload sends, so nothing changes between the check and
         // the send. Only a regular file is read; any other file has no digest, which matches no
@@ -375,60 +408,81 @@ export async function runDispatchCli(
           if (file.flag === "--path" && file.operand === parsed.args.path) uploadBytes = bytes;
         }
         const spent = consumeMarker(gate.stores, argv, parsed.args, files, Date.now());
-        // The asks this write would open for a person, counted from the write's own text: the
-        // one number pi-envoy's record of an unmarked write carries, so a session holding a
-        // Dispatch token alone can count the asks that went out, or were refused, unreviewed.
-        // The ledger carries the count and never the ask text. An upload's asks are in its file,
-        // whose bytes are already read above, and which the dry run's arguments name only by
-        // path. A re-upload's blocks are counted again: the write carries them.
-        const asksCarried = spent.ok
-          ? 0
-          : newAsks(
-              parsed.tool,
-              uploadBytes === undefined
-                ? parsed.args
-                : { ...parsed.args, content: new TextDecoder().decode(uploadBytes) }
-            ).length;
-        if (!spent.ok && gate.mode === "block") {
-          return refuse(
-            spent.changed === undefined
-              ? `${notCalled} AskGate is on for this session, and ${spent.why}. ${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`
-              : `${notCalled} AskGate is on for this session, and ${spent.why}. ${SAME_MESSAGE} Send the call again in a later message than the one that changes the file.`,
-            REFUSED,
-            parsed.tool,
-            { mode: "block", why: spent.why, asksCarried }
-          );
-        }
-        if (!spent.ok) {
-          // The ledger line that tells pi-envoy this write went out unreviewed is written before
-          // the write is sent, on its own: a ledger that cannot take it stops the write here, so
-          // no unreviewed write posts unrecorded.
-          try {
-            appendResult(dir, {
-              tool: parsed.tool,
-              askgate: { mode: "warn", why: spent.why, asksCarried },
-            });
-          } catch (error) {
-            return refuse(
-              `${notCalled} AskGate is on for this session in warn mode, and ${spent.why}. A write that posts unreviewed is first recorded in this session's ledger, and the ledger could not be written: ${messageFor(error)}.`,
-              REFUSED,
-              parsed.tool
-            );
-          }
-          print(
-            spent.changed === undefined
-              ? `dispatch: warning: AskGate is on for this session in warn mode, and ${spent.why}, so this write posts unreviewed. ${LITERAL_FORM} Send the next one in that form.`
-              : `dispatch: warning: AskGate is on for this session in warn mode, and ${spent.why}, so this write posts unreviewed. ${SAME_MESSAGE} Send a write in a later message than the call that changes its file.`
-          );
-        }
+        if (!spent.ok)
+          finding = {
+            kind: spent.changed === undefined ? "no-marker" : "changed",
+            reviewed: spent.reviewed,
+            mode: gate.mode,
+            why: spent.why,
+            reason: `AskGate is on for this session, and ${spent.why}`,
+          };
       }
     } catch (error) {
-      return refuse(
-        `${notCalled} AskGate's marker for this call could not be checked: ${messageFor(error)}.`,
-        REFUSED,
+      finding = {
+        kind: "state",
+        reviewed: false,
+        mode: "warn",
+        why: messageFor(error),
+        reason: `AskGate's marker for this call could not be checked: ${messageFor(error)}`,
+      };
+    }
+    if (finding !== undefined) {
+      // The asks this write would open for a person, counted from the write's own text: the
+      // one number pi-envoy's record of an unmarked write carries, so a session holding a
+      // Dispatch token alone can count the asks that went out, or were refused, unreviewed.
+      // The ledger carries the count and never the ask text. An upload's asks are in its file,
+      // whose bytes are already read above, and which the dry run's arguments name only by
+      // path. A re-upload's blocks are counted again: the write carries them.
+      const asksCarried = newAsks(
         parsed.tool,
-        { mode: "block", why: messageFor(error) }
+        uploadBytes === undefined
+          ? parsed.args
+          : { ...parsed.args, content: new TextDecoder().decode(uploadBytes) }
+      ).length;
+      /** What the agent does about it, where the write posts. */
+      const advice: Record<typeof finding.kind, string> = {
+        "no-marker": `${LITERAL_FORM} Send the next one in that form.`,
+        changed: `${SAME_MESSAGE} Send a write in a later message than the call that changes its file.`,
+        state: GATE_STATE_BROKEN,
+      };
+      // The one refusal: a review ran for this call, this write is not what its verdict covers,
+      // and the session chose block. `kind` is never `state` here, which no review stands behind.
+      if (finding.reviewed && finding.mode === "block") {
+        return refuse(
+          [
+            `${notCalled} ${finding.reason}.`,
+            finding.kind === "changed"
+              ? `${SAME_MESSAGE} Send the call again in a later message than the one that changes the file.`
+              : `${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`,
+          ].join(" "),
+          REFUSED,
+          parsed.tool,
+          { mode: "block", why: finding.why, asksCarried }
+        );
+      }
+      // The ledger line that tells pi-envoy this write went out unreviewed is written before the
+      // write is sent, so a reader of the session counts what posted with no review behind it. A
+      // ledger that cannot take it no longer stops the write: holding a write back for a record
+      // that failed is a refusal no review stands behind, which is the thing this branch exists
+      // to prevent. The call's own output then carries the whole account, and says so.
+      let unrecorded: string | undefined;
+      try {
+        appendResult(dir, {
+          tool: parsed.tool,
+          askgate: { mode: "warn", why: finding.why, asksCarried },
+        });
+      } catch (error) {
+        unrecorded = messageFor(error);
+      }
+      print(
+        finding.reviewed
+          ? `dispatch: warning: AskGate is on for this session in warn mode, and ${finding.why}, so this write posts unreviewed. ${advice[finding.kind]}`
+          : `dispatch: warning: dispatch ${command} posted without review: ${finding.reason}. No review ran for this call, so AskGate refused nothing. ${advice[finding.kind]}`
       );
+      if (unrecorded !== undefined)
+        print(
+          `dispatch: warning: dispatch ${command} could not be recorded as unreviewed in this session's ledger: ${unrecorded}. The write posts all the same, and this output is its only account.`
+        );
     }
   }
 

@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A refusal of a Dispatch write by the `dispatch` CLI is now only ever the verdict of an AskGate
+  review that ran. A write no review stands behind posts, with a warning naming the call and why
+  no review ran, where it used to be refused: a call carrying no marker at all (the gate never
+  read the command that ran it, so a write from a subagent, a script, an eval cell, `xargs`,
+  `python3 -c` or any other form outside the literal grammar), a session record that cannot be
+  read or that names a marker store that is gone, a marker check that threw, and a ledger that
+  cannot take the line recording the unreviewed write. The warning reads
+  `dispatch: warning: dispatch <command> posted without review: …`, and the session's ledger
+  carries the write as `askgate.mode: warn` with its `asksCarried` count, as it did for warn
+  mode. A review that ran and does not cover the write still refuses where the session chose
+  block, unchanged: arguments that differ from the reviewed ones, a file whose bytes changed
+  after AskGate read them, and a marker past its age. `consumeMarker` answers which of the two a
+  rejected call is, as `Consumed.reviewed`, and the CLI decides in that one place.
+  dispatch://INFRA-2079, row 3.5.

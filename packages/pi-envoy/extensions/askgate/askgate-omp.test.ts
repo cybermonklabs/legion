@@ -285,9 +285,12 @@ for (const [language, code] of [
 
 // AskGate's enforcement at the CLI, on the real binary with the real CLI and a fake Dispatch: the
 // gate reviews a literal call, mints its marker, and the CLI consumes it and posts once. Every
-// other form reaches the CLI with no marker and is refused before it sends, which the CLI logs and
-// pi-envoy records as an `unmarked` entry. With the switch off nothing asks any form for a marker.
+// other form reaches the CLI with no marker, which is a call no review ever saw: it posts with
+// the CLI's warning, whatever mode the session chose (INFRA-2079, row 3.5), and pi-envoy records
+// an `unmarked` entry. With the switch off nothing asks any form for a marker.
 const REFUSED = "dispatch ask was not called: AskGate is on for this session";
+/** The CLI's warning on a write no review stood behind, which the agent reads on its result. */
+const UNREVIEWED = "posted without review";
 /** The ask's argument vector as a JS or Python list literal, the CLI called by its path. */
 const askArgv = (dispatch: string) =>
   JSON.stringify([dispatch, "ask", "--issue", "DSP-1", "--question", "Ship the release today?"]);
@@ -411,7 +414,7 @@ for (const [form, firstTurn, config] of [
   ],
 ] as const)
   test.skipIf(omp === undefined && !onActions)(
-    `the real CLI refuses a gated write from ${form}, which carries no marker, once the session chose block`,
+    `the real CLI posts a gated write from ${form} with its warning, since no review saw it, even once the session chose block`,
     async () => {
       const { requests, sessions } = await runSession({
         cli: "real",
@@ -420,11 +423,12 @@ for (const [form, firstTurn, config] of [
         config,
         mode: "block",
       });
-      expect(asksPosted(requests)).toBe(0);
-      expect(lastTurn(requests)).toContain(REFUSED);
-      // The gate read no call; the CLI's refusal is recorded from its ledger.
+      expect(asksPosted(requests)).toBe(1);
+      expect(lastTurn(requests)).not.toContain(REFUSED);
+      expect(lastTurn(requests)).toContain(UNREVIEWED);
+      // The gate read no call; the write is recorded from the CLI's ledger line.
       expect(await gateEntries(sessions)).toMatchObject([
-        { tool: "dispatch_ask", outcome: "unmarked", decision: "revise", verdictMode: "block" },
+        { tool: "dispatch_ask", outcome: "unmarked", decision: "allow", verdictMode: "warn" },
       ]);
     },
     180_000
@@ -446,7 +450,7 @@ test.skipIf(omp === undefined && !onActions)(
     });
     expect(asksPosted(requests)).toBe(1);
     expect(lastTurn(requests)).not.toContain(REFUSED);
-    expect(lastTurn(requests)).toContain("AskGate is on for this session in warn mode");
+    expect(lastTurn(requests)).toContain(UNREVIEWED);
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_ask", outcome: "unmarked", decision: "allow", verdictMode: "warn" },
     ]);

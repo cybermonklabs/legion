@@ -696,7 +696,20 @@ function readMarker(file: string): Marker | undefined {
  */
 export type Consumed =
   | { readonly ok: true }
-  | { readonly ok: false; readonly why: string; readonly changed?: FileOperand };
+  | {
+      readonly ok: false;
+      /**
+       * Whether AskGate reviewed this call: a marker it minted for this exact argv was found and
+       * then rejected, so a review ran and this write is not what its verdict covers (other
+       * arguments, a file changed since it was read, a marker past its age). False where the
+       * stores hold no marker for this argv at all, which is a call no review ever saw — the
+       * gate never read the command that ran it, or there is no gate. The CLI refuses only the
+       * first: a refusal is the verdict of a review that ran (dispatch://INFRA-2079, row 3.5).
+       */
+      readonly reviewed: boolean;
+      readonly why: string;
+      readonly changed?: FileOperand;
+    };
 
 /**
  * Consumes one marker for `argv` from `stores`: a marker bound to `args` and to `files` (each file
@@ -763,11 +776,16 @@ export function consumeMarker(
   if (changed !== undefined)
     return {
       ok: false,
+      reviewed: true,
       why: `a file this write posts changed after AskGate read it (\`${changed.flag} ${changed.operand}\`)`,
       changed,
     };
+  // A marker for this argv was found and rejected (`mismatched`, `expired`): AskGate reviewed
+  // this call, and this write is not what its verdict covers. With neither, the stores held no
+  // marker for this argv at all, and no review ever saw the call.
   return {
     ok: false,
+    reviewed: mismatched || expired,
     why: mismatched
       ? "its arguments differ from the ones AskGate reviewed"
       : expired

@@ -472,15 +472,22 @@ gated write only when it consumes one, so a write sent any other way is refused 
 - **The check.** After `--help`, `--dry-run` and the session and Dispatch settings, and before a
   gated write posts, the CLI reads the session's record. With a live one it reads each file the
   argv names once and consumes one matching marker by unlinking it: exactly one process wins, so a
-  marker posts one write and a replay finds none. In `block` mode a write with no matching marker
-  is refused (`dispatch <command> was not called: AskGate is on for this session, …`, which names
-  the form to send, or, for a file that changed after the review, says to send the call again in a
-  later message). In `warn` mode the CLI first records the write in the session's ledger, refuses
-  it when the ledger cannot take that line, and then posts it with a `dispatch: warning:` line.
-  Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. A record that cannot
-  be read, or that names a store that is gone, is a refusal. A session no live record names needs
-  no marker: a terminal, CI, Claude Code, a pod without pi-envoy, a session with no Dispatch and
-  one with `askgate.enabled: false`.
+  marker posts one write and a replay finds none. A refusal here is only ever the verdict of a
+  review that ran (dispatch://INFRA-2079, row 3.5). AskGate reviewed the call, and the write is
+  not what its verdict covers — arguments that differ from the reviewed ones, a file whose bytes
+  changed after AskGate read them, a marker past its age — so in `block` mode the write is
+  refused (`dispatch <command> was not called: AskGate is on for this session, …`, which names
+  the form to send, or, for a changed file, says to send the call again in a later message), and
+  in `warn` mode it posts with a `dispatch: warning:` line. Everything else is a write no review
+  stands behind: a call with no marker at all, which the gate never read (a subagent, a script,
+  an eval cell, `xargs`, any form outside the literal grammar), a record that cannot be read or
+  that names a store that is gone, and a marker check that threw. Each of those posts, in every
+  mode, with `dispatch: warning: dispatch <command> posted without review: …` naming the call and
+  why no review ran. The CLI records the write in the session's ledger before it sends, and a
+  ledger that cannot take that line no longer holds the write back: the warning says the record
+  failed instead. Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. A
+  session no live record names needs no marker: a terminal, CI, Claude Code, a pod without
+  pi-envoy, a session with no Dispatch and one with `askgate.enabled: false`.
 - **The cause note.** When a `bash` call outside the literal form holds a `dispatch` word and a
   gated subcommand, and its result holds the CLI's refusal (or warn-mode warning) of a write with
   no marker, the gate appends an `AskGate note:` to that result. It names the first cause it found

@@ -19,10 +19,14 @@
 // written. For each literal call it lets run it mints one single-use marker
 // (`@legion/envoy-client/askgate-marker`), keyed by the argv the CLI will receive and, behind a
 // review or a deliberate pass (a rebuttal, a breaker trip), bound to the digest of the dry run's
-// arguments and to the sha256 of each file the argv names, as the gate read it for the review. The
-// CLI posts a gated write in a session whose record a live Oh My Pi process keeps (envoy.ts writes
-// it) only when it consumes such a marker, so a write sent in any other form, from a pipe, a
-// script, `python3 -c`, an eval cell's process or anything else, is refused when it runs. The
+// arguments and to the sha256 of each file the argv names, as the gate read it for the review. In
+// a session whose record a live Oh My Pi process keeps (envoy.ts writes it), the CLI consumes
+// that marker before it posts, and refuses the write where it finds a marker of this argv its
+// verdict does not cover — other arguments, a file changed since the review, a marker past its
+// age — and the session chose block. A write sent in any other form, from a pipe, a script,
+// `python3 -c`, an eval cell's process or anything else, carries no marker at all: no review ever
+// saw it, so the CLI posts it with a warning naming the call and refuses nothing
+// (dispatch://INFRA-2079, row 3.5), and envoy.ts records it as `unmarked`. The
 // CLI's check does not cover a direct HTTP request to Dispatch, an older or a different CLI, or a
 // same-user process that removes the record or a marker, acts as another session id or state
 // directory, or otherwise goes around the CLI. Precision comes first: the gate must not refuse a
@@ -95,12 +99,13 @@
 //     judged against failure 10 alone (askgate-upload.md), since a plan or a report is long by
 //     nature.
 //   - Any other call is not the gate's: a `bash` call in any other form, or an `eval` call, runs
-//     with no entry and no marker, and the CLI refuses a gated write it sends. The gate records
-//     the mode in its marker store at each main-agent `bash` or `eval` call (the CLI reads it:
-//     `warn` lets an unmarked write post with a warning), and envoy.ts records an `unmarked`
+//     with no entry and no marker, and the CLI posts a gated write it sends with a warning that
+//     no review ran for it. The gate records the mode in its marker store at each main-agent
+//     `bash` or `eval` call (the CLI reads it, and it decides only a write AskGate did review),
+//     and envoy.ts records an `unmarked`
 //     entry for each such write the CLI logged. When such a call's text holds a `dispatch` word
 //     and a gated write subcommand, the gate finds the first cause that puts it outside the
-//     grammar (`nonLiteralCause`) and, when the call's result holds the CLI's refusal of a write
+//     grammar (`nonLiteralCause`) and, when the call's result holds the CLI's line for a write
 //     with no marker, appends a note that names the cause and the literal form (`causeNote`).
 //   - `write xd://<device>` calls, seen on the nested `tool_call` event the device wrapper emits
 //     with `toolName = <device>` and the validated arguments, for dispatch_ask, dispatch_message,
@@ -1500,7 +1505,8 @@ function fileInputs(
 /**
  * The `bash` command as a scoped `dispatch` call, or undefined for any other command. Only the
  * literal grammar of one call is read (`dispatchCommandHead`). A call in any other form is no
- * scoped call: it runs, and the CLI refuses a gated write in it, which carries no marker. The
+ * scoped call: it runs, and the CLI posts a gated write in it, which carries no marker, with a
+ * warning that no review ran for it. The
  * override comment that may stand where the call's line ends is read as overrides after the call's own
  * flags, and is left out of `command` and of the dry run, as an override flag is: the gate puts
  * every override back as one comment (`keepOverrideVisible`), so a rebutted command it handed
@@ -2140,12 +2146,17 @@ const NO_MODEL_ROLE_REFUSAL = `AskGate did not send this call: it reviews each D
  */
 const recordFailureRefusal = (message: string, configFile: string) =>
   `AskGate did not send this call: no review stands behind it, and AskGate could not record that in the session (${message}). Every Dispatch write that posts unreviewed is recorded, so AskGate holds this one back. Send it again once the session takes its entries. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
-/** The refusal for a call whose marker could not be minted: the CLI would refuse it with none. */
+/**
+ * The refusal for a call whose marker could not be minted. The CLI would now post such a write
+ * with a warning rather than refuse it (dispatch://INFRA-2079, row 3.5), so this refusal is the
+ * gate's own: a review it could not carry to the CLI.
+ */
 const mintFailureRefusal = (message: string, configFile: string) =>
   `AskGate did not send this call: the dispatch CLI posts a Dispatch write in this session only with a marker AskGate mints for it, and AskGate could not mint one (${message}). Send the call again once the CLI's state directory takes files. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
 /**
  * The refusal, in block mode, of a literal call whose final command gives the gate no argument
- * vector to key a marker by: the CLI would refuse it with no marker, naming a form it already has.
+ * vector to key a marker by. The gate reviewed nothing of it and can mint nothing for it; the
+ * CLI would post it with a warning, so this refusal too is the gate's own.
  */
 const UNKEYED_REFUSAL =
   "AskGate did not send this call: it could not read the arguments the dispatch CLI gets from the command that runs, so it could not mint the marker the CLI needs to post the write. Send the write again as one bash call of literal words.";
@@ -2522,10 +2533,10 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
     };
     /**
      * The cause each `bash` call outside the literal grammar that runs a gated write has, as the
-     * note its result gets (`causeNote`), by tool call id. The gate refuses nothing for it: the
-     * CLI refuses such a write, and cannot see the shell text that put it outside the grammar.
-     * So the note goes on the call's result only when that result holds the CLI's refusal (or
-     * warn mode's warning) of a write with no marker. At most NOTICE_CAP are kept.
+     * note its result gets (`causeNote`), by tool call id. The gate refuses nothing for it, and
+     * cannot see the shell text that put the call outside the grammar once it has run. So the
+     * note goes on the call's result only when that result holds the CLI's line for a write
+     * with no marker. At most NOTICE_CAP are kept.
      */
     const causes = new Map<string, string>();
     const rememberCause = (toolCallId: string, command: unknown) => {
@@ -3467,7 +3478,8 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
      * vector of the command that runs, the final one the gate returns, bound to the dry run's
      * arguments and the digests of the files the gate read when a review or a deliberate pass
      * stands behind them (`bound`), argv-only otherwise. Undefined when it was minted; else the
-     * refusal of a mint that failed, since the CLI would refuse the call anyway. A command whose
+     * refusal of a mint that failed, which is the gate's own (the CLI would post the write with
+     * a warning). A command whose
      * argument vector the gate cannot read gets no marker: `block` mode refuses it, and `warn`
      * mode lets it run with a note, as the CLI then posts it with a warning.
      */
