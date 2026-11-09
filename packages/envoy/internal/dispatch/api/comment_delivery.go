@@ -525,7 +525,7 @@ func (s *server) supersedeCommentDelivery(
 //
 // A resumed attempt carries the resolution it was opened with, in its pinned session or its
 // resolve error, and its first try keeps it: the routing decision - which session this attempt
-// targets - stays fixed, exactly as resolveMentionTargets already guarantees against a role
+// targets - stays fixed, exactly as resolveMentionTarget already guarantees against a role
 // transition redirecting an in-flight delivery. What a take-over retry of that try resolves is
 // deliverResolvedCommentMention's to say: a pinned session is rechecked again, and a resolve error
 // is kept for good only on the attempt a comment's other routes were decided on. An attempt

@@ -272,7 +272,7 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 	return failure, nil
 }
 
-// resolveThroughTakeover resolves one target as resolveMentionTargets does, with nothing held,
+// resolveThroughTakeover resolves one target as resolveMentionTarget does, with nothing held,
 // and, when wait is set, waits out a listener take-over the way a sender does: a resolution whose
 // outcome is a take-over's (retryableDeliveryFailure) is taken again after takeoverRetry's backoff
 // until the listener answers otherwise or the window closes. A comment resolves this way the
