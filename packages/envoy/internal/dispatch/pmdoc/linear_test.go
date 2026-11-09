@@ -42,6 +42,13 @@ import (
 // load, inflating the apparent ratio independent of any real growth; TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack's
 // own history records the fix.
 //
+// A shape's input - the text or the tree a rung is measured on - is built once for that rung,
+// above the sampling, and every sample of that rung reads the one copy: a timed window only
+// reads its input, and building a mebibyte of markdown, or a tree parsed from one, once for every
+// sample cost more CPU in this package's CI lane than some of the calls being measured
+// (dispatch://INFRA-1075). A run that changes what it reads gets a fresh one from cpuTimeOf's
+// prepare instead, per run rather than per sample.
+//
 // Every measured call also runs under its own deadline (perCallDeadline, growsLinearly): a single
 // call that itself blocks far longer than this bound allows fails fast and names its own shape,
 // rather than the package's own ten-minute default eventually firing with no shape attached
@@ -60,13 +67,15 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		full := parseFullTarget / len(shape)
 		small := full / growthStep
 		t.Run(shape, func(t *testing.T) {
-			growsLinearly(t, fmt.Sprintf("parsing %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) (time.Duration, error) {
-				text := strings.Repeat(shape, size/len(shape))
-				return cpuTimeOf(again(func() {
-					if _, err := ParseRendering(text); err != nil {
-						t.Fatalf("parse %d bytes of %q: %v", size, shape, err)
-					}
-				}))
+			growsLinearly(t, fmt.Sprintf("parsing %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) func() (time.Duration, error) {
+				text := strings.Repeat(shape, size/len(shape)) // the parse only reads it, so the rung's samples share one
+				return func() (time.Duration, error) {
+					return cpuTimeOf(again(func() {
+						if _, err := ParseRendering(text); err != nil {
+							t.Fatalf("parse %d bytes of %q: %v", size, shape, err)
+						}
+					}))
+				}
 			})
 		})
 	}
@@ -86,13 +95,15 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		small := full / growthStep
 		name := "a typed block of spaced items in a list item"
 		t.Run(name, func(t *testing.T) {
-			growsLinearly(t, name, []int{small * len(repeat), full * len(repeat)}, linearSlack, func(size int) (time.Duration, error) {
-				text := open + strings.Repeat(repeat, size/len(repeat)) + closer
-				return cpuTimeOf(again(func() {
-					if _, err := ParseForWrite(text, nil); err != nil {
-						t.Fatalf("%s at %d bytes: %v", name, size, err)
-					}
-				}))
+			growsLinearly(t, name, []int{small * len(repeat), full * len(repeat)}, linearSlack, func(size int) func() (time.Duration, error) {
+				text := open + strings.Repeat(repeat, size/len(repeat)) + closer // the parse only reads it, so the rung's samples share one
+				return func() (time.Duration, error) {
+					return cpuTimeOf(again(func() {
+						if _, err := ParseForWrite(text, nil); err != nil {
+							t.Fatalf("%s at %d bytes: %v", name, size, err)
+						}
+					}))
+				}
 			})
 		})
 	}
@@ -112,17 +123,20 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		small := full / growthStep
 		name := "quoted typed blocks ending on a bare line"
 		t.Run(name, func(t *testing.T) {
-			growsLinearly(t, name, []int{small * unit, full * unit}, linearSlack, func(size int) (time.Duration, error) {
+			growsLinearly(t, name, []int{small * unit, full * unit}, linearSlack, func(size int) func() (time.Duration, error) {
+				// The parse only reads this text, so the rung's samples share the one build of it.
 				var text strings.Builder
 				for index := 0; index < size/unit; index++ {
 					fmt.Fprintf(&text, repeat, index)
 				}
 				body := text.String()
-				return cpuTimeOf(again(func() {
-					if _, err := ParseForWrite(body, nil); err != nil {
-						t.Fatalf("%s at %d bytes: %v", name, size, err)
-					}
-				}))
+				return func() (time.Duration, error) {
+					return cpuTimeOf(again(func() {
+						if _, err := ParseForWrite(body, nil); err != nil {
+							t.Fatalf("%s at %d bytes: %v", name, size, err)
+						}
+					}))
+				}
 			})
 		})
 	}
@@ -154,14 +168,16 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			parse func(string) (*Node, error)
 		}{{"ParseRendering", ParseRendering}, {"Parse", Parse}} {
 			t.Run(reader.name+" "+name, func(t *testing.T) {
-				growsLinearly(t, fmt.Sprintf("%s of %q", reader.name, name), []int{small * pair, full * pair}, linearSlack, func(size int) (time.Duration, error) {
+				growsLinearly(t, fmt.Sprintf("%s of %q", reader.name, name), []int{small * pair, full * pair}, linearSlack, func(size int) func() (time.Duration, error) {
 					repeats := size / pair
-					text := shape.before + strings.Repeat(shape.open, repeats) + strings.Repeat(shape.close, repeats) + shape.after
-					return cpuTimeOf(again(func() {
-						if _, err := reader.parse(text); err != nil && !refusedForItsMarks(err) {
-							t.Fatalf("%s of %d bytes of %q: %v", reader.name, size, name, err)
-						}
-					}))
+					text := shape.before + strings.Repeat(shape.open, repeats) + strings.Repeat(shape.close, repeats) + shape.after // the parse only reads it, so the rung's samples share one
+					return func() (time.Duration, error) {
+						return cpuTimeOf(again(func() {
+							if _, err := reader.parse(text); err != nil && !refusedForItsMarks(err) {
+								t.Fatalf("%s of %d bytes of %q: %v", reader.name, size, name, err)
+							}
+						}))
+					}
 				})
 			})
 		}
@@ -173,13 +189,15 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			return &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: strings.Repeat(shape, repeats)}}}}}
 		}
 		t.Run(shape, func(t *testing.T) {
-			growsLinearly(t, fmt.Sprintf("rendering %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) (time.Duration, error) {
-				tree := doc(size / len(shape))
-				return cpuTimeOf(again(func() {
-					if _, err := Render(tree); err != nil {
-						t.Fatalf("render %d bytes of %q: %v", size, shape, err)
-					}
-				}))
+			growsLinearly(t, fmt.Sprintf("rendering %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) func() (time.Duration, error) {
+				tree := doc(size / len(shape)) // the render only reads the tree, so the rung's samples share one
+				return func() (time.Duration, error) {
+					return cpuTimeOf(again(func() {
+						if _, err := Render(tree); err != nil {
+							t.Fatalf("render %d bytes of %q: %v", size, shape, err)
+						}
+					}))
+				}
 			})
 		})
 	}
@@ -216,25 +234,32 @@ const growthStep = 8
 // them; TestRunWithDeadlineReportsAHangPromptly, below growsLinearly, proves the deadline itself).
 func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T) {
 	const small, full = 1, growthStep // the growth step itself; growthVerdict never reads these as bytes
-	linear := func(size int) time.Duration { return time.Duration(size) * time.Second }
-	quadratic := func(size int) time.Duration { return time.Duration(size*size) * time.Second }
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, quadratic); failedStep != 0 {
+	linearTime := func(size int) time.Duration { return time.Duration(size) * time.Second }
+	quadraticTime := func(size int) time.Duration { return time.Duration(size*size) * time.Second }
+	// A synthetic shape has no input to build, so each rung hands its samples the same function;
+	// a real shape builds its rung's input here instead (growsLinearly).
+	rung := func(timed func(size int) time.Duration) func(size int) func() time.Duration {
+		return func(size int) func() time.Duration { return func() time.Duration { return timed(size) } }
+	}
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, rung(quadraticTime)); failedStep != 0 {
 		t.Errorf("growthVerdict did not fail a synthetic quadratic timing function at growth=%d, slack=%d (failedStep=%d), want step 0 to fail", growthStep, linearSlack, failedStep)
 	}
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, linear); failedStep != -1 {
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, rung(linearTime)); failedStep != -1 {
 		t.Errorf("growthVerdict failed a synthetic linear timing function at growth=%d, slack=%d (step %d), want it to pass", growthStep, linearSlack, failedStep)
 	}
 	// Negative control: round 1-2's 2x step, the same slack, the same quadratic function. This
 	// must still pass growthVerdict (wrongly) - it is the historical defect
 	// growthStep's doc comment names, kept here so a future reader can run it and see the defect
 	// reproduce rather than take the claim on faith.
-	if failedStep, _ := growthVerdict([]int{1, 2}, linearSlack, quadratic); failedStep != -1 {
+	if failedStep, _ := growthVerdict([]int{1, 2}, linearSlack, rung(quadraticTime)); failedStep != -1 {
 		t.Errorf("growthVerdict unexpectedly failed the 2x-step negative control (failedStep=%d) - if this starts failing, the control no longer demonstrates round 1-2's defect and this test's comment needs updating, not alarm", failedStep)
 	}
 	// growsLinearly itself, through a real *testing.T, confirms the wrapper agrees with
 	// growthVerdict on the passing direction (the failing direction cannot run through a real
 	// t.Fatalf without failing this test, which the growthVerdict assertion above already proves).
-	growsLinearly(t, "synthetic linear", []int{small, full}, linearSlack, func(size int) (time.Duration, error) { return linear(size), nil })
+	growsLinearly(t, "synthetic linear", []int{small, full}, linearSlack, func(size int) func() (time.Duration, error) {
+		return func() (time.Duration, error) { return linearTime(size), nil }
+	})
 }
 
 // linearSlack is how many times faster than growth itself a linear operation's time may grow
@@ -287,13 +312,15 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 		{"line feeds", func(size int) *Node { return doc(paragraph(strings.Repeat("a\n", size/2))) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, "rendering "+test.name, []int{renderFullTarget / growthStep, renderFullTarget}, linearSlack, func(size int) (time.Duration, error) {
-				document := test.doc(size)
-				return cpuTimeOf(again(func() {
-					if _, err := Render(document); err != nil {
-						t.Fatalf("render %s at %s: %v", test.name, sizeText(size), err)
-					}
-				}))
+			growsLinearly(t, "rendering "+test.name, []int{renderFullTarget / growthStep, renderFullTarget}, linearSlack, func(size int) func() (time.Duration, error) {
+				document := test.doc(size) // the render only reads the tree, so the rung's samples share one
+				return func() (time.Duration, error) {
+					return cpuTimeOf(again(func() {
+						if _, err := Render(document); err != nil {
+							t.Fatalf("render %s at %s: %v", test.name, sizeText(size), err)
+						}
+					}))
+				}
 			})
 		})
 	}
@@ -310,13 +337,15 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 		{"a\\~~ repeated", func(size int) string { return strings.Repeat("a\\~~", size/4) }, ParseRendering},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, "parsing "+test.name, []int{parseFullTarget / growthStep, parseFullTarget}, linearSlack, func(size int) (time.Duration, error) {
-				markdown := test.markdown(size)
-				return cpuTimeOf(again(func() {
-					if _, err := test.parse(markdown); err != nil {
-						t.Fatalf("parse %s at %s: %v", test.name, sizeText(size), err)
-					}
-				}))
+			growsLinearly(t, "parsing "+test.name, []int{parseFullTarget / growthStep, parseFullTarget}, linearSlack, func(size int) func() (time.Duration, error) {
+				markdown := test.markdown(size) // the parse only reads it, so the rung's samples share one
+				return func() (time.Duration, error) {
+					return cpuTimeOf(again(func() {
+						if _, err := test.parse(markdown); err != nil {
+							t.Fatalf("parse %s at %s: %v", test.name, sizeText(size), err)
+						}
+					}))
+				}
 			})
 		})
 	}
@@ -334,13 +363,15 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 // rendering is, whose parse no element limit stops.
 func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 	const header, row = "| a |\n| --- |\n", "`\\|`\n"
-	growsLinearly(t, "parsing a table of `\\|` cells", ladderSizes, growthAllowance, func(size int) (time.Duration, error) {
-		markdown := header + strings.Repeat(row, (size-len(header))/len(row))
-		return cpuTimeOf(again(func() {
-			if _, err := ParseRendering(markdown); err != nil {
-				t.Fatalf("parse %d bytes of `\\|` rows: %v", size, err)
-			}
-		}))
+	growsLinearly(t, "parsing a table of `\\|` cells", ladderSizes, growthAllowance, func(size int) func() (time.Duration, error) {
+		markdown := header + strings.Repeat(row, (size-len(header))/len(row)) // the parse only reads it, so the rung's samples share one
+		return func() (time.Duration, error) {
+			return cpuTimeOf(again(func() {
+				if _, err := ParseRendering(markdown); err != nil {
+					t.Fatalf("parse %d bytes of `\\|` rows: %v", size, err)
+				}
+			}))
+		}
 	})
 }
 
@@ -423,17 +454,19 @@ func TestUnclosedRawHTMLShapesParseAndRenderLinearly(t *testing.T) {
 func readsAndWritesLinearly(t *testing.T, head, shape, tail string, sizes []int) {
 	t.Helper()
 	what := head + shape + tail
-	growsLinearly(t, fmt.Sprintf("reading and writing %q", what), sizes, growthAllowance, func(size int) (time.Duration, error) {
-		markdown := head + strings.Repeat(shape, (size-len(head))/len(shape)) + tail + "._\n"
-		return cpuTimeOf(again(func() {
-			doc, err := ParseRendering(markdown)
-			if err != nil {
-				t.Fatalf("parse %d bytes of %q: %v", size, what, err)
-			}
-			if _, err := Render(doc); err != nil {
-				t.Fatalf("render %d bytes of %q: %v", size, what, err)
-			}
-		}))
+	growsLinearly(t, fmt.Sprintf("reading and writing %q", what), sizes, growthAllowance, func(size int) func() (time.Duration, error) {
+		markdown := head + strings.Repeat(shape, (size-len(head))/len(shape)) + tail + "._\n" // the read and the write only read it, so the rung's samples share one
+		return func() (time.Duration, error) {
+			return cpuTimeOf(again(func() {
+				doc, err := ParseRendering(markdown)
+				if err != nil {
+					t.Fatalf("parse %d bytes of %q: %v", size, what, err)
+				}
+				if _, err := Render(doc); err != nil {
+					t.Fatalf("render %d bytes of %q: %v", size, what, err)
+				}
+			}))
+		}
 	})
 }
 
@@ -473,27 +506,40 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 		full := test.target / len(test.to)
 		small := full / growthStep
 		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, test.name, []int{small * len(test.to), full * len(test.to)}, linearSlack, func(size int) (time.Duration, error) {
+			growsLinearly(t, test.name, []int{small * len(test.to), full * len(test.to)}, linearSlack, func(size int) func() (time.Duration, error) {
 				blocks := size / len(test.to)
+				// Every write of this rung writes the same trees into a document of its own, and a
+				// write only reads the tree it writes, so the rung's samples share one seed and one
+				// want rather than parsing a mebibyte of markdown into a tree once per sample.
 				var seed *Node
 				if test.from != "" {
 					seed = repeatedBlocks(t, test.from, blocks)
 				}
 				want := repeatedBlocks(t, test.to, blocks)
 				var fragment *crdt.YXmlFragment // the last run's, which every run's write matches
-				took, err := cpuTimeOf(func() func() {
-					doc := crdt.New()
-					written := doc.GetXmlFragment("prosemirror")
-					if seed != nil {
-						writeUpdate(t, doc, written, seed)
+				// The read-back is this rung's check rather than part of its measurement, and every
+				// sample writes the same want into a document of its own, so the first sample's
+				// read-back answers for the rung: reading back what a later sample wrote costs
+				// another Read of a mebibyte and another tree comparison to prove what that one
+				// proved.
+				readBack := sync.OnceFunc(func() {
+					if got, err := Read(fragment); err != nil || !got.Equal(want) {
+						t.Fatalf("%s: %d blocks read back otherwise (%v)", test.name, blocks, err)
 					}
-					fragment = written
-					return func() { writeUpdate(t, doc, written, want) }
 				})
-				if got, err := Read(fragment); err != nil || !got.Equal(want) {
-					t.Fatalf("%s: %d blocks read back otherwise (%v)", test.name, blocks, err)
+				return func() (time.Duration, error) {
+					took, err := cpuTimeOf(func() func() {
+						doc := crdt.New()
+						written := doc.GetXmlFragment("prosemirror")
+						if seed != nil {
+							writeUpdate(t, doc, written, seed)
+						}
+						fragment = written
+						return func() { writeUpdate(t, doc, written, want) }
+					})
+					readBack()
+					return took, err
 				}
-				return took, err
 			})
 		})
 	}
@@ -595,7 +641,21 @@ const growthAllowance = 4
 // other (an asymmetric draw biases a minimum low on the side with more samples, independent of
 // any real growth). Measuring CPU time rather than wall time (processCPUTime, below) removes most
 // of what ambient box load would otherwise still leave to sample away.
-const sampleCount = 3
+//
+// Two, not the three this file ran until dispatch://INFRA-1075 measured the count in CI (run
+// 42657054358). Both halves of that proof ran at two samples: the twelve measured tests of this
+// package fifty times each, under busy loops at twice the runner's cores, every run green and the
+// worst ratio of the whole half 2.3 against a bound of 4; and each of the four quadratic controls
+// fifty times, every one of them breaking the test it must break, with lowest ratios over the
+// fifty of 722, 1465, 1205 and 54 against allowances of 256, 256, 256 and 24. What the third
+// sample bought was one more draw for each rung's minimum: at two, a spike that lands on the
+// smaller rung is likelier to survive into its minimum and shrink the ratio a regression would
+// show, and one on the larger rung likelier to inflate it into a failure of nothing. Those
+// margins answer both directions - 2.3 of an allowed 4 on the healthy side, and the narrowest
+// control still more than twice its allowance on the other - and the sample they drop is worth
+// about a third of the 105.9 s of CPU the twelve spend inside their measurement windows (the
+// profile of run 42652756229), which is this package's share of a CI step held to 480 s.
+const sampleCount = 2
 
 // processCPUTime is this process's total CPU time, user and system, since it started
 // (cputest.Process), not wall time: it leaves out the time the process waits for a core, which is
@@ -958,14 +1018,16 @@ func waitForLeakToClear(t *testing.T, cleared <-chan struct{}) {
 // growthVerdict runs growsLinearly's measurement algorithm without a *testing.T to report
 // through: which step (0-based, among sizes[1:]) first grew past its bound, or -1 if none did,
 // and one line of context for every step up to and including a failure - the fail-style line at
-// that step, a log-style line at every other. Every size, the first included, is measured
-// sampleCount times and the fastest kept, so the comparison at every step draws from the same
-// number of samples on both sides. growsLinearly below turns these into t.Fatalf/t.Logf;
+// that step, a log-style line at every other. timed is called once per size and hands back what
+// each of that size's samples measures, so a rung's input is built once and every sample of it
+// reads that one copy. Every size, the first included, is measured sampleCount times and the
+// fastest kept, so the comparison at every step draws from the same number of samples on both
+// sides. growsLinearly below turns these into t.Fatalf/t.Logf;
 // TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack calls this directly, so the
 // bound it proves is provable without a real *testing.T failing, a real parse or render, or a
 // hang past some other timeout standing in for the check actually tripping.
-func growthVerdict(sizes []int, allowance int, timed func(size int) time.Duration) (failedStep int, lines []string) {
-	fastest := func(size int) time.Duration { return fastestOf(func() time.Duration { return timed(size) }) }
+func growthVerdict(sizes []int, allowance int, timed func(size int) func() time.Duration) (failedStep int, lines []string) {
+	fastest := func(size int) time.Duration { return fastestOf(timed(size)) }
 	before := fastest(sizes[0])
 	failedStep = -1
 	for i := 1; i < len(sizes); i++ {
@@ -1031,15 +1093,19 @@ func perCallDeadline(t *testing.T) time.Duration {
 }
 
 // growsLinearly times what at each of sizes in turn and fails t at the first size whose time grew
-// more than allowance times faster than the size did (growthVerdict, which this wraps). Every
+// more than allowance times faster than the size did (growthVerdict, which this wraps). timed is
+// called once per size, outside the sampling and outside the deadline below, and hands back what
+// each of that size's samples measures: a shape's input is built there, once for the rung. Every
 // measured call runs under perCallDeadline (timedWithDeadline), so a call that itself hangs fails
 // this shape by name instead of the package's own default timeout firing with none.
-func growsLinearly(t *testing.T, what string, sizes []int, allowance int, timed func(size int) (time.Duration, error)) {
+func growsLinearly(t *testing.T, what string, sizes []int, allowance int, timed func(size int) func() (time.Duration, error)) {
 	t.Helper()
-	bounded := func(size int) time.Duration {
-		return timedWithDeadline(t, fmt.Sprintf("%s at %s", what, sizeText(size)), perCallDeadline(t), func() (time.Duration, error) {
-			return timed(size)
-		})
+	bounded := func(size int) func() time.Duration {
+		at := fmt.Sprintf("%s at %s", what, sizeText(size))
+		measure := timed(size) // the rung's input is built here, once, for every sample below
+		return func() time.Duration {
+			return timedWithDeadline(t, at, perCallDeadline(t), measure)
+		}
 	}
 	failedStep, lines := growthVerdict(sizes, allowance, bounded)
 	for step, line := range lines {
