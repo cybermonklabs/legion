@@ -1387,8 +1387,9 @@ func addRelatedDocument(t *testing.T, handler http.Handler, issue, name, content
 // keyword statement before it asserts the item, so a fixture that stopped seeding the second
 // document, or that let the issue row onto the page, fails here rather than passing by luck.
 //
-// Keyword-only, as the three tests above are: the ordering under test is the keyword leg's and
-// needs no model; the embedder is configured only because the check's server takes one.
+// Keyword-only, as TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument and the two open-ask
+// tests are: the ordering under test is the keyword leg's and needs no model; the embedder is
+// configured only because the check's server takes one.
 func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
 	const title = "Tender upkeep on the slipway"
 	const widerDocument = "The binnacle verdigris reaches the chronometer escapement in the damp."
@@ -1439,17 +1440,20 @@ func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
 	}
 }
 
-// The whole rule, over every arrival order of an owner's rows: the item kept is the owner's
-// best-ranked row that is not a document, and the document only where the owner has no other row
-// on the page. Each of the three rounds before this one fixed one arrival order and left the
-// next uncovered - ask first, document first, then two documents - because each test pinned the
-// order its own fixture produced. This sweep pins all of them at once.
+// The rule over constructed arrival orders of one owner's rows: the item kept is the owner's
+// best-ranked row that is not a document, and the first document only where the owner has
+// no other row on the page. The table holds every order of an issue, a document and an ask, two
+// documents with and without a row behind them, and a comment on either side of a document. The
+// guard reads only whether each row is a document, so a message row is handled as the ask and
+// comment rows here are; no case puts two rows of one kind other than document on one owner.
 //
 // It drives fillRelatedItems with constructed rows rather than seeding a fixture per case: the
 // loop is the unit under test, and given the rows directly the arrival order is literal and
-// exact instead of coaxed out of the fusion by the words a fixture's items hold. The four tests
-// above stay as they are and prove the other half, that a real corpus really does hand the loop
-// these orders; neither replaces the other. The rows need a server because fillRelatedItems
+// exact instead of coaxed out of the fusion by the words a fixture's items hold. The integration
+// tests above (TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument, the two open-ask tests and
+// TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments) stay as they are and prove the other
+// half, that a real corpus really does hand the loop these orders; neither replaces the other.
+// The rows need a server because fillRelatedItems
 // reads its ask states from the pool first, and an id that no ask row carries leaves Ask nil,
 // which is all these cases need.
 func TestRelatedCheckKeepsOneRowPerOwnerInEveryArrivalOrder(t *testing.T) {
