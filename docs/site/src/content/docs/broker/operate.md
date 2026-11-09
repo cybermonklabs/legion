@@ -103,6 +103,18 @@ name does not carry is answered `403 ACCOUNT_LACKS_POWER`, naming the caller and
 entry naming a caller the broker does not know refuses the start, naming that name and the names
 it knows, so a typo cannot quietly produce a caller that reaches nothing.
 
+Five settings turn the model judge on, which decides one narrow class of the requests that would
+otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge)): the endpoint
+and the id of the model it asks, the audience of the Google identity token the broker presents to
+that endpoint, and the Dispatch it reads an issue from with the file holding the broker's own
+projected ServiceAccount token for it. They are all-or-none: with none of them set there is no
+judge, and every human-tier request waits for the person who decides it today. A sixth setting
+names the protocol that endpoint speaks and has a default. The
+[configuration reference](/legion/broker/reference/config/) names each and gives its accepted
+values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
+local stack's negative control of them, and a production start — one with
+`BROKER_FAKE_SECRETS_FILE` unset — is refused naming it.
+
 `BROKER_SECRETS_STORE` picks the secret store: `aws-secrets-manager`, the default when it is unset,
 as above, or `gcp-secret-manager`, which takes the Google Cloud forms of the namespace and the key
 and reads nothing from AWS:
@@ -564,6 +576,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. |
+| The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
 
 ## Network and trust
 
@@ -575,6 +588,13 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   terminate TLS without setting `X-Forwarded-Proto`, and a client that sends those headers itself
   changes nothing. That holds for the machine login's token endpoint (`POST /v1/oauth/token`)
   too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`.
+- The model judge adds two outbound calls. The broker reads one Dispatch issue and that issue's
+  spec document at `BROKER_JUDGE_DISPATCH_URL`, with its own projected ServiceAccount token, and
+  writes nothing there: no ask, no comment, no status. It calls the model at
+  `BROKER_JUDGE_MODEL_URL`, presenting its machine's own Google identity token for
+  `BROKER_JUDGE_MODEL_AUDIENCE`. Each call carries the broker's own identity and no session's,
+  and neither carries a secret value: what reaches the model is the secret's name and rules, the
+  request's reason and the issue, as data to judge.
 - A person approves a secret request in a browser at `BROKER_PUBLIC_URL`, which must therefore be
   an `https` address people's browsers reach: the page's two cookies, `__Host-broker-session` and
   `__Host-broker-signin`, are `Secure` and host-only. A decision is accepted only from a form on
@@ -783,7 +803,7 @@ The broker logs text lines to stderr. The ones worth alerting or searching on:
 | `broker: mint failed name=<NAME> kind=<kind> class=<class> error=…` | At ERROR, for each release of a kind secret its minter could not make. `class` says whose fix it is: `stored-value`, the secret's value is not a key or login the kind takes, so its owner stores a new one; `binding`, a `google-service-account` secret the deployment binds to no account, or to an account its stored value does not name, so the operator fixes `BROKER_SERVICE_ACCOUNT_SECRETS` — this one is not the secret's owner to fix by storing a new value, and the mint is refused before any call reaches Google; `refused`, GitHub or Google answered and refused, such as a Google login that needs a new sign-in or a GitHub App with no installation on a listed account, so its owner signs in again or fixes the App; `upstream`, GitHub or Google could not be asked, answered no usable reply or rate limited the call, or answered a narrowed GitHub token holding more than the narrowing asked, which the broker revokes at GitHub, so check the broker's egress and the upstream's status. A narrowing the caller got wrong is never this line: see `broker: narrowing refused`. The error never holds the stored value, a token or a value from GitHub's answer. The session is answered `502 MINT_FAILED` with the same error. |
 | `broker: GitHub did not revoke a narrowed token it minted wider than asked; it lapses at its expiry app=… installation=… expires_at=… error=…` | At WARN, beside a `mint failed … class=upstream` line: GitHub answered a narrowed token holding more than asked, the broker refused it, and GitHub did not confirm the revoke the broker then sent. No caller got the token; GitHub honours it until `expires_at`, at most an hour. Check the broker's route to GitHub, as for the line it follows. |
 | `broker: narrowing refused grant=… enrollment=… name=<NAME> error=…` | At WARN, for each release whose narrowing of its GitHub App tokens names what the secret cannot serve: an account its `github-owners` tag does not list, refused before any minter runs (`403 NARROWING_OWNER_NOT_LISTED`), or a narrowing GitHub answered 422, such as a repository the installation does not reach (`422 NARROWING_REFUSED`); a 422 that says it is a rate limit is an upstream `mint failed` instead. Nothing was released. The caller fixes its narrowing; the App and the secret are not at fault, so this line needs no action unless one session repeats it. |
-| `broker: grant log …` | At INFO, once for each request decision and each grant end. Every line carries the event's `kind`, its `actor`, whichever of the enrollment, request and grant ids the row names, and `raw`, the audit row's own detail; it carries no audit id and no timestamp, since the line is written once the row has committed and the log keeps its own time. The rest is what the writer of that line had in hand, which differs by line: a `request.created` line adds the session and its person, the service the broker verified, the service the session's credential claims (`claimed_service`), the secrets and how each was decided, the state, the approver, the lifetime, the reason and the detail; a `request.granted` or `request.denied` line adds the session and its person, the claimed service, the state, the approver, who decided, the lifetime, the reason and the detail, and neither the verified service nor the secrets; a `request.cancelled` or `request.expired` line adds the state, the detail and, for a cancel, who decided; a `grant.revoked` or `grant.withheld` line adds nothing more, except the session's person when a person's revoke ended it. A reader joins a line to its request's own `request.created` line by `request_id` for the rest, or reads that row from `GET /v1/grant-log`, which joins the tables and holds every field. The line is the copy a deployment's log pipeline keeps of the rows that route answers from the `audit` table, so a closed period's decisions can be read without the database ([the audit record](/legion/broker/concepts/#the-audit-record)). A release (`grant.used`) and an enrollment row write no such line. |
+| `broker: grant log …` | At INFO, once for each request decision, each `request.judged` row and each grant end. Every line carries the event's `kind`, its `actor`, whichever of the enrollment, request and grant ids the row names, and `raw`, the audit row's own detail; it carries no audit id and no timestamp, since the line is written once the row has committed and the log keeps its own time. The rest is what the writer of that line had in hand, which differs by line: a `request.created` line adds the session and its person, the service the broker verified, the service the session's credential claims (`claimed_service`), the secrets and how each was decided, the state, the approver, the lifetime, the reason and the detail; a `request.granted` or `request.denied` line adds the session and its person, the claimed service, the state, the approver, who decided, the lifetime, the reason and the detail, and neither the verified service nor the secrets; a `request.cancelled` or `request.expired` line adds the state, the detail and, for a cancel, who decided; a `request.judged` line, written for every judge run that reached a verdict, its referrals and its failed checks included, adds the session and its person, the claimed service, and the grant where the verdict granted one; a `grant.revoked` or `grant.withheld` line adds nothing more, except the session's person when a person's revoke ended it. A reader joins a line to its request's own `request.created` line by `request_id` for the rest, or reads that row from `GET /v1/grant-log`, which joins the tables and holds every field. The line is the copy a deployment's log pipeline keeps of the rows that route answers from the `audit` table, so a closed period's decisions can be read without the database ([the audit record](/legion/broker/concepts/#the-audit-record)). A release (`grant.used`) and an enrollment row write no such line. |
 | `broker sweeper: ended an enrollment whose lease lapsed enrollment_id=… kind=… runtime_id=… slot=… lease_expired_at=… grants_revoked=… requests_cancelled=…` | A session stopped renewing (a pod that is gone, a box whose `agent-secrets renew` stopped) while a broker was serving; the sweep ended it, revoking its grants and cancelling its pending requests. A lease that ran out while no broker was serving is not ended ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving)). |
 | `broker: gave back the time no broker was serving to every lease still running when the last broker served gap=… last_serving_at=… enrollments=…` | At INFO, on the first beat after more than three sweeps in which no broker beat: every broker process was down, or none could reach the database. Each enrollment not revoked whose lease was still running at `last_serving_at` had its lease moved on by `gap`, but no further than `BROKER_LEASE_SECONDS` from now; `enrollments` counts them. Their sessions renew as before. |
 | `broker: the serving clock could not beat; it retries every interval and logs again once it beats error=… timed_out=…` | At WARN: this process could not record its beat, usually because the database is out of reach. A beat may take at most one `BROKER_SWEEP_SECONDS`; `timed_out=true` says it ran out of that (its deadline, or a lock or statement past it), as when another transaction holds this process's row, while the other brokers go on beating. It retries every `BROKER_SWEEP_SECONDS` and logs `broker: the serving clock beats again` once it does. |
@@ -1114,7 +1134,21 @@ A secret request's state is its request's (`request_state`), which is what the b
 request an older broker cancelled when its session ended carries no event on its record. A machine
 login has no request, and its events alone say how it was decided.
 
-Neither holds a secret value.
+A decision the model judge made names `judge:<model id>` in the event's `actor` and in the
+request's `decided_by`, with no login beside it, and writes one `request.judged` row of its own.
+That row is there for every judge run that reached a verdict, the referrals and the failed checks
+included, so it is where a request the judge did not take says why
+([Concepts](/legion/broker/concepts/#the-model-judge)):
+
+```sql
+select at, actor, request_id, detail
+from audit
+where kind = 'request.judged'
+order by at desc
+limit 50;
+```
+
+No row any of them answers holds a secret value.
 
 ## Running it locally
 

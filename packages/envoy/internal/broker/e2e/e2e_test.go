@@ -136,7 +136,7 @@ func newE2EServer(t *testing.T) *e2eServer {
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	// The caller of the routes Dispatch's server calls presents its own projected ServiceAccount
 	// token, verified against a local OIDC issuer standing in for the cluster's, as the broker
 	// verifies one in production.

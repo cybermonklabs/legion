@@ -168,3 +168,112 @@ func recordsOf(t *testing.T, url string) []airlocktest.Request {
 	}
 	return records
 }
+
+// startStands starts the command with args, answers the report it printed, and stops it when
+// the row ends. The row above starts and stops the command itself, since the start and the stop
+// are what it is about; this is for a row about what the stands answer once they are up.
+func startStands(t *testing.T, args ...string) report {
+	t.Helper()
+	cmd := exec.Command(buildStands(t), args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the command: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = cmd.Wait()
+	})
+	var out report
+	if err := json.NewDecoder(bufio.NewReader(stdout)).Decode(&out); err != nil {
+		t.Fatalf("read the command's JSON: %v\n%s", err, stderr.String())
+	}
+	return out
+}
+
+// TestTheModelStandsAnswerIsSetWhileItRuns is the command's own half of the model stand: the
+// route the report names sets what the stand answers from then on, which is how one check
+// drives several cases against one running stack, and a body that sets no answer is refused
+// rather than quietly leaving the last one in place.
+func TestTheModelStandsAnswerIsSetWhileItRuns(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir())
+	if out.ModelAnswerURL != out.RecordsURL+"/answers/model" {
+		t.Fatalf("the report names the answer route %q; want it on the recording server at %s", out.ModelAnswerURL, out.RecordsURL)
+	}
+	if out.DispatchOpenIssue == "" || out.DispatchDoneIssue == "" {
+		t.Errorf("the report names the issues %q and %q; want the open one and the done one",
+			out.DispatchOpenIssue, out.DispatchDoneIssue)
+	}
+
+	// Until a check sets anything the model approves, so a stack nothing called this route
+	// on still judges a request through to a grant.
+	if reply := askTheModel(t, out.Stands[standModel].URL); !strings.Contains(reply, "approve") {
+		t.Errorf("the first answer is %q; want the approving one it starts with", reply)
+	}
+	for _, c := range []struct {
+		name, answer, want, unwanted string
+	}{
+		{name: "a referring verdict", answer: `{"verdict":"refer","reason":"the reason names no issue"}`, want: "refer", unwanted: "approve"},
+		{name: "a reply that is no object", answer: `{"text":"I would rather not say."}`, want: "I would rather not say."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if status, body := setTheAnswer(t, out.ModelAnswerURL, c.answer); status != http.StatusOK {
+				t.Fatalf("setting %s answered %d %s; want 200", c.answer, status, body)
+			}
+			reply := askTheModel(t, out.Stands[standModel].URL)
+			if !strings.Contains(reply, c.want) || (c.unwanted != "" && strings.Contains(reply, c.unwanted)) {
+				t.Errorf("the answer is %q; want %q in it", reply, c.want)
+			}
+		})
+	}
+	if status, body := setTheAnswer(t, out.ModelAnswerURL, `{}`); status != http.StatusBadRequest {
+		t.Errorf("an answer naming nothing was answered %d %s; want 400", status, body)
+	}
+
+	records := recordsOf(t, out.Stands[standModel].Records)
+	if len(records) != 3 {
+		t.Fatalf("the model stand recorded %d calls; want the three the row made", len(records))
+	}
+	if records[0].Path != "/v1/messages" || records[0].Method != http.MethodPost {
+		t.Errorf("the model stand recorded %s %s; want the Messages API call", records[0].Method, records[0].Path)
+	}
+}
+
+// setTheAnswer posts one answer to the model stand's answer route.
+func setTheAnswer(t *testing.T, url, answer string) (int, string) {
+	t.Helper()
+	reply, err := http.Post(url, "application/json", strings.NewReader(answer))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer reply.Body.Close()
+	body, err := io.ReadAll(reply.Body)
+	if err != nil {
+		t.Fatalf("read %s: %v", url, err)
+	}
+	return reply.StatusCode, strings.TrimSpace(string(body))
+}
+
+// askTheModel makes one Messages API call against the model stand and answers the event stream
+// it got, which is where the answer the route set rides.
+func askTheModel(t *testing.T, url string) string {
+	t.Helper()
+	reply, err := http.Post(url+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"the-judge-model","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"decide this"}]}`))
+	if err != nil {
+		t.Fatalf("call the model stand: %v", err)
+	}
+	defer reply.Body.Close()
+	body, err := io.ReadAll(reply.Body)
+	if err != nil {
+		t.Fatalf("read the model stand's answer: %v", err)
+	}
+	if reply.StatusCode != http.StatusOK {
+		t.Fatalf("the model stand answered %d %s; want 200", reply.StatusCode, body)
+	}
+	return string(body)
+}

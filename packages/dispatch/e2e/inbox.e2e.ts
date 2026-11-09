@@ -1070,9 +1070,10 @@ test.describe("credential record path", () => {
   });
 });
 
-// No Dispatch event names a credential request (the broker holds no Dispatch credential by
-// design), so an Inbox already open can only learn of one, or that one is gone, from the
-// credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`, `features/credentials/pending.ts`).
+// No Dispatch event names a credential request (the broker writes nothing in Dispatch by design;
+// its model judge only reads an issue there), so an Inbox already open can only learn of one, or
+// that one is gone, from the credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`,
+// `features/credentials/pending.ts`).
 // `page.clock` fast-forwards past that interval without disturbing the event feed: its socket is
 // replaced only after 45 s with no frame (`LIVE_SOCKET_SILENT_MS`, `api/live-socket.ts`), well
 // past the 15.5 s advanced here, so the feed never has a gap and the poll is the only thing that

@@ -142,7 +142,10 @@ machine's Application Default Credentials are its own identity, and so does ever
   broker cannot read off the kind: an admin console password and a personal API key are both
   stored strings. Such a secret is `--tier human`, names its `--requesters`, and takes a
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
-  ask, and the grant is short enough to review while it is live. Any value but `true` is refused.
+  ask, and the grant is short enough to review while it is live. A person approves every release
+  of one even where a deployment runs a model judge: the judge refuses an administrator's
+  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.

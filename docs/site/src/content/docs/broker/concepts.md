@@ -304,7 +304,10 @@ marked with tags or annotations:
   Such a secret is human tier, names its `requesters` and bounds its grants to an hour, so a
   person approves every release, only someone the secret names may ask, and the grant is short
   enough to review while it is live; one that is not is refused `admin-tier`,
-  `admin-requesters` or `max-grant-required`. Set it with
+  `admin-requesters` or `max-grant-required`. A person approves every release of one even where
+  a deployment runs a model judge: the judge refuses an administrator's secret, so a rules entry
+  that gives the judge seconds of that name cannot undo the tag
+  ([The model judge](#the-model-judge)). Set it with
   `agent-secrets secret create|retag --admin true`.
 - **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` one:
   each of those needs it, of an hour or less, and is refused `max-grant-required` without it. It
@@ -670,7 +673,9 @@ file when it starts (`BROKER_AIRLOCK_RULES_FILE`, an `airlock.json`), which name
 secret it covers, the hosts that secret's value may reach, the request headers that may carry it
 (`authorization`, unless the entry names others) and, where the entry gives them, the methods and
 path prefixes it may travel on
-(`packages/envoy/internal/broker/airlock`). Those hosts carry no port, so an entry binds a name
+(`packages/envoy/internal/broker/airlock`). An entry may also give a `judge` of so many seconds:
+the longest grant of that secret the model judge may approve, at most 900
+([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
@@ -738,8 +743,8 @@ What the airlock does not stop is as much of the design as what it does:
 
 ## Approvals
 
-A secret request is approved on the broker's own approval page, never in Dispatch. The broker holds
-no Dispatch credential and sends Dispatch nothing: Dispatch's server reads the broker's pending list
+A person approves a secret request on the broker's own approval page, never in Dispatch. The
+broker writes nothing in Dispatch: Dispatch's server reads the broker's pending list
 for the person signed in, and its Inbox lists each secret request as a link to that request's page
 on the broker, `<broker>/approve/<record>`, which the broker's answers name as `approve_url`. The
 page signs the person in to the broker itself, with OpenID Connect and the broker's own client (the
@@ -807,6 +812,70 @@ session, and the broker takes that name on Dispatch's word. A listed account's t
 approve a machine login and revoke in any person's name, though never approve a secret request:
 list Dispatch's own account and nothing else.
 
+### The model judge
+
+A deployment may configure a **model judge**, which decides one narrow class of the requests that
+wait for a person (`packages/envoy/internal/broker/judge`). It approves a request or leaves it for
+the person who approves it today, and it never denies. What bounds a judged grant is the airlock
+rules and the tag policy, not the model: one secret, 15 minutes at most, no longer than that
+secret's rules entry gives the judge, and only while the tag policy still answers approval for the
+name. With the judge's settings unset there is no judge, and every human-tier request waits for a
+person as before.
+
+The broker that wrote a request pending runs the judge in the background, for a request it wrote
+and never for one it joined to a request already pending, so one record is judged once. A run has
+30 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
+at the first that fails, asking the model nothing:
+
+1. the secret's rules entry has a `judge` value;
+2. the request names one secret, and its grant's lifetime — the `--ttl` its session signed, else
+   the broker's default for that secret — is at most 15 minutes and at most that entry's seconds;
+3. the tag policy, read again now, still answers approval for that name;
+4. the secret is not an administrator's (the `admin` tag), of which a person approves every
+   release, whatever seconds a rules entry gives the judge;
+5. the name is not withheld for that session;
+6. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
+   status that is not `done`.
+
+A request that passes all six goes to one model, with the secret's name and rules, the reason and
+the issue put to it as data to judge rather than as instructions, and the model answers `approve`
+or `refer`. The run reads the request's state once more immediately before that call and asks
+nothing about a request that is no longer pending — one its session cancelled, one a person
+decided, or one whose wait ran out while the run was reading Dispatch. That read bounds nothing
+about how many model calls one session can start: each request a session creates is pending for
+the moment the run reads it, so a session that creates and cancels requests in a loop costs one
+model call per request it creates.
+Everything else leaves the request where it was, pending for its person: a check that
+failed, `refer`, a model that could not be reached or did not answer within the 20 seconds, an
+answer that is neither word, a run past its 30 seconds, and a broker that stops serving mid-run.
+
+An approval is the judge's own. The decision event's actor is `judge:<model id>` and its login is
+null, so no owner tag makes a judge's approval read as a person's. The request's `decided_by`
+holds that same string, which `agent-secrets status <request>` prints. The grant records the
+record's own approver — the secret's owner, or `anyone` for a shared secret — so the person who
+approves that secret lists the grant and can end it, and a judged grant of a shared secret is on
+every signed-in person's page.
+
+A judged grant is held to the rules in force rather than to a person's standing, and to the
+`admin` tag over both. Each release re-checks that the secret's entry still gives the judge at
+least the grant's lifetime; a grant whose entry lost its `judge`, or whose seconds fell below
+that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
+administrator's after the judge decided it ends that grant for good, at the release and at the
+next request that would reuse it: a person approves every release of one, so no judged grant
+goes on releasing it, and taking the tag off again does not bring the grant back: the session
+asks afresh, as a new request, which the judge refuses while the tag stands. The chain check
+([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
+one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
+key, so a forged record, and one a rules change left behind, release nothing either.
+
+The issue check is the broker's one read of Dispatch: two GETs, the issue and the text of its
+spec document, with the broker's own projected ServiceAccount token, read again from its file once
+the copy it holds is 30 seconds old. The broker writes nothing there — no ask, no comment, no
+status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
+settings name, presenting the broker machine's own Google identity token for the audience they
+name. Those settings are all-or-none, and the
+[configuration reference](/legion/broker/reference/config/) gives each one.
+
 ## The audit record
 
 Everything a person decides rests on a **credential-request record**
@@ -816,11 +885,13 @@ the lifetime (`-` for a grant that lasts until its session ends), the policy ver
 and, for a machine login, its confirmation code. The
 record's id is the SHA-256 of that text, so a record cannot change without changing its id.
 Decisions are events on the record (`approved`, `denied`, `expired`, `cancelled`, `revoked`), each
-naming who made it.
+naming who made it: a person by their login, and the model judge by its actor alone
+([The model judge](#the-model-judge)).
 
 Every time the broker releases a value or authenticates a launcher credential, it re-verifies the
 whole chain: the record still reproduces its id, the session's signature inside it still verifies,
-and exactly one approval by the record's approver stands behind it. A grant or credential with no
+and exactly one approval stands behind it. That approval is the record's approver's, or the
+judge's on a record the rules in force still let the judge decide. A grant or credential with no
 approved record behind it releases nothing.
 
 Beside the records, the broker keeps an append-only `audit` table with one row per event:
@@ -829,7 +900,11 @@ Beside the records, the broker keeps an append-only `audit` table with one row p
 a session reads a grant, naming the secrets released), `grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
-a grant already revoked, naming under `withheld` the secrets it withheld from the session) and
+a grant already revoked, naming under `withheld` the secrets it withheld from the session),
+`request.judged` (one row for every judge run that reached a verdict, its referrals and the runs
+a check stopped included: each check and its result, the model, whether the model was asked, the
+verdict, the reason, the token counts, that it priced nothing, and the raw answer where it did
+not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
@@ -839,7 +914,7 @@ the credential's `expires_at` and the token's own `token_expires_at`). Each row 
 made for its signed-in person, `session:<enrollment id>` for
 a session's own, `launcher:<credential id>` for one
 a machine login made under its own credential, a person's revoke from their machine and a
-service's token login included, or `broker`. No
+service's token login included, `judge:<model id>` for one the model judge made, or `broker`. No
 record, event or audit row ever holds a secret value.
 [Operating the broker](/legion/broker/operate/#the-audit-record) shows how to read them.
 

@@ -170,10 +170,10 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 
 	stdout, stderr, exit = grant("list")
 	header, rows := tableRows(t, stdout)
-	if want := []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "SESSION", "OPERATOR", "EXPIRES"}; exit != 0 || !slices.Equal(header, want) || len(rows) != 1 {
+	if want := []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}; exit != 0 || !slices.Equal(header, want) || len(rows) != 1 {
 		t.Fatalf("grant list: exit %d, stdout %q, stderr %q; want the header %v and one row", exit, stdout, stderr, want)
 	}
-	if row := rows[0]; !slices.Equal(row[:6], []string{grantID, "TEST_AUTO_SECRET", "automatic", "-", "session/" + runtimeID, rig.Operator}) {
+	if row := rows[0]; !slices.Equal(row[:7], []string{grantID, "TEST_AUTO_SECRET", "automatic", "-", "-", "session/" + runtimeID, rig.Operator}) {
 		t.Fatalf("grant list's row = %v, want the session key's automatic grant %s", row, grantID)
 	}
 

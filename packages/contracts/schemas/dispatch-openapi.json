@@ -11222,6 +11222,12 @@
             "format": "date-time",
             "type": "string"
           },
+          "decided_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "enrollment": {
             "$ref": "#/components/schemas/RecordEnrollmentResp"
           },
@@ -11265,6 +11271,7 @@
           "enrollment",
           "names",
           "approver",
+          "decided_by",
           "expires_at",
           "created_at"
         ],

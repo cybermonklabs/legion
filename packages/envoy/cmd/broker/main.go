@@ -2,9 +2,11 @@
 // requests by policy or, for a request that needs a person, on its own approval page, where the
 // approver signs in to the broker itself (BROKER_SIGNIN_*), over a signed credential-request
 // record, and releases granted values. Its HTTP API is documented at
-// https://cybermonklabs.github.io/legion/broker/reference/api/. The broker holds no Dispatch credential
-// and never opens a Dispatch ask: Dispatch's server lists pending requests and links each to the
-// broker's page, and relays a machine login's decision with its typed code.
+// https://cybermonklabs.github.io/legion/broker/reference/api/. The broker opens no Dispatch ask
+// and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
+// broker's page, and relays a machine login's decision with its typed code. The one thing the
+// broker reads in Dispatch is its model judge's, whether an issue is open
+// (BROKER_JUDGE_DISPATCH_URL), with the broker's own projected ServiceAccount token.
 package main
 
 import (
@@ -43,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
@@ -55,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -427,6 +431,10 @@ func main() {
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate)
+	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
+	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
+	// person who decides it today rather than approving it while the pod is going away.
+	wireJudge(ctx, cfg, rules, reqMachine)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -806,14 +814,15 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
 }
 
-// refuseAirlockTestSettingsInProduction refuses every one of the airlock's test-only settings
-// unless BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and
-// for the same reason: each of them points the broker at a stand-in, lets it dial an address no
-// production proxy may dial, or turns off a part of the airlock, so one reaching a real
-// deployment must fail loudly at boot rather than quietly serve a broker that is not the one
-// the operator configured. The refusal names the variable it found, since an operator reads
-// which of its settings it has to take out. Extracted from main so a test can drive it
-// directly instead of through fatal, which calls os.Exit.
+// refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
+// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// a local run, as the port-0 refusal above does and for the same reason: each of them points
+// the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
+// a check the airlock or the judge is made of, so one reaching a real deployment must fail
+// loudly at boot rather than quietly serve a broker that is not the one the operator
+// configured. The refusal names the variable it found, since an operator reads which of its
+// settings it has to take out. Extracted from main so a test can drive it directly instead of
+// through fatal, which calls os.Exit.
 func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile string) error {
 	if fakeSecretsFile != "" {
 		return nil
@@ -829,6 +838,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
 			return fmt.Errorf("%s is for the broker's local stack alone and is set on a production start (BROKER_FAKE_SECRETS_FILE is unset); take it out", setting.name)
@@ -1003,8 +1013,56 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
 	}
-	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	return m
+}
+
+// The request machine answers every question the model judge asks of the broker. The assertion
+// lives here, where the two already meet, and never in internal/broker/requests: that package
+// must not import the judge, since the judge imports it. Breaking either of the three methods
+// fails this build rather than a deployment's first judged request.
+var _ judge.Requests = (*requests.Machine)(nil)
+
+// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// budget already ends a read whose server never answers, but that budget is shared with the
+// 20-second model call, so a client with no timeout of its own would let one stalled read eat
+// the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
+// GET against a service inside the cluster.
+const judgeDispatchTimeout = 10 * time.Second
+
+// wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
+// one line which of the two brokers this is. The five settings are all-or-none (config.Load
+// refuses a start that sets some of them), so the model URL alone says whether there is a judge.
+//
+// ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
+// `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
+// is asked to stop ends there, before the drain, having written nothing at all and left its
+// request pending for the person who decides it today. That is the right way round for a judge
+// where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
+// drain, while a half-finished run would approve a credential as the pod goes away.
+func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
+	if cfg.JudgeModelURL == "" {
+		slog.Info("model judge", "state", "off",
+			"detail", "none of "+strings.Join(config.JudgeSettings, ", ")+" is set, so every human-tier request waits for the person who decides it today")
+		return
+	}
+	runner := judge.New(ctx, judge.Options{
+		Rules: rules,
+		Dispatch: judge.Dispatch{
+			BaseURL: cfg.JudgeDispatchURL,
+			Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+			HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+		},
+		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
+		Requests:   m,
+		SkipChecks: cfg.JudgeTestSkipChecks,
+	})
+	// The hook the state machine calls for each request it writes pending: the judge takes the
+	// machine's own type, so this is the method and nothing else. Consider returns at once, so
+	// nothing of a run is on the requester's path.
+	m.Judge = runner.Consider
+	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
+		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and
