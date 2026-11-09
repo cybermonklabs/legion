@@ -310,7 +310,7 @@ for (const row of rows) {
   }, testInfo) => {
     test.skip(
       testInfo.project.name !== "iphone-alone",
-      "the measurement set-up is the iphone viewport, touch and Chromium, and the number is read from the wall clock, so it runs in `iphone-alone` with the machine to itself (e2e/playwright.config.ts's `clockRows`)"
+      "the measurement set-up is the iphone viewport, touch and Chromium, and the number is read from the wall clock, so it runs in `iphone-alone` with the machine to itself (e2e/playwright.config.ts's `phoneClockRows`)"
     );
     test.setTimeout(row.timeoutMs);
     // The document the run measures is the one this module spells, so a change to the generator
@@ -1595,8 +1595,9 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
  *  pod otherwise quiet, against 2,680 ms before it. It is as load-sensitive as the two
  *  measuring rows and their own 500 ms, and for the same reason: run beside the whole browser
  *  suite, the worst task of a build reached 902 ms here while the phone's rows read 723 and
- *  1,114 ms for theirs. A miss is read the way theirs is - against what else the machine was
- *  doing - which is why the row prints every task of the build before it reads any of them. */
+ *  1,114 ms for theirs. That is why the row is given a machine of its own, as they are, and why
+ *  it still prints every task of the build before it reads any of them: a miss on a quiet
+ *  machine is the regression this guards, and the print is what says the machine was quiet. */
 const aDesktopBuildTaskAtMostMs = 500;
 
 // What cost a desktop width ten times a phone's longest task was not a batch. Traced per
@@ -1613,9 +1614,15 @@ const aDesktopBuildTaskAtMostMs = 500;
 // whatever stands beside them (`web/src/styles.css`), and one box is read per top-level block
 // (`web/src/features/doc/marks.ts`).
 //
-// This row is the guard on that. It carries no `@phone` tag, so it runs in the `chromium`
-// project alone - the two measuring rows cover the phone, over a window that is wider still -
-// and it reads the same `longtask` entries they do, over the build alone.
+// This row is the guard on that. It carries no `@phone` tag, and its number is read from the
+// wall clock, so it runs in `chromium-alone` - Desktop Chrome with the machine to itself, one
+// row at a time after every lane (`desktopClockRow`, e2e/playwright.config.ts) - and in no
+// parallel project. Four workers on one runner measure the runner: in the `chromium` shard leg
+// this row printed `longest 445 ms`, `longest 467 ms` and `longest 557 ms` over three CI runs
+// of one branch, the last of them red on both attempts, while the build it reads grew from
+// 23,061 ms to 41,888 ms with nothing of the page changing. The two measuring rows cover the
+// phone, over a window that is wider still, and this row reads the same `longtask` entries they
+// do, over the build alone.
 test(`no task of ${documentNames.large}'s build holds a desktop page for half a second`, async ({
   browser,
 }) => {

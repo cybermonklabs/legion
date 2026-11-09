@@ -296,10 +296,13 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed again
-    # after the forward merges of main, the suite holds 1,378 rows: 1,322 in the eight projects
-    # the full lane's four shards run, of which 1,221 are in the two the pull-request lane runs.
-    # The remaining 56 are the four `-alone` projects', which the alone job runs - 19, 17 and 17
-    # of the three engine legs and 3 of `iphone-alone`, the rows `clockRows` names.
+    # at this branch's head (`bunx playwright test --config e2e/playwright.config.ts --list`),
+    # the shard and alone jobs hold 1,402 rows: 1,345 in the eight projects the full lane's four
+    # shards run, of which 1,244 are in the two the pull-request lane runs. The remaining 57 are
+    # the four `-alone` projects', which the alone job runs - 20, 17 and 17 of the three engine
+    # legs and 3 of `iphone-alone`. The 20 is `chromium-alone`'s two clock specs plus the one
+    # desktop clock row of large-documents.e2e.ts; the 3 are `iphone-alone`'s phone clock rows.
+    # The visual job's 20 rows are in neither figure: it writes no blob report at all.
     timeout-minutes: 13
     strategy:
       fail-fast: false
@@ -643,19 +646,27 @@ jobs:
     #   Browser-test dispatch dashboard                    116            111           141
     #   every other step summed                             74             72            82
     #
+    # The `chromium-alone` figure is now short of a row: the desktop clock row of
+    # large-documents.e2e.ts reached that leg after that run.
+    #
     # `iphone-alone` has no reading of this job yet, because its three rows reached it from the
     # shard legs. What they cost there, contended four lanes wide, is run 42485503469: the
     # 28-section measurement 34.3 s, the 140-section one 1.2 min and the timer row 1.3 min, 184 s
-    # summed. That is the number the browser step's budget below is built on, and it is an
-    # over-estimate of this leg, since the contention those three rows were moved away from is in
-    # it; the first full-lane run of this head replaces it with a reading of its own.
+    # summed. `chromium-alone` took the desktop clock row of that same file the same way, and
+    # what it cost in a `chromium` shard leg, contended four lanes wide, is 38.0 s in run
+    # 42628596511, 1.1 min in run 42682941869 and 1.3 min in run 42686241170 (job 129395267274,
+    # where it failed its guard): 78 s at worst, which over the 116 s above puts that leg at
+    # 194 s. Both figures are over-estimates of this job, since the contention those rows were
+    # moved away from is in them; the first full-lane run of this head replaces each with a
+    # reading of its own.
     #
-    # The rule is in this file's head. The browser step's maximum is `iphone-alone`'s 184 s, from
-    # the contended reading above, so 184 x 1.15 = 212 s -> 4 min. Three legs of one run, and a
-    # fourth read off another run's shard legs, is a thin reading, and these are the projects
-    # whose rows are read from the wall clock, so a slower machine moves them further than it
-    # moves a parallel row. The 15 per cent the rule adds is what carries that, and a leg that
-    # outran it fails the browser step by name, which is a reading of its own.
+    # The rule is in this file's head. The browser step's maximum is `chromium-alone`'s 194 s,
+    # from the contended reading above, so 194 x 1.15 = 223 s -> 4 min, the same 4 minutes
+    # `iphone-alone`'s 184 s gave. Three legs of one run, and two rows read off another run's
+    # shard legs, is a thin reading, and these are the projects whose rows are read from the
+    # wall clock, so a slower machine moves them further than it moves a parallel row. The 15
+    # per cent the rule adds is what carries that, and a leg that outran it fails the browser
+    # step by name, which is a reading of its own.
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193 and not on the
     # digest this file pins, for the reason the shard job's head gives, which also says why a
@@ -697,9 +708,9 @@ jobs:
     # 2 + 2 + 1, not 2.
     #
     # The browser step's own 4 minutes above still holds: 69 s is the most it took over these
-    # nine legs, webkit-alone's again, well under the 184 s that budget was derived from - none
-    # of those nine is an `iphone-alone` leg, which has no reading of this job yet - so the
-    # pooled maximum the rule reads is still that 184 s.
+    # nine legs, webkit-alone's again, well under the 194 s that budget was derived from - none
+    # of those nine is an `iphone-alone` leg, and none of the three `chromium-alone` legs among
+    # them ran the desktop clock row, so the pooled maximum the rule reads is still that 194 s.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
     # that budget plus the maxima above of every step without one, which sum to 137 s:
@@ -761,10 +772,12 @@ jobs:
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
         # legs run uploads or downloads anything. chromium-alone runs both clock specs
         # (`clockSpecs`: heavy-bodies and nested-directive, named at
-        # e2e/playwright.config.ts:200 and taken by that project at :389), firefox-alone and
-        # webkit-alone run heavy-bodies alone (:397, :409), and iphone-alone runs the three rows
-        # of large-documents.e2e.ts that `clockRows` names - the two measurements and the timer
-        # row, each of which seeds its document through the API and reads it. And
+        # e2e/playwright.config.ts:261) and the one row of large-documents.e2e.ts read at a
+        # desktop width (`desktopClockRow`, :286), which that project takes with the `testMatch`
+        # and `grep` at :521-522; firefox-alone and webkit-alone run heavy-bodies alone (:530,
+        # :542); and iphone-alone runs the three rows of large-documents.e2e.ts that
+        # `phoneClockRows` names (:275) - the two measurements and the timer row. Each
+        # large-documents row seeds its document through the API and reads it. And
         # e2e/run.ts:126-130 makes no lane bucket at one worker. A store serving nothing would be
         # charged to the very reading these rows exist for, which is why the `weed` the image
         # carries is started on the shard job's machines and not on these. A row that later
@@ -780,10 +793,11 @@ jobs:
         # this step wrote into the checkout would leave it dirty afterwards. The blob report
         # goes beside the list reporter's output, so a green run reports what it ran too.
         #
-        # The budget below is the 4 minutes the job's head derives from `iphone-alone`'s three
-        # rows as the shard legs ran them, and the containerised reading taken on sha256:ba003193
-        # does not move it: the most this step took over the nine legs the job's head lists is
-        # 69 s, well under that 184 s, and none of those nine is an `iphone-alone` leg.
+        # The budget below is the 4 minutes the job's head derives from `chromium-alone`'s
+        # measured leg plus the desktop clock row as a shard leg ran it, and the containerised
+        # reading taken on sha256:ba003193 does not move it: the most this step took over the
+        # nine legs the job's head lists is 69 s, well under that 194 s, and no leg of those
+        # nine ran the desktop clock row or `iphone-alone`'s three.
         timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts

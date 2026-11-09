@@ -1797,10 +1797,12 @@ A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the 
 (`.github/workflows/dispatch-browser-nightly.yaml`)
 run the `full` lane: all eight parallel projects over those same four shards, the four `-alone`
 projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
-So the three rows of `e2e/large-documents.e2e.ts` the spec's targets are read from, which
-`iphone-alone` holds (`clockRows` in `e2e/playwright.config.ts`), are measured by the merge group
-and the nightly rather than by an unlabelled pull request's own run, for the reason that
-selector gives: a row that differs from itself by three seconds between two attempts on one
+So the four rows of `e2e/large-documents.e2e.ts` whose numbers are read from the wall clock - the
+three the spec's targets are read from, which `iphone-alone` holds (`phoneClockRows` in
+`e2e/playwright.config.ts`), and the guard on the longest task of a build at a desktop width,
+which `chromium-alone` holds (`desktopClockRow` there) - are measured by the merge group
+and the nightly rather than by an unlabelled pull request's own run, for the reason those
+selectors give: a row that differs from itself by three seconds between two attempts on one
 runner is measuring the runner, and a shard machine running four lanes is that runner.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that step's comment gives: a name outside
@@ -2600,13 +2602,18 @@ rather than leaving the route unanswered, because Chromium sends a paused reques
 server once its page closes. They skip on an `https:` `PLAYWRIGHT_BASE_URL` as the two specs
 above do.
 
-The `chromium-alone`, `firefox-alone` and `webkit-alone` projects run the rows whose claim is a
-wall-clock time, with the machine to themselves. `chromium-alone` runs
-`e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second, both through `e2e/main-thread-hold.ts`); `firefox-alone`
-and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines before, for the
-reasons given under `webkit` and `firefox` above. No project above them runs those two files,
-so each row runs once. Each of the three names every project before it in `dependencies`, so
+The four `-alone` projects run the rows whose claim is a wall-clock time, with the machine to
+themselves.
+`chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws
+without holding the main thread for a second, both through `e2e/main-thread-hold.ts`), and with
+them the one row of `e2e/large-documents.e2e.ts` read at a desktop width, the guard on the
+longest main-thread task of a build there (`desktopClockRow` in `e2e/playwright.config.ts`);
+`firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines
+before, for the reasons given under `webkit` and `firefox` above; and `iphone-alone` runs the
+three rows of `e2e/large-documents.e2e.ts` the spec's own targets are read from, on the iPhone
+13 profile they are measured on (`phoneClockRows` there).
+No project above them runs those two files or those four rows, so each row runs once.
+Each of the four names every project before it in `dependencies`, so
 Playwright starts them only once the rest of the run has finished and runs them one after
 another, and each sets `workers: 1`, which caps that project's own workers while the run's own
 `workers` stays at the lane count: `dependencies` orders a project but does not stop its own
