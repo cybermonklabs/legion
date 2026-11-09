@@ -48,7 +48,7 @@
 <dt>Approver</dt>
 <dd>{{$r.Approver}}</dd>
 <dt>State</dt>
-<dd class="state">{{$r.State}}{{if $r.DecidedBy}} by {{$r.DecidedBy}}{{end}}{{if $r.DecidedAt}} at {{$r.DecidedAt}}{{end}}{{if $r.Detail}} ({{$r.Detail}}){{end}}</dd>
+<dd class="state">{{$r.State}}{{if $r.DecidedBy}} by {{if $r.DecidedByJudge}}the model judge <code>{{$r.DecidedBy}}</code>{{else}}{{$r.DecidedBy}}{{end}}{{end}}{{if $r.DecidedAt}} at {{$r.DecidedAt}}{{end}}{{if $r.Detail}} ({{$r.Detail}}){{end}}</dd>
 </dl>
 {{- if not $r.MachineLogin}}
 <p class="note">Approve gives this session the value of these secrets {{$r.Lifetime}}.</p>

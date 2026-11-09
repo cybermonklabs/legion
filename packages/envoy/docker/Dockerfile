@@ -129,6 +129,10 @@ RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && retu
 
 COPY packages/envoy/cmd ./cmd
 COPY packages/envoy/internal ./internal
+# agentloop: the model loop and the tools a model may call, a package outside internal/ so the
+# daemon runs the same loop. envoy-broker's judge compiles it in, so the build needs it here
+# beside cmd and internal.
+COPY packages/envoy/agentloop ./agentloop
 # listenfd: the inherited listening socket envoy-dispatch and envoy-listener serve on
 # (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD).
 COPY packages/envoy/listenfd ./listenfd
