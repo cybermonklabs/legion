@@ -56,11 +56,12 @@ func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 // that it joined and that it started, no tree lifecycle and no architect of its own.
 //
 // The child waits for a slot where it used to start the moment it joined: the cap counts the
-// issues at work now, so a child of a running tree takes a slot of its own for its first phase
-// and stands in the waiting line until one is free. When it starts therefore depends on what
-// else that tree is doing — a root whose gate has opened holds no slot of its own, so its tree's
-// one slot may fall to this child at once — and the assertion is about where it ends up, which
-// is the tree it joined and never a tree of its own.
+// issues the daemon has started, so a child of a running tree takes a slot of its own for its
+// first phase and stands in the waiting line until one is free. Its tree's root frees none for
+// it by opening its gate — a root keeps the row it was started with until it is done, leaves
+// the workflow or waits only for its merge — which is why the pass below runs under a cap of
+// 3, with a slot to spare whatever else the tree holds. The assertion is about where the child
+// ends up, which is the tree it joined and never a tree of its own.
 func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree string, generation uint64) {
 	t.Helper()
 	if got := issue(t, pool, child); got.Tree != tree || got.Generation != generation {
@@ -629,15 +630,18 @@ func TestAnAnsweredRootIsNotHeldByTheChainItQueuedUnder(t *testing.T) {
 		t.Fatalf("%s = %#v, want it promoted with no chain left", root, promoted)
 	}
 
-	// The root waits on a person, gives its slot back, and is answered; meanwhile the ancestor on
-	// its old chain is a live root holding the slot.
+	// The root waits on a person and is answered, holding no row: a root the daemon started keeps
+	// its row through that wait (record.KeepsSlot), so this is the state an upgrade leaves from a
+	// release that freed the row at awaiting_person, which the fixture reaches by taking the row
+	// away itself.
+	// Meanwhile the ancestor on its old chain is a live root holding a row of its own.
 	at := fixedNow
 	promoted.Phase = phase.AwaitingPerson
 	promoted.Awaiting = &record.Awaiting{Ask: "ask-q", AnsweredAt: &at, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	putIssue(t, pool, promoted)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().ReleaseSlot(context.Background(), tx, root); err != nil {
-			t.Fatalf("give the slot back: %v", err)
+			t.Fatalf("take the root's row away, as a release that freed it at awaiting_person did: %v", err)
 		}
 	})
 	seedSlotted(t, pool, ancestor, "A")

@@ -1,0 +1,4 @@
+kind: Changed
+body: '`admission.active` of the daemon state now names every issue the daemon has started and has not finished: an issue keeps its admission slot until it is done, leaves the workflow or waits only for its merge, so a root waiting on a person and an issue in `accepting`, in `held` or in `merging` are all in that list. An issue in `awaiting_merge` is in neither `admission.active` nor `admission.waiting`. No field is added, removed or renamed, and the daemon API contract stays 58.'
+custom:
+    Issue: pr3206

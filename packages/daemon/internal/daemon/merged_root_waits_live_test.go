@@ -122,11 +122,11 @@ func TestAMergedRootsCloseWaitsForTheRestOfItsTreeLive(t *testing.T) {
 	r.step("step7-the-childs-merge-closes-the-root", r.childMergeClosesTheRoot)
 }
 
-// newMergedRootWaitsLive boots the daemon over the script's broker with the tree already recorded:
-// the root in accepting on its reviewed, open pull request, holding no admission slot, since an
-// issue that only waits holds none, and the one child beneath it implementing on an open pull
-// request of its own, holding the one slot the tree's work takes. The issue the merged root's
-// wait is proven on comes later, with the shape seedArcTwo writes.
+// newMergedRootWaitsLive boots the daemon over the script's broker with the tree already
+// recorded: the root in accepting on its reviewed, open pull request, holding no admission slot
+// because this fixture writes none for it, and the one child beneath it implementing on an open
+// pull request of its own, holding one. The issue the merged root's wait is proven on comes
+// later, with the shape seedArcTwo writes.
 func newMergedRootWaitsLive(t *testing.T) *mergedRootWaitsLive {
 	t.Helper()
 	proof := newLiveProof(t, "scripts/e2e/merged-root-waits.sh")
@@ -185,9 +185,9 @@ func mergedRootWaitsGitHub(t *testing.T, branch string, number int) string {
 // seedTree records the tree as the daemon would hold it at the moment the reviewer approved the
 // root: the root in accepting with its reviewer's handoff and its open pull request, its
 // lifecycle open under the workflow, the one child beneath it implementing on a pull request of
-// its own and holding the admission slot that work takes — the root in accepting holds none,
-// since the cap counts the issues at work — and the root's architect claim as a launch a
-// previous daemon began and never recorded, which this boot relaunches. That last one is how the
+// its own and holding an admission slot — this fixture writes none for the root itself, which
+// the proof needs nothing of — and the root's architect claim as a launch a previous daemon
+// began and never recorded, which this boot relaunches. That last one is how the
 // proof reaches a live architect session without the operator's spawn, which would take the
 // tree's lifecycle from the workflow.
 func (r *mergedRootWaitsLive) seedTree() {
@@ -480,9 +480,9 @@ func (r *mergedRootWaitsLive) rootMergeWaits() {
 	}
 	r.note("read back: %s is in %s, pullRequest.state %s, status %s, no production check",
 		r.parent, got.Phase, got.PullRequest.State, got.Status)
-	// The cap counts the issues at work: the merge's own admission pass takes the root's slot,
-	// since a root waiting in awaiting_merge is at work no longer, and leaves the slot of the
-	// child whose phase holds that close open.
+	// The cap counts the issues the daemon has started: the merge's own admission pass takes the
+	// root's row, since an issue waiting only for its merge keeps none (record.KeepsSlot), and
+	// leaves the row of the child whose phase holds that close standing.
 	r.waitFor("the merged root holding no slot", r.parent, func(got api.Issue) bool { return got.Slot == nil })
 	child := r.waitFor("the child at work keeping the tree's one slot", r.child, func(got api.Issue) bool { return got.Slot != nil })
 	r.note("read back: %s holds no admission slot in its wait, and %s, implementing beneath it, keeps slot %d",

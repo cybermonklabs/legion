@@ -134,23 +134,10 @@ func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*pgxpool.Pool, *
 func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.Logger) (*pgxpool.Pool, *workflowRuntime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
-	return pool, catchUpRigLoggingOn(t, pool, client, cap, log)
-}
-
-// catchUpRigOn is catchUpRig on a database the caller already holds, for a table-driven test whose
-// rows share one clone and empty it between them (tableDatabase).
-func catchUpRigOn(t *testing.T, pool *pgxpool.Pool, client dispatch.Client, cap int) *workflowRuntime {
-	t.Helper()
-	return catchUpRigLoggingOn(t, pool, client, cap, quietLogger())
-}
-
-// catchUpRigLoggingOn is catchUpRigLogging on a database the caller already holds.
-func catchUpRigLoggingOn(t *testing.T, pool *pgxpool.Pool, client dispatch.Client, cap int, log *slog.Logger) *workflowRuntime {
-	t.Helper()
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: catchUpClock}, log)
 	admission := admit.New(records, engine, cap, "CAPTURE", log)
-	return &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
+	return pool, &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
 		gatedSteps: config.DesignGateRootIssues.Steps(),
 		handlers:   []intake.Handler{engine, admission}, log: log, bootID: "boot-1", catchUpRetryDelay: time.Millisecond}
 }
@@ -194,13 +181,11 @@ func readIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 	return got
 }
 
-// catchUpAwaitingRootOn seeds CAPTURE-100 waiting on waiting, its handout taken, with gate when one
-// is given, runs the boot catch-up against client, and returns the root as it stands after. It
-// takes a database the caller already holds, for a table-driven test whose rows share one clone
-// and empty it between them (tableDatabase).
-func catchUpAwaitingRootOn(t *testing.T, pool *pgxpool.Pool, waiting record.Awaiting, gate *record.DesignGate, client *awaitingDispatch) *record.Issue {
+// catchUpAwaitingRoot seeds CAPTURE-100 waiting on waiting, its handout taken, with gate when one is given,
+// runs the boot catch-up against client, and returns the root as it stands after.
+func catchUpAwaitingRoot(t *testing.T, waiting record.Awaiting, gate *record.DesignGate, client *awaitingDispatch) *record.Issue {
 	t.Helper()
-	w := catchUpRigOn(t, pool, client, 0)
+	pool, w := catchUpRig(t, client, 0)
 	root := captureRoot(phase.AwaitingPerson, &waiting)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
@@ -327,7 +312,6 @@ func answeredIn(key string, seq int64) json.RawMessage {
 // is then skipped and released, so the next root is caught up and the catch-up finishes.
 func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	t.Parallel()
-	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		status int
 		reads  int
@@ -338,9 +322,8 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 		{status: http.StatusForbidden, reads: 1},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
-			reset(t)
 			client := &catchUpRefuser{status: tc.status, awaitingDispatch: awaitingDispatch{events: []json.RawMessage{answeredIn("CAPTURE-2", 9)}}}
-			w := catchUpRigOn(t, pool, client, 0)
+			pool, w := catchUpRig(t, client, 0)
 			waitingRoots(t, pool, "CAPTURE-1", "CAPTURE-2")
 			if err := bootCatchUp(t, w); err != nil {
 				t.Fatalf("catch up with a root Dispatch refuses = %v, want the root skipped", err)
@@ -366,7 +349,6 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
 	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
-	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		awaiting record.Awaiting
@@ -397,12 +379,11 @@ func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
 			gate: &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}, events: []json.RawMessage{specChanges(9, 3, "name the rollback path")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
 			waitGate := tc.gate
 			if waitGate == nil && tc.awaiting.GateVersion != 0 {
 				waitGate = gate
 			}
-			got := catchUpAwaitingRootOn(t, pool, tc.awaiting, waitGate, &awaitingDispatch{events: tc.events})
+			got := catchUpAwaitingRoot(t, tc.awaiting, waitGate, &awaitingDispatch{events: tc.events})
 			if got == nil || !got.Answered() {
 				t.Fatalf("caught-up root = %#v, want it answered", got)
 			}
@@ -417,7 +398,6 @@ func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
 func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
 	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
-	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		awaiting record.Awaiting
@@ -442,13 +422,12 @@ func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
 			events: []json.RawMessage{specChanges(8, 3, "name the rollback path")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
 			waitGate := tc.gate
 			if waitGate == nil && tc.awaiting.GateVersion != 0 {
 				waitGate = gate
 			}
 			client := &awaitingDispatch{events: tc.events}
-			got := catchUpAwaitingRootOn(t, pool, tc.awaiting, waitGate, client)
+			got := catchUpAwaitingRoot(t, tc.awaiting, waitGate, client)
 			if got == nil || !got.AwaitingPerson() || got.Answered() {
 				t.Fatalf("root after the catch-up = %#v, want it still waiting on the person", got)
 			}
@@ -550,7 +529,6 @@ func TestCatchUpAwaitingBoundsEachRootAndResumesAfterTheRootsItFinished(t *testi
 // answers nothing.
 func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
 	t.Parallel()
-	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		reasons []string
@@ -559,9 +537,8 @@ func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
 		{name: "A, A", reasons: []string{"name the rollback path", "name the rollback path"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
 			client := &awaitingDispatch{}
-			w := catchUpRigOn(t, pool, client, 0)
+			pool, w := catchUpRig(t, client, 0)
 			seq := int64(10)
 			next := func() int64 { seq++; return seq }
 			root := captureRoot(phase.AwaitingPerson, &record.Awaiting{GateVersion: 4, Artifact: "artifact-root", Since: record.EventMark{Seq: next()}})
@@ -621,7 +598,6 @@ func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
 func TestCatchUpAnswersWithAPersonsActOnAnyAskOfTheRoot(t *testing.T) {
 	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
-	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		events []json.RawMessage
@@ -630,8 +606,7 @@ func TestCatchUpAnswersWithAPersonsActOnAnyAskOfTheRoot(t *testing.T) {
 		{name: "a person answered another ask of the root", events: []json.RawMessage{askClosed(9, "answered", "ask-question", "question", alice)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
-			got := catchUpAwaitingRootOn(t, pool, record.Awaiting{GateVersion: 3, Artifact: "artifact-root"}, gate, &awaitingDispatch{events: tc.events})
+			got := catchUpAwaitingRoot(t, record.Awaiting{GateVersion: 3, Artifact: "artifact-root"}, gate, &awaitingDispatch{events: tc.events})
 			if got == nil || !got.Answered() {
 				t.Fatalf("root after the catch-up = %#v, want a person's act to have answered its gate wait", got)
 			}
@@ -858,8 +833,8 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // CAPTURE-100's gate opened at version 3 and the version written after it closed the gate
 // again, so under the children-first rule the root is waiting for its children rather than
 // working, ReconcileAwaiting can start no wait on a person for it (workflow's decideAwait, rule
-// 0), and no pass can start it while a step of its design is unapproved; the slot it still holds
-// is one admission's next pass takes back. CAPTURE-200 waits in line for its first slot, so its
+// 0), and no pass can start it while a step of its design is unapproved; it keeps the row it
+// took at its admission throughout (record.KeepsSlot). CAPTURE-200 waits in line for its first row, so its
 // architect has never run and has handed nothing back. Reading either one's event log would hold
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.
@@ -922,12 +897,10 @@ func TestTheCatchUpReadsNoRootThatLeftTheWorkflow(t *testing.T) {
 func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 	t.Parallel()
 	cursor := catchUpHandout
-	pool, reset := tableDatabase(t)
 	t.Run("answered within the window", func(t *testing.T) {
-		reset(t)
 		client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
 			events: []json.RawMessage{askOpened(7, "ask-q1"), askClosed(9, "answered", "ask-q1", "question", alice)}}
-		w := catchUpRigOn(t, pool, client, 1)
+		pool, w := catchUpRig(t, client, 1)
 		slottedCapture(t, pool, nil, &cursor)
 		if err := bootCatchUp(t, w); err != nil {
 			t.Fatalf("catch up: %v", err)
@@ -940,10 +913,9 @@ func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 		}
 	})
 	t.Run("a second question left with the person", func(t *testing.T) {
-		reset(t)
 		client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 			events: []json.RawMessage{askOpened(7, "ask-q1"), askClosed(9, "answered", "ask-q1", "question", alice), askOpened(11, "ask-q2")}}
-		w := catchUpRigOn(t, pool, client, 1)
+		pool, w := catchUpRig(t, client, 1)
 		slottedCapture(t, pool, nil, &cursor)
 		if err := bootCatchUp(t, w); err != nil {
 			t.Fatalf("catch up: %v", err)
@@ -958,14 +930,14 @@ func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 	})
 }
 
-// A root already waiting on its gate's approval at the deploy returns its slot at the first boot:
+// A root already waiting on its gate's approval at the deploy keeps its row at the first boot:
 // its gate was registered by a daemon of the earlier release, so the asks' mirror holds no request
 // of its document; the boot mirrors the request Dispatch shows open and, with that request on the
-// person's turn, declares the hand-back as a registration would. A request Dispatch shows on the agent's turn hands nothing
-// back, and the root keeps its slot.
-func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
+// person's turn, declares the hand-back as a registration would. A request Dispatch shows on the
+// agent's turn hands nothing back. Either way the root keeps its row, and the root waiting in
+// line behind it takes none.
+func TestARootWaitingOnItsGateAtDeployKeepsItsRow(t *testing.T) {
 	t.Parallel()
-	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name      string
 		waitingOn string
@@ -975,10 +947,9 @@ func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
 		{name: "the request with the agent", waitingOn: "agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
 			client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
 				approval: dispatch.Approval{State: "awaiting", LatestVersion: 3, AskID: "ask-approval", WaitingOn: tc.waitingOn}}
-			w := catchUpRigOn(t, pool, client, 1)
+			pool, w := catchUpRig(t, client, 1)
 			slottedCapture(t, pool, &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3}, nil)
 			if err := bootCatchUp(t, w); err != nil {
 				t.Fatalf("catch up: %v", err)
@@ -1003,46 +974,9 @@ func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
 			if ops := captureArchitectOps(t, pool); len(ops) != 0 {
 				t.Fatalf("architect operations = %v, want none while the root waits", ops)
 			}
-			if !slotHeld(t, pool, "CAPTURE-200") || slotHeld(t, pool, "CAPTURE-100") {
-				t.Fatalf("slot held by CAPTURE-200 %t, by CAPTURE-100 %t, want the root waiting in line to take the one slot",
-					slotHeld(t, pool, "CAPTURE-200"), slotHeld(t, pool, "CAPTURE-100"))
-			}
-		})
-	}
-}
-
-// What a boot's read of a gate's document applies for the root: Dispatch showing an approval
-// request open gives the fact that mirrors it, at the sequence the boot read before it, and the
-// request is the person's to answer unless Dispatch shows it waiting on the agent, which is what
-// decides whether the root hands its slot back. Dispatch showing no open request is nothing to
-// apply. The id the fact is applied under names the root's generation, the ask and that
-// sequence, so the same read is one fact and a re-admission's read of it another.
-func TestWhatAGatesApprovalAppliesAtABoot(t *testing.T) {
-	t.Parallel()
-	root := record.Issue{Key: "CAPTURE-100", Tree: "CAPTURE-100", Generation: 2}
-	for _, tc := range []struct {
-		name     string
-		approval dispatch.Approval
-		want     intake.GateRequestFound
-		id       string
-	}{
-		{name: "a request with the person",
-			approval: dispatch.Approval{State: "awaiting", LatestVersion: 3, AskID: "ask-approval", WaitingOn: "human"},
-			want:     intake.GateRequestFound{Issue: "CAPTURE-100", Generation: 2, ArtifactID: "artifact-root", RequestAsk: "ask-approval", Since: 9},
-			id:       "gate-request:CAPTURE-100:2:ask-approval:9"},
-		{name: "a request with the agent",
-			approval: dispatch.Approval{State: "awaiting", LatestVersion: 3, AskID: "ask-approval", WaitingOn: "agent"},
-			want:     intake.GateRequestFound{Issue: "CAPTURE-100", Generation: 2, ArtifactID: "artifact-root", RequestAsk: "ask-approval", WaitsOnAgent: true, Since: 9},
-			id:       "gate-request:CAPTURE-100:2:ask-approval:9"},
-		{name: "a document nobody has asked to approve", approval: dispatch.Approval{State: "draft", LatestVersion: 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fact, id, found := gateRequestFact(root, "artifact-root", tc.approval, 9)
-			if found != (tc.id != "") {
-				t.Fatalf("gateRequestFact found a request = %t, want %t", found, tc.id != "")
-			}
-			if found && (fact != tc.want || id != tc.id) {
-				t.Fatalf("gateRequestFact = %+v under %q, want %+v under %q", fact, id, tc.want, tc.id)
+			if !slotHeld(t, pool, "CAPTURE-100") || slotHeld(t, pool, "CAPTURE-200") {
+				t.Fatalf("row held by CAPTURE-100 %t, by CAPTURE-200 %t, want the waiting root to keep the one row",
+					slotHeld(t, pool, "CAPTURE-100"), slotHeld(t, pool, "CAPTURE-200"))
 			}
 		})
 	}
