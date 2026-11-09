@@ -2199,7 +2199,8 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // A row the fences keep is weighed once more, against the claim it would start: a stop that
 // outlived the row's own start ends the row too, since the row's retry would otherwise start
 // the stopped worker again the moment a slot came (stopOutlivedStart). That second read is one
-// batched RoleRuns call over the rows the fences kept, and no read at all when they kept none.
+// batched RoleClaims call over the rows the fences kept, and no read at all when they kept none:
+// the rule reads nothing of the queued rows beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -2223,7 +2224,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	finished := false
 	kept := make([]owedRow, 0, len(facts.OwedRows))
-	keys := make([]record.RoleRunKey, 0, len(facts.OwedRows))
+	tokens := make([]claim.Token, 0, len(facts.OwedRows))
 	for _, owed := range facts.OwedRows {
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
@@ -2238,7 +2239,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 				continue
 			}
 			kept = append(kept, owedRow{owed: owed, token: token})
-			keys = append(keys, record.RoleRunKey{Token: token, Issue: owed.Issue, Role: owed.Role, Generation: owed.Generation})
+			tokens = append(tokens, token)
 			continue
 		}
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
@@ -2254,16 +2255,16 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
 	}
-	if len(keys) == 0 {
+	if len(tokens) == 0 {
 		return finished, nil
 	}
-	runs, err := a.store.RoleRuns(ctx, tx, keys)
+	held, err := a.store.RoleClaims(ctx, tx, tokens)
 	if err != nil {
 		return finished, err
 	}
 	for _, keptRow := range kept {
-		owed, run := keptRow.owed, runs[keptRow.token]
-		if !stopOutlivedStart(run, owed) {
+		owed := keptRow.owed
+		if !stopOutlivedStart(held[keptRow.token], owed) {
 			continue
 		}
 		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
@@ -2280,14 +2281,15 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 
 // stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
 // that would only ever start a stopped worker. Its three terms together say the stop is the whole
-// of this row's story, and the claim carries all three: its state, the newest start run against
-// it, and the task it holds, read in one record.Store.RoleRuns call after the rows the fences
-// kept (record's RoleRuns reads its claims last). That order is what keeps the second term
-// honest: the mark it weighs owed's id against is never older than the read that said owed was
-// still owed, so a row run in between reads as run rather than as a start still to come.
-func stopOutlivedStart(run record.RoleRun, owed record.OwedStart) bool {
+// of this row's story, and held, the claim as record.Store.RoleClaims reads it (nil for a role
+// the store holds no claim of), carries all three: its state, the newest start run against it,
+// and the task it holds. That read runs after the owed rows the fences kept, which is what keeps
+// the second term honest: the mark it weighs owed's id against is never older than the read that
+// said owed was still owed, so a row run in between reads as run rather than as a start still to
+// come.
+func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
-	if run.Claim == nil || run.Claim.State != supervise.StateRetired {
+	if held == nil || held.State != supervise.StateRetired {
 		return false
 	}
 	// A row that has never run against this claim is the workflow's next start of this worker,
@@ -2313,13 +2315,13 @@ func stopOutlivedStart(run record.RoleRun, owed record.OwedStart) bool {
 	// that term would have read every start the workflow writes after a stop as a start the stop
 	// outlived. What the rule still does not reach is an owed row a lane has already leased, which
 	// is not in this read at all (record.Store.OwedStarts).
-	if run.Claim.LastStartRow < owed.ID {
+	if held.LastStartRow < owed.ID {
 		return false
 	}
 	// A task the claim still works would say the claim kept the work of this very row — the row
 	// gave it that task on the run above and the stop came before the claim was done with it — so
 	// the row is not simply a start the stop outlived.
-	if p := run.Claim.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, run.Claim.State) {
+	if p := held.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, held.State) {
 		return false
 	}
 	return true

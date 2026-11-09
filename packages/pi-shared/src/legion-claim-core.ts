@@ -29,9 +29,19 @@ export interface LegionClaimHost {
   readonly claimRole: (role: string) => Promise<void>;
   /** Registers `claim`, the step that takes this session's Envoy name, to be run once the
    * session's first turn has started — whatever started it: the daemon's task, a card, a
-   * reminder. The host calls `claim` exactly once per registration, and calls it at once, inside
-   * this very call, when a turn has already started by the time the boot registers: a signal the
-   * host swallowed would leave the name to the bound. Calling it more than once claims once.
+   * reminder. Calling it more than once claims once, and a signal the host swallows leaves the
+   * name to the bound.
+   *
+   * Which turn is its session's first is the host's to decide, and the two hosts decide it
+   * differently because their startups differ. A host whose own startup can begin no turn
+   * before the boot has registered may call `claim` at once, inside this very call, for a turn
+   * that has already started: pi-legion awaits the boot inside `session_start`, and Oh My Pi
+   * reads no input until every such handler has returned, so a turn it heard of is this
+   * session's own. A host whose startup seeds a turn of its own before the claim exists counts
+   * only a turn that arrives after this registration: in claude-envoy the bridge's seeding
+   * `/rename` is what writes the transcript the boot waits for, so a signal kept from before
+   * the registration would take the name ahead of the daemon's task — the very ordering the
+   * deferred claim exists to end.
    *
    * Both hosts have such a signal — Oh My Pi's `agent_start` and the Claude Code hook's
    * `UserPromptSubmit` — so it is required: a boot with no way of hearing its first turn is not
@@ -135,13 +145,20 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       }
     });
   } catch (error) {
-    host.log(
-      `claim boot failed after claims/register registered ${claim.claimToken}; ${host.stopping}: ${messageFor(error)}`
-    );
-    host.stop();
+    stopAfterRegistration(host, claim.claimToken, error);
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken) };
+}
+
+/** The one path every failure after a registration takes, wherever it happens: the boot's own
+ * steps and the deferred role claim, which runs after the boot has settled, report it in the
+ * same sentence and stop the session, since neither changes on retry. */
+function stopAfterRegistration(host: LegionClaimHost, role: string, error: unknown): void {
+  host.log(
+    `claim boot failed after claims/register registered ${role}; ${host.stopping}: ${messageFor(error)}`
+  );
+  host.stop();
 }
 
 /**
@@ -166,10 +183,7 @@ function claimRoleAtFirstTurn(host: LegionClaimHost, role: string): Promise<void
       try {
         await host.claimRole(role);
       } catch (error) {
-        host.log(
-          `claim boot failed after claims/register registered ${role}; ${host.stopping}: ${messageFor(error)}`
-        );
-        host.stop();
+        stopAfterRegistration(host, role, error);
       }
       done.resolve();
     })();

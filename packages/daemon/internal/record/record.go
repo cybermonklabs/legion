@@ -1591,6 +1591,10 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
+	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' second statement
+	// without its first, for a caller that judges a run by its claim and reads no queued start
+	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
+	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

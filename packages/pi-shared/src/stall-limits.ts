@@ -99,8 +99,10 @@ export function defaultCallBoundMs(role: string | undefined): number {
 }
 
 /** One variable's value: the default when it is unset, and the default with one `warn` naming the
- * variable when it is not an integer of `least` or more. */
-function integerSetting(
+ * variable when it is not an integer of `least` or more. Exported for the one other `LEGION_*`
+ * number a session reads this way, the claim boot's first-turn bound
+ * (`src/claim-first-turn-bound.ts`). */
+export function integerSetting(
   env: Record<string, string | undefined>,
   log: StallLimitsLog,
   name: string,

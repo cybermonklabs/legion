@@ -134,7 +134,14 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       client.callTool({ name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } }),
     ).rejects.toThrow("this session has no Legion claim yet")
 
-    // The bridge's /rename seed writes the transcript; only then does the pane register.
+    // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
+    // claim exists, since the seed is what writes the transcript the pane registers with. It
+    // says a turn started, and the server has no step to run for it yet (INFRA-1573).
+    const seed = await client.callTool({
+      name: PHASE_HOOK_TOOL_NAME,
+      arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
+    })
+    expect(seed.content).toEqual([{ type: "text", text: "{}" }])
     const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
     await mkdir(join(configDir, "projects", "-work"), { recursive: true })
     await writeFile(transcript, "{}\n")
@@ -163,9 +170,10 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         },
       },
     ])
-    // No turn has started, so the pane has registered and said it is ready without taking its
-    // Envoy name: a message the listener kept for the role is handed over inside a running turn
-    // rather than ahead of the daemon's task (INFRA-1573).
+    // The seed is behind the pane and it holds no name: the registration and its ready have
+    // run, and only a turn after them takes the Envoy name, so a message the listener kept for
+    // the role is handed over inside a running turn rather than ahead of the daemon's task
+    // (INFRA-1573).
     expect(roles).toEqual([])
     const turn = await client.callTool({
       name: PHASE_HOOK_TOOL_NAME,

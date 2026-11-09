@@ -59,11 +59,13 @@ func (r *startMidRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tra
 // RoleRuns reads a role's claim and its queued supervise rows as two statements, and under a
 // READ COMMITTED transaction — which every fact handler's is, and this test's with it — a
 // writer commits between them. The rows are read first and the claims last, so every claim in
-// the answer is at least as new as the rows beside it. Admission's stop rule stands on that
-// order: it weighs the claim's mark of the newest start run against it (LastStartRow) against
-// the id of the row it holds, and a claim read before those rows could report a mark older than
-// the read that said the row was still owed, which would read a row the daemon has just run as
-// a start still to come (admit's stopOutlivedStart).
+// the answer is at least as new as the rows beside it. Every rule that weighs the two together
+// stands on that order, admission's start repair among them (workflow.StartFor, for admit's
+// resumeSlottedWorkers and startMidPhaseMembers): a claim read before those rows could report a
+// state older than the read that said a row of it was queued, which would read a worker the
+// daemon has just started as one nothing is starting. The stop rule weighs the same pair across
+// two reads of its own, the owed rows first and RoleClaims after them (admit's
+// stopOutlivedStart), and that order is the same order this one holds inside.
 //
 // The run of a retired claim's own start commits the two halves of that order's one hard case
 // after the other: the claim's new state first, the delete of the start row second. A read that
@@ -148,7 +150,7 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 		}
 	}
 	if run.Claim.State == supervise.StateRetired && !queuedStart {
-		t.Fatalf("the run of %s reads retired with no queued start, while the run of its own start was committing: that pair is a claim read before the rows, and admission's stop rule weighs the claim's own start mark against a row it already read as owed. The claim and the rows must be read in an order that cannot report it (record's RoleRuns)",
+		t.Fatalf("the run of %s reads retired with no queued start, while the run of its own start was committing: that pair is a claim read before the rows, and a caller weighs the claim against the rows beside it (workflow.StartFor). The claim and the rows must be read in an order that cannot report it (record's RoleRuns)",
 			token)
 	}
 }

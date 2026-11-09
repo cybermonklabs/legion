@@ -20,9 +20,10 @@ import {
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-/** The channel server's first-turn signal as a pane whose turn is already running gives it: the
- * name is taken as soon as the boot has registered the step (`onFirstTurn`). A case that holds
- * the step back, or never runs it, passes its own. */
+/** The first-turn signal a case whose subject is the claim itself passes: the name is taken as
+ * soon as the boot has registered the step (`onFirstTurn`). It is not the channel server's own
+ * wiring, which runs the step at a prompt submitted after that registration and at nothing
+ * before it (`registeredPane` below). */
 const firstTurnNow = (takeTheName: () => void): void => {
   takeTheName()
 }
@@ -603,13 +604,17 @@ test("a pane no launcher keeps registers once the transcript exists, waiting for
   expect(posted[0]?.body["ompSessionFile"]).toBe(transcript)
 })
 
-/** A registered pane whose claim step the case drives itself: `firstTurn` is what the channel
- * server resolves at the phase hook's first `UserPromptSubmit`, `env` the environment the bound
- * is read from, and the boot is awaited before it answers. */
+/** A registered pane whose claim step the case drives itself: `submitPrompt` is the phase hook's
+ * `UserPromptSubmit` as the channel server answers it — it runs the step the boot put in the
+ * server's slot, and nothing at all before the boot has put one there — `env` is the
+ * environment the bound is read from, and the boot is awaited before this answers.
+ * `beforeRegistration` runs the moment the claim starts, before its boot has registered: the
+ * bridge's seeding `/rename` turn arrives there. */
 async function registeredPane(options: {
   readonly env: Record<string, string>
-  readonly firstTurn: Promise<void>
+  readonly beforeRegistration?: (submitPrompt: () => void) => void
 }): Promise<{
+  readonly submitPrompt: () => void
   readonly claim: LegionClaim
   readonly posted: Posted[]
   readonly setRoles: SetRoleInput[]
@@ -629,6 +634,8 @@ async function registeredPane(options: {
   const remembered: string[] = []
   const lines: string[] = []
   let stops = 0
+  let takeTheNameAtFirstTurn: (() => void) | undefined
+  const submitPrompt = (): void => takeTheNameAtFirstTurn?.()
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
@@ -654,25 +661,23 @@ async function registeredPane(options: {
     stop: () => {
       stops += 1
     },
-    // The server's own wiring: the step waits on the promise the phase hook's first
-    // `UserPromptSubmit` resolves (`onFirstTurn` in `src/envoy-channel-server.ts`).
+    // The server's own wiring: the step goes in a slot the phase hook's `UserPromptSubmit`
+    // calls, and a prompt that finds it empty signals nothing (`onFirstTurn` in
+    // `src/envoy-channel-server.ts`).
     onFirstTurn: (takeTheName) => {
-      void options.firstTurn.then(takeTheName)
+      takeTheNameAtFirstTurn = takeTheName
     },
     env: options.env,
     pollMs: 5,
   })
+  options.beforeRegistration?.(submitPrompt)
   await claim.booted
-  return { claim, posted, setRoles, remembered, lines, stops: () => stops }
+  return { submitPrompt, claim, posted, setRoles, remembered, lines, stops: () => stops }
 }
 
 test("the name is taken at the turn the server signals, not at the boot, and two turns take it once", async () => {
-  const turn = Promise.withResolvers<void>()
   // Ten minutes: nothing but the signal can claim the name inside this case.
-  const pane = await registeredPane({
-    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000" },
-    firstTurn: turn.promise,
-  })
+  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000" } })
 
   // Ready has answered and the pane is still nameless, so a message the listener kept for this
   // role is handed over inside a turn rather than ahead of the daemon's task.
@@ -682,8 +687,8 @@ test("the name is taken at the turn the server signals, not at the boot, and two
   ])
   expect(pane.setRoles).toEqual([])
 
-  turn.resolve()
-  turn.resolve()
+  pane.submitPrompt()
+  pane.submitPrompt()
   await pane.claim.claimed
 
   const token = String(registeredClaim["claimToken"])
@@ -695,26 +700,47 @@ test("the name is taken at the turn the server signals, not at the boot, and two
   expect(pane.lines).toEqual([])
 })
 
+test("a prompt submitted before the boot registered its step takes no name, the next one does", async () => {
+  // The bridge's seeding `/rename`, which every fresh pane's Claude Code submits before any
+  // claim exists: it is what writes the transcript the boot waits for. The server keeps no
+  // signal from before its step is registered, or the name would be taken one microtask after
+  // `claims/ready` answers — ahead of the daemon's task, the order this change exists to end.
+  const pane = await registeredPane({
+    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000" },
+    beforeRegistration: (submitPrompt) => submitPrompt(),
+  })
+
+  // The assertion below is that nothing happened, and nothing has a signal to await, so this
+  // waits out the one thing that could: the claim step runs on a microtask of its own, and the
+  // ten-minute bound is the only other way the name could be taken inside this case.
+  await Bun.sleep(20)
+  expect(pane.posted.map(({ path }) => path)).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
+  ])
+  expect(pane.setRoles).toEqual([])
+
+  // The daemon's own task, which reaches Claude Code as a `UserPromptSubmit` of its own: that
+  // turn is already running when the name is taken.
+  pane.submitPrompt()
+  await pane.claim.claimed
+  expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
+  expect(pane.stops()).toBe(0)
+})
+
 test("a pane that submits no prompt takes its name at the bound its environment sets", async () => {
   // A role the daemon brought back with no task of its own starts no turn, and the bound is what
   // keeps it from staying unaddressable: it claims anyway, and the lane kept for it is handed
-  // over then. Nothing resolves this signal.
-  const pane = await registeredPane({
-    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "5" },
-    firstTurn: Promise.withResolvers<void>().promise,
-  })
+  // over then. This case submits no prompt at all.
+  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "5" } })
   await pane.claim.claimed
   expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
   expect(pane.stops()).toBe(0)
 })
 
 test("a bound this pane's environment states badly is warned about on the pane's own log line", async () => {
-  const turn = Promise.withResolvers<void>()
-  const pane = await registeredPane({
-    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "soon" },
-    firstTurn: turn.promise,
-  })
-  turn.resolve()
+  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "soon" } })
+  pane.submitPrompt()
   await pane.claim.claimed
   expect(pane.lines).toEqual([
     'warn: legion: LEGION_CLAIM_FIRST_TURN_BOUND_MS is not an integer of 0 or more; using 30000 {"value":"soon"}',

@@ -2354,7 +2354,9 @@ type roleRunIdentity struct {
 // misses was deleted before the second one ran, and the second one reads the claim state that
 // delete stands for. Reading the rows first is therefore what keeps a caller from ever seeing a
 // queued start gone beside a claim that has not yet moved, which is the one pair a rule that
-// deletes a row would read as a worker nothing is starting again (admit's finishFencedStarts).
+// weighs a claim against rows it has read would take for a worker nothing is starting again
+// (workflow.StartFor, for admit's resumeSlottedWorkers and startMidPhaseMembers; RoleClaims
+// says what the same order means for a caller that reads the claims alone).
 func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error) {
 	runs := make(map[claim.Token]RoleRun, len(keys))
 	if len(keys) == 0 {
@@ -2417,11 +2419,55 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	}
 	rows.Close()
 
-	rows, err = tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
+	if err := readRoleClaims(ctx, tx, tokens, func(token claim.Token, held *RoleClaim) {
+		run := runs[token]
+		run.Claim = held
+		runs[token] = run
+	}); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
+// statement alone, for a caller that judges a role run by its claim and never reads the queued
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart). A token the store
+// holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
+// It saves that caller RoleRuns' first statement, which selects and strictly decodes every
+// supervise row of every issue that owes a start, once per admission pass.
+//
+// Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
+// claims must be read after the owed rows they are judged against, so that every claim read is
+// at least as new as the row beside it and the newest start run against a claim
+// (LastStartRow) is never older than the read that said the row was still owed. That is where
+// the call sits — the pass reads its owed rows into record.LineFacts first, and weighs them
+// here after.
+func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error) {
+	held := make(map[claim.Token]*RoleClaim, len(tokens))
+	if len(tokens) == 0 {
+		return held, nil
+	}
+	names := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		names = append(names, string(token))
+	}
+	if err := readRoleClaims(ctx, tx, names, func(token claim.Token, c *RoleClaim) {
+		held[token] = c
+	}); err != nil {
+		return nil, err
+	}
+	return held, nil
+}
+
+// readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
+// RoleClaims share, with the task pending on each claim read beside it (the two tables are
+// written apart and read together, as claimSelect reads them).
+func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
 		coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
-		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -2431,7 +2477,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var task supervise.Delivery
 		var confirmed *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
-			return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if pending {
 			if confirmed != nil {
@@ -2439,14 +2485,12 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			}
 			held.Pending = &task
 		}
-		run := runs[claim.Token(token)]
-		run.Claim = &held
-		runs[claim.Token(token)] = run
+		found(claim.Token(token), &held)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
-	return runs, nil
+	return nil
 }
 
 // PendingStatusWrites lists every Dispatch status write of project's issues the outbox has not

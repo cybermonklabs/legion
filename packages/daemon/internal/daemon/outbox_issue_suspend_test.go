@@ -777,8 +777,9 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 			Linger: time.Hour, Clock: func() time.Time { return clock }}, quietLogger())
 		admission := admit.New(records, engine, 2, "LEGION", quietLogger())
+		trees := outboxTreeStore(t, pool, root.Key)
 		runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup,
-			trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, stateDir: t.TempDir(),
+			trees: trees, tokens: outboxTokens{}, stateDir: t.TempDir(),
 			githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
 			dispatch: &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}},
 			handlers: []intake.Handler{engine, admission}, log: quietLogger(), now: func() time.Time { return clock },
@@ -844,32 +845,24 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatal(err)
 		}
 		run("the linger's close of the tree")
+		// The supervisor of this door keeps its claims in a stand-in store of its own
+		// (outboxClaimStore), so the two roles that ran leave no claim row behind. Each is
+		// written to the record here, in the state the close left it: the claim row is the
+		// durable record that a role has run, which a re-admission reads to decide which of a
+		// member's sessions to bring back (admit's startMidPhaseMembers), and it survives the
+		// close and the new generation.
 		for _, tok := range []claim.Token{worker, earlier} {
 			machine, found := sup.Machine(tok)
 			if !found {
 				t.Fatalf("no machine for %s after the linger closed the tree", tok)
 			}
 			machine.Wait()
-			if got := machine.Claim(); got.State != supervise.StateRetired || got.SessionFile == "" {
-				t.Fatalf("%s after the linger closed the tree = %s with session file %q, want it retired with its session kept", tok, got.State, got.SessionFile)
+			stopped := machine.Claim()
+			if stopped.State != supervise.StateRetired || stopped.SessionFile == "" {
+				t.Fatalf("%s after the linger closed the tree = %s with session file %q, want it retired with its session kept", tok, stopped.State, stopped.SessionFile)
 			}
-		}
-		// The supervisor of this door keeps its claims in a stand-in store of its own
-		// (outboxClaimStore), so the two roles that ran leave no claim row behind. The record is
-		// written here, in the state the close left each of them: the claim row is the durable
-		// record that a role has run, which a re-admission reads to decide which of a member's
-		// sessions to bring back (admit's startMidPhaseMembers), and it survives the close and
-		// the new generation.
-		for _, tok := range []claim.Token{worker, earlier} {
-			role := claim.RoleImplementer
-			if tok == earlier {
-				role = claim.RolePlanner
-			}
-			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
-				values ($1, 'legion', $2, $3, $4, $5, $6, $7, 'retired', 0, 0, 0, 0, $5)`,
-				string(tok), root.Tree, member.Key, string(role), int64(member.Generation), "ses-"+string(role), "/tmp/"+string(role)+".jsonl"); err != nil {
-				t.Fatalf("record the retired claim of the member's %s: %v", role, err)
+			if err := trees.PutClaim(ctx, stopped); err != nil {
+				t.Fatalf("record the retired claim of %s: %v", tok, err)
 			}
 		}
 

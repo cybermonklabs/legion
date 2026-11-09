@@ -426,9 +426,11 @@ test("the prompt that carries this endpoint's own reminder does not reset its co
 
 test("every prompt submitted says a turn of this session has started, before the phase gate", async () => {
   // The claim's first-turn signal, which the channel server answers by taking this session's
-  // Envoy name (`onFirstTurn`, `src/legion-claim.ts`). It is fired before the gate below, so the
-  // bridge's seeding `/rename` turn — which runs before any claim exists, since it writes the
-  // transcript the boot waits for — says a turn started, and so does an architect's turn.
+  // Envoy name when its claim boot has registered the step by then, and by nothing when it has
+  // not (`onFirstTurn`, `src/envoy-channel-server.ts`). This endpoint draws no such line: it
+  // fires the signal before the gate below, for the bridge's seeding `/rename` turn — which
+  // runs before any claim exists, since it writes the transcript the boot waits for — as for
+  // an architect's turn, and the server decides what each comes to.
   const seeding = await harness()
   expect(await seeding.endpoint.handle({ event: "UserPromptSubmit", prompt: "/rename" })).toEqual(
     {},

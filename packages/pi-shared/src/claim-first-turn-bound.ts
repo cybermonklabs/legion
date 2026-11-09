@@ -1,3 +1,5 @@
+import { integerSetting, type StallLimitsLog } from "./stall-limits";
+
 /**
  * The one number the claim boot's deferred role claim runs on
  * (`src/legion-claim-core.ts`, `bootLegionClaim`): how long it waits for its session's first turn
@@ -17,12 +19,6 @@
  * spec, which reads 8 and 10 seconds for the two launches it measures). */
 export const DEFAULT_CLAIM_FIRST_TURN_BOUND_MS = 30_000;
 
-/** The log one bad value writes its `warn` to (`logger` from `@oh-my-pi/pi-utils` in production,
- * the pane's own log line in the Claude Code host). */
-export interface ClaimFirstTurnBoundLog {
-  readonly warn: (message: string, context?: Record<string, unknown>) => void;
-}
-
 /** The one variable that moves the bound, in the `LEGION_*` family a Legion session's
  * environment carries, and one value for every role and both harnesses. A test that would not
  * wait 30 seconds sets it on the session it starts. For a deployment to move it from the
@@ -39,20 +35,13 @@ const BOUND_VARIABLE = "LEGION_CLAIM_FIRST_TURN_BOUND_MS";
  *
  * 0 is a value the reader honours: the name is taken as soon as `claims/ready` has answered,
  * waiting for no turn at all, which is the order this change replaced.
+ *
+ * The read is `integerSetting` (`src/stall-limits.ts`) with `least` 0, the one reader every
+ * `LEGION_*` number of a session goes through, warning included.
  */
 export function claimFirstTurnBoundMs(
   env: Record<string, string | undefined>,
-  log: ClaimFirstTurnBoundLog
+  log: StallLimitsLog
 ): number {
-  const raw = env[BOUND_VARIABLE];
-  if (raw === undefined) return DEFAULT_CLAIM_FIRST_TURN_BOUND_MS;
-  const value = raw.trim() === "" ? Number.NaN : Number(raw);
-  if (!Number.isInteger(value) || value < 0) {
-    log.warn(
-      `legion: ${BOUND_VARIABLE} is not an integer of 0 or more; using ${DEFAULT_CLAIM_FIRST_TURN_BOUND_MS}`,
-      { value: raw }
-    );
-    return DEFAULT_CLAIM_FIRST_TURN_BOUND_MS;
-  }
-  return value;
+  return integerSetting(env, log, BOUND_VARIABLE, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS, 0);
 }

@@ -2391,6 +2391,47 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 	})
 }
 
+// RoleClaims reads the claims of the tokens it is given and nothing else: RoleRuns' second
+// statement without its first. The undecodable supervise row of the same issue is the witness
+// that no row is read at all — RoleRuns fails that very role's run on it — and a token no claim
+// stands under is absent from the answer, which is the nil claim RoleRuns reports for it. The
+// task a claim holds comes with it, as it does through RoleRuns.
+func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	tester := claim.Token("legion-legion-legion-208-tester")
+	held := supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester,
+		Generation: 1, State: supervise.StateRetired, LastStartRow: 17, Session: "ses_tester", SessionFile: "/tmp/tester.jsonl"}
+	task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
+		QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}
+	if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
+		t.Fatalf("record the tester's claim and the task it holds: %v", err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('supervise', 'LEGION-208', '{"op": "bogus", "tree": "LEGION-208", "role": "tester", "generation": 1}', 0, now(), '')`)
+		must(t, err)
+	})
+	merger := claim.Token("legion-legion-legion-208-merger")
+	inTx(t, st, func(tx pgx.Tx) {
+		claims, err := records.RoleClaims(ctx, tx, []claim.Token{tester, merger})
+		if err != nil {
+			t.Fatalf("read the claims of the tester and of a role with none = %v, want the tester's own undecodable row never read", err)
+		}
+		read := claims[tester]
+		if read == nil || read.State != supervise.StateRetired || read.Tree != "LEGION-208" || read.LastStartRow != 17 {
+			t.Fatalf("the tester's claim = %+v, want the retired claim the fixture wrote, with the newest start run against it", read)
+		}
+		if read.Pending == nil || read.Pending.Generation != 1 || read.Pending.Phase != phase.Testing || read.Pending.ConfirmedAt.IsZero() {
+			t.Fatalf("the task on the tester's claim = %+v, want the confirmed delivery the fixture wrote", read.Pending)
+		}
+		if _, found := claims[merger]; found {
+			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)
+		}
+	})
+}
+
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
 // replaces it (an approval after a changes request of the same spec), an older one arriving late
 // does not. A read names them all, newest first and ties by reference, and leaves them; the forget

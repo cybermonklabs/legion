@@ -223,10 +223,12 @@ export function startLegionClaim(deps: {
   /** Ends the pane's Claude Code, this server's parent, so the daemon launches the claim again. */
   readonly stop: () => void
   /** Registers the step that takes this session's Envoy name, to be run once a turn of this
-   * session has started: the channel server fires it from the phase hook's `UserPromptSubmit`,
-   * the only sight this process has of a turn beginning (`./legion-phase-hook`). It is called
-   * once the boot has registered, and the step runs at once when a turn has already started by
-   * then. */
+   * session has started: the channel server holds it in a slot the phase hook's
+   * `UserPromptSubmit` calls, the only sight this process has of a turn beginning
+   * (`./legion-phase-hook`). It is called once the boot has registered, and a prompt submitted
+   * before that — the bridge's seeding `/rename`, which runs before any claim exists — runs
+   * nothing, so the name is never taken ahead of the daemon's task
+   * (`src/envoy-channel-server.ts`). */
   readonly onFirstTurn: (claim: () => void) => void
   /**
    * How long a claim refused by a standing claim under this very session id keeps asking before
@@ -340,6 +342,6 @@ export function startLegionClaim(deps: {
   return {
     capability: () => capability,
     booted: started.then(() => undefined),
-    claimed: started.then((boot) => boot.claimed),
+    claimed: started.then((claimBoot) => claimBoot.claimed),
   }
 }

@@ -2352,9 +2352,23 @@ func HoldsCapability(state ClaimState) bool {
 //
 // Since INFRA-1573 the ready comes before the Envoy role as well — the plugin claims the role at
 // its session's first turn, or at a bound if no turn comes — so a claim this answers true for
-// may not answer to its name yet. Nothing is lost in that window: the listener refuses a publish
-// to a role no live session holds with 404 (notify.ErrNoHolder), and the row that sent it keeps
-// its lease and retries on its own backoff until the claim lands (the outbox's rehold).
+// may not answer to its name yet. The listener refuses a publish to a role no live session holds
+// with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:
+//
+//   - An architect's notice waits and is published again. noticeAnswered turns the refusal into
+//     errNoticeWaits, so the row keeps its lease and retries on its own backoff until the claim
+//     lands; only an architect that will not hold its role again ends it, with the decision
+//     parked (internal/daemon/notice_exceptions.go).
+//   - A phase-ended message is dropped. phaseEnded finishes the row with one log line, because
+//     the role's next task from the daemon names its phase anyway and a role that never claims
+//     its topic would hold the row for ever (internal/daemon/outbox.go).
+//   - A merge queue's READY packet becomes a Dispatch message. mergeQueue stands one in for the
+//     packet, naming the role and the time it had no live holder, and the row finishes
+//     (internal/daemon/outbox.go).
+//
+// The window is bounded at both ends: the name is taken inside the session's first turn — the
+// daemon's own task starts one, on either harness — and at the first-turn bound (30 s by
+// default) for a session that is given no task at all.
 func TookRole(state ClaimState) bool {
 	return state == StateReady || state == StateWorking || state == StateIdle
 }

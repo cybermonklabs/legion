@@ -169,7 +169,9 @@ export interface PhaseHookDeps {
    * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
    * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
    * name inside a turn that is already running (INFRA-1573). It is called for every
-   * `UserPromptSubmit` and costs nothing once the name is taken. */
+   * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
+   * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
+   * name is taken costs nothing. */
   readonly firstTurnStarted: () => void
   /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
    * check's bound passes (`PhaseReminderDeps.readState`). */
@@ -490,8 +492,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
       // Before the gate below, and before anything else this endpoint does: the claim's own
       // first-turn signal is not the reminder's business, and a turn is a turn whether or not a
       // claim has registered yet (the bridge's seeding `/rename` turn runs before one has) and
-      // whatever role this pane holds, an architect's included. A start the boot has not
-      // registered for yet is kept by the server and claims the moment it does.
+      // whatever role this pane holds, an architect's included. What a prompt before the boot
+      // registered its step comes to is the server's to decide, not this endpoint's: it holds
+      // the step the signal runs (`src/envoy-channel-server.ts`).
       if (event.event === "UserPromptSubmit") deps.firstTurnStarted()
       // The same gate as `phaseWorkerSession` in `packages/pi-legion/extensions/legion.ts`: the
       // machine runs for a phase worker whose claim has booted, and for nobody else. The bridge's
