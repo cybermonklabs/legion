@@ -1598,13 +1598,13 @@ func machineCredential(cred Credential) bool {
 //   - such an enrollment ends under the credential that made it, and only while that credential
 //     is the one its own pod holds: cred.PodUID is the enrollment's runtime id (ownPod, the
 //     reading podUnderTokenLogin makes of the same pair at Create). Each test refuses what the
-//     other lets through: a sibling pod's enrollment is refused by the pod uid while the two
-//     pods hold one credential row between them, and by the enrolling credential once each pod
-//     holds a row of its own, so which test refuses it follows the schema and the refusal does
-//     not; and a pod whose own enrollment another credential made — a service login a person
+//     other lets through: cred.PodUID is the caller's own pod, so the pod uid refuses a sibling
+//     pod's enrollment on either schema, and the enrolling-credential test refuses it too once
+//     each pod holds a row of its own, while it lets it through where the two share one row;
+//     and a pod whose own enrollment another credential made — a service login a person
 //     approved, which enrols any pod — brings a matching pod uid, and the enrolling-credential
-//     test is what refuses that. So a session pod of an account both settings name ends its own
-//     enrollment and no other pod's of that account, on either schema.
+//     test is the one that refuses that. So a session pod of an account both settings name ends
+//     its own enrollment and no other pod's of that account, on either schema.
 //
 //   - every other enrollment with no operator ends under the credential that made it, and a pod
 //     enrollment under the same launcher logging in again from another pod as well

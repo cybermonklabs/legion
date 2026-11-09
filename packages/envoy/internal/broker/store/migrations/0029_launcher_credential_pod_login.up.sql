@@ -44,10 +44,11 @@
 --   - enroll.Service.CredentialForKey's doc and api's authLauncher comment. The read by id and
 --     thumbprint stays right afterwards, because a pod's own re-login moves its own row's key
 --     under the same id; check that each still gives that re-login race as its reason.
---   - enroll.Service.Revoke's doc and its ownPod branch. Which of the two tests refuses a
---     sibling pod of the same account changes with the schema -- the pod uid while the row is
---     shared, the enrolling credential once each pod holds a row of its own -- so check the
---     worked example in that doc, not its conclusion, which holds on either.
+--   - enroll.Service.Revoke's doc and its ownPod branch. The pod uid refuses a sibling pod's
+--     enrollment on either schema, since cred.PodUID is the caller's own pod; what the drop
+--     changes is the enrolling-credential test, which lets a sibling through while the row is
+--     shared and refuses it once each pod holds a row of its own -- so check the worked example
+--     in that doc, not its conclusion, which holds on either.
 --   - the two paragraphs of packages/envoy/AGENTS.md on those two, which must go on saying only
 --     what holds on either schema.
 --   - enroll.Service.IssueTokenLoginTx's conflict target and legacySubjectIndex, which read at
