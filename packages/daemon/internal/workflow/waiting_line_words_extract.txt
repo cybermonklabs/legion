@@ -28,7 +28,7 @@
 # AGENTS.md states the placement twice, a paragraph apart, and each quotation stands on its own
 # in the file it came from.
 
-# AGENTS.md collapsed
+# AGENTS.md raw
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue
 
 # AGENTS.md collapsed
