@@ -138,17 +138,21 @@ func TestAPeerUpdateIsWeighedAgainstTheRoomsLastMeasurement(t *testing.T) {
 			changes:  true,
 		},
 		{
-			// A delete inside an item is a different update: it cuts the item it falls in and
-			// leaves the room holding the halves, which is how an update that inserts nothing
-			// multiplies what a room holds - one 2.2 MB frame took a room from 4 structs to
-			// 1,100,002 (roomWeight, room_prices.go). Under the pressure the allowance's Split
-			// is nothing as its Structs is, so the cut is refused with the transient close and
-			// the editor keeps the edit to send once the pressure passes (peerApplyAllowance).
-			name:     "a delete that cuts an item while the room budget is full is refused as transient",
+			// A delete inside an item cuts the item it falls in and leaves the room holding the
+			// halves, which is how an update that inserts nothing multiplies what a room holds -
+			// one 2.2 MB frame took a room from 4 structs to 1,100,002 (roomWeight,
+			// room_prices.go). The pressure therefore bounds the cutting, but it does not forbid
+			// it: R3 promises a full document can still be cut back down, and a person's delete
+			// of a selection is one range cutting at most two items, so up to pressureSplits of
+			// them apply. Refusing every cut instead refused the hundred shrinking updates A4
+			// drives on a full server (TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks),
+			// which is what this row holds against.
+			name:     "a delete that cuts an item while the room budget is full applies",
 			markdown: ordinary,
 			busy:     true,
 			update:   func(t *testing.T, room *crdt.Doc) []byte { return peerDeleting(t, room, 3) },
-			refused:  contracts.DocumentBusyCloseCode,
+			applied:  true,
+			changes:  true,
 		},
 		{
 			name:     "the whole live state the room already holds applies while the room budget is full",
@@ -1127,15 +1131,19 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			},
 		},
 		{
-			// Under the pressure an apply may cut nothing either: a delete of every other
-			// character of a run splits one item into a struct for each character, so an update
-			// that inserts nothing can still multiply what the room holds (peerApplyAllowance,
-			// roomWeight). 4503 is transient, so the editor keeps the edit and sends it once the
-			// pressure passes.
-			name: "a delete inside a word while the room budget is full", code: contracts.DocumentBusyCloseCode, reason: contracts.DocumentBusyCloseReason, applies: true,
+			// Under the pressure an apply may cut a few items and no more: a delete of every
+			// other character of a run splits one item into a struct for each character, so an
+			// update that inserts nothing can still multiply what the room holds
+			// (peerApplyAllowance, roomWeight), while a person's own delete cuts at most two and
+			// must still land so a full document can be cut back down (pressureSplits). This is
+			// the update past that allowance. 4503 is transient, so the editor keeps the edit
+			// and sends it once the pressure passes.
+			name: "a delete cutting more items than the pressure allows while the room budget is full", code: contracts.DocumentBusyCloseCode, reason: contracts.DocumentBusyCloseReason, applies: true,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
-				service, room, replica := peerUpdateRoom(t, ordinary, 0)
-				cut := peerDeletingAt(t, room, 4, 5)
+				// A heading long enough that every cut falls inside its run: the ordinary
+				// fixture's own first text is five characters, which cannot hold eight cuts.
+				service, room, replica := peerUpdateRoom(t, "# "+strings.Repeat("a", 64)+"\n\nOne paragraph of ordinary prose.\n", 0)
+				cut := peerDeletingInPieces(t, room, pressureSplits)
 				fillRoomBudget(t, &service.budget)
 				return service, room, cut, replica
 			},
@@ -2001,4 +2009,24 @@ func TestABrowsersUpdateIntoARoomWhoseBacklogWillNotDrainIsRefused(t *testing.T)
 		}
 	}
 	t.Logf("%s", line)
+}
+
+// peerDeletingInPieces is the update a browser sends that deletes one character in each of cuts
+// places spread through the room's first text, every one of them inside the run rather than at
+// its ends, so each cut splits the item it lands in at both edges. It is how a test reaches a
+// split count rather than a byte count: the update inserts nothing and carries a few bytes, and
+// the structs it leaves behind are the halves (crdt.ApplyBudget.Split, pressureSplits).
+func peerDeletingInPieces(t *testing.T, room *crdt.Doc, cuts int) []byte {
+	t.Helper()
+	browser, from := peerDocument(t, room)
+	length := int(from.Len())
+	if length < 2*cuts+2 {
+		t.Fatalf("the room's text is %d characters, want at least %d so %d cuts each fall inside it", length, 2*cuts+2, cuts)
+	}
+	browser.Transact(func(txn *crdt.Transaction) {
+		for cut := cuts; cut > 0; cut-- {
+			from.Delete(txn, 2*cut, 1)
+		}
+	})
+	return crdt.EncodeStateAsUpdateV1(browser, room.StateVector())
 }
