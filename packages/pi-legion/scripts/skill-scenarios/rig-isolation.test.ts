@@ -59,7 +59,7 @@ const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
-  for (const lib of ["rig.sh", "port-file.sh", "held-port.py"]) {
+  for (const lib of ["rig.sh", "loopback-dsn.sh", "loopback-dsn.py", "port-file.sh", "held-port.py"]) {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
   }
