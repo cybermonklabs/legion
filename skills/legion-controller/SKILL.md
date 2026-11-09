@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, parked-decision, held, worker-died, worker-stalled, update-stalled), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -69,12 +69,13 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
-| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for the slot it returned |
+| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
 | `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
@@ -119,13 +120,21 @@ you label at a person's request or file yourself.
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan ruling that names
-it, and cite that request. A slot is one issue with work, a root or a child, not one tree: a tree
-of four working issues holds four slots, and a tree whose root only waits holds none of its own,
-so `admission.trees` is what names the roots of the live trees. The free slots are
-`admission.cap` minus the issues in `admission.active` and the issues in `admission.waiting` that
-are not in `admission.blocked`, since an issue its blockers or its own open children hold takes no
-slot until they are done. Every move to `todo` you make is one of
-these:
+it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
+tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
+starts it and keeps it
+until it is done, leaves the workflow or waits only for its merge,
+so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
+roots of the live trees. The free slots are `admission.cap`, less every issue in
+`admission.active`, which is every issue holding a slot, and less again each issue of
+`admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
+daemon counts a slot a waiting issue will take as taken already, and an issue in
+`admission.blocked` waits on a blocker rather than on a slot. Count no issue twice. An issue
+that holds a slot and waits for a promotion stands in both lists — a root a person answered,
+a tree's own root at `admitted` under a design gate a person has opened, a root another tree
+handed over with the slot it held there, and a child the daemon started that a person set back
+to `todo` — and subtracting such an issue a second time would hide a slot that is free. Every
+move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);

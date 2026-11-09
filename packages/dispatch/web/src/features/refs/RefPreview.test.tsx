@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -45,6 +46,8 @@ function issue(key: string, title: string): IssueDetails {
     assignee: null,
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+    plan_artifact_id: "plan",
+    decisions_artifact_id: "",
     primary_artifact_id: "spec",
     priority: 1,
     project: "CORE",
@@ -56,6 +59,7 @@ function issue(key: string, title: string): IssueDetails {
     status: "in_progress",
     title,
     updated_at: "2026-09-09T00:00:00Z",
+    verification_artifact_id: "verification",
   };
 }
 
@@ -602,7 +606,9 @@ test("an ask's card heads with its question formatted, not its source", async ()
     ask: {
       anchor: null,
       answer: null,
+      artifact_id: null,
       author: { id: "alice", kind: "user" },
+      block_id: null,
       created_at: "2026-09-09T00:00:00Z",
       edited_at: null,
       id: "ask-1",
@@ -735,6 +741,7 @@ function pinnedRead(pin: Omit<BlockPin, "ref" | "version">): GraphReferences {
   return {
     edges: [],
     node: {
+      ...graphNodeFields(),
       block_id: "p1",
       changed_version: pin.state === "removed" ? undefined : 3,
       document: "dispatch://CORE-1/spec",
@@ -952,6 +959,7 @@ test("a comment or message block's card names its item and author, a comment's p
         ? {
             edges: [],
             node: {
+              ...graphNodeFields(),
               block_id: "b2",
               changed_version: 2,
               id: `comment/${comment}#b2`,
@@ -973,6 +981,7 @@ test("a comment or message block's card names its item and author, a comment's p
         : {
             edges: [],
             node: {
+              ...graphNodeFields(),
               block_id: "b1",
               id: `message/${message}#b1`,
               issue_key: "CORE-1",
@@ -1089,6 +1098,7 @@ test("an ask part's card names the ask and its author, its pin a revision, and t
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
     node: {
+      ...graphNodeFields(),
       block_id: "b3",
       changed_version: 2,
       id: `ask/${ask}#b3`,
@@ -1183,6 +1193,7 @@ test("a comment card names its agent by its current title and state, without a s
       open_asks: 0,
       roles: [],
       session_id: "ses-hover",
+      state: "live",
       title: "Current title",
     },
   ]);

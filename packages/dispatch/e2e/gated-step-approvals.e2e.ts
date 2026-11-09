@@ -255,6 +255,7 @@ test("one request over two documents reads the same on both steps, and one Reque
     { include_verification: true },
     session
   );
+  if (opened.ask === null) throw new Error("the approval request opened no ask");
   expect(opened.ask.question).toBe("Approve spec.md (version 1) and verification.md (version 1)?");
 
   const alice = await asUser(browser, "alice");

@@ -28,14 +28,23 @@
 # sjawhar-agent App), never a Legion App, so run the script from the operator's own Oh My Pi
 # session, not a Legion pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses
 # to start otherwise (require_proof_human, lib/workflow.sh).
-# Legion's two role Apps are this deployment's own by default, and four inputs for another
-# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id, and
-# LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_SECRET, the secrets broker github-app
-# secrets that release their installation tokens (lib/github-apps.sh). `prerequisites` proves each
-# App from its token before the run writes anything, whichever pair it took. The tokens are
-# released through each App's token_command to the daemon, and once to lib/app-logins.ts to prove
-# each App and read its bot login from GitHub (read_app_logins, lib/workflow.sh); they never enter
-# this shell, a pane, an argv, or this transcript.
+# Legion's two role Apps are this deployment's own by default, and three inputs name another
+# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id,
+# and LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that
+# releases the implement App's installation tokens (lib/github-apps.sh). Those three default. The
+# fourth, LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private
+# key on stdout, is no input for another deployment's Apps: every run needs it, this deployment's
+# own included, it has no default, and a run that sets none is refused.
+# `prerequisites` runs that command once, here on the driver, in the operator's own environment —
+# so it may read their HOME and their own gcloud or kubectl configuration — and writes what it
+# prints to $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which cleanup removes
+# on every exit. The daemon never runs it: the review App's private_key_command is a `cat` of that
+# file, and the daemon mints and renews that App's tokens from the key it reads there. The
+# implement App's tokens are released through its token_command, which runs agent-secrets.
+# `prerequisites` proves each App from its token before the run writes anything, whichever Apps it
+# took: either is proved once to lib/app-logins.ts, which reads its bot login from GitHub
+# (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an argv, or
+# this transcript.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -173,6 +182,10 @@ cleanup() {
   # resolved path, must never survive this script on any exit, so it is never conditioned on how
   # the rest of cleanup goes.
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key, which prerequisites resolved the operator's key command into for
+  # the daemon to read, goes with it and for the same reason: $work itself is kept when a run
+  # fails, and a private key must not be what it keeps.
+  rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
     printf 'production audit after failure:\n' >&2
     production_audit >&2 || audit_failed=1
@@ -220,6 +233,9 @@ cleanup() {
   [ -n "${ok:-}" ] || [ "$check" != smoke-main-clean ] || [ -n "$audit_failed" ] ||
     [ -s "$evidence/pane-endpoint-violation.txt" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the close it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 trap cleanup EXIT
@@ -355,11 +371,11 @@ stop_dispatch() {
 issue_worker_pane() {
   daemon_state | jq -er --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].claim.locator.tmux.pane'
 }
-# A slot is one issue with work, not one tree (dispatch://INFRA-980), so a child takes a slot of
-# its own once its first phase starts. This child cannot start yet: its tree's design gate has
-# never opened, so it stands at admitted, holds no slot and is in no line, while the cap's two
-# slots stay with the two roots whose architects write their specs. admission.trees names its
-# tree, never the child, and the state's own `tree` field puts the child in that tree; the
+# A slot is one issue the daemon has started, not one tree (dispatch://INFRA-980), so a child
+# takes a slot of its own once the daemon starts its first phase. This child cannot start yet: its
+# tree's design gate has never opened, so it stands at admitted, holds no slot and is in no line,
+# while the cap's two slots stay with the two roots the daemon has started. admission.trees names
+# its tree, never the child, and the state's own `tree` field puts the child in that tree; the
 # daemon's record is read too, as the durable source of the same fact.
 child_waits_in_its_tree_without_a_slot() {
   local child=$1 root_issue_key=$2 tree
@@ -503,11 +519,12 @@ rig_sessions_json() {
   jq -R -s -c 'split("\n") | map(fromjson? | select(.msg == "api: claim registered") | .session) | unique' \
     "$evidence/logs/daemon.log"
 }
-# production_audit replays production Dispatch events since the baseline and fails on any event a
-# rig session authored, any event naming this rig's project key, and any rig session on the
-# production Envoy listener. The baseline event itself is the positive control that the replay ran.
+# production_audit fails on any rig session on the production Envoy listener and, through
+# production_dispatch_audit, on any production Dispatch event a rig session authored or that names
+# the rig's project key, on a production project naming that key, or on an audit that cannot vouch
+# for production.
 production_audit() {
-  local sessions bearer events envoy found=0
+  local sessions envoy found=0
   audited=1
   sessions=$(rig_sessions_json)
   printf '%s\n' "$sessions" >"$evidence/rig-sessions.json"
@@ -525,32 +542,7 @@ production_audit() {
     printf 'no user-level Dispatch configuration exists, so no production Dispatch fallback was possible\n'
     return "$found"
   fi
-  bearer=$work/production-dispatch-bearer
-  (umask 077 && printf '%s\n' "$prod_token" >"$bearer")
-  # A refusal of the feed is printed on stderr; the replay's close, resubscribe and duplicate lines
-  # carry no event and are not counted, so an event a redial repeats counts once. The probe takes
-  # its cursor from Dispatch's own events_start, so a --since the server clamps to its head leaves
-  # the events after that head counted, not written off as duplicates.
-  bun "$root/scripts/e2e/lib/dispatch-live-events.ts" \
-    --url "$prod_dispatch_url" --bearer-file "$bearer" --since "$((prod_baseline - 1))" --timeout 25 \
-    >"$work/production-events.jsonl" || true
-  rm -f "$bearer"
-  events=$(jq -s -c --argjson ids "$sessions" --arg project "$project" --argjson baseline "$prod_baseline" '
-    [.[] | .event | select(. != null)] |
-    {control: any(.[]; .id == $baseline), count: length,
-     rig: [.[] | select((.actor.id as $a | $ids | index($a)) or (tostring | contains($project)))
-       | {id, issue_key, type, actor: .actor.id, created_at}]}' "$work/production-events.jsonl")
-  printf '%s\n' "$events" >"$evidence/production-dispatch-audit.json"
-  if ! jq -e '.control' >/dev/null <<<"$events"; then
-    printf 'production Dispatch replay did not return its baseline event %s\n' "$prod_baseline"
-    return 1
-  fi
-  if ! jq -e '.rig == []' >/dev/null <<<"$events"; then
-    printf 'production Dispatch has rig-authored events: %s\n' "$(jq -c .rig <<<"$events")"
-    found=1
-  fi
-  printf 'production audit: %s events replayed since %s, rig events %s, rig Envoy sessions %s\n' \
-    "$(jq -r .count <<<"$events")" "$prod_baseline" "$(jq -c .rig <<<"$events")" "$envoy"
+  production_dispatch_audit "$sessions" "$envoy" || found=1
   return "$found"
 }
 
@@ -639,11 +631,13 @@ approval_requests_in() { jq '[.[] | select(.type == "ask.opened" and .payload.ki
 begin prerequisites
 refuse_leftovers legion-e2e3
 for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
-# github_apps is the block proved.
+# github_apps is the block proved. The key command runs once, here, in this shell's own
+# environment, into $work/app-key, which the daemon reads the key from and cleanup removes.
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 # STAGE3_FROM is a development aid for iterating on the later scenarios against a fresh rig; a run
 # with it set is never the proof and never prints PASS. `held` skips the first issue's workflow:
@@ -860,15 +854,18 @@ pass
 # after the close, through the look its own report asked for and the bound's last look.
 primary_issue() {
   begin primary-architect-posts-and-registers-spec
-  # Every root's architect registers a closed gate on its own and gives its slot back, so the slot
-  # the root left at registration went to a waiting root (no-change, restart), and the approved root
-  # takes one back only once one of those registers its own gate in turn: the bound is twice
-  # architect_registers_gate's 900 s for that registration. admission_cap stays 2: admission order
-  # and the child that stands in its tree with no slot of its own are proved against it, and every root of the run gives its slot
-  # back at its registration, so the slot always comes back within that bound.
+  # Every root's architect registers a closed gate on its own and its root then waits on the
+  # person, keeping the admission slot it took at its admission: an issue holds its row from the
+  # moment the daemon starts it until it is done, leaves the workflow or waits only for its merge.
+  # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
+  # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
+  # peak this lane needs under that rule: the two roots the daemon starts here hold both rows for
+  # as long as they run, each of the two waiting roots is admitted as one of them finishes — the
+  # first root at its merge, the no-change root at its close — and no scene of the run needs a
+  # third root at work beside them.
   drive_gate "$root_issue" "Stage 3 proof gate operation" 1800
   artifact_id=$gate_artifact
-  note "architect registered $artifact_id version $gate_version and $root_issue waited on the person without a slot; the human's approval answered it, the root took a slot back, and the daemon moved it to planning"
+  note "architect registered $artifact_id version $gate_version and $root_issue waited on the person holding its admission slot; the human's approval answered it, the root resumed with no further slot, and the daemon moved it to planning"
   pass
 
   begin primary-planner-handoff
@@ -1210,8 +1207,8 @@ held_worker() {
   # never becomes ready spends the claim's launch budget (three) and a ready agent resets it, so the
   # first kill takes the ready implementer and every later kill takes the relaunch as soon as the pane
   # watcher has checked it, until the claim fails and the issue is held. Its architect registered its
-  # closed gate early in the run, so the root has waited on a person since, without a slot; the first
-  # root's close freed one, which it takes back once the human approves.
+  # closed gate early in the run, so the root has waited on a person since, holding the slot it took
+  # at its admission; the human's approval resumes it there, taking no further slot.
   drive_gate "$held_issue" "Stage 3 held-worker proof"
   send_agent "$held_issue" planner "Stage 3 held-worker proof: write a minimal plan handoff and complete planning."
   wait_for_phase "$held_issue" implementing
@@ -1269,14 +1266,15 @@ else
 fi
 
 # no_change_close: a root whose human decides at the design gate that no change is needed. The
-# no-change root took the slot the first or held root gave back at its registration early in the
-# run, its architect registered its own closed gate, and it has waited on a person since, without a
-# slot while its architect stays live. The human requests changes saying no change is needed: that
-# answers the wait, and the root takes a slot back at admitted (the held root holds the other one),
+# no-change root took the row the first root gave up at its merge, before that root's close; its
+# architect registered its own closed gate, and it has waited on a person since, keeping that row
+# while its architect stays live. The human requests changes saying no change is needed: that
+# answers the wait, and the root resumes at admitted on the next pass, taking no further slot (the
+# held root holds the other one),
 # its architect receives a task naming the changes request. close_root is refused while a root is
-# not at admitted holding its slot, so the proof waits for both before it tells the architect to end
+# not at admitted, so the proof waits for the phase before it tells the architect to end
 # the tree itself. The daemon posts the architect's reason on the issue before it writes done, and
-# the freed slot goes to the next answered or waiting root with no human status write. Each step of
+# the slot the close frees goes to the fourth root with no human status write. Each step of
 # the tree's close is one journal line.
 no_change_close() {
   begin architect-closes-a-no-change-root
@@ -1286,9 +1284,9 @@ no_change_close() {
   artifact=$(daemon_state | jq -er --arg issue "$nochange_issue" '.issues[$issue].designGate.artifactId')
   reason="No change is needed: $repo already has what this issue asks for. Close this issue without a change."
   dispatch_human POST "artifacts/$artifact/reviews" "$(jq -cn --arg reason "$reason" '{state: "changes_requested", reason: $reason}')" >/dev/null
-  await_answered_slot "$nochange_issue" "Stage 3 no-change proof"
+  await_answered_resume "$nochange_issue" "Stage 3 no-change proof"
   wait_for_phase "$nochange_issue" admitted 60
-  until_true 300 "the live no-change architect to receive its task once its root holds its slot" issue_worker_live "$nochange_issue" architect
+  until_true 300 "the live no-change architect to receive its task once its root has resumed" issue_worker_live "$nochange_issue" architect
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."
   until_true 600 "the no-change root to be done in Dispatch" dispatch_status_is "$nochange_issue" "done"
   dispatch_events "$nochange_issue" >"$evidence/nochange-events.json"
@@ -1303,10 +1301,10 @@ no_change_close() {
   token=$(claim_token "$nochange_issue" architect)
   await_tree_suspended "$nochange_issue" "the no-change tree's architect to be suspended"
   # daemon.log carries the daemon's stderr too, so each line is parsed on its own, as every other
-  # reader of it does: one line that is not JSON must not end the run. The root gives its slot back
-  # twice: once when it waits on the person at its gate, once at its close.
+  # reader of it does: one line that is not JSON must not end the run. The root is admitted once
+  # and its row goes once, at the close: it keeps the row through its wait on the person.
   jq -R -c --arg issue "$nochange_issue" --arg token "$token" 'fromjson? | select(
-      (.msg == "workflow: root waits on a person and returns its admission slot" and .issue == $issue)
+      (.msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)
       or (.msg == "workflow: design gate changes requested" and .issue == $issue)
       or (.msg == "workflow: issue left the workflow" and .issue == $issue)
       or (.msg == "workflow: tree lingers" and .tree == $issue)
@@ -1314,13 +1312,13 @@ no_change_close() {
       or (.msg == "admission: slot taken" and .issue == $issue)
       or (.msg == "supervise: suspended" and .claim == $token))
     | {msg, issue, tree, status, reason, slots, cap}' "$evidence/logs/daemon.log" >"$evidence/nochange-journal.txt"
-  for line in "root waits on a person and returns its admission slot" "design gate changes requested" "issue left the workflow" "tree lingers" "admission: slot released" "supervise: suspended"; do
+  for line in "root waits on a person and keeps its admission slot" "design gate changes requested" "issue left the workflow" "tree lingers" "admission: slot released" "supervise: suspended"; do
     grep -qF "$line\"" "$evidence/nochange-journal.txt" || fail "the journal has no \"$line\" line for $nochange_issue; see $evidence/nochange-journal.txt"
   done
-  [ "$(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt")" -ge 2 ] ||
-    fail "the journal of $nochange_issue lacks a slot release at the wait and another at the close; see $evidence/nochange-journal.txt"
-  [ "$(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt")" -ge 2 ] ||
-    fail "the journal of $nochange_issue lacks its first admission and its return after the person's answer; see $evidence/nochange-journal.txt"
+  [ "$(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt")" -eq 1 ] ||
+    fail "the journal of $nochange_issue has $(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt") slot releases, want the one at its close; see $evidence/nochange-journal.txt"
+  [ "$(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt")" -eq 1 ] ||
+    fail "the journal of $nochange_issue has $(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt") slot takes, want the one at its admission; see $evidence/nochange-journal.txt"
   grep -F '"workflow: issue left the workflow"' "$evidence/nochange-journal.txt" | grep -qF '"status":"done"' ||
     fail "the close line of $nochange_issue does not name done"
   grep -F '"supervise: suspended"' "$evidence/nochange-journal.txt" | grep -qF "\"reason\":\"the tree of $nochange_issue lingers\"" ||
@@ -1333,10 +1331,11 @@ no_change_close() {
 # write, all on the fourth root.
 restart_scenarios() {
   begin restart-mid-implementer
-  # The fourth root took a slot another root gave back early in the run, its architect registered
-  # its closed gate, and it has waited on a person since, without a slot. The no-change root's close
-  # freed a slot, so once the human approves, it takes that slot back with no human status write;
-  # this validates the answered root's return before exercising the mid-phase restart.
+  # The fourth root waited in the line until the no-change root's close freed a row: with the cap
+  # at 2, the first root's merge let the no-change root in and that close lets this one in. Its
+  # architect then registers its closed gate and the root waits on a person, keeping that row, so
+  # the human's approval resumes it with no human status write and no further slot; this validates
+  # the answered root's resume before exercising the mid-phase restart.
   drive_gate "$restart_issue" "Stage 3 restart proof"
   send_agent "$restart_issue" planner "Stage 3 restart proof: write the minimal planner handoff and complete planning."
   wait_for_phase "$restart_issue" implementing

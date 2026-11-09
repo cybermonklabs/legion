@@ -725,6 +725,11 @@ func decisionKeeps(ctx context.Context, q queryer, artifactID string) (map[strin
 	return keeps, rows.Err()
 }
 
+// keepDecisionInput is the body of POST /api/v1/artifacts/{id}/blocks/{block_id}/keep.
+type keepDecisionInput struct {
+	TextSHA256 string `json:"text_sha256" required:"true"`
+}
+
 // keepDecision is POST /api/v1/artifacts/{id}/blocks/{block_id}/keep {"text_sha256": "<sum>"}:
 // the caller agrees with the decision that heading block opens, as the text they read it at.
 // The sum is the `text_sha256` the view served them, and a decision whose text has changed
@@ -737,9 +742,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var input struct {
-		TextSHA256 string `json:"text_sha256"`
-	}
+	var input keepDecisionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -856,6 +859,11 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
+// documentReadInput is the body of PUT /api/v1/me/documents/{id}/read.
+type documentReadInput struct {
+	Version *int `json:"version" required:"true"`
+}
+
 // putDocumentRead is PUT /api/v1/me/documents/{id}/read {"version": n}: the caller has read the
 // document through that version. It is the caller's own view state, written as PUT
 // /api/v1/me/issues/{key}/state is, and announces nothing.
@@ -864,9 +872,7 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var input struct {
-		Version *int `json:"version"`
-	}
+	var input documentReadInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

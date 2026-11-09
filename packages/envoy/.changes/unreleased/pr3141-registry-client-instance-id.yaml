@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  `GET /v1/registry/<session_id>` and each row of `GET /v1/sessions` answer the registration's
+  `client_instance_id`, the client process whose registration it is, left out where the entry
+  carries none.
+
+  `GET /v1/registry/<session_id>?view=registration` answers that registration alone — its
+  `session_id`, `state`, `last_seen`, `updated_at` and `client_instance_id` — read from the
+  session bucket itself and never from the listener's cache, with no interest record and no role
+  claims joined to it, so it answers whenever that bucket answers and under no state filter. Any
+  other value of `view` is a 400 naming the selector.
+
+  Together they let a caller holding a session id tell one client process's registration from its
+  successor's under the same id. The Legion daemon's clean stop of a dead role reads that view and
+  sends the id back as its delete's own condition, so the stop takes the dead process's
+  registration and never the one that claim's relaunch writes.
