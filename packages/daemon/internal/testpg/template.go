@@ -21,7 +21,6 @@ package testpg
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"sync"
 	"testing"
@@ -42,7 +41,7 @@ var shared struct {
 
 	once     sync.Once
 	err      error
-	server   url.URL
+	server   string
 	admin    *pgxpool.Pool
 	template string
 
@@ -71,11 +70,15 @@ func Clone(t testing.TB, prefix string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clone, err := testdb.DatabaseURL(shared.server, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := shared.admin.Exec(context.Background(), cloneStatement(name)); err != nil {
 		t.Fatalf("clone %s from the template: %v", name, err)
 	}
 	t.Cleanup(func() { dropInBackground(name) })
-	return testdb.DatabaseURL(shared.server, name)
+	return clone
 }
 
 // CloneStore is Clone opened, its pool closed when the test ends — before the clone is dropped,
@@ -167,14 +170,19 @@ func dropInBackground(name string) {
 // prepare opens the admin pool and migrates the template every Clone copies. It logs one line to
 // stderr naming the package's prefix and how long the template took: a run that logs two has lost
 // the memoisation this file exists for, which is what the test of it counts.
+//
+// The admin database's URL and the template's are testdb.DatabaseURL's, as each clone's is
+// (Clone): that one helper reads every rewrite of LEGION_TEST_PG_DSN back with the parser pgx
+// connects through, and this file makes none of its own. The template's URL is made before the
+// `create database`, so a refused rewrite leaves no database behind.
 func prepare(dsn string) error {
-	base, err := url.Parse(dsn)
+	shared.server = dsn
+	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
 	if err != nil {
-		return fmt.Errorf("parse LEGION_TEST_PG_DSN: %w", err)
+		return err
 	}
-	shared.server = *base
 	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(testdb.DatabaseURL(shared.server, "postgres"))
+	config, err := pgxpool.ParseConfig(adminURL)
 	if err != nil {
 		return fmt.Errorf("parse the admin database URL: %w", err)
 	}
@@ -192,12 +200,16 @@ func prepare(dsn string) error {
 	if err != nil {
 		return err
 	}
+	templateURL, err := testdb.DatabaseURL(dsn, name)
+	if err != nil {
+		return err
+	}
 	// A file copy of template1, for the reason each clone of it is one.
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		return fmt.Errorf("create the template database: %w", err)
 	}
 	shared.template = name
-	st, err := store.Open(ctx, testdb.DatabaseURL(shared.server, name))
+	st, err := store.Open(ctx, templateURL)
 	if err != nil {
 		return fmt.Errorf("open the template database: %w", err)
 	}

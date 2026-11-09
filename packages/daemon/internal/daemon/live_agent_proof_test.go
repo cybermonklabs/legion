@@ -212,9 +212,14 @@ func indentOutput(text string) string {
 // terminate another backend, so a drop a connection outlives is reported and not a failure, and the
 // database goes with the pod.
 //
-// ownDatabaseDSN (own_database_dsn_test.go) makes the rewritten DSN, and it is called before the
-// connection and the create: a DSN whose rewrite names another server is refused, so a run that
-// would migrate elsewhere leaves no database behind either.
+// Two frames hold this run to the server its caller named, and this is inside the second. The
+// shell reads the caller's LEGION_TEST_PG_DSN with libpq before anything starts, and ends the run
+// where that host is not loopback (require_loopback_dsn in scripts/e2e/lib/loopback-dsn.sh,
+// called from lib/live-daemon-proof.sh's `prerequisites`). This binary then reads every DSN it
+// builds from that one back with pgx: ownDatabaseDSN (own_database_dsn_test.go) is
+// testdb.DatabaseURL, the one rewrite TestMain's own database and this one both come from, and
+// it is called before the connection and the create. A DSN whose rewrite names another server is
+// refused, so a run that would migrate elsewhere leaves no database behind either.
 func takeOwnDatabase(t *testing.T) {
 	t.Helper()
 	named := os.Getenv("LEGION_TEST_PG_DSN")
