@@ -49,5 +49,3 @@ The answered root goes into the waiting line's first part, among the issues whos
 # skills/legion-architect/references/acceptance.md collapsed
 it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it
 
-# skills/legion-controller/references/wakes.md collapsed
-The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task
