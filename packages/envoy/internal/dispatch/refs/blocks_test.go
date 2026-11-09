@@ -112,7 +112,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 		{"b3", "heading", "# Pieces"},
 		{"b4", "paragraph", "A long block becomes pieces."},
 	})
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index the document: %v", err)
 	}
 	document := windowRowsOf(t, tx, DocumentWindowKind, artifact)
@@ -176,7 +176,7 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 		{"b4", "paragraph", "A long block becomes pieces."},
 	}
 	markdown, blocks := documentOf(parts)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index version 1: %v", err)
 	}
 	before := windowRowsOf(t, tx, DocumentWindowKind, artifact)
@@ -184,7 +184,7 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 	edited := slices.Clone(parts)
 	edited[1].text = "A window holds the blocks beside each other."
 	markdown, blocks = documentOf(edited)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index the edited paragraph: %v", err)
 	}
 	after := windowRowsOf(t, tx, DocumentWindowKind, artifact)
@@ -198,7 +198,7 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 	edited = slices.Clone(edited)
 	edited[0].text = "# What a window is"
 	markdown, blocks = documentOf(edited)
-	if _, err := IndexBlocks(ctx, tx, artifact, 3, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 3, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index the edited heading: %v", err)
 	}
 	headed := windowRowsOf(t, tx, DocumentWindowKind, artifact)
@@ -226,18 +226,18 @@ func TestADeletedBlockTakesItsWindowRow(t *testing.T) {
 		{"b4", "paragraph", "A long block becomes pieces."},
 	}
 	markdown, blocks := documentOf(parts)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index version 1: %v", err)
 	}
 	markdown, blocks = documentOf(parts[:2])
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index the version without the second section: %v", err)
 	}
 	if got := slices.Sorted(maps.Keys(windowRowsOf(t, tx, DocumentWindowKind, artifact))); !slices.Equal(got, []string{"b1"}) {
 		t.Fatalf("the document's windows are %v, want the first section's alone", got)
 	}
 	markdown, blocks = documentOf(nil)
-	if _, err := IndexBlocks(ctx, tx, artifact, 3, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, err := IndexBlocks(ctx, tx, artifact, 3, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index the empty version: %v", err)
 	}
 	if got := windowRowsOf(t, tx, DocumentWindowKind, artifact); len(got) != 0 {

@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  Dispatch holds every thing it knows as a node and every fact about it as a tuple, with the
+  tables it reads today as projections of that store. A fact carries the moment it was stated,
+  who stated it and the event that caused it, and a change appends rather than overwrites, so
+  the whole history of a block's parent, a comment's author or a delivery reads back in order.
+
+  A person, a role, a session and a role's page are nodes of that store, and a person's own page
+  lists what they wrote and what reached them. A block type is data in the database rather than a
+  file compiled into the binary, and changing one leaves an open editor writing.
+
+  `envoy-dispatch census --store` reads what the store and the projections disagree about,
+  `census --store --sizing` prints how large the log gets, and `envoy-dispatch erase` is the one
+  statement that removes a node's bytes.

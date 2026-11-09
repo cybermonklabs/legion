@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -58,12 +59,14 @@ type Pointer struct {
 // the source event Stamp gives it. On the document's first indexing (no block rows yet), a new
 // pair dates instead from the document's own refs row for that target, when one exists. The
 // version is recorded as indexed, and as the version the document's blocks stand at
-// (document_block_versions). It returns the targets of the pairs it inserted or deleted, or whose
-// to_types it changed, whose counts moved: a node is counted once for each block citing it. It
-// also returns what else a Referenced by panel or a link shows that the version moved: the target
-// of each pair it kept in a block whose text it changed (the block's text is that link's excerpt),
-// and each block it changed or deleted that some source cites (citedBlocks), whose text every
-// link to it and its own panel show.
+// (document_block_versions), a mark that only ever moves forward: the second result is false
+// where this pass lost that race to one holding a higher version, so a caller knows the blocks
+// it just indexed are not the ones the document stands at. It returns the targets of the pairs
+// it inserted or deleted, or whose to_types it changed, whose counts moved: a node is counted
+// once for each block citing it. It also returns what else a Referenced by panel or a link
+// shows that the version moved: the target of each pair it kept in a block whose text it
+// changed (the block's text is that link's excerpt), and each block it changed or deleted that
+// some source cites (citedBlocks), whose text every link to it and its own panel show.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -74,10 +77,10 @@ func IndexBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
-) ([]Target, error) {
+) ([]Target, bool, error) {
 	stored, err := storedBlockSums(ctx, tx, artifactID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	firstIndexing := len(stored) == 0
 	nodes, long, longest := uniqueBlocks(blocks)
@@ -112,7 +115,7 @@ func IndexBlocks(
 		if _, err := tx.Exec(ctx, `
 			delete from document_blocks where artifact_id = $1 and block_id = any($2)
 		`, artifactID, deleted); err != nil {
-			return nil, fmt.Errorf("delete the blocks version %d of %s no longer holds: %w", version, artifactID, err)
+			return nil, false, fmt.Errorf("delete the blocks version %d of %s no longer holds: %w", version, artifactID, err)
 		}
 	}
 	if len(ids) > 0 {
@@ -128,7 +131,7 @@ func IndexBlocks(
 				changed_version = excluded.changed_version,
 				changed_at = excluded.changed_at
 		`, artifactID, version, versionAt, ids, types, sums, excerpts); err != nil {
-			return nil, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
+			return nil, false, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
 		}
 	}
 	if len(textIDs) > 0 {
@@ -137,14 +140,14 @@ func IndexBlocks(
 			select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
 			on conflict (artifact_id, block_id, version) do update set text = excluded.text
 		`, artifactID, version, textIDs, texts); err != nil {
-			return nil, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
+			return nil, false, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
 
 	pairs := blockPairs(nodes, located, pointers)
 	moved, err := replaceBlockRefs(ctx, tx, artifactID, version, versionAt, firstIndexing, pairs)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	changedBlocks := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -158,27 +161,42 @@ func IndexBlocks(
 	// textIDs is every block this version changed, restored or deleted.
 	cited, err := citedBlocks(ctx, tx, artifactID, textIDs)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	moved = append(moved, cited...)
 	if _, err := tx.Exec(ctx, `
 		insert into document_indexed_versions (artifact_id, version) values ($1, $2)
 		on conflict (artifact_id, version) do nothing
 	`, artifactID, version); err != nil {
-		return nil, fmt.Errorf("record version %d of %s indexed: %w", version, artifactID, err)
+		return nil, false, fmt.Errorf("record version %d of %s indexed: %w", version, artifactID, err)
 	}
 	// Migration 0122's trigger marked the document owed when this version's row was inserted;
-	// this transaction's own index settles it.
-	if _, err := tx.Exec(ctx, `
+	// this transaction's own index settles it. The mark only ever moves forward: two passes can
+	// be indexing one document at once, and the slower one, reading version 9 while the other
+	// already wrote 10, would otherwise set the row back to 9 and claim 10's work as its own.
+	// The fence is the `where`, and the `returning` reads the row back in the same statement, so
+	// this pass learns whether it is the one the row now stands at: no row comes back when the
+	// fence held, which is this pass losing. The next commit gives that answer its weight - a
+	// pass that lost appends no tuple and writes no projection row, since the tuples and the
+	// node's projection are the work the winning version already stated (dispatch://INFRA-1149).
+	// indexOwedDocument's own early return is a short cut, not this fence: it spares the work
+	// of a pass whose version is already settled, and it reads before the write rather than
+	// deciding it.
+	var stands int
+	err = tx.QueryRow(ctx, `
 		insert into document_block_versions (artifact_id, version) values ($1, $2)
 		on conflict (artifact_id) do update set version = excluded.version
-	`, artifactID, version); err != nil {
-		return nil, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
+		where document_block_versions.version is null or document_block_versions.version < excluded.version
+		returning version
+	`, artifactID, version).Scan(&stands)
+	won := err == nil && stands == version
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
 	}
 	if err := writeDocumentWindows(ctx, tx, artifactID, markdown, nodes); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return moved, nil
+	return moved, won, nil
 }
 
 // DocumentWindowKind is the embeddings kind of a window of a document's blocks, as
