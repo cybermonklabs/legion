@@ -53,9 +53,9 @@ import (
 // mid-phase child, through the outbox's start like every other start (StartOrOwe): one row that
 // resumes the claim by rule and carries the task that takes its phase on (ResumePhaseTask, the
 // merger's with the head its round approved), which the outbox does not deliver to a claim still
-// holding its phase's task. Whether that row waits for the issue's admission slot is
-// record.AtWork's answer for the issue, read below. A role a start already covers (StartFor)
-// gets no second. The sweep runs first so the resume reads the trees it closed as lingering.
+// holding its phase's task, and which waits for the issue's admission slot as every start of a
+// phase worker does. A role a start already covers (StartFor) gets no second. The sweep runs
+// first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
@@ -118,17 +118,8 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if err != nil {
 			return intake.Result{}, err
 		}
-		// The row waits for a slot only where a worker of the issue has work where it stands.
-		// The cap counts the issues the daemon has started (record.KeepsSlot), and what the
-		// mark is for is the start that puts a worker to work: record.AtWork is false for
-		// exactly one claim this resumes — the merger of an issue in merging while a closed
-		// design gate holds the READY it already built — which comes back to wait on a person
-		// rather than to work, and admission's own repair passes over that same holder for that
-		// same reason (admit's resumeSlottedWorkers). record.TreeGate{} is exact here: the loop
-		// never reaches a phase whose role is empty, and AtWork reads the gate only at admitted.
 		if err := StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true},
-			record.AtWork(issue, record.TreeGate{}), e.now()); err != nil {
+			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true}, e.now()); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

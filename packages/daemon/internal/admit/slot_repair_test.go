@@ -215,7 +215,7 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, record.SuperviseRequest{
 				Op: "start", Tree: row.root, Role: role, Generation: row.generation, Phase: row.stands,
-				Task: "Carry on.", Assignment: seededAssignment(row.key)}, true, fixedNow); err != nil {
+				Task: "Carry on.", Assignment: seededAssignment(row.key)}, fixedNow); err != nil {
 				t.Fatalf("queue the start %s already has: %v", row.key, err)
 			}
 		})
@@ -262,7 +262,7 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	request := record.SuperviseRequest{Op: "start", Tree: row.root, Role: role, Generation: 1, Phase: row.stands,
 		Task: "Carry on.", Assignment: seededAssignment(row.key)}
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, request, true, fixedNow); err != nil {
+		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, request, fixedNow); err != nil {
 			t.Fatalf("owe %s its start through the workflow's own writer: %v", row.key, err)
 		}
 	})
@@ -558,7 +558,7 @@ func TestTheRetryOfAStoppedWorkerKeepsTheStartItWrote(t *testing.T) {
 	retry := record.SuperviseRequest{Op: "start", Tree: row.root, Role: workflow.RoleFor(row.stands),
 		Generation: 1, Phase: row.stands, Task: retriedTask, Assignment: seededAssignment(row.key)}
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, retry, true, fixedNow); err != nil {
+		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, retry, fixedNow); err != nil {
 			t.Fatalf("write the operator's retry of %s through the workflow's own writer: %v", row.key, err)
 		}
 	})

@@ -94,7 +94,7 @@ func oweStart(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase) 
 	role := workflow.RoleFor(stands)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: "LEGION-1",
-			Role: role, Generation: 1, Phase: stands, Task: "Continue " + key + ".", Assignment: "assignment-" + key}, true, fixedNow); err != nil {
+			Role: role, Generation: 1, Phase: stands, Task: "Continue " + key + ".", Assignment: "assignment-" + key}, fixedNow); err != nil {
 			t.Fatalf("owe %s a start: %v", key, err)
 		}
 	})

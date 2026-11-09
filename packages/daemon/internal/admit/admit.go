@@ -2022,7 +2022,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, true, now); err != nil {
+				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
 				return err
 			}
 		}

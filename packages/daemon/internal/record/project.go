@@ -510,12 +510,10 @@ func later(a, b time.Time) time.Time {
 // works (KeepsSlot), so this answers a narrower question than the cap asks. gate is the design
 // gate of the issue's tree root, the zero value for a root with no step of it registered.
 //
-// Three readers are left, and each asks about a worker rather than about the cap:
+// Two readers are left, and each asks about a worker rather than about the cap:
 // CanWaitOnPerson, which lets a root hand work to a person only while its architect has work to
-// hand over; admit's resumeSlottedWorkers, which starts the phase worker of a slot holder that
-// has lost its task and must pass over a holder whose phase has no worker at all; and the boot's
-// resume by rule (workflow's booted), which marks the start it writes for its issue's slot only
-// where the worker it brings back has work where that issue stands.
+// hand over; and admit's resumeSlottedWorkers, which starts the phase worker of a slot holder
+// that has lost its task and must pass over a holder whose phase has no worker at all.
 //
 // Planning, implementing, testing, reviewing and retro each have a phase worker with work.
 // Merging has one too, unless a closed design gate is holding the READY its merger already built
