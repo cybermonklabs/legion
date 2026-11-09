@@ -83,8 +83,19 @@ function session(answer: "allow" | "revise" = "revise"): Fixture {
       });
     },
   });
+  // The gate's dry run execs whatever `dispatch` is on PATH, which without this is the
+  // released plugin build rather than the tree under test: every row would measure a CLI this
+  // branch does not change. A shim at the head of PATH runs the entry point from source.
+  const bin = join(work, "bin");
+  mkdirSync(bin, { recursive: true });
+  const entry = join(import.meta.dir, "..", "..", "..", "envoy-client", "bin", "dispatch.ts");
+  writeFileSync(
+    join(bin, "dispatch"),
+    `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(entry)} "$@"\n`,
+    { mode: 0o755 }
+  );
   const env = {
-    PATH: process.env.PATH,
+    PATH: `${bin}:${process.env.PATH}`,
     HOME: work,
     TMPDIR: "/tmp",
     DISPATCH_HOST: "omp",
@@ -524,23 +535,18 @@ describe("every remedy the CLI prints, followed", () => {
             });
             return;
           }
-          // Which caveat the state calls for, derived rather than listed: where the session's
-          // own uncertainty outlives every repair the message names, none of the advice works
-          // and the all-session sentence is the true one; where only the marker-bound clause is
-          // beyond a subagent, the one-clause sentence is; where its resend works, neither.
+          // The oracle is the behaviour, not a list. Which caveat is true of a state is
+          // settled by following the advice: if the write posts, neither sentence belongs;
+          // if this write is refused but a different write of the same session posts, only
+          // the marker-bound clause is beyond a subagent; if even a different write is
+          // refused, nothing in the message works and the all-session sentence is true.
           //
-          // The cell this rule does not cover is named in the body: an unreadable upload whose
-          // repaired write is itself refused takes two steps, and the CLI cannot compute an
-          // identity while the bytes are unreadable, so the caveat lands on step two.
-          // Either axis can supply it: the base fault is one of these in its own right, and so
-          // is the session condition crossed with it.
-          const outlivesRepair = new Set([
-            "no verdict capability",
-            "a foreign verdict store",
-            "a lost verdict",
-            "its own verdict store unreadable",
-          ]);
-          const persistent = outlivesRepair.has(name) || outlivesRepair.has(condition);
+          // A hand-listed oracle can disagree with the system, and the one that stood here
+          // did: it called an unparseable verdict file of this write a session-wide
+          // uncertainty, so the row agreed with a message telling the agent two false things.
+          // A measured oracle cannot disagree, and a cell nobody enumerated is untested
+          // rather than tested against a wrong expectation.
+          const persistent = !(await corrected(name, arrange, apply, call, repair, mode));
           if (!sub.printed)
             expect({ name, condition, caveat: sub.caveat }).toEqual({
               name,
@@ -554,6 +560,44 @@ describe("every remedy the CLI prints, followed", () => {
               caveat: persistent ? "all" : sub.posted ? "none" : "clause",
             });
         }, 60_000);
+
+  /**
+   * Whether a *different* write of this session posts from a subagent, which is what tells the
+   * one-clause caveat from the all-session one. Measured in a session of its own, so the row
+   * it answers for is not disturbed.
+   */
+  const corrected = async (
+    name: string,
+    arrange: (s: Fixture) => void,
+    apply: (s: Fixture) => void,
+    call: ((s: Fixture) => { command: string; argv: readonly string[] }) | undefined,
+    repair: ((s: Fixture) => void) | undefined,
+    mode: "block" | "warn"
+  ): Promise<boolean> => {
+    const s = session();
+    try {
+      expect((await s.gate("main"))?.block).toBe(true);
+      // Before the arrange, never after: `setRecordMode` rewrites the owner record, so a
+      // state built by editing that record — a gate with no capabilities — is undone by it.
+      s.setMode(mode);
+      if (name !== "a recorded refusal of this write") clearVerdict(s.dir(), identity());
+      arrange(s);
+      apply(s);
+      call?.(s);
+      repair?.(s);
+      s.allow();
+      const other = await resend(s, "sub", {
+        command: "dispatch comment --issue DSP-1 --body a-different-write",
+        argv: ["comment", "--issue", "DSP-1", "--body", "a-different-write"],
+      });
+      return other.posts === 1;
+    } finally {
+      if (existsSync(join(s.dir(), "askgate-verdicts-v2")))
+        chmodSync(join(s.dir(), "askgate-verdicts-v2"), 0o700);
+      if (existsSync(join(s.store, "markers"))) chmodSync(join(s.store, "markers"), 0o700);
+      s.stop();
+    }
+  };
 
   // The clause a message offers that is *not* a resend of the same write: `REFUSAL_STANDS`
   // tells the agent to send a corrected write, which is a different write and meets no
@@ -589,6 +633,14 @@ describe("every remedy the CLI prints, followed", () => {
               ? "clause"
               : "none",
         }).toEqual({ condition, caveat: condition === "a healthy session" ? "clause" : "all" });
+        // By position, not only by name: swapping the two clauses puts the caveat on the one
+        // that works and leaves the refused resend reading as free, which every assertion
+        // above passes unchanged.
+        if (condition === "a healthy session") {
+          const flat = printed.out.replace(/\s+/g, " ");
+          expect(flat).toContain("replaces the refusal. That is the main agent's to send");
+          expect(flat).not.toContain("meets no refusal. That is the main agent's to send");
+        }
       } finally {
         for (const locked of ["askgate-verdicts-v2"])
           if (existsSync(join(s.dir(), locked))) chmodSync(join(s.dir(), locked), 0o700);

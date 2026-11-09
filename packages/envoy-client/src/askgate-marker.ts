@@ -911,13 +911,15 @@ export type Consumed =
       readonly why: string;
       readonly changed?: FileOperand;
       /**
-       * The store the expired marker sits in, where the marker was rejected for its age alone.
-       * The caller tells its agent what to do about it, and an expired marker is swept by the
-       * next mint while one bound to other arguments is not — but `mintMarker` sweeps only the
-       * store its own gate mints into, so which store holds it decides whether a resend can
-       * clear it. Counting the stores instead was wrong in the ordinary two-owner shape.
+       * Whether the marker was rejected for its age alone. The caller tells its agent what to
+       * do about it, and an expired marker is swept by the next mint while one bound to other
+       * arguments is not, so the two differ in whether a resend can clear them.
+       *
+       * The store holding it was carried here for a round and could not be used: it is always
+       * one of the stores searched, so comparing it against a single-store session is an
+       * identity, not a refinement.
        */
-      readonly expiredIn?: string;
+      readonly expired?: boolean;
     }
   | { readonly ok: false; readonly verdict: "unknown"; readonly why: string; readonly path: string }
   | { readonly ok: false; readonly verdict: "none"; readonly why: string };
@@ -954,8 +956,7 @@ export function consumeMarker(
   );
   let changed: FileOperand | undefined;
   let mismatched = false;
-  /** The store an expired marker of this argv sits in, where one was found. */
-  let expired: string | undefined;
+  let expired = false;
   /** The first file of this call's own key that exists and will not say what it holds. */
   let unreadable: string | undefined;
   const usable: Array<{ file: string; bound: boolean }> = [];
@@ -974,7 +975,7 @@ export function consumeMarker(
         continue;
       }
       if (now - marker.createdAt > MARKER_MAX_AGE_MS) {
-        expired ??= store;
+        expired = true;
         continue;
       }
       if (marker.args !== null) {
@@ -1037,12 +1038,12 @@ export function consumeMarker(
       verdict: "stale",
       why: "its arguments differ from the ones AskGate reviewed",
     };
-  if (expired !== undefined)
+  if (expired)
     return {
       ok: false,
       verdict: "stale",
       why: "its AskGate marker expired before it ran",
-      expiredIn: expired,
+      expired: true,
     };
   // A readable marker is gone or says no to this call; an unreadable one is read before absence
   // is reported, since a file that will not speak is no proof that nothing was said.

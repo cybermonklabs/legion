@@ -164,21 +164,6 @@ const SUBAGENT_HELD_ALL_SESSION =
   "None of that works from a task subagent: repairing what this message names leaves the session's own uncertainty standing, and only a marker bound to this write answers that, which a subagent's literal write is never given. The main agent has to send it, or the session has to end.";
 
 /**
- * Whether a resend's own mint would sweep an expired marker sitting in `store`.
- *
- * `mintMarker` sweeps the store its own gate mints into, and the CLI cannot name which of
- * several live owners will review a resend — so this answers yes only where the session has one
- * live store and the marker is in it. Counting the stores instead, which is what this replaces,
- * was wrong both ways: it dropped the caveat for a single owner whose marker sat outside that
- * store, and kept it wherever a session had two owners, including the ordinary case where the
- * marker is in the very store the resending gate sweeps. With more than one owner the caveat
- * stands and over-states that case, which the body names as a cell rather than a condition this
- * can decide; no session on this box has two owner files.
- */
-const sweptByAResend = (store: string, stores: readonly string[]): boolean =>
-  stores.length === 1 && stores[0] === store;
-
-/**
  * Renders advice, with the caveat the state makes true and no other.
  *
  * The caveat is a property of the clause **and** of the state, which two rounds got wrong in
@@ -748,11 +733,11 @@ export async function runDispatchCli(
             mode: gate.mode,
             why,
             reason: why,
-            // Faults compound: fixing the path clears the first and leaves the session's own
-            // uncertainty standing, which no per-write repair touches. Asked of the session
-            // rather than of this write, since an upload with no readable bytes has no
-            // identity to look a verdict up by.
-            persistent: said !== undefined || !capable || uncertainSession(dir),
+            // Of the session, never of this one write. A verdict file of this write that
+            // cannot be parsed is a fault a repair clears, in a session that is otherwise
+            // certain and need not end — and reading any unknown as session-wide told the
+            // agent both of those were false.
+            persistent: !capable || uncertainSession(dir),
             advice:
               said === undefined
                 ? { refused: UPLOAD_UNREADABLE, posted: UPLOAD_UNREADABLE }
@@ -782,10 +767,14 @@ export async function runDispatchCli(
                         // resend's own mint sweeps it, and the subagent's argv-only marker is
                         // then honoured.
                         // An expired marker is swept by the resend's own mint, so a
-                        // subagent's resend posts — but only where that mint reaches the store
-                        // holding it (`sweptByAResend`).
-                        ...(spent.expiredIn !== undefined &&
-                        sweptByAResend(spent.expiredIn, gate.stores)
+                        // subagent's resend posts. `mintMarker` sweeps only the store its own
+                        // gate mints into, and the CLI cannot name which of several live
+                        // owners will review a resend, so the caveat is kept whenever a
+                        // session has more than one owner. That over-states the ordinary
+                        // two-owner case; a predicate comparing the marker's own store against
+                        // the session's stood here for a round and was an identity, since the
+                        // marker is always found in one of them.
+                        ...(spent.expired === true && gate.stores.length === 1
                           ? {
                               anywhere:
                                 "Send the write again in that form, as a bash call of its own.",
@@ -861,6 +850,11 @@ export async function runDispatchCli(
     } catch (error) {
       finding = {
         verdict: "unknown",
+        // Not a mode question, and the model's "an unknown is mode-governed" was too broad
+        // for this one. The mode is a choice about what to do when no review saw a write; a
+        // store this process cannot list is the check itself failing, so the session's answer
+        // to a different question does not govern it. Measured as refusing in warn mode
+        // before it was written down, which is the disagreement that found it.
         mode: "block",
         why: messageFor(error),
         reason: `AskGate's marker for this call could not be checked: ${messageFor(error)}`,
@@ -908,7 +902,15 @@ export async function runDispatchCli(
         (finding.verdict === "refused" || (finding.verdict !== "none" && finding.mode === "block"))
       )
         return refuse(
-          `${notCalled} ${finding.reason}. ${advise(held, { refusal: true, persistent: finding.persistent })}`,
+          `${notCalled} ${finding.reason}. ${advise(held, {
+            refusal: true,
+            // Session-wide only where the session holds other writes too. In warn mode a
+            // different write of the same session posts, so "the main agent has to send it,
+            // or the session has to end" is false there and the one-clause caveat is the
+            // true one — the refusal itself still stands, since a verdict is not a mode's to
+            // overrule.
+            persistent: finding.persistent && finding.mode === "block",
+          })}`,
           REFUSED,
           parsed.tool,
           {
