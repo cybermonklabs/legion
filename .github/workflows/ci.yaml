@@ -1633,13 +1633,16 @@ jobs:
             # airlock package and compare it against the model's program, so a change to either
             # side runs the job. Both sides live under internal/broker/airlock, which one glob
             # names; the axiom check is a script of its own, which check k15 runs too; the Lean
-            # toolchain comes from the elan the job's action installs.
+            # toolchain comes from the elan the job's action installs, and that action reads the
+            # `elan` row of the tool manifest through the fetch helper every install goes through.
             airlock_lean:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - 'packages/envoy/internal/broker/airlock/**'
               - 'packages/envoy/scripts/airlock-lean-axioms.sh'
               - '.github/actions/install-elan/**'
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # Every file packages/envoy/docker/Dockerfile builds from, so envoy-smoke runs whenever
             # the image it smokes changes, every file the held-port image built on top of it reads
             # (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore), and what
@@ -1692,9 +1695,10 @@ jobs:
               - 'packages/daemon/go.sum'
               - 'packages/envoy/daemonpermissions/*'
               # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
-              # workspace; the docker provider step reads pulumitest.DockerPluginVersion, under
-              # infra/internal. The plugin build's step is pinned whole in check-ci-filters.sh's
-              # table (an exact entry), so what it compiles is here, not the infra module.
+              # workspace; the live tests compile internal/pulumitest, which holds the version
+              # they pin the docker provider at, under infra/internal. The plugin build's step is
+              # pinned whole in check-ci-filters.sh's table (an exact entry), so what it compiles
+              # is here, not the infra module.
               - 'packages/envoy/infra/go.mod'
               - 'packages/envoy/infra/go.sum'
               - 'packages/envoy/infra/go.work'
@@ -1707,8 +1711,13 @@ jobs:
               - 'packages/envoy/infra/internal/**'
               - 'packages/envoy/infra/nats/*'
               - 'packages/envoy/infra/provider/*'
-              # The Pulumi CLI the live tests run, and the image pull before the build and tests.
+              # The Pulumi CLI the live tests run, the docker provider plugin the step before them
+              # downloads, and the image pull before the build and tests. Both of those installs
+              # read their row of the tool manifest through the fetch helper.
               - '.github/actions/install-pulumi/**'
+              - '.github/actions/install-docker-plugin/**'
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
               - '.github/actions/pull-test-images/**'
               # The download URL the schema step stamps into the plugin and asserts on.
               - '.github/scripts/repo-paths.sh'
@@ -1916,9 +1925,10 @@ jobs:
             # source every tool install reads when the first source does not serve the bytes:
             # the manifest that names both sources of each row, the fetch helper every install
             # goes through, the filler and the gate beside it, the rig and the fault proxy it
-            # drives, the four actions it installs through, and the two files a row's version
+            # drives, the eight actions it installs through, and the three files a row's version
             # is pinned in (.bun-version for the bun rows, the worker image's Dockerfile for
-            # mise and jj).
+            # mise, jj and uv, and packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
+            # `const DockerPluginVersion` the gate holds the pulumi-docker row's version to).
             # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
             # job drives the same action over the same manifest through the same helper, so a
             # change that selects one of them must select both, and one list cannot drift from
@@ -1936,8 +1946,13 @@ jobs:
               - '.github/actions/install-changie/**'
               - '.github/actions/install-jj/**'
               - '.github/actions/setup-bun/**'
+              - '.github/actions/install-elan/**'
+              - '.github/actions/install-uv/**'
+              - '.github/actions/install-pulumi/**'
+              - '.github/actions/install-docker-plugin/**'
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
+              - 'packages/envoy/infra/internal/pulumitest/pulumitest.go'
               - '.github/workflows/ci.yaml'
             # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
             # through the crane .github/actions/install-crane installs), the package mode of
