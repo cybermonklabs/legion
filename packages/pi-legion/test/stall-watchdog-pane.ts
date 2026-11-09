@@ -6,6 +6,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
@@ -208,7 +209,7 @@ const MOVED_ON = {
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
-};
+} satisfies LegionState;
 
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own

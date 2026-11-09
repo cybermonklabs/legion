@@ -1044,3 +1044,45 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 		t.Fatalf("the backward move's notice = %s, want no summary and no verdict: the row a move writes is empty", payload)
 	}
 }
+
+// A round the record opened while it held the head conflicting with its base is a conflict round,
+// and review_round_cap does not count it: the implementer answers such a head with a forward merge
+// nobody asked for, and the base branch moving is no loop of rejected work (dispatch://INFRA-1442,
+// main's #2946). The counted rounds therefore stand where the round before left them, and the cap
+// posts nothing — a notice is itself a way of counting, and it would wake the architect to decide a
+// round nobody spent. This is the one case of main's conflict_round_test.go that outlived the merge
+// lane that test was written against.
+func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
+	pool := migratedPool(t)
+	ctx := context.Background()
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
+	// The record as a CONFLICTING read of this head leaves it (workflow's mergeability): the head
+	// it holds conflicting is the head under review.
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/LEGION-208", HeadSHA: "head", ConflictingHead: "head", CheckedHead: "head", Failing: []string{}})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
+	// Two rounds counted already, so a third counted round would reach the cap of three and post.
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	if _, err := intake.ApplyFact(ctx, pool, "github", "changes-requested", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
+		State: "changes_requested", CommitID: "head", HeadSHA: "head", Author: testReviewApp}, engine, admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact the review that requested changes: %v", err)
+	}
+
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after the review the issue is in %s, want implementing", got)
+	}
+	var rounds, conflicts int
+	if err := pool.QueryRow(ctx, "select rounds, conflict_rounds from phases where issue = 'LEGION-208' and role = 'implementer'").Scan(&rounds, &conflicts); err != nil {
+		t.Fatalf("read the implementer's rounds: %v", err)
+	}
+	if rounds != 3 || conflicts != 1 {
+		t.Fatalf("the implementer's rounds = %d of which %d conflict rounds, want 3 and 1", rounds, conflicts)
+	}
+	if messages, blocked := capPosts(t, pool); len(messages) != 0 || blocked != 0 {
+		t.Fatalf("the cap posted %q and %d pr-blocked notices, want none: two of the three rounds are counted and the third is a conflict round",
+			messages, blocked)
+	}
+}
