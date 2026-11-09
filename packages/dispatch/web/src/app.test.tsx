@@ -1113,3 +1113,31 @@ test("/pipeline lands the reader on the Delivery page's Pipeline section", async
     sockets.restore();
   }
 });
+
+// The address a reader bookmarked carries their window, and the redirect that answers it keeps
+// that window: the old Pipeline page read `from`/`to` from its own URL, and the Delivery page
+// reads the same two (`features/delivery/lib/window.ts`'s readWindow), so a redirect that
+// dropped the search would answer an old link with the default 28 days and say nothing. The
+// window control shows which window the page settled on, which is what this reads.
+test("/pipeline keeps the window the reader's address names", async () => {
+  // Dynamic on purpose, as the row above it is: React.lazy loads this page's module on its
+  // first render, and loading it here keeps that cold compile out of findBy's window. A static
+  // import would load it at this file's own load and so prove nothing about the lazy boundary.
+  await import("./features/delivery/DeliveryPage");
+  const sockets = installFakeLiveSockets();
+  const teardown = await renderSignedIn(
+    async () => ({ event_head: "0", kind: "user", login: "alice" }),
+    "/pipeline?from=2026-06-01&to=2026-06-08"
+  );
+  try {
+    await screen.findByRole("heading", { level: 1, name: "Delivery timeline" });
+    expect(screen.getByLabelText<HTMLSelectElement>("Window").value).toBe("custom");
+    expect(screen.getByLabelText<HTMLInputElement>("From").value).toBe("2026-06-01");
+    // The control names the last day the window includes, and a custom range ends at the
+    // midnight after it (`lib/window.ts`'s customRange), so `to=2026-06-08` reads as the 7th.
+    expect(screen.getByLabelText<HTMLInputElement>("To").value).toBe("2026-06-07");
+  } finally {
+    teardown();
+    sockets.restore();
+  }
+});

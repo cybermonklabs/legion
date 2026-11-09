@@ -359,11 +359,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "pipeline",
     // `/pipeline` is a redirect since INFRA-1077 folded the Pipeline page into the Delivery
     // page as its Pipeline section (`web/src/app.tsx`'s PipelineRedirect, to
-    // `/delivery#pipeline`). The row keeps that router path, because the reader's own address
-    // is what this list covers, and waits on what the reader lands on: the Delivery page's own
-    // h1 and the section's heading. The `at` the seed carries is dropped by the redirect, as it
-    // is for any reader following an old link, so the section draws on the page's own window.
-    path: () => "/pipeline",
+    // `/delivery<search>#pipeline`). The row keeps that router path, because the reader's own
+    // address is what this list covers, and waits on what the reader lands on: the Delivery
+    // page's own h1 and the section's heading.
+    //
+    // It opens it with the seed's window, which the redirect carries through, for the reason
+    // the delivery row above gives: the Timeline chart's y-axis is a time axis whose ends are
+    // the window the read resolved (`Timeline.tsx`'s `min`/`max`), so a preset window ends at
+    // the server's own clock and every dated tick lands a pixel further down in a later run.
+    // A window the seed pins holds the axis still, and holds it the same way for both rows.
+    path: (seed) => `/pipeline?${seed.deliveryQuery}`,
     pattern: "/pipeline",
     ready: (page) => [
       page.getByRole("heading", { level: 1, name: "Delivery timeline" }),

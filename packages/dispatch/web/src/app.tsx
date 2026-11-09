@@ -149,11 +149,17 @@ const DeliveryPage = lazy(() =>
   import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
 );
 /** `/pipeline` was Dispatch's Pipeline page until INFRA-1077 folded it into the Delivery page as
- *  that page's Pipeline section; the address a reader bookmarked lands them on it. Named, as
+ *  that page's Pipeline section; the address a reader bookmarked lands them on it, with the
+ *  window they bookmarked: the old page read `?from=`/`?to=`/`?at=` from its own address, and the
+ *  Delivery page reads the first two, so a redirect that dropped the search would answer an old
+ *  link with the default window and say nothing about it. Named, as
  *  every other row's element is, because the router's rows are a roster
  *  (`e2e/two-builds-routes.ts`) that `e2e/__tests__/two-builds-routes.test.ts` reads from this
  *  file by each row's element name. */
-const PipelineRedirect = () => <Navigate replace to="/delivery#pipeline" />;
+const PipelineRedirect = () => {
+  const { search } = useLocation();
+  return <Navigate replace to={`/delivery${search}#pipeline`} />;
+};
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
