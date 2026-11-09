@@ -2123,6 +2123,105 @@ runs:
 run_check "$root"
 check "a JavaScript action is admitted, so zero builds is what fails" "$(contains "$out" 'this check covered 0 image builds')"
 
+echo "case: a ./ action under a second checkout of this repository is that action here"
+# base_action <root> <checkout path, or empty for none> <uses>: the fixture's build moved into a
+# local composite action, and a job that runs it through a second checkout of this same
+# repository — one checkout at the root, one at <checkout path>, and <uses> in place of the
+# build step.
+base_action() {
+  local root=$1 path=$2 uses=$3 repository=${4:-} second=""
+  mkdir -p "$root/.github/actions/builder"
+  cat > "$root/.github/actions/builder/action.yml" <<'ACTION'
+name: Builder
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: docker/Dockerfile
+ACTION
+  # A command substitution drops the trailing newline, so `second` is the step's lines with
+  # none, and the heredoc gives it a line of its own. Empty, it leaves a blank line there.
+  # A fourth argument gives that checkout a `repository:`, which is the one way the directory
+  # it writes holds a tree other than this one's.
+  if [ -n "$path" ]; then
+    second=$(printf '      - uses: actions/checkout@v5\n        with:\n          path: %s' "$path")
+    [ -z "$repository" ] || second=$(printf '%s\n          repository: %s' "$second" "$repository")
+  fi
+  cat > "$root/.github/workflows/image.yaml" <<YAML
+name: Image
+on:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+      - "packages/app/**"
+      - "docker/**"
+      - ".dockerignore"
+      - ".github/workflows/image.yaml"
+  workflow_dispatch:
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+$second
+      - uses: $uses
+YAML
+}
+
+root=$(fixture base-checkout-action)
+base_action "$root" base ./base/.github/actions/builder
+run_check "$root"
+check "a uses under the job's checkout at base is read as this tree's action" "$(is "$status" 0)"
+check "  and its build counts" "$(contains "$out" '(1 image build(s))')"
+check "  and its image inputs are checked" "$(contains "$out" 'docker/Dockerfile: checked 5 inputs')"
+# Read, not skipped: the trigger is still held to the inputs of the image that action builds.
+drop_path "$root" "packages/app/**"
+run_check "$root"
+check "an input that action's build reads is still owed" "$(is "$status" 1)"
+check "  and the uncovered file is named" "$(contains "$out" 'does not cover packages/app (docker/Dockerfile:3)')"
+
+for written in ./base base/; do
+  root=$(fixture "base-checkout-path-$(echo "$written" | tr './' '--')")
+  base_action "$root" "$written" ./base/.github/actions/builder
+  run_check "$root"
+  check "a checkout path written $written resolves the same way" "$(is "$status" 0)"
+done
+
+root=$(fixture base-no-checkout)
+base_action "$root" "" ./base/.github/actions/builder
+run_check "$root"
+check "the same uses with no second checkout is refused" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-elsewhere)
+base_action "$root" vendor ./base/.github/actions/builder
+run_check "$root"
+check "the same uses under a checkout at another path is refused" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-missing-action)
+base_action "$root" base ./base/.github/actions/absent
+run_check "$root"
+check "a name no action of this tree has is refused under the checkout too" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/absent, which has no action.yml this check can read')"
+
+# A checkout of another repository writes that repository's tree at `base`, so `./base/<rest>`
+# is a file of that repository and not this tree's `<rest>`, whatever this tree keeps there.
+root=$(fixture base-checkout-foreign)
+base_action "$root" base ./base/.github/actions/builder acme/other
+run_check "$root"
+check "a checkout of another repository at that path is refused" "$(is "$status" 1)"
+check "  with the message a missing action gets" \
+  "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-this-repository)
+base_action "$root" base ./base/.github/actions/builder '${{ github.repository }}'
+run_check "$root"
+check "a checkout that names this repository is read as this tree, as one naming none is" "$(is "$status" 0)"
+
 echo "case: a job that calls a workflow outside this repository is refused"
 root=$(fixture job-uses-foreign)
 python3 - "$root/.github/workflows/image.yaml" <<'PYEOF'

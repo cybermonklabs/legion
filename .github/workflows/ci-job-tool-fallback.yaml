@@ -1,0 +1,486 @@
+name: CI job tool-fallback
+
+# The steps of ci.yaml's `tool-fallback` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
+# and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
+# own. The comment above that job says what the proof is and why it is permanent.
+#
+# The split is for the filters. The tool_fallback filter names this file beside ci.yaml, so a
+# change to these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job id here is the one ci.yaml calls this file under, and it has to stay: a composite
+# action reads `github.job` as the id of the job that called it, and .github/actions/setup-bun
+# passes no-cache for every job whose id starts with `tool-fallback`, which is what keeps every
+# case of this job a reading of an install rather than of the Actions cache.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  tool-fallback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The merge base, for the negative control below: a second tree of this same repository,
+      # whose four installs that control drives with nowhere left to go. The comment on those
+      # steps says what keeps this checkout here.
+      - name: Check out the merge base the negative control installs from
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          path: base
+          persist-credentials: false
+
+      # The package holds the blob of every mirrored row, asked for with no credential at all
+      # and at the address .github/scripts/ci-tools.sh builds, which is how an install asks for
+      # it: this step reads the blob an install reads, through the same CI_TOOLS_GHCR_BASE
+      # seam, and writes no address of its own.
+      # This rule is the opposite of the filler's, on purpose. .github/scripts/mirror-ci-tools.sh
+      # leaves a cold row green, because an asset that does not answer is the outage the copy
+      # exists to survive and a red ci-ok during that outage helps nobody. Here a cold row is a
+      # refusal, because this job records a pass for a fallback it drove, and a pass recorded for
+      # a row whose second source does not exist yet is a pass for nothing.
+      - name: Check the package holds the blob of every mirrored row
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          registry=$(ci_tools_registry)
+          token=$(ci_tools_ghcr_token)
+          rows=$(ci_tools_rows ghcr-mirror)
+          cold=""
+          for row in $rows; do
+            url=$(ci_tools_blob_url "$row")
+            status=$(curl -sS -o /dev/null -I -L -w '%{http_code}' \
+              -H "Authorization: Bearer $token" "$url")
+            echo "$row: $registry answers $status for $url"
+            [ "$status" = 200 ] || cold="$cold $row"
+          done
+          if [ -n "$cold" ]; then
+            echo "::error::the package holds no blob for$cold, so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
+            exit 1
+          fi
+
+      # Each row beside the two call sites that read its digest: the line of the manifest that
+      # holds the literal, and what reads that row in an action or in the rig.
+      # One literal is what both paths are held to, and this is the evidence of it — there is no
+      # second digest in an action to read it out of, which is the point.
+      - name: Print every row beside the two call sites that read its digest
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          rows=$(ci_tools_rows)
+          unread=""
+          for row in $rows; do
+            digest=$(ci_tools_digest "$row")
+            echo "$row: sha256 $digest, of $(ci_tools_field "$row" digest_of)"
+            pinned=$(grep -n "digest: $digest" .github/ci-tools.yaml || true)
+            # The lines that read the row rather than every line that says its name: a
+            # ci_tools_* call that names it, and the `row=` an action assigns it to where the
+            # call site names the row through a variable (.github/actions/setup-bun does).
+            readers=$(grep -rn -- "$row" .github/actions .github/scripts/ci-tools-proof.sh \
+              | grep -E 'ci_tools_|row=' || true)
+            echo "  the manifest's own line:"
+            printf '%s\n' "$pinned" | sed 's|^|    .github/ci-tools.yaml:|'
+            echo "  what reads that row, in the action or the rig:"
+            printf '%s\n' "$readers" | sed 's|^|    |'
+            { [ -n "$pinned" ] && [ -n "$readers" ]; } || unread="$unread $row"
+          done
+          if [ -n "$unread" ]; then
+            echo "::error::nothing reads$unread, so that row's digest is pinned and read by no install" >&2
+            exit 1
+          fi
+
+      - name: Stage the correct bytes of every row a case serves, before the fault
+        run: .github/scripts/ci-tools-proof.sh stage
+
+      - id: origin
+        name: Start the origin that stands in for all three sources
+        run: .github/scripts/ci-tools-proof.sh origin-start
+
+      # Case 5 of 8 of the corrupted payloads, and the one that runs here rather than with the
+      # other seven: the jj binary in mise's install directory is one byte changed.
+      # That directory is where .github/actions/install-jj reads an installed jj from, so a
+      # changed binary there is the primary path's own mismatch: `mise install` finds the tool
+      # installed, the action holds the binary mise points at to the jj row, and refuses it.
+      # It runs before the fault because `mise install` resolves the tool's version list over
+      # api.github.com even when the install directory already holds it, and the fault below
+      # holds every host under github.com. Under the fault that resolve fails, the action takes
+      # its second source instead, and this case would read the fallback rather than the
+      # primary — which is what happened at 1725f7ce before this step moved.
+      # Here it needs no release asset either: the rig seeds mise's directory from the payload
+      # it staged, so a release-asset outage, which is what this whole job is about, leaves this
+      # case exactly as it is. api.github.com is not a release-asset host and does not go down
+      # with one.
+      - name: Corrupt nothing at the origin for the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Seed mise's install of jj with the staged binary, one byte changed
+        run: |
+          set -euo pipefail
+          proof=.github/scripts/ci-tools-proof.sh
+          corrupted="$RUNNER_TEMP/jj-one-byte-changed"
+          cp -- "$("$proof" payload-path jj)" "$corrupted"
+          "$proof" flip-last-byte "$corrupted"
+          "$proof" seed-mise-jj "$corrupted"
+          rm -f "$corrupted"
+
+      - id: jj-primary
+        continue-on-error: true
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
+
+      # What that case seeded goes, so nothing of it reaches the installs below: the head's own
+      # install-jj meets an empty mise directory, as a fresh runner would.
+      # It is not what decides that install. Measured in CI at run 42507815176, `mise install`
+      # resolves the tool's version list over api.github.com even when its install directory
+      # already holds the tool, so under the fault below that install fails whether this
+      # directory is here or not, and the action reads the copy either way. What a directory
+      # left here would leave behind is the one-byte-changed jj this case seeded, on a runner
+      # whose later steps run what this job installed.
+      - name: Take mise's install away again, so the faulted install must read the copy
+        run: rm -rf "$HOME/.local/share/mise"
+
+      # The fault, and the routing of every later step through it, in one step: the rig starts
+      # .github/scripts/ci-fault-proxy.py over the release hosts its own FAULT_HOSTS names, and
+      # writes the four spellings of the two proxy variables and the two emptied bypass lists
+      # to $GITHUB_ENV itself. Those hosts and those variables are written there and in no step
+      # of this file, so a release host that moves again is one edit in one place.
+      # The runner resolves and downloads an action with its own environment rather than a
+      # step's, so every action this job uses is already on disk when the fault starts, and the
+      # fault is met only by what an action fetches.
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
+
+      - name: Read the fault before any install meets it
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # The negative control, under the same fault: the merge base's four installs, each given a
+      # ghcr base and an npm base on a dead port, so every one of them must fail here.
+      # What it asserts is a property of this change and not a fact about history: an install
+      # whose primary meets the fault and whose second source cannot be reached fails. That is
+      # what makes the passes below a reading of the second source rather than of a cache, of a
+      # tool the runner image already carries, or of a proxy that let the asset through.
+      # A merge base from before this change reads neither CI_TOOLS_GHCR_BASE nor
+      # CI_TOOLS_NPM_BASE, so the release asset this fault holds is its one source, and that is
+      # what fails these four on a pull request and a merge group today.
+      # A base that reads both — this tree on a workflow_dispatch, and every base once this
+      # change is on main — fails for the two dead ports instead, which leave its second source
+      # nothing to reach.
+      # A control that leaned on the merge base having one source each would expire the day this
+      # change lands on main: the base would then be this tree, each primary would meet the
+      # fault, each second source would reach the real ghcr — whose blobs redirect to
+      # pkg-containers.githubusercontent.com, which this fault leaves alone on purpose — or the
+      # real npm, all four would succeed, and this step would fail every pull request and merge
+      # group that selects this job. On a workflow_dispatch the ref below falls through to
+      # github.sha, the head itself, so that control is wrong already.
+      # A dead port rather than a manifest with its `second_source` rows deleted: a row with no
+      # second source makes ci_tools__second_source refuse the empty field, so the install would
+      # fail for the wrong reason — it would prove the helper rejects an empty field, not that
+      # the install had nowhere to go, and a negative control must fail for the reason the check
+      # names. A base that does not have the helper ignores both variables and fails as it
+      # always did.
+      # The merge-base checkout stays. It is this repository's only caller of the rule
+      # .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second
+      # checkout of this same repository, and that check's own comment names this job for it.
+      # After this change is on main the checkout is redundant to the two variables below, which
+      # drive the control by themselves, so a later reader who deletes these four steps is
+      # deleting that caller too and should move the rule's exercise rather than lose it.
+      - id: base-crane
+        continue-on-error: true
+        uses: ./base/.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: base-changie
+        continue-on-error: true
+        uses: ./base/.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: base-jj
+        continue-on-error: true
+        uses: ./base/.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: base-bun
+        continue-on-error: true
+        uses: ./base/.github/actions/setup-bun
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - name: Check all four installs with nowhere to go failed
+        env:
+          CRANE: ${{ steps.base-crane.outcome }}
+          CHANGIE: ${{ steps.base-changie.outcome }}
+          JJ: ${{ steps.base-jj.outcome }}
+          BUN: ${{ steps.base-bun.outcome }}
+        run: |
+          set -euo pipefail
+          echo "a merge base from before this change reads neither CI_TOOLS_GHCR_BASE nor CI_TOOLS_NPM_BASE, so the release asset behind this fault is the one source each of its four installs has, and on a pull request and a merge group that is what fails them here"
+          echo "a base that reads both — this tree on a workflow_dispatch, and every base once this change is on main — is sent by them to a port nothing listens on, and that is what fails them instead"
+          wrong=""
+          for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN"; do
+            echo "  the merge base's ${pair%%:*} install ended in ${pair#*:}"
+            [ "${pair#*:}" = failure ] || wrong="$wrong ${pair%%:*}"
+          done
+          if [ -n "$wrong" ]; then
+            echo "::error::the merge base's install of$wrong served bytes with its primary behind the fault and its second source pointed at a dead port, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the passes below would then say nothing about the second source" >&2
+            exit 1
+          fi
+
+      # The head's own four installs, under the same fault and with no continue-on-error: each
+      # must succeed, through the second source its row names.
+      # install-jj meets an empty mise data directory here, since nothing warmed one before the
+      # fault: its `mise install` must reach the release asset mise fetches jj from, which the
+      # fault holds, so that install fails and the action reads the copy. This step is therefore
+      # the proof of jj's second source itself, rather than a warm directory answering for it.
+      - uses: ./.github/actions/install-crane
+
+      - uses: ./.github/actions/install-changie
+
+      - uses: ./.github/actions/install-jj
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Check every tool is the version its row pins
+        run: |
+          set -euo pipefail
+          proof=.github/scripts/ci-tools-proof.sh
+          wrong=""
+          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
+          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+          "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
+          # The name that Bun install must have left beside the bun those four lines end with.
+          # It is a reading of its own and not a fifth version-answers line because what can be
+          # missing here is the name rather than the version: npm serves the binary alone, so a
+          # faulted install that left no bunx behind answers every reading above and fails at
+          # the first bunx a later job runs. The verb prints which of the three things it reads
+          # — the name, the version, the bytes — was wrong, so this keeps its own word and does
+          # not join the list below, whose sentence is about versions.
+          bunx=read
+          "$proof" installed-bunx || bunx=refused
+          if [ -n "$wrong" ]; then
+            echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
+          fi
+          if [ -n "$wrong" ] || [ "$bunx" = refused ]; then
+            exit 1
+          fi
+
+      # The eight corrupted payloads, one case at a time: the rig says which rows the origin
+      # serves with their last byte changed, the install meets them through the seams the case's
+      # own env: names, and the report after it is what passes or fails this job.
+      #
+      # Case 1 of 8: crane's primary serves one byte changed, and the second source must stay
+      # untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
+      - name: Corrupt crane for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt crane
+
+      - id: crane-primary
+        continue-on-error: true
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the crane-primary case
+        run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 2 of 8: crane's second source serves one byte changed, after the primary — the real
+      # host, which the fault holds — did not serve them at all.
+      - name: Corrupt crane for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt crane
+
+      - id: crane-second-source
+        continue-on-error: true
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the crane-second-source case
+        run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
+
+      # Case 3 of 8: changie's primary serves one byte changed.
+      - name: Corrupt changie for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt changie
+
+      - id: changie-primary
+        continue-on-error: true
+        uses: ./.github/actions/install-changie
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the changie-primary case
+        run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 4 of 8: changie's second source serves one byte changed.
+      - name: Corrupt changie for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt changie
+
+      - id: changie-second-source
+        continue-on-error: true
+        uses: ./.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the changie-second-source case
+        run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
+
+      # Case 6 of 8: the copy of the jj binary serves one byte changed, with mise unable to
+      # install the tool at all.
+      # Its data directory goes, so `mise install` must reach the faulted host and fails, which
+      # is what sends the action to the second source. Only jj is corrupted, so the action's own
+      # mise fetch still serves from the origin.
+      # Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install-jj
+      # verifies the binary where mise put it and copies only after that passes, so a refused
+      # jj never reaches that path.
+      - name: Corrupt the jj copy for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt jj
+
+      - name: Remove mise's data directory, so its install must reach the faulted host
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.local/share/mise"
+          echo "$HOME/.local/share/mise is gone, so mise must install jj rather than find it installed"
+
+      - id: jj-second-source
+        continue-on-error: true
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-second-source case
+        run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
+
+      # Case 7 of 8: the installed Bun is one byte changed and still answers the pinned revision,
+      # so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
+      # version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
+      # one writes for it is `existing-install` — and the fourth step refuses those bytes.
+      # Measured on 2026-11-08: the 107308936-byte binary of the bun-linux-x64 row answers
+      # `--revision 1.4.4+38afee6c8` with its final byte changed, as it does whole, so the
+      # branch this case needs is the branch it takes. The step below reads that answer again
+      # and refuses the case rather than proving another one, should a later Bun read its own
+      # last byte.
+      - name: Corrupt nothing at the origin for the bun-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Change the last byte of the installed Bun
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-tools-proof.sh flip-last-byte "$HOME/.bun/bin/bun"
+          revision=$("$HOME/.bun/bin/bun" --revision)
+          pinned=$(tr -d '[:space:]' < .bun-version)
+          echo "the changed binary answers --revision $revision, and .bun-version pins $pinned"
+          if [ "${revision%%+*}" != "$pinned" ]; then
+            echo "::error::the changed Bun no longer answers the pinned version, so setup-bun would take its npm branch and this case would read something else" >&2
+            exit 1
+          fi
+
+      - id: bun-primary
+        continue-on-error: true
+        uses: ./.github/actions/setup-bun
+
+      - name: Read the bun-primary case
+        run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
+
+      # Case 8 of 8: with no Bun of the pinned version on this runner, setup-bun's third step
+      # must read the second source, and the npm package serves one byte changed.
+      # This case takes the pair away itself rather than leaning on the case before it. That
+      # case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
+      # fourth step says so — but a case that must read the second source is held to its own
+      # state and not to the one the case before it happened to leave.
+      - name: Take any Bun away, so the second source must serve this case
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+      - name: Corrupt the Bun package for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt bun-linux-x64
+
+      - id: bun-second-source
+        continue-on-error: true
+        uses: ./.github/actions/setup-bun
+        env:
+          CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
+
+      - name: Read the bun-second-source case
+        run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
+
+      # What this runner holds after the eight refusals, said plainly: no corrupted byte was
+      # installed, and what the installs themselves left is what this step reads.
+      # .github/scripts/ci-tools.sh verifies the bytes before it puts them at their destination,
+      # so every refused fetch above left nothing behind, and the two installs that meet a
+      # binary a third party put there refuse it without leaving it either. install-jj verifies
+      # the binary where mise left it and copies to ~/.local/bin/jj only after that passes, so
+      # the jj here is the pinned one the head's own install under the fault wrote and neither
+      # jj case moved it. setup-bun removes the bun and the bunx it refused from ~/.bun/bin,
+      # which is on this job's PATH, so the bun-primary case took away the Bun it refused; the
+      # case after it took that pair away again before its own install and then refused the npm
+      # bytes before anything was written in their place: this runner ends with no bun at all.
+      # crane and changie are held to the version they answer, because their rows pin the release
+      # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
+      # the installed binary.
+      - name: Print what every tool answers now
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          proof=.github/scripts/ci-tools-proof.sh
+          wrong=""
+          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
+          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+          ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
+          for taken in "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
+            if [ -e "$taken" ]; then
+              echo "::error::$taken is still here, and no case of this job may leave one: the bun-primary case's refusal takes the binary it refused away, and the bun-second-source case's refusal writes none in its place, so a bun here is a refused binary on the PATH of every later step" >&2
+              wrong="$wrong $taken"
+            else
+              echo "$taken is gone: the bun-primary case's refusal took it away, the case after it took the pair away again before its own install, and that case refused the corrupted package before it wrote anything there"
+            fi
+          done
+          if [ -n "$wrong" ]; then
+            echo "::error::$wrong is not what this job must leave on this runner, so one of the eight refusals did not hold; the lines above say which reading was wrong" >&2
+            exit 1
+          fi
+          echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the eight corrupted payloads was installed"
+
+      # The proxy stops with this job, and the steps after this one must not be routed through
+      # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      - name: Stop routing this job through the fault
+        if: always()
+        run: .github/scripts/ci-tools-proof.sh stop-fault
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tool-fallback
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

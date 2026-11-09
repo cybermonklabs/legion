@@ -95,6 +95,18 @@ on:
         description: "ci.yaml's needs.changes.outputs.mirror_ci_images_test: mirror-ci-images.test.sh and what it tests."
         type: string
         required: true
+      ci_tools_test:
+        description: "ci.yaml's needs.changes.outputs.ci_tools_test: ci-tools.test.sh and what it tests."
+        type: string
+        required: true
+      mirror_ci_tools_test:
+        description: "ci.yaml's needs.changes.outputs.mirror_ci_tools_test: mirror-ci-tools.test.sh and what it tests."
+        type: string
+        required: true
+      check_ci_tools_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_tools_test: check-ci-tools.test.sh and what it tests."
+        type: string
+        required: true
       check_action_pins_test:
         description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
         type: string
@@ -333,6 +345,21 @@ jobs:
       - name: Test the CI image mirror
         if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'
         run: .github/scripts/mirror-ci-images.test.sh
+
+      # The three tool scripts, in the order they depend on each other: the fetch helper every
+      # install goes through, the filler that puts the bytes in the copy that helper reads, and
+      # the gate that holds every row to its pin.
+      - name: Test the tool fetch helper
+        if: inputs.changes-result != 'success' || inputs.ci_tools_test == 'true'
+        run: .github/scripts/ci-tools.test.sh
+
+      - name: Test the tool copy filler
+        if: inputs.changes-result != 'success' || inputs.mirror_ci_tools_test == 'true'
+        run: .github/scripts/mirror-ci-tools.test.sh
+
+      - name: Test the tool manifest check
+        if: inputs.changes-result != 'success' || inputs.check_ci_tools_test == 'true'
+        run: .github/scripts/check-ci-tools.test.sh
 
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'

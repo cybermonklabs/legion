@@ -1,0 +1,95 @@
+name: CI job tool-fallback-arm
+
+# The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own. The
+# comment above that job says what the arm64 half proves and why it needs the `changes` job alone.
+#
+# The split is for the filters. The tool_fallback filter names this file beside ci.yaml and the
+# tool-fallback job's own file, so a change to these steps selects this job alone, where a change
+# to ci.yaml selects every job.
+#
+# The job id here is the one ci.yaml calls this file under, and it has to stay: a composite
+# action reads `github.job` as the id of the job that called it, and .github/actions/setup-bun
+# passes no-cache for every job whose id starts with `tool-fallback`, so no call of it here can be
+# served by the Actions cache.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  tool-fallback-arm:
+    runs-on: ubuntu-24.04-arm
+    # The budget, added up from the slowest run this job can have rather than copied from
+    # another job: the checkout and the runner's download of the actions (1), the healthy
+    # install of the 34 MB release zip (2), the fault and its probe, whose two requests are
+    # bounded at 15 s each (1), the faulted install — oven-sh/setup-bun's own download against a
+    # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, which
+    # `--retry-max-time 60` bounds at a minute of new attempts plus one last attempt of the
+    # row's `max_time` 60 s, so two minutes at worst (4) — the 107 MB npm tarball, its gunzip
+    # and the write (3), the two readings, each a sha256 of that binary (2), and the report step
+    # (1). That is 14, and a job its own limit cuts off reports `cancelled`, which ci-ok fails,
+    # so the limit is the next minute up.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
+      # fourth step holds what it installed to the row its third step read out of `uname -m`.
+      - uses: ./.github/actions/setup-bun
+
+      - name: Read the Bun the release asset served
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
+
+      # The fault and the routing of every later step through it, as in the tool-fallback job:
+      # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
+      # four spellings of the two proxy variables and the two emptied bypass lists to
+      # $GITHUB_ENV, so neither the hosts nor the variables are written in this file.
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
+
+      - name: Read the fault before any install meets it
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # Both names, because the action's refusal takes both: what must be read again is an
+      # install, and not the bun the healthy half left behind.
+      - name: Take the installed Bun away, so the second source must serve it
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+      # The npm path on arm64: the release asset answers nothing behind the fault, so the
+      # action's third step reads the @oven/bun-linux-aarch64 package the row names.
+      - uses: ./.github/actions/setup-bun
+
+      # --expect-refused is this half's own reading of the source: the proxy's 504 for
+      # github.com after the probe is the refusal that sent this install to npm, and the
+      # version and the digest cannot say it, since both sources serve one binary.
+      - name: Read the Bun npm served
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+      # The proxy stops with this job, and the steps after this one must not be routed through
+      # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      - name: Stop routing this job through the fault
+        if: always()
+        run: .github/scripts/ci-tools-proof.sh stop-fault
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tool-fallback-arm
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -70,6 +70,9 @@ jobs:
       - name: Check every image a CI job fetches is a row of .github/ci-images.yaml
         run: .github/scripts/check-ci-images.sh tree
 
+      - name: Check every tool asset of .github/ci-tools.yaml agrees with its pin
+        run: .github/scripts/check-ci-tools.sh
+
       - name: Check every remote action is pinned to a commit SHA
         run: .github/scripts/check-action-pins.sh
 

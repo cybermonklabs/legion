@@ -88,7 +88,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **TypeScript** on **Bun** runtime — the version `.bun-version` pins.
   Every job installs it through `.github/actions/setup-bun`, and `packages/daemon/docker/worker.Dockerfile`'s `ARG BUN_VERSION` default must equal it, since no build passes `--build-arg` and its notices stage fetches Bun's licence at that version.
-  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves.
+  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves, with the three `bun-*` rows of `.github/ci-tools.yaml` moving in that second commit beside `.bun-version`.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
 - **bun.lock** — the step `Check bun.lock agrees with the workspace manifests` of `ci.yaml`'s `lint` job (`.github/workflows/ci-job-lint.yaml`, which holds that job's steps) runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
@@ -133,6 +133,18 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
+
+- **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
+  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own.
+  `.github/scripts/ci-tools.sh` is the one fetch helper every install goes through: it tries the primary, then the second source, and leaves only bytes of the row's digest behind.
+  A transport failure of the primary sends it to the second source and a digest mismatch does not, because a checksum mismatch is a supply-chain signal rather than an outage, and every exit names the source that served the bytes.
+  Bun's second source is the npm package upstream publishes the same binary in, which needs no copy; crane, changie, mise and jj take a copy in the same package the images live in, addressed by the digest the install checks.
+  `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
+  A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
+  `.github/scripts/check-ci-tools.sh` is the gate, a step of `lint`: it holds each row to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile), refuses a release-asset URL under `.github/actions` or `.github/workflows` of a repository a row already covers, or of `oven-sh/bun`, and an npm URL under a scope a row names, unless the URL is exactly a row's own, and refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob.
+  It does not see a release asset of a repository no row covers, so a new tool installed from a GitHub release with no row and no second source passes it (dispatch://INFRA-1974).
+  `ci.yaml`'s `tool-fallback` job is the live proof: it faults GitHub's release hosts for a whole job, runs the merge base's four installs as the negative control and the head's four beside them, and drives eight corrupted payloads to read every refusal.
+  Raising a tool is one commit, unlike an image: a call site names a row rather than a digest, so a second row of the same tool has no name a call site can use, and a row that disagrees with its pin installs one version and verifies another, which is what the gate refuses; Bun is the exception that takes two, and its three `bun-*` rows move in the second commit, with `.bun-version`; `tool-fallback` needs `ci-images`, so the copy is filled before `tool-fallback` reads it, and the one window left is a raise merged while the asset is down and the copy is still cold, where the tool has the single source it has today
 
 ## Commands
 

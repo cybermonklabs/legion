@@ -23,7 +23,9 @@ on:
 jobs:
   ci-images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Raised from 15 to 25 when the tool copy joined the image copy: this job now fetches and
+    # pushes up to four release archives of its own beside the images.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,6 +44,11 @@ jobs:
 
       - name: Check the package holds every row of .github/ci-images.yaml
         run: .github/scripts/check-ci-images.sh package
+
+      - name: Fill the copy of every tool asset the package does not hold
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/mirror-ci-tools.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -75,7 +75,9 @@ name: CI
 # shard and alone jobs restore the Playwright browsers of the version bun.lock pins, which
 # ci-caches.yaml's browsers job fills on that same push. setup-bun reads and writes its cache
 # only on main (.github/actions/setup-bun), which of this workflow's events is the dispatched
-# run alone.
+# run alone, and not in the tool-fallback and tool-fallback-arm jobs at all: that action reads
+# the id of the job that called it and passes no-cache for those two on every ref, so a
+# restored Bun cannot stand in for the install each of their cases is a reading of.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -167,6 +169,8 @@ env:
       "envoy-session-stall": "envoy_session_stall",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
+      "tool-fallback": "tool_fallback",
+      "tool-fallback-arm": "tool_fallback",
       "proof-sdk-offline": "proof_sdk_offline",
       "worker-image": "worker_image"
     }
@@ -266,6 +270,9 @@ jobs:
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
       check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
       mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_images_test }}
+      ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_test }}
+      mirror_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_tools_test }}
+      check_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_tools_test }}
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
@@ -350,6 +357,11 @@ jobs:
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_images }}
+      # The second source of every tool install, proved by driving it: no `full-ci` term, so the
+      # proof comes back on every change that selects it. It selects the arm64 half of that
+      # proof too, which drives the same action over the same manifest through the same helper
+      # and so reads the same files.
+      tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.tool_fallback }}
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.proof_sdk_offline }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
       # the seven outputs the eight slow suites run behind. On a pull request without that
@@ -479,6 +491,11 @@ jobs:
               - 'docs/site/package.json'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
+              # setup-bun's third step reads this runner's bun row through that helper and
+              # fetches the npm copy when the release asset served no Bun of the pinned version,
+              # and its last step holds the bun on PATH to that row's digest.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # `bunx biome check|lint` reads the root biome.json, which has it read the root
             # .gitignore too (biome.json:3-6, vcs.useIgnoreFile).
             biome: &biome
@@ -765,8 +782,14 @@ jobs:
               - '.omp-pin'
               - '.github/actions/install-omp/**'
               - '.github/actions/install-jj/**'
-              # install-jj reads the mise version and checksum it installs from here.
+              # install-jj's second step reads `ARG JJ_TOOL` from here, the tool spec mise
+              # installs.
               - 'packages/daemon/docker/worker.Dockerfile'
+              # install-jj's first step installs mise from the manifest's `mise` row through
+              # that helper, and its second step holds the jj binary mise installs to the `jj`
+              # row's digest, or fetches that row's second source when mise cannot.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # The daemon-go job: what its two Go steps read together — the plain step, which
             # tests every package of packages/daemon but the three concurrent ones, and the race
             # step, which tests those three — so the filter covers the whole module's closure,
@@ -1178,6 +1201,30 @@ jobs:
               - '.github/scripts/ci_images.py'
               # :322-351 builds its ordering fixture from this repository's own rows.
               - '.github/ci-images.yaml'
+            ci_tools_test: &ci_tools_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/ci-tools.test.sh'
+              - '.github/scripts/ci-tools.sh'
+              # :525-532 reads every row of this repository's own manifest.
+              - '.github/ci-tools.yaml'
+            mirror_ci_tools_test: &mirror_ci_tools_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/mirror-ci-tools.test.sh'
+              - '.github/scripts/mirror-ci-tools.sh'
+              # :357 symlinks in the fetch helper the filler sources.
+              - '.github/scripts/ci-tools.sh'
+            check_ci_tools_test: &check_ci_tools_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-ci-tools.test.sh'
+              - '.github/scripts/check-ci-tools.sh'
+              # :446 runs the gate over this repository's own tree.
+              - '.github/ci-tools.yaml'
             check_action_pins_test: &check_action_pins_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1418,6 +1465,9 @@ jobs:
               - *check_image_trigger_paths_test
               - *check_ci_images_test
               - *mirror_ci_images_test
+              - *ci_tools_test
+              - *mirror_ci_tools_test
+              - *check_ci_tools_test
               - *check_action_pins_test
               - *check_private_names_test
               - *check_plugin_names_test
@@ -1469,6 +1519,8 @@ jobs:
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
               # The one tool the job still installs: changie, for the fold below.
+              # Its one step sources .github/scripts/ci-tools.sh and fetches the `changie` row of
+              # .github/ci-tools.yaml, both of which the tool harness lists above name.
               - '.github/actions/install-changie/**'
               # The fold-check step renders every fragment of every package
               # .github/changelog-packages lists, each with its own changie configuration;
@@ -2068,6 +2120,11 @@ jobs:
               - 'docs/site/package.json'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
+              # setup-bun's third step reads this runner's bun row through that helper and
+              # fetches the npm copy when the release asset served no Bun of the pinned version,
+              # and its last step holds the bun on PATH to that row's digest.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             biome: &biome
               - 'biome.json'
               - '.gitignore'
@@ -2109,6 +2166,11 @@ jobs:
               - '.github/actions/install-omp/**'
               - '.github/actions/install-jj/**'
               - 'packages/daemon/docker/worker.Dockerfile'
+              # install-jj's first step installs mise from the manifest's `mise` row through
+              # that helper, and its second step holds the jj binary mise installs to the `jj`
+              # row's digest, or fetches that row's second source when mise cannot.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # What `go test ./cmd/dispatch` reads under both its memory and its multiprocess tag:
             # the packages it compiles, with the whole of cmd/dispatch and internal/dispatch, whose
             # .go files internal/textcheck/environment_reads_test.go:33 walks (from the
@@ -2218,6 +2280,11 @@ jobs:
               - 'scripts/sessions/**'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
+              # setup-bun's third step reads this runner's bun row through that helper and
+              # fetches the npm copy when the release asset served no Bun of the pinned version,
+              # and its last step holds the bun on PATH to that row's digest.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # The secrets broker's TypeScript client: its own sources and tests (it imports nothing
             # first-party outside itself but the fixtures its tests use), the Bun install and the
             # Bun it runs, and Biome.
@@ -3345,22 +3412,67 @@ jobs:
               - '**/go.work.sum'
               - 'packages/daemon/**'
               - 'packages/envoy/**'
-            # ci.yaml's ci-images job: the copy (.github/scripts/mirror-ci-images.sh, through the
-            # crane .github/actions/install-crane installs) and the package mode of
-            # .github/scripts/check-ci-images.sh, which reads ghcr.io. These files are what
-            # decides what those two steps do. The gate's other half reads the whole tree and is
-            # a step of lint, which runs on every change.
+            # ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
+            # source every tool install reads when the first source does not serve the bytes:
+            # the manifest that names both sources of each row, the fetch helper every install
+            # goes through, the filler and the gate beside it, the rig and the fault proxy it
+            # drives, the four actions it installs through, and the two files a row's version
+            # is pinned in (.bun-version for the bun rows, the worker image's Dockerfile for
+            # mise and jj).
+            # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
+            # job drives the same action over the same manifest through the same helper, so a
+            # change that selects one of them must select both, and one list cannot drift from
+            # another that does not exist. Each job carries a gate of its own in
+            # .github/scripts/ci_job_reads.py for what it reads.
+            # Each job holds its steps in a called file of its own, which this list names beside
+            # ci.yaml, where both jobs keep their gate.
+            tool_fallback:
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
+              - '.github/scripts/mirror-ci-tools.sh'
+              - '.github/scripts/check-ci-tools.sh'
+              - '.github/scripts/ci-tools-proof.sh'
+              - '.github/scripts/ci-fault-proxy.py'
+              - '.github/actions/install-crane/**'
+              - '.github/actions/install-changie/**'
+              - '.github/actions/install-jj/**'
+              - '.github/actions/setup-bun/**'
+              - '.bun-version'
+              - 'packages/daemon/docker/worker.Dockerfile'
+              - *ci_router
+              - '.github/workflows/ci-job-tool-fallback.yaml'
+              - '.github/workflows/ci-job-tool-fallback-arm.yaml'
+            # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
+            # through the crane .github/actions/install-crane installs), the package mode of
+            # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
+            # (.github/scripts/mirror-ci-tools.sh), which fills the second source of every tool
+            # install. These files are what decides what those three steps do. The gate's other
+            # half reads the whole tree and is a step of lint, which runs on every change.
+            # It names what this job reads and nothing else, the tool_fallback filter above
+            # included: rule 9's second direction refuses a pattern of a gate's filter that
+            # matches no file its job reads, so this list cannot name that filter whole to be a
+            # superset of it by construction. The tool-fallback job below therefore carries
+            # `!cancelled()` rather than leaning on that: its `needs: ci-images` is for order,
+            # since a run that selects both must fill the copy before the proof reads it, and
+            # the one file that can bring a new row in, .github/ci-tools.yaml, is in both
+            # filters, so every change that adds a row runs the fill first.
             ci_images:
               - '.github/ci-images.yaml'
               - '.github/scripts/mirror-ci-images.sh'
               - '.github/scripts/check-ci-images.sh'
               - '.github/scripts/ci_images.py'
+              # The tool half of the copy: the rows the step fills from, the filler that runs,
+              # and the fetch helper whose seams that filler reads.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/mirror-ci-tools.sh'
+              - '.github/scripts/ci-tools.sh'
               - '.github/actions/install-crane/**'
               - *ci_router
               - '.github/workflows/ci-job-ci-images.yaml'
-              # The job reads no Markdown file: its two steps read the image rows, the two
-              # scripts that copy and check them, and the crane the action installs, so a guide
-              # written under one of those directories would start it for nothing.
+              # The job reads no Markdown file: its steps read the image rows, the two scripts
+              # that copy and check them, the tool rows and the filler beside them, and the
+              # crane the action installs, so a guide written under one of those directories
+              # would start it for nothing.
               - '!**/*.md'
 
             # The proof-sdk-offline job: a frozen install behind a proxy that answers 504
@@ -3415,23 +3527,136 @@ jobs:
   # Copies every row .github/ci-images.yaml names into ghcr.io/cybermonklabs/legion/ci, then reads the
   # package to check that it holds every row. The order is the point: the read fails a row the
   # package does not hold, so the copy for this change runs first. The ci_images filter selects
-  # this job, and names the files that decide what its two steps do: the rows, the two scripts,
-  # the module both scripts read a reference with, the crane action and this file. The gate's
+  # this job, and names the files that decide what its steps do: the rows, the scripts, the
+  # module both image scripts read a reference with, the actions and this file. The gate's
   # other half reads the whole tree, and is a step of lint, which runs on every change: a file
   # that names a third-party registry again can be any file, and this filter names few of them.
   # This job is the one copy path: it runs on a pull request and on a merge group, which is every
   # event that can bring a new row in, and a failed copy is re-run with `gh run rerun`.
+  # The copy of every tool asset is filled here too, in the step after the image half
+  # (.github/scripts/mirror-ci-tools.sh): it is the same package, under the same login, and the
+  # tool-fallback job below reads what this step filled, so that copy must land before it.
   ci-images:
     needs: changes
     if: needs.changes.outputs.ci_images == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    # packages: write is the ghcr.io push `crane copy` makes; actions: read and checks: write are
-    # the ci-ok-report step's.
+    # packages: write is the ghcr.io push, which is `crane copy` for an image row and the
+    # registry API call .github/scripts/mirror-ci-tools.sh makes for a tool row; actions: read
+    # and checks: write are the ci-ok-report step's.
     permissions:
       contents: read
       packages: write
       actions: read
       checks: write
     uses: ./.github/workflows/ci-job-ci-images.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The live proof of the second source every tool install of this repository now has: it faults
+  # the host the first source is on, installs all four tools through the source
+  # .github/ci-tools.yaml names for each, and then serves eight corrupted payloads and reads the
+  # refusal of every one of them.
+  # It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
+  # nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
+  # work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873). This
+  # repository's own principle is that testing means booting and running it, so what says the
+  # fallback works on the day the assets are down is a job that takes them down and installs
+  # anyway.
+  #
+  # Once the fault is up, no step of this job needs a GitHub release host to answer.
+  # Every install that must succeed reads the second source its row names, the ghcr copy or npm,
+  # and the fault holds neither; the bytes the corrupted cases serve were staged before the
+  # fault; and the one case about a binary a third party installed seeds mise's install
+  # directory from that staged payload rather than downloading one inside the fault.
+  # That is what keeps ci-ok green during the very outage this job proves survivable: this job
+  # is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
+  # Dockerfile and the four actions, so a step of it that waited on a release host would turn
+  # every pull request touching one of those files red on exactly the day the fallback is doing
+  # its work.
+  # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
+  # only callers.
+  # It needs ci-images for order, since that job fills the copy this proof reads, and carries
+  # `!cancelled()` so a run that selected this job and not that one still runs: the ci_images
+  # filter names what the ci-images job reads and nothing more, so it is no superset of this
+  # job's, and a skipped need would otherwise skip a job ci-ok has as selected. The file that
+  # can bring a new row in, .github/ci-tools.yaml, is in both filters, so the fill runs before
+  # this proof on every change that adds one.
+  #
+  # WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
+  # Everything a case is read on is driven here: the fault, the origin that stands in for all
+  # three sources, the corrupted payloads, and the removals each case makes before it.
+  # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's second step pins,
+  # restores a cached Bun into ~/.bun/bin/bun inside a step of its own, and the Actions cache it
+  # restores from is on hosts this job's fault does not hold.
+  # .bun-version holds an exact version, so that action builds its key and its URL without
+  # asking any host which version to take, and nothing the fault refuses stands in its way.
+  # Taking a bun away before that step is therefore no answer to the cache, since the step would
+  # put a restored one back.
+  # What keeps every case here a reading of an install is the wrapper's own `no-cache`, true for
+  # every job whose id starts with `tool-fallback` — `github.job` in a composite action is the
+  # id of the job that called it — so no call of that action in this job can be served by the
+  # Actions cache, on any event and any ref.
+  # That is read from the wrapper's expression rather than from a run of this job: a run that
+  # told the action not to read the cache cannot measure what the cache would have served.
+  # The removals the cases do make are about this job's own state: a case that must read the
+  # second source takes ~/.bun/bin/bun and the bunx beside it away before its install, so what
+  # it reads is not the bun an earlier case left.
+  tool-fallback:
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    # contents: read is the two checkouts'; actions: read and checks: write are the
+    # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
+    # so this job needs no packages scope at all.
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-tool-fallback.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The same two halves of the Bun install, proved again on an arm64 runner.
+  # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
+  # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
+  # python3 with PyYAML. No other step of this repository that runs on ubuntu-24.04-arm imports
+  # yaml, so nothing says that runner image carries it until the arm64 leg of
+  # .github/workflows/release-envoy-listener.yaml runs, which happens on a push to main and so
+  # only after a merge. This job says it on the pull request instead, and a release that would
+  # have failed on the first push fails here.
+  # It proves both halves: the healthy path, where the release asset serves Bun and the action's
+  # fourth step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
+  # job uses, where the release hosts answer nothing and the second source serves the same
+  # binary. Each half ends in a reading of what this runner holds, printed for a person reading
+  # the run: the machine, the version, the path, the row's own pins, and what ci_tools_verify
+  # reads that binary as against the row.
+  # The npm half says which source served it as well, because neither the version nor the
+  # digest can: the release asset and the npm package are one binary by design, so a run where
+  # the release host answered after all would read exactly as a run where npm served. What says
+  # it is the fault proxy's own 504 for github.com after the probe, the refusal that sent the
+  # install to its second source. The `ci-tools:` line the install wrote would say it too, and
+  # no step can read it: a composite action writes that line to the job's log, which no later
+  # step reads.
+  # The tool-fallback job's comment about the Actions cache holds here too: the wrapper passes
+  # no-cache for every job whose id starts with `tool-fallback`, so no call of it in this job
+  # can be served by the cache either, on any event and any ref.
+  # The npm half takes ~/.bun/bin away before its install all the same, so no Bun the healthy
+  # half left behind satisfies it.
+  # The `tool_fallback` filter selects this job, as it selects that one: both drive the same
+  # action over the same manifest through the same helper, so one filter decides both and
+  # neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
+  # .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
+  # It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job
+  # fills, so it has no reason to wait for that job as tool-fallback does.
+  tool-fallback-arm:
+    needs: changes
+    if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
+    # step's. Both sources serve this job's bytes without a credential, so it needs no other
+    # scope.
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-tool-fallback-arm.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -3486,6 +3711,9 @@ jobs:
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
       check_ci_images_test: ${{ needs.changes.outputs.check_ci_images_test }}
       mirror_ci_images_test: ${{ needs.changes.outputs.mirror_ci_images_test }}
+      ci_tools_test: ${{ needs.changes.outputs.ci_tools_test }}
+      mirror_ci_tools_test: ${{ needs.changes.outputs.mirror_ci_tools_test }}
+      check_ci_tools_test: ${{ needs.changes.outputs.check_ci_tools_test }}
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
@@ -4380,6 +4608,8 @@ jobs:
       - changes
       - lint
       - ci-images
+      - tool-fallback
+      - tool-fallback-arm
       - typecheck
       - test
       - daemon-go

@@ -158,7 +158,14 @@ def setup_bun(job, workflow=""):
     sessions-script, whose test and the script it spawns import node: builtins and bun alone."""
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
-        (".bun-version", ".github/actions/setup-bun/action.yml:22 bun-version-file: .bun-version"),
+        (".bun-version", ".github/actions/setup-bun/action.yml:106 bun-version-file: .bun-version, and :84 and :137 "
+                         "read the version it pins to tell a Bun of that version from any other"),
+        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:119-133 chooses the bun row of this runner's "
+                                  "build variant, :174 fetches that row's second source where no Bun of the pinned "
+                                  "version is installed, and :208 holds the bun on PATH to that row's digest"),
+        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:115,194 source it: ci_tools_source_name "
+                                        "reads the word for the source that served the bytes, ci_tools_fetch_fallback "
+                                        "installs the npm copy and ci_tools_verify checks the installed binary"),
     )
 
 
@@ -186,7 +193,12 @@ def biome(where):
 def install_jj(job):
     return reads(
         (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:22-24,49-50 read ARG MISE_VERSION, MISE_SHA256, JJ_TOOL"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:60 reads ARG JJ_TOOL, the tool spec mise installs"),
+        (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:42-43 installs the mise row's archive, and "
+                                  ":74,83 hold the jj binary to the jj row's digest, whichever source served it"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:39,58 source it: ci_tools_fetch installs "
+                                        "mise, ci_tools_fetch_fallback reads the jj row's second source and "
+                                        "ci_tools_verify checks the binary"),
     )
 
 
@@ -507,6 +519,14 @@ RULES = {
     # daemon's jobs and not this one (dispatch://INFRA-1413).
     f"{ENVOY}/internal/dispatch/startup/started_test.go": reads(
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "internal/dispatch/startup/started_test.go:379")),
+    # The deployer's own copy of the migration advisory key, in the shell script beside the Go
+    # constant: the test reads both scripts out of packages/envoy/deploy/scripts.
+    f"{ENVOY}/internal/dispatch/store/deployer_key_test.go": reads(
+        (f"{ENVOY}/deploy/scripts/autodeploy.sh",
+         "internal/dispatch/store/deployer_key_test.go:44 reads it, the path built under ../../../deploy/scripts "
+         "(:30), and holds every pg_try_advisory_lock literal of it to migrationLockKey"),
+        (f"{ENVOY}/deploy/scripts/autodeploy_test.sh",
+         "internal/dispatch/store/deployer_key_test.go:44 reads it the same way (:31)")),
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -1127,6 +1147,19 @@ CHECK_STEP = "Check every CI filter matches every file its job reads"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
+TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
+# The steps of the tool-fallback job the reads below cite. The job is one long drive of
+# .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
+TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
+TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
+TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
+TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
+TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
+TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
+# The step of the tool-fallback-arm job the reads below cite, beside the fault step that job
+# shares with the one above: the reading of the Bun this runner holds, which the rig makes
+# against the bun-linux-aarch64 row.
+TOOL_ARM_READ_STEP = "Read the Bun the release asset served"
 # The session message-wait suite's own job: the test job's one step that needs a database.
 SESSIONS_JOB = "sessions-script"
 SESSIONS_STEP = "Test the session message-wait script"
@@ -1203,6 +1236,21 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:38 runs the gate over the registry a copy left"),
         (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:134 symlinks in the grammar both scripts read a row with"),
         (".github/ci-images.yaml", "mirror-ci-images.test.sh:322-351 builds its ordering fixture from this repository's own rows"),
+    ]),
+    # The three tool scripts, in the order the job runs them: the fetch helper every install
+    # goes through, the filler that puts the bytes in the copy that helper reads, and the gate
+    # that holds every row to its pin.
+    harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
+        (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
+        (".github/ci-tools.yaml", "ci-tools.test.sh:525-532 reads every row of this repository's own manifest"),
+    ]),
+    harness("mirror_ci_tools_test", "Test the tool copy filler", f"{SCRIPTS}/mirror-ci-tools.test.sh", [
+        (f"{SCRIPTS}/mirror-ci-tools.sh", "the script under test"),
+        (f"{SCRIPTS}/ci-tools.sh", "mirror-ci-tools.test.sh:357 symlinks in the fetch helper the filler sources"),
+    ]),
+    harness("check_ci_tools_test", "Test the tool manifest check", f"{SCRIPTS}/check-ci-tools.test.sh", [
+        (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
+        (".github/ci-tools.yaml", "check-ci-tools.test.sh:446 runs the gate over this repository's own tree"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -1458,6 +1506,9 @@ GATES = [
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:175-187"),
         ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
+        (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:19-20 installs the changie row's tarball"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-changie/action.yml:18 sources it, and ci_tools_fetch "
+                                        "reads the changie row's two sources"),
         (".github/changelog-packages", f"{at('test', FOLD_CHECK_STEP)}: the step reads it as the package list"),
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
@@ -2111,8 +2162,9 @@ GATES = [
          f"are that step's arguments"),
     ) + bun_job("proof-sdk-offline")),
 
-    # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.
-    # These are the files that decide what those two steps do. The gate's tree mode is a step of
+    # The ci-images job: the image copy, the package mode of the image gate, which reads
+    # ghcr.io, and the tool copy, which fills the second source of every tool install. These are
+    # the files that decide what those three steps do. The image gate's tree mode is a step of
     # lint, which runs on every change, and no filter gates it.
     gate("ci_images", "ci-images", reads=reads(
         (".github/ci-images.yaml", f"{at('ci-images', COPY_STEP)} copies the rows it holds, and "
@@ -2120,7 +2172,69 @@ GATES = [
         (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
         (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
+        (".github/ci-tools.yaml", f"{at('ci-images', TOOL_COPY_STEP)} fills the copy of every ghcr-mirror row it holds"),
+        (".github/scripts/mirror-ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)} runs it"),
+        (".github/scripts/ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)}: the filler reads a row's fields and "
+                                        "its seams the way that helper does, and the copy it fills is what the "
+                                        "helper then reads"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
+    )),
+
+    # The tool-fallback job: the live proof that every tool install reads the second source
+    # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
+    # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
+    # the gate beside it, the rig and the fault proxy it drives, the four actions it installs
+    # through, and the two files a row's version is pinned in.
+    gate("tool_fallback", "tool-fallback", reads=reads(
+        (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
+                                  f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
+        (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
+                                        "bytes through it, and the two steps above source it for a row's fields"),
+        (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
+                                              "of this job that drives the proof does; this job and tool-fallback-arm "
+                                              "are its only callers"),
+        (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
+                                              "of GitHub's release assets"),
+        (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "
+                                               "not filled, and states the rule that is the opposite of its own"),
+        (".github/scripts/check-ci-tools.sh", f"{at('tool-fallback', TOOL_ROWS_STEP)} prints the one literal both "
+                                              "paths are held to, which that gate holds every row and every call "
+                                              "site of the tree to"),
+        (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
+        (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
+        (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
+        (".github/actions/setup-bun/**", at("tool-fallback", "./.github/actions/setup-bun")),
+        (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
+                                               "to name mise's own install directory for that tool, and "
+                                               ".github/actions/install-jj reads that same ARG, while the mise row "
+                                               "that action installs mise from is pinned to this file's "
+                                               "ARG MISE_VERSION and ARG MISE_SHA256 by .github/scripts/check-ci-tools.sh"),
+        (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
+                         ".github/actions/setup-bun installs the Bun it pins"),
+    )),
+
+    # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
+    # the Bun install on an arm64 runner, the one architecture no other job of this repository
+    # installs a tool on. It drives the same action over the same manifest through the same
+    # helper, so one filter selects both jobs, and check-ci-filters.sh keys a claim by
+    # (job, step), so the two gates claim different steps and do not collide.
+    # It runs no go command either, and reads less than the job above: the action, the version
+    # it pins, the manifest row the action and the rig both read, the helper that reads it, and
+    # the rig and the fault proxy that put the release hosts out of reach.
+    gate("tool_fallback", "tool-fallback-arm", reads=reads(
+        (".github/actions/setup-bun/**", at("tool-fallback-arm", "./.github/actions/setup-bun")),
+        (".bun-version", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig holds what bun answers to the "
+                         "version that file pins, and .github/actions/setup-bun installs the Bun it pins"),
+        (".github/ci-tools.yaml", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig reads the "
+                                  "bun-linux-aarch64 row's version and digest, as the action reads that row to "
+                                  "verify what it installed"),
+        (".github/scripts/ci-tools.sh", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig reads that row "
+                                        "through it, which is the PyYAML read this job proves the arm64 runner can "
+                                        "make"),
+        (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)} runs it, as the fault "
+                                              "and probe steps of this job do"),
+        (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback-arm', TOOL_FAULT_STEP)}: the rig starts it in "
+                                              "front of GitHub's release assets"),
     )),
 ] + SCRIPT_TEST_GATES
 

@@ -15,7 +15,20 @@
 #     same rules recursively, and a local action that is not composite is as opaque as a remote
 #     one — `docker/build-push-action` is itself a JavaScript action — so `using: docker`,
 #     `using: node*` and a missing `using` are all refused unless NON_BUILDING_ACTIONS names
-#     it. A job-level `uses:` must be a `./.github/workflows/` call, which triggers_for traces.
+#     it. A local `./<dir>/<rest>` whose `<dir>` is the `path:` of an `actions/checkout` step
+#     of the same job (checkout_paths) is this repository's own action at another commit, so
+#     the file READ is this tree's `<rest>/action.yml`. A second checkout of this same
+#     repository holds this same repository's actions, and it can introduce no image builder
+#     this check does not already read at `<rest>`, because `<rest>` is where every other
+#     caller uses it; ci.yaml's `tool-fallback` job runs the merge base's four installs that
+#     way. A step counts only where it checks out this same repository: one that names no
+#     `repository:`, or names this one. A checkout of another repository writes that
+#     repository's tree at `<dir>`, and the action it holds there is one this check never
+#     reads, so `./<dir>/<rest>` under it is refused as any other unknown path is. The rule
+#     refuses what it always did besides: a local `uses:` into a directory no checkout
+#     of the job creates, and one whose `<rest>` names no action of this tree. That typo is
+#     what the refusal exists to catch. A job-level `uses:` must be a `./.github/workflows/`
+#     call, which triggers_for traces.
 #   * The build action's `with:` keys are an ALLOWLIST (BUILD_ACTION_INPUTS). A key this check
 #     has not read may name another tree the build receives — `build-contexts`, `secret-files`
 #     — which the trigger would then owe, so an unlisted key is refused. `cache-from` is
@@ -1265,12 +1278,49 @@ def triggers_for(workflow: Path) -> tuple[list[tuple[str, str, list, Path, tuple
 builds = []
 
 
-def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, depth: int, prefix: str | None = None) -> None:
+# The two spellings of this repository a checkout may name: the context that resolves to the
+# repository the run is of, and the slug itself (.github/scripts/repo-paths.sh's own default).
+THIS_REPOSITORY = re.compile(r"\$\{\{\s*github\.repository\s*\}\}|cybermonklabs/legion", re.I)
+
+
+def checks_out_this_repository(step: dict) -> bool:
+    """Whether this checkout step writes this repository's own tree.
+
+    A step that names no `repository:` checks out the repository the run is of, and so does one
+    that names it. Anything else — another repository, or a value this check cannot resolve —
+    writes a tree whose files this check never reads."""
+    repository = step["with"].get("repository")
+    if repository is None:
+        return True
+    return isinstance(repository, str) and bool(THIS_REPOSITORY.fullmatch(repository.strip()))
+
+
+def checkout_paths(job: dict) -> set[str]:
+    """The directories this job checks this repository out into, normalised.
+
+    A checkout writes `path:` as `base`, `./base` or `base/`, and all three name one directory,
+    so both sides of the comparison in scan_local_action go through posixpath.normpath. The
+    root checkout, which has no `path:` or writes `.`, is left out: `./x` already names this
+    tree. A checkout of another repository is left out too: `./x` under it is that repository's
+    file and not this tree's, whatever `ref:` either of them names."""
+    return {
+        posixpath.normpath(step["with"]["path"])
+        for step in job.get("steps") or []
+        if isinstance(step, dict)
+        and str(step.get("uses", "")).split("@", 1)[0] == "actions/checkout"
+        and isinstance(step.get("with"), dict)
+        and isinstance(step["with"].get("path"), str)
+        and checks_out_this_repository(step)
+    } - {"."}
+
+
+def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, depth: int, checkouts: set[str], prefix: str | None = None) -> None:
     """Classify one step: a build this check reads, an action it trusts, or a refusal.
 
     `gate_step` is the step whose `if:` gates the build — the step itself at job level, and the
     CALLING step when this one came out of a local composite action, since that is what decides
-    whether the composite runs at all. `origin` names the file the step lives in."""
+    whether the composite runs at all. `origin` names the file the step lives in. `checkouts` is
+    the job's checkout_paths, which scan_local_action resolves a `./` action against."""
     uses = str(step.get("uses", ""))
     action = uses.split("@", 1)[0]
     where = step.get("name") or "an unnamed step"
@@ -1327,7 +1377,7 @@ def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, dept
         if action in NON_BUILDING_ACTIONS:
             return
         if action.startswith("./"):
-            scan_local_action(workflow, job_name, action, gate_step, place, depth, step_id)
+            scan_local_action(workflow, job_name, action, gate_step, place, depth, checkouts, step_id)
             return
         problems.append(
             f"::error file={workflow}::{place} uses {uses}, which this check cannot tell apart "
@@ -1418,19 +1468,36 @@ def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, dept
         f"NOT_A_BUILD_STEPS in this script in a reviewed PR"
     )
 
-def scan_local_action(workflow, job_name, action: str, gate_step: dict, place: str, depth: int, prefix: str) -> None:
+def scan_local_action(workflow, job_name, action: str, gate_step: dict, place: str, depth: int, checkouts: set[str], prefix: str) -> None:
     """A `./` action is read, not trusted: a composite's steps get the same rules recursively.
 
     Anything else is refused. A container action's image comes from a Dockerfile this check
     never sees, and a JavaScript action is as opaque as a remote one — `docker/build-push-
     action` is itself JavaScript — so a local `using: node*`, an unknown `using`, and a missing
-    `runs.using` are all refused unless NON_BUILDING_ACTIONS names the action."""
+    `runs.using` are all refused unless NON_BUILDING_ACTIONS names the action.
+
+    `./<dir>/<rest>` under a `<dir>` of `checkouts` is read as this tree's `<rest>`: that
+    directory holds this same repository at another commit, and the action it holds there is
+    the one this tree keeps at `<rest>`. A `./` path under no checkout of the job, and a
+    `<rest>` naming no action of this tree, are refused the same way a typo always was."""
     if depth > 5:
         problems.append(f"::error file={workflow}::{place} nests local actions too deeply to read; flatten the "
         f"chain to five levels or fewer")
         return
+    # The path as written, then the same path with a checkout directory of this job taken off
+    # its front: `./base/.github/actions/x` under a checkout at `base` is this tree's
+    # `.github/actions/x`.
+    relative = posixpath.normpath(action[2:])
+    candidates = [relative] + [
+        relative[len(checkout) + 1 :] for checkout in sorted(checkouts) if relative.startswith(checkout + "/")
+    ]
     definition = next(
-        (p for p in (Path(action[2:]) / "action.yml", Path(action[2:]) / "action.yaml") if p.is_file()),
+        (
+            p
+            for candidate in candidates
+            for p in (Path(candidate) / "action.yml", Path(candidate) / "action.yaml")
+            if p.is_file()
+        ),
         None,
     )
     if definition is None:
@@ -1445,7 +1512,7 @@ def scan_local_action(workflow, job_name, action: str, gate_step: dict, place: s
     if using == "composite":
         for inner in (runs or {}).get("steps") or []:
             if isinstance(inner, dict):
-                scan_step(workflow, job_name, inner, gate_step, str(definition), depth + 1, prefix)
+                scan_step(workflow, job_name, inner, gate_step, str(definition), depth + 1, checkouts, prefix)
         return
     problems.append(
         f"::error file={workflow}::{place} uses {action}, a local `using: {using or 'unset'}` "
@@ -1467,9 +1534,10 @@ for workflow, document in documents.items():
                 f"a ./.github/workflows/ workflow instead"
             )
             continue
+        checkouts = checkout_paths(job)
         for step in job.get("steps") or []:
             if isinstance(step, dict):
-                scan_step(workflow, job_name, step, step, str(workflow), 0)
+                scan_step(workflow, job_name, step, step, str(workflow), 0, checkouts)
 
 if not builds:
     problems.append(
