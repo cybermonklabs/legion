@@ -78,13 +78,11 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		t.Fatalf("gate = latest %d approved %v, want version 4 open", latest, approved)
 	}
 
-	// Every start that carries no task is left out: a phase worker's start is one row, which
-	// carries the task (StartOrOwe), and the starts with none are the tree architect's own and
-	// the roles admission brings back beside a phase worker's. This is about the row with the
-	// task on it.
-	rows, err := pool.Query(ctx, `select kind, payload from outbox
-		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
-		order by id`)
+	// Every row the registration left, with no start passed over: in this package every start
+	// carries a task — the architect's (awaiting_reconcile.go), the wake's (wake.go) and every
+	// phase start through StartOrOwe — and the task-less starts admission brings back beside a
+	// phase worker are written in internal/admit, never here.
+	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}

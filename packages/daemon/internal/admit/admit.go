@@ -1553,7 +1553,7 @@ func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 // (releaseUnslotted).
 //
 // A root whose architect holds no claim row of its generation, or whose claim has not said it is
-// ready (supervise.TookRole), is told nothing either: there is no session to read the notice,
+// ready (supervise.SaidReady), is told nothing either: there is no session to read the notice,
 // and the pass after that architect reports ready tells it then. The claim is read as
 // workflow.ReconcileAwaiting reads it, by the architect token of this project. An untold wait
 // costs those reads each pass — the Dispatch claim workflow.Unresumable reads, and one
@@ -1581,7 +1581,7 @@ func (a *Admission) tellWaitingForSlot(ctx context.Context, tx pgx.Tx, issue rec
 	if err != nil {
 		return fmt.Errorf("read the architect claim of %s: %w", issue.Key, err)
 	}
-	if run.Claim == nil || !supervise.TookRole(run.Claim.State) {
+	if run.Claim == nil || !supervise.SaidReady(run.Claim.State) {
 		return nil
 	}
 	now := a.now()
@@ -2305,40 +2305,35 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
 // that would only ever start a stopped worker. Its three terms together say the stop is the whole
 // of this row's story, and held, the claim as record.Store.RoleClaims reads it (nil for a role
-// the store holds no claim of), carries all three: its state, the newest start run against it,
-// and the task it holds. That read runs after the owed rows the fences kept, which is what keeps
-// the second term honest: the mark it weighs owed's id against is never older than the read that
-// said owed was still owed, so a row run in between reads as run rather than as a start still to
-// come.
+// the store holds no claim of), carries all three: its state, where the outbox stood when it
+// retired, and the task it holds. That read runs after the owed rows the fences kept, which is
+// what keeps the second term honest: a stop made between the two reads is in the claim read here,
+// so a row the earlier read said was owed is weighed against a mark that is never older than it.
 func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if held == nil || held.State != supervise.StateRetired {
 		return false
 	}
-	// A row that has never run against this claim is the workflow's next start of this worker,
-	// not a start the stop outlived: a re-admitted tree's promotion and the held phase's retry
-	// write such a row for a claim the operator has already stopped, and the row is the whole of
-	// that start. Ending it would end the way back — the issue would leave the waiting line, since
-	// the line's first part is the issues that owe a start (record.Waiting), and nothing would
-	// start that phase again, the slot repair being no backstop: it skips a retired claim on
-	// purpose (resumeSlottedWorkers).
+	// The claim's mark is the outbox's high-water row id at the moment its retirement was
+	// recorded, stamped by the write that recorded it (store's putClaim). Outbox ids come from
+	// one increasing sequence, so the mark splits the outbox at the stop.
 	//
-	// A row the claim has already run is the start the stop then ended. The outbox records the row
-	// against the claim before it brings the worker back (supervise's StartedBy, from the outbox's
-	// start), so a row at or below that mark has had its start, and what left it queued is a
-	// failure of its own after that point — a delivery the listener refused, a crash before the
-	// row was finished — which its retry would answer by starting the stopped worker again. The
-	// mark is the newest start run, so an older row still queued beside a newer one that ran reads
-	// the same way, and rightly: the workflow's next start of this worker is not behind it.
+	// A row at or below the mark stood in the outbox when the worker was stopped, so the stop is
+	// the whole of its story: whatever it was written for, the worker it would reach is gone, and
+	// its only effect when a slot came would be to start a stopped worker.
 	//
-	// This is where the rule read a second queued start before INFRA-1573. A phase worker's start
-	// was two rows then — a task-less relaunch beside the row that carried the task — so the
-	// sibling was there to be read, and reading it said the workflow was starting this worker
-	// again. A start is one row now (workflow.StartOrOwe), so there is no sibling to find, and
-	// that term would have read every start the workflow writes after a stop as a start the stop
-	// outlived. What the rule still does not reach is an owed row a lane has already leased, which
-	// is not in this read at all (record.Store.OwedStarts).
-	if held.LastStartRow < owed.ID {
+	// A row above the mark was written after the stop, so it is the workflow's own next start of
+	// this worker — a re-admitted tree's promotion, the held phase's retry — and the row is the
+	// whole of that start. Ending it would end the way back: the issue would leave the waiting
+	// line, since the line's first part is the issues that owe a start (record.Waiting), and
+	// nothing would start that phase again, the slot repair being no backstop, as it skips a
+	// retired claim on purpose (resumeSlottedWorkers).
+	//
+	// A claim an earlier release retired carries 0, below every outbox id, so none of its owed
+	// rows is ended and its stop reads as that release read it. What the rule still does not
+	// reach is an owed row a lane has already leased, which is not in this read at all
+	// (record.Store.OwedStarts).
+	if owed.ID > held.RetiredAtRow {
 		return false
 	}
 	// A task the claim still works would say the claim kept the work of this very row — the row

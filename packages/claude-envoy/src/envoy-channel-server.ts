@@ -2176,15 +2176,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // this process's only sight of a turn starting, so the Envoy name is taken inside a running
   // turn rather than ahead of the daemon's task (INFRA-1573).
   //
-  // A slot, rather than a promise that remembers a signal given before the claim registered,
-  // because on this host the first prompt is always the bridge's seeding `/rename`
+  // A slot, rather than a promise that remembers every prompt this process ever saw, because on
+  // this host the first prompt is always the bridge's seeding `/rename`
   // (`packages/daemon/internal/claudebridge`), which runs before the claim exists — it is what
-  // writes the transcript the boot waits for. A signal kept from before the registration would
-  // claim the name one microtask after `claims/ready` answers, ahead of the daemon's task,
-  // which is the ordering this defers. So only a prompt after the registration counts as this
-  // session's first turn: the daemon's own task reaches Claude Code as a `UserPromptSubmit` of
-  // its own and is the turn that takes the name, and a pane given no task at all is the bound's
-  // to cover. A later prompt costs nothing — the step itself claims once however often it runs.
+  // writes the transcript the boot waits for, so no registration can precede it. A signal kept
+  // from before the boot filled this slot would take the name the moment `claims/ready` answers,
+  // ahead of the daemon's task, which is the ordering this defers.
+  //
+  // The boot fills the slot as soon as `claims/register` has answered, before the ready that
+  // follows, so a prompt that arrives while that ready is still being retried — the daemon took
+  // the first one and its answer was lost, and its task reaches Claude Code meanwhile — is this
+  // session's first turn and the name is taken as soon as ready answers, rather than at the
+  // bound. A pane given no task at all is the bound's to cover, and a later prompt costs
+  // nothing — the step itself claims once however often it runs.
   let takeTheNameAtFirstTurn: (() => void) | undefined
   const phaseHook =
     pane === undefined || daemon === undefined
@@ -2470,8 +2474,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         signal: booting.signal,
         log: logLegion,
         stop: endPane,
-        // The step goes in the slot the phase hook's `UserPromptSubmit` calls, and a prompt
-        // before this registration — the bridge's seed — found it empty and signalled nothing.
+        // The step goes in the slot the phase hook's `UserPromptSubmit` calls. The boot fills it
+        // when `claims/register` has answered, which is after the bridge's seed: that prompt
+        // found the slot empty and signalled nothing.
         onFirstTurn: (takeTheName) => {
           takeTheNameAtFirstTurn = takeTheName
         },

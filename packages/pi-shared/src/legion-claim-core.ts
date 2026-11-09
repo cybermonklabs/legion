@@ -25,28 +25,31 @@ export interface LegionClaimHost {
   /** Claims `role`, the claim token, on Envoy for this session: the topic the daemon sends the
    * claim's task and every notice on. It is the boot's last step and runs after `claims/ready`
    * has answered, at the session's first turn (`onFirstTurn`) or at the bound, whichever comes
-   * first. Throws when the role cannot be held, which is logged and stops the session. */
+   * first — at once where the turn started while ready was still being retried. Throws when the
+   * role cannot be held, which is logged and stops the session. */
   readonly claimRole: (role: string) => Promise<void>;
-  /** Registers `claim`, the step that takes this session's Envoy name, to be run once the
-   * session's first turn has started — whatever started it: the daemon's task, a card, a
-   * reminder. Calling it more than once claims once, and a signal the host swallows leaves the
-   * name to the bound.
+  /** Hands the host `started`, the signal to call once the session's first turn has started —
+   * whatever started it: the daemon's task, a card, a reminder. It is called as soon as
+   * `claims/register` has answered, before `claims/ready`, so a turn that starts while that
+   * ready is still being retried is heard rather than lost: the boot remembers it and takes the
+   * name the moment ready answers. Calling `started` more than once takes the name once, and a
+   * signal the host swallows leaves the name to the bound.
    *
    * Which turn is its session's first is the host's to decide, and the two hosts decide it
    * differently because their startups differ. A host whose own startup can begin no turn
-   * before the boot has registered may call `claim` at once, inside this very call, for a turn
+   * before the boot has registered may call `started` at once, inside this very call, for a turn
    * that has already started: pi-legion awaits the boot inside `session_start`, and Oh My Pi
    * reads no input until every such handler has returned, so a turn it heard of is this
-   * session's own. A host whose startup seeds a turn of its own before the claim exists counts
-   * only a turn that arrives after this registration: in claude-envoy the bridge's seeding
-   * `/rename` is what writes the transcript the boot waits for, so a signal kept from before
-   * the registration would take the name ahead of the daemon's task — the very ordering the
-   * deferred claim exists to end.
+   * session's own. A host whose startup seeds a turn of its own counts only a turn that arrives
+   * after this call: in claude-envoy the bridge's seeding `/rename` is what writes the
+   * transcript the boot waits for, so it is over before `claims/register` is even sent, and a
+   * signal kept from before this call would take the name ahead of the daemon's task — the very
+   * ordering the deferred claim exists to end.
    *
    * Both hosts have such a signal — Oh My Pi's `agent_start` and the Claude Code hook's
    * `UserPromptSubmit` — so it is required: a boot with no way of hearing its first turn is not
    * a state this interface can be in. */
-  readonly onFirstTurn: (claim: () => void) => void;
+  readonly onFirstTurn: (started: () => void) => void;
   /** How long the deferred claim waits for `onFirstTurn` before it claims the name itself: the
    * session's own `claimFirstTurnBoundMs` (`src/claim-first-turn-bound.ts`), which every host
    * reads from its own environment and which holds the default. */
@@ -72,11 +75,13 @@ export interface LegionClaimBoot {
 }
 
 /**
- * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`;
- * `afterRegister`; the capability recorded; `claims/ready`, retried on a 5xx or transport failure
- * (`callReadyWithRetry`); the regain listener, which re-runs that same ready each time the
- * heartbeat regains the role; and then, after this function has settled, the Envoy role claimed
- * at the session's first turn (`onFirstTurn`) or at the bound, whichever comes first.
+ * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`; the
+ * host's first-turn signal registered (`onFirstTurn`), which is why a turn that starts while the
+ * ready below is still being retried is not lost; `afterRegister`; the capability recorded;
+ * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the regain
+ * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
+ * after this function has settled, the Envoy role claimed at the first turn the signal reported
+ * or at the bound, whichever comes first.
  *
  * The name is taken last because the Envoy listener keeps a message published to a role no
  * session holds and hands the whole kept lane over the moment the role is claimed: claimed before
@@ -114,6 +119,11 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     host.stop();
     return { claimed: Promise.resolve() };
   }
+  // The signal is heard from here, the moment the registration answered and before the ready
+  // below, so a turn that starts while that ready is still being retried takes the name as soon
+  // as it answers rather than waiting out the bound. The claim step itself still runs after
+  // ready (claimRoleAtFirstTurn).
+  const firstTurn = listenForFirstTurn(host);
   try {
     await host.afterRegister?.(claim);
     host.setCapability({
@@ -148,7 +158,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     stopAfterRegistration(host, claim.claimToken, error);
     return { claimed: Promise.resolve() };
   }
-  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken) };
+  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
 }
 
 /** The one path every failure after a registration takes, wherever it happens: the boot's own
@@ -162,17 +172,47 @@ function stopAfterRegistration(host: LegionClaimHost, role: string, error: unkno
 }
 
 /**
+ * Hears the host's first turn from the moment the registration answered, and answers the way the
+ * claim step hands itself over: the step runs at once for a turn that has already started, and
+ * at the signal otherwise.
+ *
+ * It exists because the claim step comes after `claims/ready`, and that ready is retried (a 5xx,
+ * a transport failure). The daemon's task can reach the session while those retries run — the
+ * daemon took the first ready and its answer was lost — so the turn it starts would otherwise
+ * find no step to run and the name would be taken only at the bound (INFRA-1573). A host may
+ * report the same turn more than once — pi-legion reports one it kept from before this call and
+ * reports every later `agent_start` too — and each report after the first runs a step that has
+ * already run, which does nothing.
+ */
+function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void {
+  let started = false;
+  let claim: (() => void) | undefined;
+  host.onFirstTurn(() => {
+    started = true;
+    claim?.();
+  });
+  return (step) => {
+    claim = step;
+    if (started) step();
+  };
+}
+
+/**
  * The boot's last step, run after the boot itself has settled: `role` claimed on Envoy at the
- * host's first-turn signal or at the bound, whichever comes first, and once however many of the
- * two arrive. The timer is armed and the signal registered in that order and both before this
- * returns, so a host whose turn has already started claims inside its own `onFirstTurn` call and
- * loses nothing, and the timer is unreferenced where the runtime offers it: the bound is a
- * backstop and keeps no process alive for its own sake.
+ * first turn `firstTurn` reports or at the bound, whichever comes first, and once however many
+ * of the two arrive. The timer is armed and the step handed over in that order and both before
+ * this returns, so a turn that started while the boot was still readying claims inside that
+ * hand-over and loses nothing, and the timer is unreferenced where the runtime offers it: the
+ * bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
  * registration takes. The promise answers when the step has run, either way, and never rejects.
  */
-function claimRoleAtFirstTurn(host: LegionClaimHost, role: string): Promise<void> {
+function claimRoleAtFirstTurn(
+  host: LegionClaimHost,
+  role: string,
+  firstTurn: (claim: () => void) => void
+): Promise<void> {
   const done = Promise.withResolvers<void>();
   let ran = false;
   const claim = (): void => {
@@ -190,6 +230,6 @@ function claimRoleAtFirstTurn(host: LegionClaimHost, role: string): Promise<void
   };
   const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
-  host.onFirstTurn(claim);
+  firstTurn(claim);
   return done.promise;
 }

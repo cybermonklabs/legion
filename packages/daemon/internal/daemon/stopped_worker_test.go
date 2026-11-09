@@ -277,12 +277,12 @@ func workingPane(token claim.Token) *runtime.Locator {
 // seedWaitingMember records member as a tree member holding no admission slot, with the claim of
 // its role and the start its transition owes that role. A phase worker's start is one row, which
 // carries the task and waits for the issue's slot (record.SuperviseRequest.NeedsSlot), and that
-// row has already run against this claim: it brought the worker's session back, which is why the
-// claim is ready, and a later step of its own left it queued, so it waits for the slot to be run
-// again (the outbox's own ordering rules, where the cap is applied). The claim records the row
-// as the outbox's start records it, before it brings a worker back (supervise's StartedBy), so
-// the row reads as one the claim has run rather than as a start still to come (admit's
-// stopOutlivedStart).
+// row has never run against this claim: a row held for a slot its issue does not hold is not
+// claimable at all (record's outboxInOrder), so it stands in the outbox exactly where it was
+// written and nothing of it has reached the claim. The claim is the live one of the round
+// before — the transition that wrote this row found the role already claimed — which is why it
+// is ready, with a session and a process of its own, while the row it is owed waits for the
+// slot.
 func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim, owed record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
@@ -300,8 +300,7 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 		if err != nil {
 			return err
 		}
-		worker.LastStartRow, err = records.EnqueueID(ctx, tx, row)
-		return err
+		return records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		t.Fatalf("record %s and the start it owes its %s: %v", member.Key, owed.Role, err)
 	}
@@ -325,10 +324,10 @@ func seedCappedRoots(t *testing.T, cfg config.Config, project string, roots ...s
 
 // seedWaitingTester records key as a member of root's tree waiting for an admission slot, which
 // is the fixture every test of a stop that meets a waiting issue is built from: the member stands
-// in testing holding no slot, and the one row its start is — the row that carries the task — has
-// already run against its tester, which is ready with no task, and waits for that slot to run
-// again. rank is the member's rank; the order two of these are written in is what orders them in
-// the line, which goes by the age of the row each issue is owed (record.Waiting).
+// in testing holding no slot, and the one row its start is — the row that carries the task —
+// stands in the outbox unrun, held for the slot its issue does not hold, with its tester ready
+// and holding no task. rank is the member's rank; the order two of these are written in is what
+// orders them in the line, which goes by the age of the row each issue is owed (record.Waiting).
 func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank string, tester claim.Token) {
 	t.Helper()
 	parent := root
@@ -344,15 +343,17 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 }
 
 // A stop ends the start its issue was still owed. An issue waiting for an admission slot holds
-// the row that carries its worker's task in the outbox, and a row that has already started that
-// worker would start it again the moment a slot came. The repair of a start
-// that can no longer act ends it instead (admit's finishFencedStarts), so the stop holds for a
-// waiting issue as it holds for a slotted one.
+// the row that carries its worker's task in the outbox, and that row would start the worker the
+// operator stopped the moment a slot came. The repair of a start that can no longer act ends it
+// instead (admit's finishFencedStarts), so the stop holds for a waiting issue as it holds for a
+// slotted one.
 //
 // The fixture is that row waiting. The member stands in a worker phase with no slot of its own,
-// and its one start row has already run against its tester — which is ready, with no task — and
-// waits for the slot to be run again. Two roots hold the cap's two slots, so the member is in
-// the line and nothing is granted it. The stop is made over the operator's own route.
+// its one start row stands in the outbox unrun — a row held for a slot is claimable by nothing
+// until the slot comes — and its tester is ready with no task. Two roots hold the cap's two
+// slots, so the member is in the line and nothing is granted it. The stop is made over the
+// operator's own route, which is what stamps the claim with where the outbox stood when it
+// retired (store's putClaim): the row was written before the stop, so the stop outlived it.
 //
 // What the passes after the stop do is read twice, because the cap would explain the first read
 // on its own. First with both slots still held: the issue owes its tester nothing, the runtime is

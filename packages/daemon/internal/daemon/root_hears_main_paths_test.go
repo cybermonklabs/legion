@@ -326,7 +326,7 @@ func (r *mainPathRig) bringUp() {
 		}
 	}
 	r.waitMachine()
-	if got := machine.Claim().State; !supervise.TookRole(got) {
+	if got := machine.Claim().State; !supervise.SaidReady(got) {
 		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
 	}
 }

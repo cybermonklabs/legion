@@ -182,6 +182,26 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 
 // putClaim writes a claim through whichever executor the caller has: the pool, or a transaction
 // that carries the delivery write that goes with it.
+//
+// The write that records a retirement stamps the claim with retired_at_row, the outbox's
+// high-water row id at that moment, and every other write leaves the column where it stands: the
+// mark and the state are one write, so no claim is ever read as retired at a moment the store
+// does not hold. It is set from SQL rather than from the claim in memory, on the transition into
+// retired alone — the inserted state on the insert, `excluded.state = 'retired' and claims.state
+// <> 'retired'` on the update — so a second write of a claim that is already retired leaves the
+// stop's own moment untouched. What reads it is admit's stopOutlivedStart: an owed start row at
+// or below the mark stood in the outbox when the worker was stopped, and one above it was
+// written after the stop.
+//
+// The mark is `select coalesce(max(id), 0) from outbox` over the live table, not the sequence's
+// last_value. Outbox ids come from one increasing sequence, so a row that exists when the mark is
+// taken has an id at or below it and every row written after it has one above it. A row another
+// transaction has inserted and not committed is invisible to this read, so the mark can only come
+// out lower than the truth, which keeps an owed row rather than ending one — the safe direction,
+// since ending a row the workflow still means to run would strand the issue. The sequence's
+// last_value counts ids handed out and not yet committed, and so errs the other way. A claim an
+// earlier release retired carries the column's default, 0, which is below every outbox id, so no
+// owed row of it is ever ended and it behaves as it did before the column existed.
 func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -214,9 +234,11 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		plugin_contract, plugin_relaunch_for, delivered_rows,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
-		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged)
+		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
+		retired_at_row)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
+		case when $11 = 'retired' then (select coalesce(max(id), 0) from outbox) else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		session = excluded.session, session_file = excluded.session_file,
@@ -226,6 +248,10 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		prompt_retires = excluded.prompt_retires, boot_token_hash = excluded.boot_token_hash,
 		capability_hash = excluded.capability_hash, uncertain_streak = excluded.uncertain_streak,
 		last_start_row = excluded.last_start_row,
+		-- The outbox's high-water row id at the moment this claim retired, taken on the
+		-- transition into retired and left alone by every other write (this function's doc).
+		retired_at_row = case when excluded.state = 'retired' and claims.state <> 'retired'
+			then (select coalesce(max(id), 0) from outbox) else claims.retired_at_row end,
 		serving_generation = excluded.serving_generation,
 		serving_assignment = excluded.serving_assignment,
 		agent_secrets_enrollment = excluded.agent_secrets_enrollment,

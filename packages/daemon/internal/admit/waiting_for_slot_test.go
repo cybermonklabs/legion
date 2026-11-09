@@ -544,7 +544,7 @@ func TestEveryAnswerThatLeavesARootWaitingIsTold(t *testing.T) {
 		},
 	}
 	// One row for each state that is not ready, working or idle: a claim in any of them has not
-	// said it is ready (supervise.TookRole), so no session would read the notice.
+	// said it is ready (supervise.SaidReady), so no session would read the notice.
 	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
 		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired} {
 		cases = append(cases, toldCase{

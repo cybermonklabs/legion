@@ -2447,10 +2447,11 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 //
 // Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that every claim read is
-// at least as new as the row beside it and the newest start run against a claim
-// (LastStartRow) is never older than the read that said the row was still owed. That is where
-// the call sits — the pass reads its owed rows into record.LineFacts first, and weighs them
-// here after.
+// at least as new as the row beside it and a stop made between the two reads is seen here. A
+// claim retired in that window carries a mark (RetiredAtRow) at or above the row the earlier
+// read said was still owed, which is what the stop rule ends; reading the claims first would
+// hold that row one pass longer. That is where the call sits — the pass reads its owed rows into
+// record.LineFacts first, and weighs them here after.
 func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error) {
 	held := make(map[claim.Token]*RoleClaim, len(tokens))
 	if len(tokens) == 0 {
@@ -2472,8 +2473,8 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
-		coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_row,
+		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -2485,7 +2486,8 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var pending bool
 		var task supervise.Delivery
 		var confirmed *time.Time
-		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
+		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtRow,
+			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if pending {

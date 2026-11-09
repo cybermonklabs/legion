@@ -20,10 +20,10 @@ import {
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-/** The first-turn signal a case whose subject is the claim itself passes: the name is taken as
- * soon as the boot has registered the step (`onFirstTurn`). It is not the channel server's own
- * wiring, which runs the step at a prompt submitted after that registration and at nothing
- * before it (`registeredPane` below). */
+/** The first-turn signal a case whose subject is the claim itself passes: the turn is reported
+ * the moment the boot registers the signal, so the name is taken as soon as `claims/ready` has
+ * answered. It is not the channel server's own wiring, which reports a prompt submitted after
+ * that registration and nothing before it (`registeredPane` below). */
 const firstTurnNow = (takeTheName: () => void): void => {
   takeTheName()
 }

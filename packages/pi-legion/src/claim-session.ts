@@ -88,11 +88,11 @@ export function createClaimSession(deps: {
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
-  // The boot's deferred claim step, held from the moment it registers, and whether a turn of this
-  // session has started. The two arrive in either order and both orders claim exactly once: a
-  // turn that starts before the boot registers its step is remembered here and claims the moment
-  // it registers, and a second turn calls a step that has already run, which does nothing
-  // (`claimRoleAtFirstTurn`, `@legion/pi-shared/legion-claim-core`).
+  // The boot's first-turn signal, held from the moment the boot registers it, and whether a turn
+  // of this session has started. The two arrive in either order and both orders take the name
+  // exactly once: a turn that starts before the boot registers the signal is remembered here and
+  // reported the moment it registers, and a second turn reports a turn already reported, which
+  // does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
   let claimAtFirstTurn: (() => void) | undefined;
   let turnStarted = false;
 

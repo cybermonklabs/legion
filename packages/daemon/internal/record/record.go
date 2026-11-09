@@ -1613,13 +1613,21 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), and the task it holds,
-// nil for none, with the task's generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), where the outbox
+// stood when it retired (retired_at_row), and the task it holds, nil for none, with the task's
+// generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
+	// RetiredAtRow is the outbox's high-water row id at the moment this claim's retirement was
+	// recorded (store's putClaim), and 0 for a claim that has never retired and for one an
+	// earlier release retired, which recorded the moment nowhere. It orders the outbox against
+	// the stop: a row at or below it stood there when the worker was stopped, and a row above it
+	// was written after. It says nothing about a claim that is not retired now, which is the
+	// only state its reader looks at (admit's stopOutlivedStart).
+	RetiredAtRow int64
 	Pending      *supervise.Delivery
 }
 

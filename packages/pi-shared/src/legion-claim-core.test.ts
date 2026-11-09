@@ -24,9 +24,10 @@ const registration = {
 };
 
 /** A host over a stub daemon whose `register` and `ready` answer as given, recording every step
- * it is asked for, in order, beside the daemon's requests. Its first-turn signal is kept rather
- * than fired: a case fires it with `firstTurn()`, and a case that leaves it unfired is a session
- * no turn ever started. */
+ * it is asked for, in order, beside the daemon's requests. The boot registers its first-turn
+ * signal at the registration, before `claims/ready`, and this host keeps it rather than firing
+ * it: a case fires it with `firstTurn()`, and a case that leaves it unfired is a session no turn
+ * ever started. */
 function claimHost(options: {
   readonly register?: () => Response;
   readonly ready?: () => Response;
@@ -100,11 +101,11 @@ test("registers, runs afterRegister, records the capability, then readies withou
 
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
+    "onFirstTurn",
     `afterRegister ${claimToken}`,
     "setCapability",
     `claims/ready ${readyBody()}`,
     "onRoleRegained",
-    "onFirstTurn",
   ]);
   expect(capabilities).toEqual([
     {
@@ -180,10 +181,10 @@ test("a claim the listener refuses is logged naming the claim token and what sto
   // inside a turn already takes. The failure itself is the one it always was.
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
+    "onFirstTurn",
     "setCapability",
     `claims/ready ${readyBody()}`,
     "onRoleRegained",
-    "onFirstTurn",
     `claimRole ${claimToken}`,
     "stop",
   ]);
@@ -192,15 +193,18 @@ test("a claim the listener refuses is logged naming the claim token and what sto
   ]);
 });
 
-test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener, no first-turn signal and no claim", async () => {
-  const { host, steps } = claimHost({
+test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {
+  const { host, steps, firstTurn } = claimHost({
     ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
   });
   const booted = await bootLegionClaim(host);
   expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
   expect(steps.at(-1)).toBe("stop");
   expect(steps).not.toContain("onRoleRegained");
-  expect(steps).not.toContain("onFirstTurn");
+  // The signal was registered at the registration, before this ready, so the host has it; the
+  // boot stopped before it ever handed it a step, and a turn that starts now claims nothing.
+  expect(steps).toContain("onFirstTurn");
+  firstTurn()?.();
   expect(steps.some((step) => step.startsWith("claimRole"))).toBe(false);
   // A boot that stopped before the claim step still settles its answer, so a caller that waits
   // on the claim is not left waiting for a step that is never coming.
@@ -238,17 +242,18 @@ test("a boot that gets no first turn claims at the bound", async () => {
   expect(waiting.firstTurn()).toBeDefined();
   expect(waiting.steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
+    "onFirstTurn",
     "setCapability",
     `claims/ready ${readyBody()}`,
     "onRoleRegained",
-    "onFirstTurn",
     `claimRole ${claimToken}`,
   ]);
 });
 
-test("a first turn that started before the boot registered its callback is not lost", async () => {
-  // The host's first turn is already running when the boot registers, so the host calls back
-  // inside the registration itself rather than keeping a signal nobody will fire again.
+test("a first turn that started before the boot registered its signal is not lost, and the name is taken once ready has answered", async () => {
+  // The host's first turn is already running when the boot registers its signal, so the host
+  // reports it inside that very call rather than keeping one nobody will fire again. The claim
+  // still waits for `claims/ready`, which is what the order below says.
   const { host, steps } = claimHost({
     overrides: {
       onFirstTurn: (claim) => {
@@ -263,6 +268,39 @@ test("a first turn that started before the boot registered its callback is not l
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
     "setCapability",
+    `claims/ready ${readyBody()}`,
+    "onRoleRegained",
+    `claimRole ${claimToken}`,
+  ]);
+});
+
+test("a first turn that starts while claims/ready is still being retried is not lost, and the name is taken as soon as ready answers", async () => {
+  // The daemon took the first ready and its answer was lost, so the boot retries it — and the
+  // daemon's task reaches this session meanwhile. The signal is registered at the registration,
+  // before the first ready, so that turn is heard; the name is taken the moment the retry
+  // answers, rather than at the bound ten minutes away (INFRA-1573).
+  let readies = 0;
+  let startTurn: (() => void) | undefined;
+  const { host, steps, firstTurn } = claimHost({
+    ready: () => {
+      readies += 1;
+      if (readies > 1) return new Response(null, { status: 204 });
+      startTurn?.();
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+    },
+  });
+  startTurn = () => firstTurn()?.();
+
+  // The name is taken the instant ready answers: the boot's own promise is already past the
+  // claim step when it settles, which is the whole of the gap this closes.
+  const booted = await bootLegionClaim(host);
+  await booted.claimed;
+
+  expect(steps).toEqual([
+    `claims/register ${JSON.stringify(registration)}`,
+    "onFirstTurn",
+    "setCapability",
+    `claims/ready ${readyBody()}`,
     `claims/ready ${readyBody()}`,
     "onRoleRegained",
     `claimRole ${claimToken}`,
