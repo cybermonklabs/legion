@@ -1,0 +1,411 @@
+package supervise
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+// A claim whose session a provider keeps refusing is compacted rather than started again: the
+// session, its workspace and everything it knows stay, and what goes is the length of the
+// transcript the provider is being asked to read (dispatch://INFRA-956 R3). `legion claims
+// compact` and the controller's own compact both run it (api's compact), and this file is the
+// machine's half: taking the claim, asking Oh My Pi, and giving the claim back with its owed
+// task sent again.
+
+// ErrCompactInstructions is a compaction asked for with nothing to write the summary to. Oh My
+// Pi runs the image-based snapcompact method for a compaction that carries no instructions and
+// no internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts
+// at the pinned tag), and a worker resumed on images needs a vision model to read its own past:
+// the instructions are what make the summary text, so a compaction with none is refused before
+// anything is sent.
+var ErrCompactInstructions = errors.New("a compaction carries custom instructions, so Oh My Pi writes its summary as text rather than snapcompact's images")
+
+// ErrCompactNotTaken is a compaction nothing was asked for: the claim could not be written as
+// working, it lost its process between the take and the ask, its shim is not connected, or a
+// launch the wake pacing holds waits its turn to replace the process its session runs on, so
+// the daemon had nothing to ask through or nothing worth asking (compactStart). The claim is
+// where the request found it and no task was sent, where every other outcome gives the claim
+// back and sends the task it owes (compactEnded). A claim a suspension is held over is not
+// one of these: it is refused in its state, as every other action refuses such a claim
+// (RefusedError, compactStart).
+var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, so nothing was asked of its session")
+
+// ErrCompactNotEnded is a compaction whose end did not finish: Oh My Pi answered and a step of
+// the hand-back failed, so the task the claim owes is unsent. It is the daemon's own failure
+// and not a compaction that did not run, whose answer promises the claim is back and its task
+// has gone again (api's compact).
+//
+// Two shapes reach it, and the claim is in a different place in each. The write that gives the
+// claim back failed, and the claim is left working, which is where the compaction took it. Or
+// that write landed and what follows it failed — the stale-plugin relaunch held for this end,
+// the update round's slot, or the send of the owed task itself (afterTurn) — and the claim is
+// back with its agent, as a claim whose turn ended is, with the task still to go. The error
+// says the hand-back did not finish, which is true of both, rather than naming one of them.
+//
+// What a daemon that stops here leaves behind is a shape it already knows: a claim stored
+// working, whose agent's own answer to "are you streaming" ends it (askTurnOver), or a ready
+// or idle claim holding a task, which the next thing that reaches that claim sends — its
+// agent's hello, its ready, the end of a turn it takes of its own (sendPending's callers).
+var ErrCompactNotEnded = errors.New("the compaction ended and the claim could not be given back, so the task it owes was not sent")
+
+// ErrCompactProcessGone is a compaction whose end found it was no longer the claim's own
+// (ownsCompaction): the process it ran on was found gone while Oh My Pi wrote the summary
+// (judge's gone verdict, compactionLostProcess), it was let go for a suspension or a failure
+// (letGo), or a relaunch has moved the claim past the generation the compaction was taken at.
+// So compactEnded never ran: the claim was not given back and the task it owes was not sent.
+//
+// What happens to the claim next is its own path's, and that path is not always a relaunch. A
+// claim whose death the daemon relaunches is sent the owed task when its agent is ready again
+// (sendPending), but a claim its death failed and one a held suspension stopped each run again
+// only when an operator retries or resumes them, and the task waits for that.
+var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not sent")
+
+// ErrCompactSuspended is a compaction whose end found a suspension held over the claim: one
+// that arrived while Oh My Pi wrote the summary, which the machine holds as it holds a
+// suspension that arrives in a turn (holdSuspension). The compaction ran and its end was the
+// claim's own, so this is neither ErrCompactProcessGone nor a store that would not write
+// (ErrCompactNotEnded); what it is is a claim the end did not give back. The hold runs there
+// and the claim is suspended, or the claim is working for a turn Oh My Pi started under the
+// compaction and the hold runs at that turn's end instead (compactEnded). Either way the task
+// the claim owes was not sent.
+//
+// What becomes of that task is the hold's own, and settle is what decides it. A suspension by
+// a source that resumes this same claim in the same phase — an operator's hold, and a
+// released claim's — keeps the task through the suspension, and it goes when the claim runs
+// again (SuspendSource.RetiresPhaseTask, settle). The daemon's own suspension ends the
+// claim's phase, so settle retires the task queued for that phase with it and nothing sends
+// it; the claim's next phase brings a task of its own. A hold of the daemon's that a start
+// drops before it runs is neither: the claim runs on, and the turn this answer left it
+// working for ends as any other turn does and sends the task (StartedBy, dropHeld,
+// turnEnded).
+//
+// It is the end's answer rather than a failure of it, as ErrSuspendHeld is the answer of a
+// suspension the machine holds: nothing of the claim is left half written, and the caller is
+// told what the claim is rather than that the compaction worked (api's compact).
+var ErrCompactSuspended = errors.New("a suspension held over the claim ended its compaction, so the claim was not given back and the task it owes was not sent")
+
+// compacting is the compaction a claim is in: the connection it runs over and the generation it
+// was taken at. Those two, and the claim recording a compaction at all, are what the end of a
+// compaction is fenced on (ownsCompaction). It is memory only, as a held suspension is: a
+// daemon that restarts mid-compaction leaves a claim stored working, which its agent's own
+// answer to "are you streaming" then ends (askTurnOver), and the owed task goes on that end.
+type compacting struct {
+	conn       runtime.Conn
+	generation uint64
+	// back is the state the claim is given back in: the state the take found it in
+	// (compactStart), so a claim that was ready is ready again rather than idle, which would
+	// say a turn of it had ended. A turn that starts or ends under the compaction makes it
+	// idle, since the claim has had a turn by then (turnStartedWhileBusy, turnEnded).
+	back ClaimState
+	// inTurn is whether a turn Oh My Pi started under the compaction is still running: an
+	// Envoy follow-up it queued, which starts as the compaction ends. The claim is left
+	// working for that turn and its end gives the claim back (compactEnded, turnEnded).
+	inTurn bool
+}
+
+// Compact compacts the claim's Oh My Pi session and sends the task it owes again. It is no event
+// of its own, as ReleaseUncertainLaunch and PodUpdateTold are none: the compaction is a model
+// call over the whole transcript, up to runtime.CompactTimeout, and a decision that waited it out
+// would hold the machine's lock for ten minutes — every other request on the claim, a
+// fresh_session's read of its state among them, would wait rather than be answered. So it is
+// three steps: the claim is taken under the lock (RequestCompact), Oh My Pi is asked with no lock
+// held, and the claim is given back under the lock (CompactEnded).
+//
+// While it runs the claim is working, which is the daemon's one record of a busy agent: the
+// ladder's re-send waits, a newer task waits, an update round's question waits, a second
+// compaction and a fresh session are refused, and the idle release does not take the pod —
+// each because the site that decides it already asks whether the claim is working, and none of
+// them has learned a second word for busy (compactStart).
+//
+// Nil is a session compacted and the claim given back. A compaction Oh My Pi refused or skipped
+// — a session too small, one already compacted, a summarizer that failed — carries its words
+// (runtime.RefusalReason); a wait that ran out, or a transport that failed, is an error of its
+// own. The claim is given back in every one of those cases, and the task it owes goes with it —
+// or waits for the turn of a launch the pacing parked over its process, where every send of
+// such a claim waits (sendPending) — and only a compaction that ran puts the claim's run of
+// provider-error turns back to zero (compactEnded). A take that did not happen at all is
+// ErrCompactNotTaken or a *RefusedError, and leaves the claim where it was with its task unsent.
+//
+// A compaction that ran and did not end is none of those, and the end's own answer is what
+// tells them apart: ErrCompactNotEnded is the end the store would not write,
+// ErrCompactProcessGone the end the machine judged no longer the claim's own — the process it
+// ran over found gone under it, or the claim moved past the generation it was taken at
+// (ownsCompaction) — and ErrCompactSuspended the end that found a suspension held over the
+// claim and gave it back to that hold rather than to its agent. That judgement is made under
+// the machine's lock, where the claim cannot move under it, and it is the whole of what is
+// read here: nothing of the claim is read from this side of the lock, where a relaunch the end
+// itself raises would be taken for the process the compaction lost (afterTurn's
+// refreshPlugin). Each leaves the owed task unsent, and each says so in the daemon's own
+// words: what Oh My Pi answered such a compaction goes to the log rather than to the caller,
+// which no model's words reach through (api's reasonBound).
+func (m *Machine) Compact(ctx context.Context, customInstructions string) error {
+	if strings.TrimSpace(customInstructions) == "" {
+		return ErrCompactInstructions
+	}
+	token := m.View().Token
+	var refused *RefusedError
+	switch err := m.Handle(ctx, RequestCompact{Claim: token}); {
+	case errors.As(err, &refused):
+		// The claim is in no state to be compacted, and the refusal names that state: its
+		// caller reads which refusal it is from there (api's refuseState).
+		return err
+	case err != nil:
+		return errors.Join(ErrCompactNotTaken, err)
+	}
+	run, taken := m.compaction()
+	if !taken {
+		// The claim lost its process between the take and this read (letGo), which leaves it
+		// suspended, failed or relaunching rather than working: its own path decides what
+		// happens to it next, and there is no compaction to end.
+		return fmt.Errorf("%w: %s lost its process before its session could be compacted", ErrCompactNotTaken, token)
+	}
+	err := run.conn.Compact(ctx, customInstructions, runtime.CompactTimeout)
+	// The end runs whatever the compaction did and whatever became of ctx — a caller that hung up
+	// still leaves a claim to give back — so it is posted on a context the caller cannot cancel.
+	ended := CompactEnded{Claim: token, Generation: run.generation, Compacted: err == nil}
+	endErr := m.Handle(context.WithoutCancel(ctx), ended)
+	if endErr == nil {
+		// compactEnded ran: the claim is back and the task it owes has gone again, so what this
+		// answers is the compaction itself.
+		return err
+	}
+	// The end gave the claim back to nothing, whichever end it was, so what the caller is told
+	// is what became of the claim; what Oh My Pi made of the compaction itself goes to the log
+	// (api's reasonBound).
+	if err != nil {
+		m.log.Warn("supervise: the compaction whose claim the end did not give back was itself refused or unanswered",
+			"generation", run.generation, "error", err)
+	}
+	if errors.Is(endErr, ErrCompactSuspended) {
+		// The end ran and a suspension held over the claim took it: the claim is suspended, or
+		// working for a turn whose end suspends it, and nothing was sent (compactEnded).
+		return ErrCompactSuspended
+	}
+	if errors.Is(endErr, ErrCompactProcessGone) {
+		// The machine answered, under its lock, that the compaction is no longer the claim's own
+		// (ownsCompaction): compactEnded did not run and sent nothing.
+		return ErrCompactProcessGone
+	}
+	return fmt.Errorf("%w: %w", ErrCompactNotEnded, endErr)
+}
+
+// compaction is the compaction in flight, and false when none is.
+func (m *Machine) compaction() (compacting, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.compacting == nil {
+		return compacting{}, false
+	}
+	return *m.compacting, true
+}
+
+// ownsCompaction is whether the compaction taken at generation is still the claim's own, which
+// is the one thing the end of a compaction turns on and the only place it can be read: the
+// machine's lock is what makes the two facts one answer, and Machine.Compact holds no lock
+// while Oh My Pi writes the summary. It is asked where the end is fenced (Machine.fence), so
+// every caller of it reads the claim as the end will find it.
+//
+// A compaction is the claim's own when the claim still records one, since a process let go and
+// a process found gone each drop it (letGo, compactionLostProcess), and when it is the one this
+// end names, since launchNow's bump leaves an earlier generation's behind.
+//
+// A process still running that a parked launch is to replace is no such loss: the compaction
+// ran over a live session, so the claim records it to the end, that end gives the claim back
+// (compactEnded), and the task it owes waits for the launch's turn where every send of such a
+// claim waits (sendPending's launchWaits).
+func (m *Machine) ownsCompaction(generation uint64) bool {
+	return m.compacting != nil && m.compacting.generation == generation
+}
+
+// compactionLostProcess drops the compaction in flight, where one is, because the process it
+// runs over is gone: its end then finds no compaction recorded, gives the claim back nothing
+// and sends nothing (ownsCompaction, ErrCompactProcessGone). It is called once, where the
+// runtime's verdict that the process is gone is read (judge), so it covers both judgements that
+// verdict splits into — a death and a displacement (died, displaced) — and neither of the two
+// that replace a process still running (repoint, refreshPlugin), whose compaction keeps the
+// session it is compacting. A death the machine acts on at once drops the compaction with the
+// process anyway (letGo); this is the drop a death whose relaunch the pacing parks needs, since
+// the park writes nothing of the claim at all (reserveWake).
+//
+// The compaction is dropped rather than marked as having lost its process, so nothing of it is
+// left for the rest of the daemon to read: a claim the park leaves working over the dead process
+// would otherwise report itself being compacted until the wake's turn, and a second compaction
+// asked for in that window would be refused as one already running, after Machine.Compact had
+// already answered the first caller that its compaction was over (api's refuseState).
+//
+// What the drop gives up is the compaction's one reader that is not its end: a late agent_end
+// from the dead connection is no longer recorded on the compaction (turnStartedWhileBusy,
+// turnEnded) but read as the end of the claim's own turn, which writes the turn's end line and
+// idles the claim. Nothing is sent on it, since every send of a claim whose launch waits its
+// turn waits with it (sendPending's launchWaits), and the wake's turn relaunches an idle claim
+// exactly as it relaunches a working one.
+func (m *Machine) compactionLostProcess() {
+	m.compacting = nil
+}
+
+// compactStart takes the claim for a compaction: it is working until the compaction ends
+// (compactEnded), and that is the whole of how the rest of the daemon knows not to disturb it.
+// Working is the state every one of those readers already asks about — sendPending hands a claim
+// that is not ready or idle nothing, so the ladder's re-send and any newer task wait;
+// askForUpdate sends the task the claim holds rather than its own question; the idle rule holds
+// the pod (workflow's idleStateReleasable); a fresh session is refused in a turn (api's
+// freshSession); and this row is an ignore in working, so a second compaction is refused — and
+// the claim is in no turn, so nothing is lost by saying the agent is busy in the one word the
+// daemon already has for it.
+//
+// It is written, because the idle rule and the daemon's sweeps read the claim from the store
+// rather than from the machine. A claim left working by a daemon that stopped mid-compaction is
+// the shape a restart already knows: it asks the agent whether the turn is still running and
+// ends it when the agent says it is not (askTurnOver), and the owed task goes on that end.
+//
+// A prompt the agent has not answered yet is taken back before anything is asked. Oh My Pi runs
+// one thing at a time, so the compaction aborts the turn that prompt started, and the result of
+// an aborted turn carries no error of its own (shimwire.PromptResult): left as it was, the task
+// would be confirmed by that result and retired as worked at the end of the compaction, unsent
+// (promptResulted, settle). Taken back it is unconfirmed under a new id, which the result of
+// the aborted prompt no longer names (Machine.fence), and the end of the compaction sends it.
+// A task re-sent after work that may have run is this operation's lesser fault, as it is at
+// every other send that may repeat one (sendPending).
+//
+// A claim whose launch waits its turn in the wake pacing is taken for nothing either
+// (launchWaits). What becomes of the process its session runs on is already decided — the turn
+// lets it go and starts the next (wakeNow, launchNow) — and such a process is asked nothing
+// anywhere else: no task is handed to it (sendPending), no observation of it is judged and no
+// probe is made of it (judge, probe). A compaction is the longest ask of them all, up to ten
+// minutes of a model reading the transcript, over a connection that turn is about to close. It
+// is answered as the shim that is not connected above is, a take that did not happen
+// (ErrCompactNotTaken): the claim is left exactly where the request found it, nothing is asked
+// and nothing is sent, and its caller answers 409 COMPACTION_FAILED carrying the sentence this
+// returns (api's compact).
+//
+// A claim a suspension is held over is taken for nothing either, whatever state the hold found
+// it in. The take reaches a ready or idle claim, and either can carry a hold: a stop the
+// runtime refused at the agent's ready leaves the claim ready with the hold intact, and one it
+// refused at a turn's end leaves it idle with the hold intact, each retried at the probe
+// interval (ready, turnEnded, suspendHeld). What such a claim waits for is the hold's end, and
+// that end stops its process more often than not: the compaction would spend ten minutes of a
+// model on a session the hold is about to take, and its own end would hand the claim to that
+// hold rather than back to its agent (ErrCompactSuspended). Unlike the two above, this is a
+// refusal of the claim in the state the hold found it, as every other action refuses a held
+// claim (RefusedError, holdSuspension, stop): the one door that answers a hold then answers
+// both recoveries, in one sentence, rather than this guard writing a second copy of it
+// (api's refuseState, refuseHeldSuspension).
+func compactStart(m *Machine, ctx context.Context, _ Event) error {
+	conn, ok := m.deps.Conns.Conn(m.claim.Token)
+	if !ok {
+		// No refusal of the claim's state: the state takes a compaction, and what is missing is
+		// the connection to ask through. Machine.Compact answers it as a take that did not
+		// happen, so its caller reports the one failure it is rather than reading the claim's
+		// state for a cause that state does not hold (api's compact).
+		return errors.New("the claim's shim is not connected, so nothing can be asked of its session")
+	}
+	if m.launchWaits() {
+		// No refusal of the claim's state either: a launch the pacing holds is about to let this
+		// process go, so there is nothing of its session worth asking.
+		return errors.New("a launch waits its turn to replace the claim's process, so nothing is asked of its session")
+	}
+	if m.held != nil {
+		// The state takes a compaction, and what stops this one is the suspension waiting over
+		// the claim, so the refusal carries that state for the door to answer the hold from.
+		return &RefusedError{State: m.claim.State, Request: "compact",
+			Reason: "a suspension is held over the claim, so nothing is asked of a session that hold may stop"}
+	}
+	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
+		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",
+			"delivery", m.claim.Pending.ID)
+		if err := m.takeBackPending(ctx, taskRead); err != nil {
+			return err
+		}
+	}
+	was := m.claim.State
+	m.compacting = &compacting{conn: conn, generation: m.claim.Generation, back: was}
+	m.claim.State = StateWorking
+	m.log.Info("supervise: the claim's session is being compacted; it is busy until the compaction ends",
+		"generation", m.claim.Generation, "session", m.claim.Session)
+	if err := m.persist(ctx); err != nil {
+		m.compacting = nil
+		m.claim.State = was
+		return err
+	}
+	return nil
+}
+
+// compactEnded gives the claim back once Oh My Pi has answered, or once the wait for it ran out.
+// It is turnEnded's shape, for the same reason: the claim was working, nothing of it is working
+// now, and what was held for that is owed now — the suspension an operator asked for while the
+// compaction ran, the update round's ask, and the task the claim owes, which goes again whether
+// the compaction ran or was refused (dispatch://INFRA-956 R3). A claim that owes none is sent
+// nothing.
+//
+// A compaction that ran puts the claim's run of provider-error turns back to zero, so the
+// project's controller can be told a second time if the compacted session's turns go the same
+// way; without it the controller would be told once and never again until a turn ended with no
+// error at all. It is this action's own reset and this action's own write: forgetSession's reset
+// belongs to a claim that is losing its session, and a compaction keeps it. A compaction that
+// was refused or skipped resets nothing — the session is as it was, so the run of refused turns
+// it carried still stands.
+//
+// The ladder's wait goes whatever the compaction did (TimerPromptRetry), so the owed task is
+// sent from here rather than at the end of a wait that was counted against the transcript this
+// operation just shortened: the whole point of compacting a claim the provider keeps refusing
+// is to put the task in front of it again, and the next step of that ladder can be ten minutes
+// away (promptRetryDelay). What the ladder counted stays on the delivery
+// (Delivery.ProviderErrorRetries), so a turn that fails again waits the step it had reached.
+//
+// A turn Oh My Pi started under the compaction and has not ended — a follow-up an Envoy
+// delivery queued while the session was being compacted — leaves the claim working for that
+// turn, and that turn's end gives the claim back and sends the owed task (turnEnded). Idling
+// the claim here would send the owed task into a running turn and leave the daemon reading the
+// agent as free while it works.
+//
+// A suspension held over the claim is the one end that gives the claim back to nothing, and it
+// says so to whoever asked for the compaction (ErrCompactSuspended). The hold runs here, as
+// the turn's end runs it, and leaves the claim suspended with its process stopped; where a
+// turn is running it is left to that turn's end, and the claim is working for it. Neither is a
+// claim back on the task it owes, and that task is unsent either way, so an answer of nil —
+// which its caller reads as the claim back and its task gone again (Machine.Compact, api's
+// CompactResponse) — would be false of both.
+func compactEnded(m *Machine, ctx context.Context, ev Event) error {
+	ended := ev.(CompactEnded)
+	// The fence let this end through, so the claim holds the compaction it names (ownsCompaction).
+	run := *m.compacting
+	m.compacting = nil
+	m.disarm(TimerPromptRetry)
+	if ended.Compacted {
+		m.claim.ProviderErrorRun = 0
+	}
+	m.log.Info("supervise: the compaction of the claim's session is over", "compacted", ended.Compacted,
+		"providerErrorRun", m.claim.ProviderErrorRun, "inTurn", run.inTurn)
+	if run.inTurn {
+		// The claim stays working and keeps whatever is held for a turn's end, the suspension
+		// among it: this is not that end.
+		if err := m.persist(ctx); err != nil {
+			return err
+		}
+		if m.held != nil {
+			return ErrCompactSuspended
+		}
+		return nil
+	}
+	if m.held != nil {
+		// A suspension that arrived while the compaction ran was held for it, as one that
+		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
+		if err := m.suspendHeld(ctx); err != nil {
+			if m.held == nil {
+				return err
+			}
+			m.claim.State = run.back
+			return errors.Join(err, m.persist(ctx))
+		}
+		return ErrCompactSuspended
+	}
+	m.claim.State = run.back
+	if err := m.persist(ctx); err != nil {
+		return err
+	}
+	return m.afterTurn(ctx)
+}

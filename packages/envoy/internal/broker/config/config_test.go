@@ -229,8 +229,10 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 }
 
 // TestLoadRefusesDispatchVariables pins that the removed Dispatch variables fail loudly rather
-// than being silently ignored: the broker holds no Dispatch credential, so a stale deployment env
-// still setting one must refuse to start, naming the variable.
+// than being silently ignored: the broker asks and issues nothing in Dispatch, and the one
+// thing it does read there, whether an issue is open, is the judge's read under
+// BROKER_JUDGE_DISPATCH_URL, so a stale deployment env still setting one of the five must
+// refuse to start, naming the variable.
 func TestLoadRefusesDispatchVariables(t *testing.T) {
 	e := validEnv()
 	e["BROKER_DISPATCH_URL"] = "https://dispatch.internal.example"
@@ -1093,19 +1095,12 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "system:serviceaccount:x:y") {
 		t.Errorf("BROKER_SERVICE_LOGINS naming one account twice: err = %v, want a refusal naming the account", err)
 	}
-	// A namespace's default account proves nothing, as BROKER_SERVICES refuses it, and the account
-	// BROKER_SERVICES binds for a service's pods is one every such pod holds a token for, so neither
-	// logs a service in.
+	// A namespace's default account proves nothing, as BROKER_SERVICES refuses it, so it logs no
+	// service in.
 	e = withIssuer()
 	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=system:serviceaccount:legion-system:default"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SERVICE_LOGINS") || !strings.Contains(err.Error(), "default service account") {
 		t.Errorf("BROKER_SERVICE_LOGINS naming a default account: err = %v, want a refusal naming the setting and the default account", err)
-	}
-	e = withIssuer()
-	e["BROKER_SERVICES"] = "legion-daemon=system:serviceaccount:legion:legion-worker"
-	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=system:serviceaccount:legion-system:legion-daemon-a legion-daemon=system:serviceaccount:legion:legion-worker"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SERVICE_LOGINS") || !strings.Contains(err.Error(), `"legion-daemon=system:serviceaccount:legion:legion-worker"`) || !strings.Contains(err.Error(), "BROKER_SERVICES") {
-		t.Errorf("BROKER_SERVICE_LOGINS naming the pods' account: err = %v, want a refusal naming the entry and BROKER_SERVICES", err)
 	}
 	e = withIssuer()
 	e["BROKER_SERVICES"] = "legion-daemon=system:serviceaccount:legion:legion-worker"
@@ -1117,6 +1112,30 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=system:serviceaccount:legion-system:legion-daemon-a"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
 		t.Errorf("BROKER_SERVICE_LOGINS with no token issuer: err = %v, want a refusal naming BROKER_K8S_OIDC_ISSUER", err)
+	}
+}
+
+// TestLoadTakesOneAccountInBothServiceLists pins that a deployment may name one ServiceAccount in
+// BROKER_SERVICES and in BROKER_SERVICE_LOGINS, which is a pod of a bound account enrolling itself
+// (agent-secrets enroll --pod): Load fills both maps from that pair rather than refusing it. What
+// narrows such a login is enroll.Service.podUnderTokenLogin: it gives the login the one pod whose
+// token made it and answers ErrPodSelfEnrollOnly for every other pod of the account
+// (internal/broker/enroll/pod_self_enroll_test.go).
+func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
+	const account = "system:serviceaccount:legion:agent-session"
+	e := withK8sIssuer()
+	e["BROKER_SERVICES"] = "legion-daemon=" + account
+	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + account
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load(one account in both service lists) = %v, want no refusal", err)
+	}
+	want := map[string]string{account: "legion-daemon"}
+	if !maps.Equal(cfg.ServicesByAccount, want) {
+		t.Errorf("ServicesByAccount = %v, want %v", cfg.ServicesByAccount, want)
+	}
+	if !maps.Equal(cfg.ServiceLogins, want) {
+		t.Errorf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
 	}
 }
 
@@ -1832,10 +1851,11 @@ func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlocksTestOnlySettings pins each of the seven settings the broker's local
-// stack configures the airlock with: the two minter bases, the addresses the proxy may dial
-// although they are loopback, the extra upstream roots, where a name resolves to, and the two
-// negative-control switches. Each is read as it is given and is empty or off when unset. The
+// TestLoadReadsTheAirlocksTestOnlySettings pins each of the eight settings the broker's local
+// stack configures with: the airlock's seven — the two minter bases, the addresses the proxy
+// may dial although they are loopback, the extra upstream roots, where a name resolves to, and
+// its two negative-control switches — and the judge's one, the switch that turns its checks
+// before the model off. Each is read as it is given and is empty or off when unset. The
 // refusal of each on a production start is cmd/broker's, which has its own rows.
 func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
@@ -1843,8 +1863,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.AirlockTestGitHubAPIBase != "" || cfg.AirlockTestGoogleTokenURL != "" || cfg.AirlockTestUpstreamCAFile != "" ||
-		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind {
-		t.Fatalf("with none of them set the airlock's test settings read %+v; want every one empty or off", cfg)
+		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind ||
+		cfg.JudgeTestSkipChecks {
+		t.Fatalf("with none of them set the local stack's test settings read %+v; want every one empty or off", cfg)
 	}
 
 	e := validEnv()
@@ -1855,6 +1876,7 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.1 login.microsoftonline.com=127.0.0.2"
 	e["BROKER_AIRLOCK_TEST_KEEP_VALUES"] = "true"
 	e["BROKER_AIRLOCK_TEST_NO_KIND"] = "1"
+	e["BROKER_JUDGE_TEST_SKIP_CHECKS"] = "true"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -1875,15 +1897,15 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	if !maps.Equal(cfg.AirlockTestResolve, want) {
 		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, want)
 	}
-	if !cfg.AirlockTestKeepValues || !cfg.AirlockTestNoKind {
-		t.Errorf("the two switches read %v and %v; want both on", cfg.AirlockTestKeepValues, cfg.AirlockTestNoKind)
+	if !cfg.AirlockTestKeepValues || !cfg.AirlockTestNoKind || !cfg.JudgeTestSkipChecks {
+		t.Errorf("the three switches read %v, %v and %v; want all three on", cfg.AirlockTestKeepValues, cfg.AirlockTestNoKind, cfg.JudgeTestSkipChecks)
 	}
 }
 
-// TestLoadRefusesAnAirlockTestSettingItCannotActOn pins that a value the proxy could not act
-// on refuses the start naming the setting, rather than being read as none: an address with no
-// port, an entry that is no IP address, a host resolved twice, and a switch that is neither
-// true nor false.
+// TestLoadRefusesAnAirlockTestSettingItCannotActOn pins that a value the proxy or the judge
+// could not act on refuses the start naming the setting, rather than being read as none: an
+// address with no port, an entry that is no IP address, a host resolved twice, and a switch
+// that is neither true nor false.
 func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 	for _, c := range []struct{ setting, value, want string }{
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", "s.airlock.test", "must be <host>:<port>"},
@@ -1893,12 +1915,153 @@ func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 		{"BROKER_AIRLOCK_TEST_RESOLVE", "s.airlock.test=127.0.0.1 s.airlock.test=127.0.0.2", "twice"},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", "yes please", "must be true or false"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", "off-ish", "must be true or false"},
+		{"BROKER_JUDGE_TEST_SKIP_CHECKS", "skip", "must be true or false"},
 	} {
 		e := validEnv()
 		e[c.setting] = c.value
 		_, err := Load(env(e))
 		if err == nil || !strings.Contains(err.Error(), c.setting) || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s = %q: err = %v; want a refusal naming it and %q", c.setting, c.value, err, c.want)
+		}
+	}
+}
+
+// judgeSettings are the five settings the model judge needs, in the one order every message
+// naming them uses. They are spelled out here rather than read from JudgeSettings, so a
+// reordering of that list shows up as a failing test and not as a quietly renumbered refusal.
+var judgeSettings = []string{
+	"BROKER_JUDGE_MODEL_URL", "BROKER_JUDGE_MODEL", "BROKER_JUDGE_MODEL_AUDIENCE",
+	"BROKER_JUDGE_DISPATCH_URL", "BROKER_JUDGE_DISPATCH_TOKEN_FILE",
+}
+
+// judgeEnv is validEnv with the judge configured: the endpoint it calls its model at, the
+// model, the audience of the identity token it presents there, and the Dispatch it reads an
+// issue from with its own projected token. It names no protocol, so a judge loaded from it
+// takes the default.
+func judgeEnv() map[string]string {
+	e := validEnv()
+	e["BROKER_JUDGE_MODEL_URL"] = "https://model.internal.example/v1"
+	e["BROKER_JUDGE_MODEL"] = "claude-opus-4-5"
+	e["BROKER_JUDGE_MODEL_AUDIENCE"] = "https://model.internal.example"
+	e["BROKER_JUDGE_DISPATCH_URL"] = "https://dispatch.internal.example"
+	e["BROKER_JUDGE_DISPATCH_TOKEN_FILE"] = "/var/run/secrets/dispatch/token"
+	return e
+}
+
+// TestLoadReadsTheJudgeSettings pins the judge's six: with none of the five set there is no
+// judge and every one of its fields is empty, and with all five set each is read as it was
+// given. The protocol is the one with a default, anthropic-messages, and each of the four it
+// takes is read as it was given.
+func TestLoadReadsTheJudgeSettings(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.JudgeModelURL != "" || cfg.JudgeModel != "" || cfg.JudgeModelAudience != "" ||
+		cfg.JudgeDispatchURL != "" || cfg.JudgeDispatchTokenFile != "" {
+		t.Fatalf("with none of them set the judge reads %+v; want every field empty", cfg)
+	}
+
+	e := judgeEnv()
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ setting, got string }{
+		{"BROKER_JUDGE_MODEL_URL", cfg.JudgeModelURL},
+		{"BROKER_JUDGE_MODEL", cfg.JudgeModel},
+		{"BROKER_JUDGE_MODEL_AUDIENCE", cfg.JudgeModelAudience},
+		{"BROKER_JUDGE_DISPATCH_URL", cfg.JudgeDispatchURL},
+		{"BROKER_JUDGE_DISPATCH_TOKEN_FILE", cfg.JudgeDispatchTokenFile},
+	} {
+		if row.got != e[row.setting] {
+			t.Errorf("%s reads %q; want %q", row.setting, row.got, e[row.setting])
+		}
+	}
+	if cfg.JudgeModelProtocol != "anthropic-messages" {
+		t.Errorf("the protocol with none named reads %q; want anthropic-messages", cfg.JudgeModelProtocol)
+	}
+	for _, protocol := range []string{"anthropic-messages", "openai-responses", "openai-chat", "azure-anthropic"} {
+		e := judgeEnv()
+		e["BROKER_JUDGE_MODEL_PROTOCOL"] = protocol
+		cfg, err := Load(env(e))
+		if err != nil || cfg.JudgeModelProtocol != protocol {
+			t.Errorf("Load(BROKER_JUDGE_MODEL_PROTOCOL=%q) = (%q, %v); want it taken as it is", protocol, cfg.JudgeModelProtocol, err)
+		}
+	}
+}
+
+// TestLoadRefusesAHalfConfiguredJudge pins that the five are all-or-none: every set short of
+// all five and short of none refuses, naming the ones it lacks in the order JudgeSettings
+// fixes, so a deployment that forgot one is told which rather than running a judge that
+// decides nothing.
+func TestLoadRefusesAHalfConfiguredJudge(t *testing.T) {
+	for mask := 1; mask < 1<<len(judgeSettings)-1; mask++ {
+		e := judgeEnv()
+		var missing []string
+		for i, name := range judgeSettings {
+			if mask&(1<<i) == 0 {
+				delete(e, name)
+				missing = append(missing, name)
+			}
+		}
+		_, err := Load(env(e))
+		if err == nil {
+			t.Errorf("Load without %v = nil error, want a refusal naming them", missing)
+			continue
+		}
+		if !strings.Contains(err.Error(), strings.Join(judgeSettings, ", ")) {
+			t.Errorf("Load without %v = %v, want a refusal naming all five in order", missing, err)
+		}
+		_, named, _ := strings.Cut(err.Error(), "missing ")
+		if named != strings.Join(missing, ", ") {
+			t.Errorf("Load without %v = %v, want a refusal naming exactly those as missing", missing, err)
+		}
+	}
+}
+
+// TestTheJudgeProtocolAloneIsRefused pins the one setting that has a default and so is never
+// missing: a deployment that names the protocol and none of the five has written down the
+// shape of an endpoint it never named, which is the same mistake as four of the five, so it is
+// refused naming the five a judge needs rather than read as a deployment that meant no judge.
+func TestTheJudgeProtocolAloneIsRefused(t *testing.T) {
+	for _, protocol := range []string{"anthropic-messages", "openai-chat"} {
+		e := validEnv()
+		e["BROKER_JUDGE_MODEL_PROTOCOL"] = protocol
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), strings.Join(judgeSettings, ", ")) {
+			t.Errorf("Load(BROKER_JUDGE_MODEL_PROTOCOL=%q alone) = %v; want a refusal naming the five a judge needs", protocol, err)
+		}
+	}
+}
+
+// TestTheJudgeProtocolIsHeldToTheFour pins that only agentloop's four Run kinds are taken, and
+// that the refusal names the setting, the value and all four: a protocol the judge's client
+// cannot speak would boot and then fail every call, deciding nothing while looking configured.
+// systemone is agentloop's fifth kind, which Decide takes and no Run does.
+func TestTheJudgeProtocolIsHeldToTheFour(t *testing.T) {
+	for _, bad := range []string{"systemone", "Anthropic-Messages", "anthropic", " anthropic-messages", "openai"} {
+		e := judgeEnv()
+		e["BROKER_JUDGE_MODEL_PROTOCOL"] = bad
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_JUDGE_MODEL_PROTOCOL") || !strings.Contains(err.Error(), strconv.Quote(bad)) ||
+			!strings.Contains(err.Error(), "anthropic-messages, openai-responses, openai-chat, azure-anthropic") {
+			t.Errorf("Load(BROKER_JUDGE_MODEL_PROTOCOL=%q) = %v; want a refusal naming the setting, the value and the four it takes", bad, err)
+		}
+	}
+}
+
+// TestTheJudgesURLsAreHeldToTheirForm: the judge calls one endpoint and reads one Dispatch, so
+// a value that is no absolute http(s) URL must refuse the boot rather than fail every call
+// after it, as BROKER_MACHINE_LOGIN_URL and the airlock's proxy URL do.
+func TestTheJudgesURLsAreHeldToTheirForm(t *testing.T) {
+	for _, setting := range []string{"BROKER_JUDGE_MODEL_URL", "BROKER_JUDGE_DISPATCH_URL"} {
+		for _, bad := range []string{"model.internal.example", "//model.internal.example", "ftp://model.internal.example", "http://", "/v1/messages", "http://%zz"} {
+			e := judgeEnv()
+			e[setting] = bad
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "absolute http(s) URL") {
+				t.Errorf("Load(%s=%q) = %v; want a refusal naming the variable", setting, bad, err)
+			}
 		}
 	}
 }
