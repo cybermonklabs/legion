@@ -55,6 +55,24 @@
 # That is what those rows pin, and the check runs on the primary path too: an install that got its
 # bytes from the third party verifies the same digest as one that got them from the second source.
 
+# WHY A DECLINE IS AN ENTRY UNDER `no_second_source:` AND NOT A ROW.
+# Some bytes CI installs are published in one place and nowhere else, and the manifest must be
+# able to state that rather than force a fiction (dispatch://INFRA-1974).
+# A `tools:` row cannot carry it: ci.yaml's `tool-fallback` job fails for a row no install reads,
+# .github/scripts/check-ci-tools.sh refuses a `second_source` that is neither ghcr-mirror nor npm
+# before the row is read at all, and a row's `primary` must hold the row's `version`, which no URL
+# a job builds from an ARG or a Go constant can.
+# So a decline is an entry of its own key, invisible to .github/scripts/ci-tools.sh,
+# .github/scripts/mirror-ci-tools.sh, .github/scripts/ci-tools-proof.sh and `tool-fallback`, and
+# read by the gate alone.
+# The gate holds an entry to four rules: its `url` is written by some file under .github/, its
+# `digest` occurs in the file its `pinned_in` names, no row already covers its repository, and
+# its `why` is a sentence.
+# WHETHER THAT REASON IS TRUE IS THE REVIEWER'S JUDGEMENT, not the gate's; the three rules before
+# it are the whole of what a program can check.
+# Each of these is the honest present state and not a permanent exemption: dispatch://INFRA-1986
+# gives all three a second source and deletes the entry as each row lands.
+
 # The package every ghcr-mirror copy lives in: the one .github/ci-images.yaml publishes, which is
 # public and which a job pulls with no login (sjawhar/legion#2512).
 registry: ghcr.io/cybermonklabs/legion/ci
@@ -174,3 +192,45 @@ tools:
     max_time: 60
     npm_package: "@oven/bun-linux-aarch64"
     npm_member: package/bin/bun
+
+# The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
+# allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.
+no_second_source:
+  # elan, the Lean toolchain installer .github/actions/install-elan installs.
+  - # The URL exactly as the file that fetches it writes it.
+    url: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+    # The 64-hex sha256 that file checks the bytes against, written bare.
+    digest: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+    # The file that pins them. The gate refuses an entry whose digest that file does not hold.
+    pinned_in: .github/actions/install-elan/action.yml
+    # Which second source was looked for, why there is none today, and what building one takes.
+    why: >-
+      elan publishes its release assets on GitHub and nowhere else: it has no npm package, no
+      Debian or Homebrew package carrying these bytes, and no other registry serving them.
+      A second source means copying this archive into ghcr.io/cybermonklabs/legion/ci as the
+      ghcr-mirror rows are copied, which is a mirror row, a filler entry and a call site that
+      reads the helper. dispatch://INFRA-1986 owns that work.
+
+  # uv, which .github/actions/install-uv installs at the version the worker image pins. The URL
+  # is built from `ARG UV_VERSION`, so it is declared here as the action writes it.
+  - url: https://github.com/astral-sh/uv/releases/download/${version}/uv-x86_64-unknown-linux-gnu.tar.gz
+    digest: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
+    pinned_in: packages/daemon/docker/worker.Dockerfile
+    why: >-
+      uv's x86_64-unknown-linux-gnu tarball is published on GitHub releases alone; the PyPI
+      `uv` package ships a different archive, so its bytes cannot be held to this digest, and
+      astral-sh runs no second registry for it. A second source means copying this archive into
+      ghcr.io/cybermonklabs/legion/ci and giving the action a row to read, which also means
+      moving the version pin out of `ARG UV_VERSION`. dispatch://INFRA-1986 owns that work.
+
+  # The Pulumi docker provider plugin ci.yaml's envoy-infra live tests install. The URL is built
+  # from `const DockerPluginVersion`, so it is declared here as the workflow writes it.
+  - url: https://github.com/pulumi/pulumi-docker/releases/download/v$version/pulumi-resource-docker-v$version-linux-amd64.tar.gz
+    digest: 4dbcd9defa0fb03999cdfeab50bd461451b7c65e8566927994f63ee956055ffe
+    pinned_in: .github/workflows/ci.yaml
+    why: >-
+      Pulumi publishes its provider plugins as GitHub release assets and serves them to the CLI
+      from that same release; its registry publishes the SDK packages and not this binary
+      tarball, so there is no second address for these bytes. A second source means copying the
+      tarball into ghcr.io/cybermonklabs/legion/ci and reading it through the helper, with the
+      version still read from `const DockerPluginVersion`. dispatch://INFRA-1986 owns that work.

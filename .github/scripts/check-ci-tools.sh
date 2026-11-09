@@ -37,20 +37,48 @@
 #      The `jj` row's `version` is the part of that file's `ARG JJ_TOOL` after the `@`.
 #      Each refusal names both values and both files.
 #
-#   3. No file under .github/actions/ or .github/workflows/ fetches a tool asset no row names.
-#      Every *.yml and *.yaml under those two directories is read as text, and a
-#      https://github.com/<owner>/<repo>/releases/download/ URL whose <owner>/<repo> this
-#      manifest covers is refused unless the whole URL is exactly a row's `primary`, a row's
-#      `mirror_from`, or the npm tarball URL a row derives.
+#   3. No file under .github/ fetches a tool asset no row of this manifest names and no
+#      no_second_source entry of it declines.
+#      Every file under .github/ but this manifest — which declares addresses and fetches
+#      nothing — is read as text, and a GitHub release-asset URL — one of the shape
+#      `https://github.com/` <owner>/<repo> `/releases/download/` … — is refused whatever
+#      repository it names, unless one of these holds, tested in this order:
+#        a. its <owner>/<repo> is this repository's own, which .github/scripts/repo-paths.sh
+#           derives. This repository publishes those bytes and installs none of them.
+#        b. the file's own name holds `.test.`: its URLs are fixtures a test feeds to a gate,
+#           and the gate that reads them is the code under test. A real install could hide
+#           there, and the alternative is the hand-kept exemption list this rule exists to
+#           remove.
+#        c. the URL text is exactly a row's `primary`, a row's `mirror_from`, or the npm tarball
+#           URL a row derives.
+#        d. the URL text is exactly the `url` of a `no_second_source` entry.
+#      A URL none of those allows and whose text holds a `$` is refused as a built address
+#      rather than as an unnamed one: a row's URL is the one place a tool asset's address is
+#      written, and an address a job assembles cannot be compared with a row. It is tested after
+#      a to d, so an entry may decline a URL a job builds by writing that URL's text verbatim.
 #      A registry.npmjs.org URL under a scope a row's `npm_package` names is refused the same
-#      way.
-#      The covered repositories are the rows' own `primary` and `mirror_from` URLs, plus
-#      oven-sh/bun, whose rows carry no primary at all because oven-sh/setup-bun fetches that
-#      asset and this repository names it nowhere.
-#      A URL holding a `${` is refused too, naming it: a row's URL is the one place a tool
-#      asset's address is written, and a built one cannot be compared with a row.
-#      Out of scope and never refused: every other repository, install-uv, install-elan,
-#      install-pulumi, install-omp, install-claude-code and ci.yaml's pulumi-docker fetch.
+#      way, but in a reach of its own, which this rule claims and no more: every *.yml and
+#      *.yaml under .github/actions/ and .github/workflows/, AND NOTHING ELSE — no file under
+#      .github/scripts/, no file of any other suffix, and not this manifest. So an npm fetch
+#      written in a shell script under .github/scripts/ is invisible to this gate.
+#      The narrower reach is deliberate: the class this rule closes is GitHub release assets,
+#      and this repository writes the npm registry's address outside those two directories for
+#      reasons that fetch nothing (.github/scripts/check-bun-version.sh:137 lists
+#      `registry.npmjs.org/@oven/bun` as a string to detect).
+#
+#      A `no_second_source` entry records a URL that has no second source anywhere, and allows
+#      that one URL. It carries `url`, `digest`, `pinned_in` and `why`, and the gate holds it to
+#      four rules, each refused in its own words:
+#        * its `url` occurs verbatim in some file under .github/ that this rule reads, the
+#          manifest itself not counted, so an entry whose install was deleted is refused and the
+#          list prunes itself;
+#        * its `digest` is 64 lower-case bare hex and occurs in the file `pinned_in` names, so
+#          one source never means no checksum;
+#        * no row's `primary` or `mirror_from` already covers its repository, so a decline never
+#          bypasses a tool that has a second source;
+#        * `why` is a sentence rather than a placeholder.
+#      Whether that reason is TRUE is the reviewer's judgement and no gate's: the three rules
+#      above are the whole of what a program can check here.
 #
 #   4. No short reference to a tool blob.
 #      A `<the manifest's registry>@sha256:<d>` under .github/ whose <d> is a row's digest is
@@ -62,7 +90,7 @@
 #      https://ghcr.io/v2/…/blobs/sha256:… URL .github/scripts/ci-tools.sh builds, and this rule
 #      keeps it so.
 #      The sweep reads every file under .github/ and skips .github/ci-images.yaml, whose own rows
-#      are images and not tools.
+#      are images and not tools. It is the same pass rule 3 makes.
 #
 # Run from anywhere: .github/scripts/check-ci-tools.sh
 # CI runs it in ci.yaml's lint job, beside the tree mode of .github/scripts/check-ci-images.sh.
@@ -72,7 +100,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 python3 <<'PY'
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -117,8 +147,11 @@ CI_IMAGES = Path(".github/ci-images.yaml")
 BUN_PIN = Path(".bun-version")
 WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 GITHUB = Path(".github")
-REACH_DIRECTORIES = (Path(".github/actions"), Path(".github/workflows"))
+# Rule 3's npm half reads these two directories; its release-asset half reads every file under
+# .github/, and so does rule 4.
+NPM_DIRECTORIES = (Path(".github/actions"), Path(".github/workflows"))
 HELPER = ".github/scripts/ci-tools.sh"
+REPO_PATHS = Path(".github/scripts/repo-paths.sh")
 
 # Every row carries these, and each kind of second source carries its own two more.
 COMMON_FIELDS = ("name", "version", "digest", "digest_of", "primary", "second_source", "max_time")
@@ -136,10 +169,15 @@ DIGEST = re.compile(r"[0-9a-f]{64}")
 # in the tree with the URL a job reads when no seam is set.
 NPM_BASE = "https://registry.npmjs.org"
 
-# oven-sh/setup-bun fetches Bun's own release asset, so no bun row carries a primary and no URL
-# of this repository names that repository. It is covered all the same: a workflow that reached
-# for the asset itself would name a Bun no row pins.
-BUN_UPSTREAM = "oven-sh/bun"
+# A `no_second_source` entry: the one way a URL with no second source anywhere is allowed.
+NO_SECOND_SOURCE = "no_second_source"
+ENTRY_FIELDS = ("url", "digest", "pinned_in", "why")
+# A reason that is one of these, or shorter than this, says nothing a reader could act on. The
+# bound is stated in the refusal, so the writer is told what the gate wants rather than guessing.
+REASON_PLACEHOLDERS = {"todo", "tbd", "n/a", "na", "none", "-", "--", "unknown", "?", "fixme"}
+REASON_MINIMUM = 40
+# A file whose name holds this feeds URLs to a gate as fixtures; rule 3 reads none of them.
+TEST_FILE = ".test."
 
 ARG_MISE_VERSION = re.compile(r"^ARG\s+MISE_VERSION=(\S+)\s*$")
 ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
@@ -214,6 +252,56 @@ registry = registry.strip()
 rows = document.get("tools")
 if not isinstance(rows, list) or not rows:
     fatal(f"{CI_TOOLS}:{key_line(document, 'tools')}: tools is empty, so nothing is checked")
+
+# ------------------------------------------------- the declines, read for their shape alone
+# An entry's four rules need the rows' repositories and the text of every file rule 3 reads, so
+# they are applied in rule 3's own section below. Shape is read here, because an entry the gate
+# cannot read at all allows nothing and is refused once rather than four times.
+declines: list[Mapping] = []
+entries = document.get(NO_SECOND_SOURCE)
+if entries is None:
+    entries = []
+if not isinstance(entries, list):
+    fatal(
+        f"{CI_TOOLS}:{key_line(document, NO_SECOND_SOURCE)}: {NO_SECOND_SOURCE} is not a list of "
+        f"entries, each carrying {', '.join(ENTRY_FIELDS)}"
+    )
+declared_urls: dict[str, int] = {}
+for entry in entries:
+    line = line_of(entry) or key_line(document, NO_SECOND_SOURCE)
+    if not isinstance(entry, dict):
+        problems.append(
+            f"{CI_TOOLS}:{line}: this {NO_SECOND_SOURCE} entry is not a mapping of "
+            f"{', '.join(ENTRY_FIELDS)}"
+        )
+        continue
+    missing = [field for field in ENTRY_FIELDS if not str(entry.get(field) or "").strip()]
+    if missing:
+        problems.append(
+            f"{CI_TOOLS}:{line}: this {NO_SECOND_SOURCE} entry carries no "
+            f"{', '.join(missing)}, and an entry carries {', '.join(ENTRY_FIELDS)}: the URL it "
+            f"declines, the digest its bytes are pinned at, the file that pins them, and why "
+            f"there is no second source."
+        )
+        continue
+    url = str(entry["url"]).strip()
+    if not ASSET_URL.fullmatch(url):
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'url')}: this {NO_SECOND_SOURCE} entry's url is "
+            f"{one_line(url)}, which is not a GitHub release-asset address. An entry declines "
+            f"one such URL, written exactly as the file that fetches it writes it."
+        )
+        continue
+    earlier = declared_urls.get(url)
+    if earlier is not None:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'url')}: this URL is also declined by the "
+            f"{NO_SECOND_SOURCE} entry on line {earlier}, and two entries for one URL carry two "
+            f"reasons a reader must choose between. Keep one."
+        )
+        continue
+    declared_urls[url] = key_line(entry, "url")
+    declines.append(entry)
 
 # ---------------------------------------------------------------- rule 1: shape
 readable: list[Mapping] = []  # the rows the rules below can read
@@ -377,9 +465,39 @@ for row in readable:
             )
 
 # ---------------------------------------------------------------- rule 3: the addresses
-# The repositories this manifest covers, read off the rows' own URLs, and the one address of
-# each row a file of CI's reach may name.
-covered_repositories = {BUN_UPSTREAM}
+# This repository's own release assets are bytes it publishes and installs nowhere, and
+# .github/scripts/repo-paths.sh is the one place its own addresses are derived. GITHUB_REPOSITORY
+# is taken out of that call's environment on purpose: this gate reads the tree alone, so the name
+# it compares against is the one the tree carries (repo-paths.sh's own default), not the one the
+# runner was handed. A fork's run carries its own GITHUB_REPOSITORY, and reading it here would
+# turn ci.yaml's deliberately pinned cybermonklabs/legion URL into a refusal on every fork.
+environment = {key: value for key, value in os.environ.items() if key != "GITHUB_REPOSITORY"}
+try:
+    own_url = subprocess.run(
+        ["bash", str(REPO_PATHS), "plugin_download_url"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=environment,
+    ).stdout.strip()
+except (OSError, subprocess.CalledProcessError) as error:
+    fatal(
+        f"{REPO_PATHS} did not answer plugin_download_url ({one_line(error)}), and this gate "
+        f"allows a release-asset URL of this repository's own by reading that answer. Without "
+        f"it every rule below would judge this repository's own published address as a fetch."
+    )
+own_match = ASSET_URL.match(own_url)
+if not own_match:
+    fatal(
+        f"{REPO_PATHS} answered plugin_download_url with {one_line(own_url)}, which is not a "
+        f"GitHub release-asset address, so this gate cannot read this repository's own name out "
+        f"of it."
+    )
+OWN_REPOSITORY = f"{own_match.group('owner')}/{own_match.group('repo')}"
+
+# The one address of each row a file under .github/ may name, the repositories the rows cover,
+# and the npm scopes they cover.
+row_repositories: dict[str, str] = {}
 covered_scopes: set[str] = set()
 allowed: dict[str, str] = {}
 for row in readable:
@@ -392,7 +510,9 @@ for row in readable:
         allowed[url] = f"the {name} row's {field}"
         match = ASSET_URL.match(url)
         if match:
-            covered_repositories.add(f"{match.group('owner')}/{match.group('repo')}")
+            row_repositories.setdefault(
+                f"{match.group('owner')}/{match.group('repo')}", f"the {name} row's {field}"
+            )
     package = str(row.get("npm_package") or "").strip()
     if package:
         scope = package.partition("/")[0]
@@ -402,82 +522,176 @@ for row in readable:
         # is the URL .github/scripts/ci-tools.sh builds for this row.
         derived = f"{NPM_BASE}/{package}/-/{package.rpartition('/')[2]}-{version}.tgz"
         allowed[derived] = f"the {name} row's npm tarball"
+for entry in declines:
+    allowed[str(entry["url"]).strip()] = (
+        f"the {NO_SECOND_SOURCE} entry on line {line_of(entry)}"
+    )
 
-reach: list[Path] = []
-for directory in REACH_DIRECTORIES:
+npm_reach: set[Path] = set()
+for directory in NPM_DIRECTORIES:
     for suffix in ("*.yml", "*.yaml"):
-        reach.extend(directory.rglob(suffix))
-reach = sorted(set(reach))
+        npm_reach.update(directory.rglob(suffix))
 
-named_rows = 0
-for file in reach:
+# ------------------------------------------------- one pass: rule 3 and rule 4 over .github/
+# Rule 4: a tool blob is read at the full https://<base>/v2/<path>/blobs/sha256:<digest> URL the
+# helper builds. Written as a registry reference instead, its digest would meet rule 6 of
+# check-ci-images.sh, which refuses a digest no row of .github/ci-images.yaml holds.
+short_references = {f"{registry}@sha256:{str(row['digest']).strip()}": str(row["name"]).strip()
+                    for row in readable}
+# Rule 4's sweep already reads every file under .github/, so rule 3 rides it rather than opening
+# the tree twice. `writers` is what an entry's first rule is decided on: the text of every file
+# rule 3 reads, the manifest left out, since an entry naming only itself names no install.
+writers: dict[Path, str] = {}
+named = 0
+read_files = 0
+swept = 0
+for file in sorted(GITHUB.rglob("*")):
+    if not file.is_file():
+        continue
     text = read_text(file)
     if text is None:
         continue
-    found: list[tuple[int, str, str]] = []  # offset, the URL, what it names
+
+    if file != CI_IMAGES:
+        swept += 1
+        for reference, name in short_references.items():
+            offset = text.find(reference)
+            if offset < 0:
+                continue
+            problems.append(
+                f"{file}:{line_at(text, offset)}: this file names the {name} row's blob as "
+                f"{reference}, a registry reference. Rule 6 of .github/scripts/check-ci-images.sh "
+                f"refuses a reference of this shape whose digest no row of {CI_IMAGES} holds, so "
+                f"this one fails that gate for the wrong reason. A tool blob is read at the full "
+                f"blobs/sha256: URL {HELPER} builds from the row."
+            )
+
+    # The manifest declares addresses and fetches nothing, so rule 3 does not read it: a row's
+    # own URL is not an install, and an entry the shape check already refused would otherwise be
+    # reported a second time as a file that fetches.
+    if TEST_FILE in file.name or file == CI_TOOLS:
+        continue
+    read_files += 1
+    writers[file] = text
+
+    # offset, the URL as written, what it names, the repository it names, the remedy
+    found: list[tuple[int, str, str, str | None, str]] = []
     for match in ASSET_URL.finditer(text):
         repository = f"{match.group('owner')}/{match.group('repo')}"
-        if repository not in covered_repositories:
-            continue
         found.append(
-            (match.start(), match.group(0).rstrip(",);"), f"a release asset of {repository}")
+            (
+                match.start(),
+                match.group(0).rstrip(",);"),
+                f"a release asset of {repository}",
+                repository,
+                f"Add a row naming its second source and fetch it with {HELPER}, or, where those "
+                f"bytes are published nowhere but there, a {NO_SECOND_SOURCE} entry carrying "
+                f"{', '.join(ENTRY_FIELDS)}.",
+            )
         )
-    for match in NPM_URL.finditer(text):
-        rest = match.group("rest")
-        scope = rest.partition("/")[0]
-        if scope not in covered_scopes:
-            continue
-        found.append((match.start(), match.group(0).rstrip(",);"), f"an npm package under {scope}"))
-    for offset, url, what in found:
+    if file in npm_reach:
+        for match in NPM_URL.finditer(text):
+            scope = match.group("rest").partition("/")[0]
+            if scope not in covered_scopes:
+                continue
+            found.append(
+                (
+                    match.start(),
+                    match.group(0).rstrip(",);"),
+                    f"an npm package under {scope}",
+                    None,
+                    f"Add the row, or fetch it with {HELPER}.",
+                )
+            )
+
+    for offset, url, what, repository, remedy in found:
         line = line_at(text, offset)
-        if "${" in url:
+        if repository == OWN_REPOSITORY:
+            # This repository publishes those bytes; nothing here fetches them.
+            continue
+        if url in allowed:
+            named += 1
+            continue
+        if "$" in url:
             problems.append(
                 f"{file}:{line}: this file builds the address of {what} ({one_line(url)}). A "
                 f"row of {CI_TOOLS} is the one place a tool asset's address is written, and a "
                 f"built URL cannot be compared with a row. Read the address from the row with "
-                f"{HELPER} instead."
+                f"{HELPER} instead, or, where those bytes have no second source, write this "
+                f"URL's text verbatim as a {NO_SECOND_SOURCE} entry's url."
             )
-            continue
-        if url not in allowed:
-            problems.append(
-                f"{file}:{line}: this file fetches {what} at {one_line(url)}, and no row of "
-                f"{CI_TOOLS} names that URL. A tool CI installs from a release asset has a "
-                f"second source, and a fetch no row names has none. Add the row, or fetch it "
-                f"with {HELPER}."
-            )
-            continue
-        named_rows += 1
-
-# ---------------------------------------------------------------- rule 4: short references
-# A tool blob is read at the full https://<base>/v2/<path>/blobs/sha256:<digest> URL the helper
-# builds. Written as a registry reference instead, its digest would meet rule 6 of
-# check-ci-images.sh, which refuses a digest no row of .github/ci-images.yaml holds.
-short_references = {f"{registry}@sha256:{str(row['digest']).strip()}": str(row["name"]).strip()
-                    for row in readable}
-swept = 0
-for file in sorted(GITHUB.rglob("*")):
-    if not file.is_file() or file == CI_IMAGES:
-        continue
-    text = read_text(file)
-    if text is None:
-        continue
-    swept += 1
-    for reference, name in short_references.items():
-        offset = text.find(reference)
-        if offset < 0:
             continue
         problems.append(
-            f"{file}:{line_at(text, offset)}: this file names the {name} row's blob as "
-            f"{reference}, a registry reference. Rule 6 of .github/scripts/check-ci-images.sh "
-            f"refuses a reference of this shape whose digest no row of {CI_IMAGES} holds, so "
-            f"this one fails that gate for the wrong reason. A tool blob is read at the full "
-            f"blobs/sha256: URL {HELPER} builds from the row."
+            f"{file}:{line}: this file fetches {what} at {one_line(url)}, and no row of "
+            f"{CI_TOOLS} names that URL. A tool CI installs from a release asset has a second "
+            f"source, and a fetch nothing names has none. {remedy}"
         )
 
+# ------------------------------------------- the four rules a no_second_source entry is held to
+for entry in declines:
+    url = str(entry["url"]).strip()
+    line = line_of(entry)
+    repository = ASSET_URL.match(url)
+    repository = f"{repository.group('owner')}/{repository.group('repo')}"
+
+    if not any(url in text for text in writers.values()):
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'url')}: no file under {GITHUB} writes "
+            f"{one_line(url)}, so this entry declines a second source for an install that is no "
+            f"longer here. Delete the entry, or correct its url to the text the file that "
+            f"fetches those bytes writes."
+        )
+
+    digest = str(entry["digest"]).strip()
+    pinned_in = Path(str(entry["pinned_in"]).strip())
+    pin_text = read_text(pinned_in) if pinned_in.is_file() else None
+    if not DIGEST.fullmatch(digest):
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'digest')}: this entry's digest is {one_line(digest)}, "
+            f"which is not 64 lower-case hex characters. Write it bare, exactly as the file that "
+            f"pins those bytes writes it."
+        )
+    elif pin_text is None:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'pinned_in')}: this entry names {pinned_in} as the file "
+            f"that pins these bytes, and that file is missing or is not readable as text. A URL "
+            f"with one source is pinned by a digest some file checks, or nothing holds it to "
+            f"anything."
+        )
+    elif digest not in pin_text:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'digest')}: this entry's digest {digest} does not occur "
+            f"in {pinned_in}, the file it names as the pin, so nothing checks the bytes this "
+            f"entry declines a second source for. One source never means no checksum."
+        )
+
+    covered_by = row_repositories.get(repository)
+    if covered_by:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'url')}: {covered_by} already covers {repository}, so "
+            f"this tool has a second source and its call site reads it with {HELPER}. An entry "
+            f"declines a URL nothing else serves; delete this one and fetch the bytes from the "
+            f"row."
+        )
+
+    why = " ".join(str(entry["why"]).split())
+    if why.strip(" .").lower() in REASON_PLACEHOLDERS or len(why) < REASON_MINIMUM:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'why')}: this entry's why is {one_line(why)}, which "
+            f"says nothing a reader could act on. Write at least {REASON_MINIMUM} characters "
+            f"naming which second source was looked for, why there is none today, and what "
+            f"building one would take. Whether that reason is true is the reviewer's judgement "
+            f"and not this gate's, which is why it has to be readable."
+        )
+
+# The middle clause counts installs, not addresses: this manifest is not among the files rule 3
+# reads, so a row's own URL and an entry's own url are no part of it. A count that included them
+# would rise when the manifest grew and say nothing about what CI fetches.
 verdict(
-    f"{CI_TOOLS} holds {len(readable)} row(s), each agreeing with the pin that installs it; "
-    f"{named_rows} tool asset URL(s) in {len(reach)} file(s) under "
-    f"{' and '.join(str(directory) for directory in REACH_DIRECTORIES)} name one of those rows; "
+    f"{CI_TOOLS} holds {len(readable)} row(s), each agreeing with the pin that installs it, and "
+    f"{len(declines)} {NO_SECOND_SOURCE} entr{'y' if len(declines) == 1 else 'ies'}; "
+    f"{named} tool asset URL(s) fetched by the {read_files} file(s) under {GITHUB} that rule 3 "
+    f"reads, this manifest not among them, name one of those; "
     f"of {swept} file(s) under {GITHUB} swept, none names a tool blob by a registry reference"
 )
 PY

@@ -24,6 +24,7 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 check_script="$script_dir/check-ci-tools.sh"
+repo_paths_script="$script_dir/repo-paths.sh"
 repository=$(cd "$script_dir/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -37,11 +38,13 @@ TOOL=0a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f6071
 MISE=1b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f607182
 JJ=2c3d4e5f607182932c3d4e5f607182932c3d4e5f607182932c3d4e5f60718293
 BUN=3d4e5f60718293a43d4e5f60718293a43d4e5f60718293a43d4e5f60718293a4
+SOLO=5f60718293a4b5c65f60718293a4b5c65f60718293a4b5c65f60718293a4b5c6
 REGISTRY=ghcr.io/example/fixture/ci
 TOOL_URL=https://github.com/example/tool/releases/download/v1.0.0/tool_1.0.0_linux_amd64.tar.gz
 MISE_URL=https://github.com/example/mise/releases/download/v7.7.7/mise-v7.7.7-linux-x64.tar.gz
 JJ_URL=https://github.com/example/jj/releases/download/v5.5.5/jj-v5.5.5-x86_64.tar.gz
 BUN_URL=https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-9.9.9.tgz
+SOLO_URL=https://github.com/example/solo/releases/download/v2.2.2/solo-2.2.2.tar.gz
 
 # pins <root> [bun version] [mise version] [mise sha256] [jj tool]: the two files rule 2 holds
 # the rows to. Each value defaults to the one the green rows agree with, so the fixture names
@@ -73,6 +76,11 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/actions/install-tool" \
     "$root/packages/daemon/docker"
   ln -s "$check_script" "$root/.github/scripts/check-ci-tools.sh"
+  # The gate reads this repository's own name out of what repo-paths.sh answers, and stops with
+  # no verdict at all when it cannot run it, so the fixture holds the real script beside the
+  # gate. The name every fixture is judged against is the one that script defaults to,
+  # cybermonklabs/legion, because the gate takes GITHUB_REPOSITORY out of its environment.
+  ln -s "$repo_paths_script" "$root/.github/scripts/repo-paths.sh"
   pins "$root"
   cat > "$root/.github/ci-tools.yaml" <<YAML
 registry: $REGISTRY
@@ -154,8 +162,8 @@ echo "case: a tree every rule passes"
 root=$(fixture green)
 run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts the rows and says each agrees with its pin" \
-  "$(contains "$out" '^.github/ci-tools.yaml holds 4 row(s), each agreeing with the pin that installs it;')"
+check "counts the rows, counts the entries, and says each row agrees with its pin" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 4 row(s), each agreeing with the pin that installs it, and 0 no_second_source entries;')"
 check "and sweeps .github for a short reference" \
   "$(contains "$out" 'none names a tool blob by a registry reference$')"
 
@@ -319,8 +327,8 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file, the line and the URL" \
   "$(contains "$out" '^.github/actions/install-tool/action.yml:9: this file fetches a release asset of example/tool at https://github.com/example/tool/releases/download/v2.0.0/tool_2.0.0_linux_amd64.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
-check "and says a fetch no row names has no second source" \
-  "$(contains "$out" 'a fetch no row names has none')"
+check "and says a fetch nothing names has no second source" \
+  "$(contains "$out" 'a fetch nothing names has none')"
 
 echo "case: rule 3 — a workflow that builds a covered release URL"
 root=$(fixture reach-built-url)
@@ -341,6 +349,40 @@ check "names the built URL" \
   "$(contains "$out" 'this file builds the address of a release asset of example/mise (https://github.com/example/mise/releases/download/${MISE_VERSION}/mise.tar.gz)')"
 check "and says a built URL cannot be compared with a row" \
   "$(contains "$out" 'a built URL cannot be compared with a row')"
+
+echo "case: rule 3 — a script that fetches a release asset no row names"
+# The rule reads every file under .github/, and not the two directories its npm half reads: a
+# script installs a tool as readily as a workflow step does.
+root=$(fixture reach-script-asset)
+cat > "$root/.github/scripts/install-thing.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL -O https://github.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+SCRIPT
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script, the line and the URL" \
+  "$(contains "$out" '^.github/scripts/install-thing.sh:3: this file fetches a release asset of other/thing at https://github.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+
+echo "case: rule 3 — a URL built with a bare \$version"
+# A built address is any URL whose text holds a dollar, so a bare \$version is refused like the
+# \${MISE_VERSION} above. The rule read \${ alone until this gate was rewritten, and a job writing
+# the shorter form went through.
+root=$(fixture reach-bare-variable)
+cat > "$root/.github/workflows/uv.yaml" <<'YAML'
+name: uv
+on: [push]
+jobs:
+  uv:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O https://github.com/example/uv/releases/download/$version/uv.tar.gz
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the line and the address the job builds" \
+  "$(contains "$out" '^.github/workflows/uv.yaml:8: this file builds the address of a release asset of example/uv (https://github.com/example/uv/releases/download/$version/uv.tar.gz)')"
 
 echo "case: rule 3 — a workflow that fetches Bun's own release asset"
 # No bun row carries a primary, because oven-sh/setup-bun fetches that asset. The repository is
@@ -378,9 +420,10 @@ check "fails" "$(is "$status" 1)"
 check "names the package and the URL" \
   "$(contains "$out" 'this file fetches an npm package under @oven at https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-9.9.8.tgz')"
 
-echo "case: rule 3 — the URLs the rows themselves name, and a repository out of scope"
-# Each of these is a URL this check reads and admits: a row's primary, a row's mirror_from, the
-# npm tarball a row derives, and a release asset of a repository no row covers.
+echo "case: rule 3 — the URLs the rows name, beside two of a repository no row covers"
+# The three a row names are read and admitted: a row's primary, a row's mirror_from, and the npm
+# tarball a row derives. The other two are refused, because the rule now reads a release asset of
+# every repository: one is an address nothing names, and one is an address the job assembles.
 root=$(fixture reach-named-urls)
 cat > "$root/.github/workflows/tools.yaml" <<YAML
 name: Tools
@@ -398,9 +441,266 @@ jobs:
           curl -fsSL -O "https://github.com/other/built/releases/download/\${VERSION}/built.tar.gz"
 YAML
 run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the asset of the repository no row covers" \
+  "$(contains "$out" '^.github/workflows/tools.yaml:12: this file fetches a release asset of other/thing at https://github.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+check "names the address the job builds" \
+  "$(contains "$out" '^.github/workflows/tools.yaml:13: this file builds the address of a release asset of other/built (https://github.com/other/built/releases/download/${VERSION}/built.tar.gz)')"
+check "and refuses those two alone, so the three the rows name still pass" \
+  "$(contains "$out" '^::error::2 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
+
+echo "case: rule 3 — a release asset of this repository's own"
+# These bytes this repository publishes, and no job of it installs them, so the address is read
+# and passed over. The name it is compared against is what repo-paths.sh answers.
+root=$(fixture reach-own-asset)
+cat > "$root/.github/workflows/publish.yaml" <<'YAML'
+name: Publish
+on: [push]
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v1.2.3/envoy-infra-linux-amd64.tar.gz
+YAML
+run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts the three URLs that name a row" \
-  "$(contains "$out" '; 3 tool asset URL(s) in 3 file(s) under .github/actions and .github/workflows name one of those rows;')"
+
+echo "case: rule 3 — a URL in a file whose name holds .test."
+# A test's URLs are fixtures it feeds to a gate, and the gate reading them is the code under
+# test. The file you are reading is one of those, and every URL above is one of these.
+root=$(fixture reach-test-file)
+cat > "$root/.github/scripts/install-thing.test.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+# A fixture address a test feeds to a gate. Nothing fetches it.
+url=https://github.com/other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
+SCRIPT
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: rule 3 — an npm tarball outside the two directories the npm half reads"
+# The release-asset half widened to every file under .github/; the npm half still reads
+# .github/actions and .github/workflows alone, because this repository writes the npm registry's
+# address outside those two for reasons that fetch nothing.
+root=$(fixture reach-npm-outside)
+cat > "$root/.github/scripts/detect-bun.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+# The address a lockfile line carries, written here so a check can find it. Nothing fetches it.
+pattern=https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-9.9.8.tgz
+SCRIPT
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a no_second_source entry allows the one URL it names"
+# Both halves in one tree, so the entry is shown to be what allows the URL: the workflow alone is
+# refused, and the same workflow passes once the entry names its address.
+root=$(fixture decline-allows)
+cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O $SOLO_URL
+          echo "$SOLO  solo-2.2.2.tar.gz" | sha256sum -c -
+YAML
+run_gate "$root"
+check "fails while no entry names the URL" "$(is "$status" 1)"
+check "and names it as a fetch nothing names" \
+  "$(contains "$out" "this file fetches a release asset of example/solo at $SOLO_URL")"
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+run_gate "$root"
+check "exits 0 once the entry names it" "$(is "$status" 0)"
+check "and counts the entry in the summary" \
+  "$(contains "$out" ', and 1 no_second_source entry;')"
+
+echo "case: a no_second_source entry that carries no why"
+# The shape is read before the four rules, so an entry the gate cannot read is refused once
+# rather than four times. Its URL is in no file here: an entry this short allows nothing.
+root=$(fixture decline-no-why)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/ci.yaml
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the missing field and the four an entry carries" \
+  "$(contains "$out" '^.github/ci-tools.yaml:45: this no_second_source entry carries no why, and an entry carries url, digest, pinned_in, why: the URL it declines, the digest its bytes are pinned at, the file that pins them, and why there is no second source.$')"
+
+echo "case: a no_second_source entry whose why is a placeholder"
+# Whether the reason is true is the reviewer's judgement. Whether anything was written at all is
+# this gate's, and TODO is the word a reviewer would have had to catch.
+root=$(fixture decline-placeholder-why)
+cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O $SOLO_URL
+          echo "$SOLO  solo-2.2.2.tar.gz" | sha256sum -c -
+YAML
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: TODO
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes the placeholder and says how much the gate wants" \
+  "$(contains "$out" "^.github/ci-tools.yaml:48: this entry's why is TODO, which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
+
+echo "case: a no_second_source entry whose URL no file under .github writes"
+# The install this entry declined a second source for was deleted and the entry stayed. Refusing
+# it is how the list prunes itself.
+root=$(fixture decline-no-writer)
+cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: echo "$SOLO  solo-2.2.2.tar.gz" | sha256sum -c -
+YAML
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the URL nothing writes and what to do with the entry" \
+  "$(contains "$out" "^.github/ci-tools.yaml:45: no file under .github writes $SOLO_URL, so this entry declines a second source for an install that is no longer here. Delete the entry, or correct its url to the text the file that fetches those bytes writes.$")"
+
+echo "case: a no_second_source entry whose digest the file it names does not hold"
+# One source never means no checksum: the file that fetches these bytes checks nothing, so the
+# digest the entry carries holds the install to nothing.
+root=$(fixture decline-digest-unpinned)
+cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O $SOLO_URL
+YAML
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the digest and the file it does not occur in" \
+  "$(contains "$out" "^.github/ci-tools.yaml:46: this entry's digest $SOLO does not occur in .github/workflows/solo.yaml, the file it names as the pin, so nothing checks the bytes this entry declines a second source for. One source never means no checksum.$")"
+
+echo "case: a no_second_source entry whose repository a row already covers"
+# A second version of the tool row's asset. Those bytes have a second source already, and the
+# call site reads it through the helper rather than declining one.
+root=$(fixture decline-covered-repository)
+cat > "$root/.github/workflows/tool.yaml" <<YAML
+name: Tool
+on: [push]
+jobs:
+  tool:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O https://github.com/example/tool/releases/download/v2.0.0/tool_2.0.0_linux_amd64.tar.gz
+          echo "$SOLO  tool_2.0.0_linux_amd64.tar.gz" | sha256sum -c -
+YAML
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: https://github.com/example/tool/releases/download/v2.0.0/tool_2.0.0_linux_amd64.tar.gz
+    digest: $SOLO
+    pinned_in: .github/workflows/tool.yaml
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row that covers the repository and where to fetch the bytes" \
+  "$(contains "$out" "^.github/ci-tools.yaml:45: the tool row's primary already covers example/tool, so this tool has a second source and its call site reads it with .github/scripts/ci-tools.sh. An entry declines a URL nothing else serves; delete this one and fetch the bytes from the row.$")"
+
+echo "case: a no_second_source entry whose url is not a release asset"
+# An entry declines one release-asset address. Anything else is outside the class this rule
+# reads, and an entry for it would allow nothing.
+root=$(fixture decline-url-not-an-asset)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: https://registry.npmjs.org/solo/-/solo-2.2.2.tgz
+    digest: $SOLO
+    pinned_in: .github/workflows/ci.yaml
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes the url and says what an entry declines" \
+  "$(contains "$out" "^.github/ci-tools.yaml:45: this no_second_source entry's url is https://registry.npmjs.org/solo/-/solo-2.2.2.tgz, which is not a GitHub release-asset address. An entry declines one such URL, written exactly as the file that fetches it writes it.$")"
+
+echo "case: two no_second_source entries for one URL"
+# Two entries for one URL carry two reasons, and a reader has no way to tell which one holds.
+root=$(fixture decline-two-entries)
+cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O $SOLO_URL
+          echo "$SOLO  solo-2.2.2.tar.gz" | sha256sum -c -
+YAML
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: The same bytes again, with another reason a reader would have to choose between.
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line the earlier entry is on" \
+  "$(contains "$out" '^.github/ci-tools.yaml:50: this URL is also declined by the no_second_source entry on line 45, and two entries for one URL carry two reasons a reader must choose between. Keep one.$')"
 
 echo "case: rule 4 — a short reference to a tool blob"
 root=$(fixture short-reference)
