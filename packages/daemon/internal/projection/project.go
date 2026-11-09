@@ -272,9 +272,10 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 	waiting := record.WaitingIssues(line)
 	projected.Admission.Active = active
-	// The roots of the live trees, which no slot says any more: a slot counts one issue at work,
-	// so a running tree holds none while its root waits for its children and they wait for a
-	// slot. The pass's own facts already name every lifecycle, so this costs no further read. A
+	// The roots of the live trees, which no slot says any more: a slot counts one issue the
+	// daemon has started, and a tree is live before the daemon has started anything of it — a
+	// root waiting in the line for its tree to be opened holds no row, and neither does a child
+	// of it. The pass's own facts already name every lifecycle, so this costs no further read. A
 	// lifecycle is keyed by the project token (record.ReadLifecycles) and this pass reads them
 	// all under this daemon's, so another project's root would be judged against a lifecycle
 	// that is not its own.

@@ -97,7 +97,7 @@ refused naming that number. The split of the one plugin into this package and `@
 number is the one `DaemonAPIVersion` declares, last bumped by contract 58's waiting line
 (INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
-an issue the list does not name, a slot holder among them, carries no such key, and a caller
+an issue the list does not name carries no such key, and a caller
 from a pod below 58 is served every issue without the field), after contract 57's claim step
 record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
 carries `step`, what the daemon last saw that claim's agent do — the turn it is in, the call it
@@ -158,9 +158,10 @@ limits, read through `@legion/pi-shared`'s `stall-limits.ts`), after contract 41
 command (`legion controller start` ends the operator's Oh My Pi command line with
 `/legion-controller-start`, and this plugin sends the controller's start message from that
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
-`awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root that
-gave its admission slot up while its architect waits on a person, and what it waits on; a 39
-plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
+`awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
+architect waits on a person, and what it waits on; such a root holds its admission slot, as every
+issue does from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge;
+a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on
 `GET /legion/v1/state` (INFRA-225: `admission.blocked` lists every root and child Legion is waiting

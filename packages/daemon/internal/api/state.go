@@ -318,20 +318,26 @@ type DaemonInfo struct {
 type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
-	// the issues at work rather than the trees (dispatch://INFRA-980), so one tree with three
-	// working children holds three of these and a tree whose every issue only waits holds none.
+	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
+	// issue keeps its slot from the moment the daemon starts it until it is done, leaves the
+	// workflow or waits only for its merge (record.KeepsSlot). So one tree with three started
+	// children holds three of these, and an issue waiting on a person, one in accepting, one
+	// held and one merging under a closed gate are each here, while one in awaiting_merge is in
+	// neither list.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: the issues whose work came back and
-	// wait for a slot before their worker is started again, oldest first, then the issues whose
-	// first phase can start, by their tree root's Dispatch rank. It carries children as well as
-	// roots, for the same reason `active` does.
+	// Waiting is the admission line, in the line's own order: the issues whose work came back,
+	// oldest first — each holding its row already, an owed start, an answered awaiting_person
+	// root and a tree's own root at admitted whose gate has opened — then the issues that hold
+	// no row and whose first phase can start, by their tree root's Dispatch rank. It carries
+	// children as well as roots, for the same reason `active` does, and an issue can stand in
+	// both lists: an answered root does until the pass that resumes it.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
 	// waits in the line, and one whose root waits on a person. A slot is no longer one per tree,
-	// so a running tree can hold no slot at all — its root accepting or awaiting its merge while
-	// its children work, or every issue of it waiting — and `active` alone no longer tells a
-	// reader such as the controller which trees run. Never null; empty when no tree is live.
+	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
+	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
+	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees"`
 	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
 	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
@@ -421,8 +427,8 @@ type Issue struct {
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
-	// only for an issue that list names, and absent for a slot holder and for every other issue
-	// the list does not name.
+	// only for an issue that list names, a slot holder whose work came back among them, and
+	// absent for every other issue.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
@@ -447,9 +453,9 @@ type Issue struct {
 // is `ask` with Ask, the id of the oldest question of its tree still with the person, or `gate`
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
-// absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the wait;
-// the root then waits in admission's waiting line for its slot, among the issues whose work came
-// back, oldest first.
+// absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
+// wait; the answered root then stands in admission's waiting line as well, among the issues
+// whose work came back, oldest first, until the pass that resumes it.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`

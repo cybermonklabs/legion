@@ -46,10 +46,11 @@ children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
-to them, end your turn: that hand-back returns the root's admission slot while you stay live to
+to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
+admission slot, while you stay live to
 read the person's comments and replies — when nothing else of the tree is at work: no other issue
 of the tree in a phase, the `legion` label still on, and no person or outside session holding the
-root's Dispatch claim. The root keeps its slot otherwise, and you run on. An approval request is the same:
+root's Dispatch claim. The root stays at `admitted` otherwise, and you run on. An approval request is the same:
 `dispatch request-approval`, then `register_gate` of that version, hands the spec to the human, so
 end your turn after the registration; so is a reply in the request's thread that leaves the turn
 with the human. The person's answer, resolution or reply on any ask of the root, their review of
@@ -59,9 +60,12 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
-While that resume waits for an admission slot, nothing is sent to you about the wait: your
+Your root holds its admission slot throughout, as every issue holds the one the daemon gave it
+until it is done, leaves the workflow or waits only for its merge, so that resume takes no slot
+and comes however full the cap is. An answered root stands in the admission line until the pass
+that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon
-starts you again by itself at the next free slot. Your resume task says what answered the wait.
+starts you again by itself on that pass. Your resume task says what answered the wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.

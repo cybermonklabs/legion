@@ -265,8 +265,9 @@ Dispatch read them, delete the files, then install every App from
   adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
-  under `controller: daemon`, the controller's pod are counted; `admission_cap` bounds the issues
-  at work rather than the pods, since an issue that only waits keeps its pod and holds no slot,
+  under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
+  the daemon has started rather than the pods, since an issue keeps its pod past the slot — on to
+  its own close — and an issue that only waits keeps both,
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
@@ -1022,23 +1023,25 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-wake: 0 waiting
   ```
 
-  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: a
-  slot is one issue with work, so a tree of four working issues holds four of them, and the `live
+  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
+  issue takes a slot when the daemon starts it and keeps it
+  until it is done, leaves the workflow or waits only for its merge,
+  so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
-  The `roots waiting on a person` line counts the roots that gave their admission slot back to
-  wait on a person (phase `awaiting_person`), how many of them a person answered and the
-  published line still names — each standing
+  The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
+  the slot it took when the daemon started it, how many of them a person
+  answered and the published line still names — each standing
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
   cannot see the line, and a root of another Dispatch project, whose line this daemon does not
   publish, is counted by nobody. An
-  unanswered one is in neither admission list, only among the live trees, so without this line the
-  capacity it freed looks idle.
-  While an answered root waits for its slot, nothing is sent to its architect about the wait: the
-  place and the length in `waitingLine` are the whole of what is recorded, and the daemon starts
-  the architect again by itself at the next free slot.
+  unanswered one is in `admission.active` and in no line; an answered one is in both lists until
+  the pass that reads the answer resumes it, so this line is where the wait itself is named.
+  While an answered root stands in the line, nothing is sent to its architect about the wait: the
+  place and the length in `waitingLine` are the whole of what is recorded, and the daemon resumes
+  the architect itself on the pass that reads the answer, taking no further slot for it.
 
   The `open production checks` line counts the closed issues whose production check is still
   open and names the oldest: its pull request, merge commit, the role working it, which look it

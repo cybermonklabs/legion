@@ -168,18 +168,19 @@ review was of: `gatedSteps` carries one entry for each gated step, with its `art
 list, and not the notice, says which steps are open and which still hold the tree's work.
 
 Then end your turn. The registrations hand those documents to the human: when nothing else of the
-tree is at work, the root returns its admission slot and waits on its design gate
-(`awaiting_person`), as a root question handed to the human does ("Every turn" in
+tree is at work, the root moves to `awaiting_person` and waits on its design gate, keeping the
+admission slot it took at its admission, as a root question handed to the human does ("Every turn" in
 `skill://legion-architect/SKILL.md`). Stay live to read the human's comments and replies. Their
 approval or changes request delivers your next task, and so does a newer spec version once
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
-spec stands. An approval that opens the last gated step leaves your resume waiting for no slot at
-all: it comes back however full the cap is. Where your root's gate has never opened, the resume
-needs a slot, and while it waits for one nothing is sent to you: your record's `waitingLine`
-gives the live place in the line and the line's length, your resume task says what answered the
-wait, and you act on neither, because the daemon starts you again by itself at the next free
-slot.
+spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
+one all along: an issue keeps its admission slot from the moment the daemon starts it
+until it is done, leaves the workflow or waits only for its merge. The answered root stands in
+the admission line until the pass that resumes it, and nothing is sent to you about that wait:
+your record's `waitingLine` gives the live place in the line and the line's length, your resume
+task says what answered the wait, and you act on neither, because the daemon starts you again by
+itself on that pass.
 Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a

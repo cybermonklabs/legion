@@ -225,8 +225,8 @@ If you are that child's architect:
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
   merger's READY waits for its approval.
-  That registration's approval request waits with the person like any other, but it returns no admission slot: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
-  The slot rule below is for a root of your own at `admitted`, not for this one.
+  That registration's approval request waits with the person like any other, but it starts no wait of the root's own: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
+  The section below is for a root of your own at `admitted`, not for this one.
   When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
   `awaiting_merge` the READY is through, so register none; a red or conflicting head that returns
@@ -236,9 +236,11 @@ If you are that child's architect:
 ## Your slot while a person has your spec
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
-A registration that leaves the approval request with the person returns your root's admission slot, and what brings the root back is the answer, not the registration.
-What decides whether your resume waits for a slot is whether the gate has ever opened in this generation, never whether it stands open now: an approval opens your gate, and a root whose gate has ever opened needs no slot to resume, so it resumes however full the cap is.
-The first phase that resume starts takes a slot of its own: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
-A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval; it brings back no need for a slot to resume, and only a root whose gate has never opened has one: then, while every slot is taken, your record carries `waitingLine`, your place in the line and its length.
+A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
+Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done, leaves the workflow or waits only for its merge.
+So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
+The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval.
+While your answered root stands in the line, your record carries `waitingLine`, your place in the line and its length.
 Nothing is sent to you about that wait, and your resume task says what answered it.
-Act on neither: the daemon starts you again at the next free slot.
+Act on neither: the daemon starts you again on the pass that reads the answer.

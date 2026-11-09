@@ -233,8 +233,15 @@ start_dispatch() {
     curl -fsS "http://127.0.0.1:$port_dispatch/api/v1"
 }
 
-# The one difference from Stage 3's configuration: admission_cap 3 (three roots) and a merge queue
-# role on the project, so the daemon's READY publish is exercised.
+# The one difference from Stage 3's configuration: admission_cap 5 and a merge queue
+# role on the project, so the daemon's READY publish is exercised. Five is this lane's peak under
+# the slot rule of INFRA-1909, where an issue keeps the row the daemon gave it until it is done,
+# leaves the workflow or waits only for its merge. Its three roots hold a row each from their
+# admission on, the wait on the person at their gates included, and the two children of root 1
+# run beside them at rerun-a-closed-child: the parked child, rerun into planning, and the closed
+# child, reopened into it. 3 + 2 = 5. A cap of three, which this lane set while a waiting root
+# gave its row back, now leaves the first child waiting at the gates checkpoint, where the three
+# roots alone fill it.
 write_legion_config() {
   cat >"$work/legion.yaml" <<EOF
 project: $project
@@ -253,7 +260,7 @@ projects:
   $project: { merge_queue_role: merge-queue }
 gates:
   design: root-issues
-admission_cap: 3
+admission_cap: 5
 review_round_cap: 3
 # The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
@@ -434,10 +441,12 @@ gate_send() {
   gate_artifacts[$issue]=$(dispatch_get "issues/$issue" | jq -er .primary_artifact_id)
   architect_registers_gate "$issue" "$issue"
 }
-# gate_finish ISSUE: the root waits on a person at its closed gate without a slot while its
-# architect stays live (await_gate_wait); the proof human approves, the root takes a slot back
-# (await_answered_slot), and only then reaches planning. admission_cap 3 counts issues at work,
-# roots and children alike, so the slots every waiting root gave back stand free and the answered root takes one at once.
+# gate_finish ISSUE: the root waits on a person at its closed gate, keeping the slot it took at
+# its admission, while its architect stays live (await_gate_wait); the proof human approves, and
+# the root resumes on the pass that reads the answer (await_answered_slot), taking no further
+# slot, and only then reaches planning. admission_cap 5 counts the issues the daemon has started,
+# roots and children alike, so the three roots hold three of the five throughout and root 1's two
+# children take the rest.
 gate_finish() {
   local issue=$1 artifact=${gate_artifacts[$1]}
   until_true 600 "$issue architect to register primary artifact $artifact" sh -c \

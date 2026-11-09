@@ -12,8 +12,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Unresumable is the one rule for whether a root that returns its admission slot to wait on a
-// person may run again in its own architect session: it returns why it may not, or "" when it may.
+// Unresumable is the one rule for whether a root that waits on a person, holding the admission
+// slot it took when the daemon started it, may run again in its own architect session: it
+// returns why it may not, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session that claims within the tree are legitimate holders. The claim is the one

@@ -261,9 +261,12 @@ projects:
   $project: {}
 gates:
   design: root-issues
-# Three: trees 1 and 4 run again from answer-readmits and approval-queues, and tree 3 still needs a
-# slot in walk-on-start.
-admission_cap: 3
+# Four: an issue keeps the slot the daemon gave it until it is done, leaves the workflow or waits
+# only for its merge (INFRA-1909), so the four roots that wait on a person at trees-wait-on-a-person
+# — trees 1, 2, 4 and 5 — hold a row each at once, which is this lane's peak. It is the peak again
+# later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running again
+# (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start.
+admission_cap: 4
 review_round_cap: 3
 # The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.

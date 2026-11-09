@@ -483,10 +483,10 @@ type ControllerNotice Notice
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
 
 // The controller notices no architect is told of. A triage notice's root is unrecorded, so no
-// architect owns it; a slot-free notice names the root whose slot admission released while no
-// waiting root took it. A todo notice names an issue not handed to Legion that changed in `todo`
-// while a slot stood free. An awaiting-person notice names a root that released its slot while its
-// architect waits on a person (workflow's enterAwaiting). The controller takes no issue for any of
+// architect owns it; a slot-free notice names the issue whose slot admission released while no
+// waiting issue took it. A todo notice names an issue not handed to Legion that changed in `todo`
+// while a slot stood free. An awaiting-person notice names a root that waits on a person and
+// keeps the slot it holds while it waits (workflow's enterAwaiting). The controller takes no issue for any of
 // the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
 // issue is the project key. An unslotted notice names a root admission found in the workflow with
 // neither a slot nor a place in the waiting line, which it took out of the workflow; its reason
@@ -563,7 +563,7 @@ type SuperviseRequest struct {
 	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
 	// NeedsSlot marks a phase worker's start as the one part of a transition that waits for its
-	// issue's admission slot. The cap counts the issues at work, so what it must bound is the task
+	// issue's admission slot. The cap counts the issues the daemon has started, so what it must bound is the task
 	// that puts a worker to work; everything else the transition writes — the phase, the Dispatch
 	// status, the assignment on the role's phases row, the notices — is written in the
 	// transition's own transaction and waits for nothing. The hold is on this row's claimability

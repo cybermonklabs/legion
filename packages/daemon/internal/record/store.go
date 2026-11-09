@@ -1888,7 +1888,7 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
 // the row retries. And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
-// admission cap counts the issues at work, and this row is the delivery that puts one to work, so
+// admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
 // ends through the claim's own record of the newest start run against it (claims.last_start_row),
 // so ordering them here would buy nothing that survives a retry the runtime delayed.

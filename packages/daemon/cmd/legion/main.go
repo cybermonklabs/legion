@@ -682,16 +682,16 @@ func memorySummary(issues map[string]api.Issue) string {
 	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
 }
 
-// awaitingSummary is the one line an operator reads for the roots that gave their admission slot
-// up to wait on a person (api.WaitingOnView): an unanswered one holds no slot and is in neither
-// `active` nor `waiting`, only among the live trees, so without this line the capacity it freed
-// looks idle. It says how many, how many of them a person answered and the daemon's own published
+// awaitingSummary is the one line an operator reads for the roots that wait on a person
+// (api.WaitingOnView): such a root keeps the slot it took when the daemon started it, so it
+// stands in `active` while it waits and `active` alone does not say what it waits for. It says
+// how many, how many of them a person answered and the daemon's own published
 // line names (api.WaitingLineView), and each by key with what it waits on and whether, when and by
 // what act it was answered.
 //
 // The second count reads the published line rather than judging the wait a second time. An
 // answered root stands in that line, among the issues whose work came back, oldest first
-// (record.Waiting appends every answered root that holds no slot, whatever its design gate
+// (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
 // when the daemon answering is older than contract 58 and has no `waitingLine` to send. The

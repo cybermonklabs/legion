@@ -69,7 +69,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
-| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for the slot it returned |
+| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
 | `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
@@ -119,12 +119,17 @@ you label at a person's request or file yourself.
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan ruling that names
-it, and cite that request. A slot is one issue with work, a root or a child, not one tree: a tree
-of four working issues holds four slots, and a tree whose root only waits holds none of its own,
-so `admission.trees` is what names the roots of the live trees. The free slots are
-`admission.cap` minus the issues in `admission.active` and the issues in `admission.waiting` that
-are not in `admission.blocked`, since an issue its blockers or its own open children hold takes no
-slot until they are done. Every move to `todo` you make is one of
+it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
+tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
+starts it and keeps it
+until it is done, leaves the workflow or waits only for its merge,
+so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
+roots of the live trees. The free slots are `admission.cap` minus the issues in
+`admission.active`, which is every issue holding a slot. Count no issue of `admission.waiting` a
+second time: an issue that holds a slot stands in that line too while its work comes back to it,
+an answered root among them, and the issues of the line that hold none are what take the free
+slots, less the ones in `admission.blocked`, which wait on a blocker rather than on a
+slot. Every move to `todo` you make is one of
 these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a

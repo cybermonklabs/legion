@@ -569,8 +569,8 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 // whose request the daemon never saw an event of. When the gate is closed on a step the
 // deployment gates and the request waits on the person, that is the architect's hand-back of
 // that document, declared at the read's sequence as a registration would declare it
-// (declareRegistration), so a root already waiting on its approval at the deploy returns its slot
-// rather than holding it until its architect registers again. A request the mirror already holds
+// (declareRegistration), so a root already waiting on its approval at the deploy is recorded as
+// waiting, keeping its slot, rather than standing at admitted until its architect registers again. A request the mirror already holds
 // is the mirror's; a gate of another generation or document is left as it is.
 func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.GateRequestFound) (intake.Result, error) {
 	root, err := e.recordedRoot(ctx, tx, fact.Issue)

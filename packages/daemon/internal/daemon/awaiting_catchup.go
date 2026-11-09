@@ -67,9 +67,9 @@ const (
 // not lingering, and one of three things —
 //
 //   - a root in awaiting_person;
-//   - a root ReconcileAwaiting could move into it — at admitted, holding the admission slot its
-//     own work takes, its design gate never opened (record.CanWaitOnPerson, which is decideAwait's
-//     rule 0);
+//   - a root ReconcileAwaiting could move into it — at admitted, with a row of its own saying the
+//     daemon started it, its design gate never opened (record.CanWaitOnPerson, which is
+//     decideAwait's rule 0);
 //   - a root whose tree this boot's own step list opens and whose work that opening releases: one
 //     standing at admitted, whose first phase the waiting line offers a slot to (record.Waiting
 //     classes it LineFirstPhase, and StartFirstPhase runs it), and one of a tree with a member in

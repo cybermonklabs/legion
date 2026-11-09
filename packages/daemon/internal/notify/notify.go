@@ -143,7 +143,7 @@ const RoleTopicPrefix = "notifications.role."
 // daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
 // to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
 // every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
-// triage handed to Legion (admission), a root that gave its admission slot up while its architect
+// triage handed to Legion (admission), a root that keeps its admission slot while its architect
 // waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
 // the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
 // releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the

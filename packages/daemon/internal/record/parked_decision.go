@@ -44,8 +44,9 @@ const (
 // are the design-gate steps the deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
-// thing and no longer does: a running root holds none while it waits for its merge, in
-// accepting or for its children, so a person's todo on such a root read here as a root with no
+// thing and no longer does: a running root holds no row while it waits for its merge, and a root
+// handed over in accepting carries the row it held in the tree it left, so a person's todo on
+// such a root read here as a root with no
 // architect, and every decision a person made on its tree was kept for a start that is never
 // queued instead of reaching the architect that is running (RelayParkedDecision, workflow's
 // CatchUpTheTreesOwed). The slot is still asked, after the rule rather than instead of it: a

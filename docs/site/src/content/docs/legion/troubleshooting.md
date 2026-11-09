@@ -272,7 +272,7 @@ Check, in order:
 
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
-   counts issues at work, not trees). A parent whose own first phase waits for its open children
+   counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -297,8 +297,8 @@ Check, in order:
 ## A tree waits on a person
 
 When a root's architect asked a person a question on the root and nothing else of its tree runs,
-its phase is `awaiting_person`: it returned its admission slot while its architect stays live to
-read the person's comments and replies. Read the wait:
+its phase is `awaiting_person`: it keeps the slot it took when the daemon started it, while its
+architect stays live to read the person's comments and replies. Read the wait:
 
 ```sh
 legion state --config legion.yaml --json |
@@ -314,12 +314,15 @@ the approval request is on the architect's turn), `closed` (a session or anyone 
 person closed the question), `turn` (a session handed it back to the agent's turn), `retracted`
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
-`gates.design` while the root waited on it. The root stands in `admission.waiting`
-among the issues whose work came back, oldest first, and resumes itself there: at once, holding
-no slot, once its design gate has opened at every gated step, and at the next free slot while its
-architect is still writing the first design. While it waits for that slot, `waitingLine` on the
+`gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
+issue keeps its admission slot from the moment the daemon starts it
+until it is done, leaves the workflow or waits only for its merge;
+once it is answered it stands in `admission.waiting` too,
+among the issues whose work came back, oldest first, until the pass that resumes it. That resume
+takes no further slot, so it happens however full the cap is, whether or not the design gate has
+opened. While the root stands in the line, `waitingLine` on the
 issue gives its place in the line and the line's length. Nothing is sent to its architect about
-the wait, and the daemon starts the root again by itself at the next free slot, so neither the
+the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
 Do not park it or
 start it by hand. Without `answeredAt`, check, in order:
@@ -356,7 +359,7 @@ A root whose architect registered its spec while the approval request waits on t
 `admitted` waiting on its design gate keeps its slot for one of the reasons above, or because
 Dispatch shows the request on the architect's turn (a reply or a newer version since the request),
 when the architect has nothing handed to the person. A root waiting on its gate at a daemon's deploy
-gives its slot back at that daemon's first boot. The gate stays closed until a person approves the
+is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
 earlier version does not count: the spec changed since. The merger's `READY` waits on the same approval.
@@ -621,7 +624,7 @@ something will still start: a worker whose phase is not its own is started again
 comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
 slot has that start queued already. A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
-and the answer's task is delivered once the root takes a slot. Never resume or retry by hand a
+and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
 A claim an operator suspended is listed even when a workflow start is queued for it: that start

@@ -307,26 +307,32 @@ architect_registers_gate() {
 # ---- a root waiting on a person (gates.design armed) ----------------------------------------------
 # A root at admitted whose architect registers a closed gate, with no worker running in its tree,
 # enters awaiting_person: legion state shows waitingOn {kind: "gate", gateVersion} with no
-# answeredAt, the root holds no slot (no .slot, absent from .admission.active), and the architect
-# stays live. The person's review answers the wait (waitingOn.answeredAt), and the answered root
+# answeredAt, and the root keeps the admission slot it took when the daemon started it (.slot is
+# there and admission.active names it), while its architect stays live. The person's review
+# answers the wait (waitingOn.answeredAt), and the answered root
 # waits in the line among the issues whose work came back, oldest first: at planning when an
 # approval opened the gate, at admitted with the same architect session given its task when
-# changes were requested. A
-# slot free at the answer is taken in the same transaction, so the answer reads as answeredAt or as
-# the root holding a slot again. Nothing of the root's tree advances until the root resumes, and
-# each issue of it that then has work waits for a slot of its own.
+# changes were requested. The resume takes no slot, since the root holds one throughout, so it
+# comes on the pass that reads the answer however full the cap is, and the answer reads either as
+# answeredAt or as a root already out of awaiting_person. Nothing of the root's tree advances
+# until the root resumes, and each issue of it that then has work waits for a slot of its own.
 root_awaits_gate() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
     | $i.phase == "awaiting_person" and $i.waitingOn.kind == "gate" and ($i.waitingOn.gateVersion // 0) > 0
-      and $i.waitingOn.answeredAt == null and $i.slot == null and (.admission.active | index($issue)) == null'
+      and $i.waitingOn.answeredAt == null and $i.slot != null and (.admission.active | index($issue)) != null'
 }
+# The slot says nothing about either answer below: the root holds its row in awaiting_person and
+# after it alike, so each reads the phase and the wait instead.
 root_answered() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
-    | ($i.phase == "awaiting_person" and $i.waitingOn.answeredAt != null) or ($i.phase != "awaiting_person" and $i.slot != null)'
+    | ($i.phase == "awaiting_person" and $i.waitingOn.answeredAt != null) or $i.phase != "awaiting_person"'
 }
+# root_holds_slot ISSUE: the root resumed — out of awaiting_person with its wait cleared
+# (waitingOn gone, so no answeredAt is left to read) and its architect live in the same session.
 root_holds_slot() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
-    | $i.phase != "awaiting_person" and $i.slot != null and (.admission.active | index($issue)) != null'
+    | $i.phase != "awaiting_person" and $i.waitingOn == null
+      and ($i.architect.session // "") != "" and ($i.architect.state | IN("ready", "working", "idle"))'
 }
 # A timeout in the waits below prints the root and the admission state as legion state shows them.
 awaiting_issue=
@@ -335,40 +341,40 @@ report_awaiting() {
     slot: .issues[$issue].slot, waitingOn: .issues[$issue].waitingOn, architect: .issues[$issue].architect.state}')"
 }
 # await_gate_wait ISSUE LABEL: once ISSUE's architect registered its closed gate, the root waits on
-# a person at that gate with no slot while its architect remains live. The caller's timeout hook is
-# restored afterwards.
+# a person at that gate, keeping its slot, while its architect remains live. The caller's timeout
+# hook is restored afterwards.
 await_gate_wait() {
   local issue=$1 label=$2 hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true 120 "$label root $issue to wait on a person at its gate (awaiting_person, waitingOn.kind gate, no slot)" root_awaits_gate "$issue"
+  until_true 120 "$label root $issue to wait on a person at its gate (awaiting_person, waitingOn.kind gate, slot kept)" root_awaits_gate "$issue"
   until_true "$phase_seconds" "$label architect of $issue to stay live while its root waits on a person" issue_worker_live "$issue" architect
   timeout_hook=$hook
-  note "$issue waits on a person at gate version $(daemon_state | jq -r --arg issue "$issue" '.issues[$issue].waitingOn.gateVersion') with no admission slot; its architect stays live"
+  note "$issue waits on a person at gate version $(daemon_state | jq -r --arg issue "$issue" '.issues[$issue].waitingOn.gateVersion') holding its admission slot; its architect stays live"
 }
-# await_root_slot ISSUE LABEL [SECONDS] waits for ISSUE to hold an admission slot again, out of
-# awaiting_person: phase_seconds unless SECONDS says, for a run where the slot comes back only when
-# another root gives its own up.
+# await_root_slot ISSUE LABEL [SECONDS] waits for ISSUE to resume, out of awaiting_person with its
+# architect live: phase_seconds unless SECONDS says. The resume takes no slot — the root has held
+# one since the daemon started it — so what the wait covers is the pass that reads the answer.
 await_root_slot() {
   local issue=$1 label=$2 limit=${3:-$phase_seconds} hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true "$limit" "$label root $issue to hold an admission slot again" root_holds_slot "$issue"
+  until_true "$limit" "$label root $issue to resume out of awaiting_person" root_holds_slot "$issue"
   timeout_hook=$hook
 }
 # await_answered_slot ISSUE LABEL [SECONDS]: the person's review answered ISSUE's wait, and the root
-# then holds a slot again (await_root_slot's SECONDS).
+# then resumes (await_root_slot's SECONDS).
 await_answered_slot() {
   local issue=$1 label=$2 limit=${3:-} hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true 120 "the person's review to answer $label root $issue (waitingOn.answeredAt, or a slot already back)" root_answered "$issue"
+  until_true 120 "the person's review to answer $label root $issue (waitingOn.answeredAt, or a root already resumed)" root_answered "$issue"
   timeout_hook=$hook
   await_root_slot "$issue" "$label" "$limit"
 }
 # drive_gate ISSUE LABEL [SECONDS]: the architect registers the gate on its own and its root waits on
-# a person without a slot; the proof's human approves the registered version, the root takes a slot
-# back (await_answered_slot's SECONDS), and the daemon moves it to planning.
+# a person, keeping its slot; the proof's human approves the registered version, the root resumes
+# on the pass that reads the answer (await_answered_slot's SECONDS), and the daemon moves it to planning.
 drive_gate() {
   local issue=$1 label=$2 limit=${3:-}
   architect_registers_gate "$issue" "$label"

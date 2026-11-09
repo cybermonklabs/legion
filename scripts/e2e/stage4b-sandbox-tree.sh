@@ -9,7 +9,7 @@
 # the controls' pods) use the admin context. It is the production-EKS driver LEGION-206
 # Requirement 12 asks for.
 #
-# Four roots run under admission_cap 4, a cap of issues at work rather than of trees
+# Four roots run under admission_cap 4, a cap of the issues the daemon has started rather than of trees
 # (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to `done`, through one
 # changes-requested review round whose thread the reviewer opens, lingers, and closes; while its
 # planner holds, the driver files two children under it, each in an issue pod and on a volume of
@@ -233,22 +233,30 @@ session_dsn_key=SESSION_DSN
 # under it.
 pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
-# The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue with
-# work, a root or a child, so tree 1's children count against this cap as its root does. Four is
-# the run's own peak: tree 1's root and its two children beside tree 2's root
-# (issue-independence), which is where the cap stands full and tree 3, set todo there, waits for
-# it. Trees 3 and 4 each take a slot the issues before them leave.
+# The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
+# daemon has started, a root or a child, so tree 1's children count against this cap as its root
+# does, and since INFRA-1909 an issue keeps that slot until it is done, leaves the workflow or
+# waits only for its merge. Four is the run's own peak under that rule, reached twice. At
+# issue-independence: tree 1's root and its two children beside tree 2's root, which is where the
+# cap stands full and tree 3, set todo there, waits for it. At children-first-acceptance: tree 1's
+# root, which keeps its slot in `accepting` now, beside tree 3 and children 3 and 4 — tree 2 has
+# left the workflow by then (issue-cap-moves) and child 2 is parked again (child-reentered), so
+# those four are the whole of it. Trees 3 and 4 each take a slot the issues before them leave:
+# tree 3 the one child 1's close and child 2's park free, tree 4 the one tree 3's own backlog
+# frees at controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
-# Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting,
-# holding no slot of its own, and are parked there, so they raise no peak either.
+# Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
+# holding its own slot, and are parked there; with tree 2 gone and child 2 parked they raise no
+# peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
-# at work runs in one pod of its own, and a root that holds no slot while its tree works keeps
-# its own pod (tree 1 in accepting at children-first-acceptance, beside tree 3 and those two
-# children). The run launches no controller pod: its controller starts from the operator shell
-# (controller). preflight refuses, BLOCKED, a pool with room for fewer.
+# the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
+# root in `awaiting_merge` holds none and keeps its pod. The peak of pods is the peak of slots
+# here: tree 1, tree 3 and children 3 and 4 at children-first-acceptance, and the four of
+# issue-independence before them. The run launches no controller pod: its controller starts from
+# the operator shell (controller). preflight refuses, BLOCKED, a pool with room for fewer.
 run_pods_at_once=$admission_cap
 # The run's reservations: the cpu and memory every container of an issue pod carries as both its
 # request and its limit, and the ephemeral storage it carries as a limit over a smaller request
@@ -3632,7 +3640,7 @@ else
 fi
 
 begin admitted-issue-cap
-# The cap counts the issues at work (dispatch://INFRA-980), so two roots fill none of a cap of 4
+# The cap counts the issues the daemon has started (dispatch://INFRA-980), so two roots fill none of a cap of 4
 # and both are admitted at once, in rank order. Tree 3 is filed here, with the ranks of the run's
 # roots settled in one place, and set todo at issue-independence, where tree 1's two children
 # fill the cap and it is held in the line — the state this checkpoint used to read here, when a
@@ -3685,10 +3693,11 @@ gate_open() {
 # "Approve <name> (version N)?", a human answered at least one of the spec's decision blocks, and no
 # approval request it made on the spec named a version holding one open or came before a human
 # answered one raised before the human's turn on that request. While the root waits on the human (a
-# question, or a closed gate it registered) it is in awaiting_person without a slot while its
+# question, or a closed gate it registered) it is in awaiting_person, keeping the admission slot it
+# took at its admission, while its
 # architect stays live; the approval answers it, and nothing of its tree advances until the root
 # resumes, each issue of it that then has work waiting for a slot of its own.
-# Tree 1 is the run's one issue at work then under admission_cap 4, so a slot stands free for it.
+# The resume takes no slot of its own, so it comes on the pass that reads the approval.
 drive_gated_spec() {
   local issue=$1 artifact approved asks events version verdict request early blocks requested_versions waits
   local -a requested=()
@@ -3697,8 +3706,8 @@ drive_gated_spec() {
   until_true 300 "the $issue architect to be given its catch-up notice" notice_delivered "$issue" architect "$(notice_needle catch-up "$issue")"
   until_true 43200 "a human to approve the $issue spec in Dispatch, opening its design gate" gate_open "$issue" "$artifact"
   await_root_slot "$issue" "the $issue"
-  waits=$(jq -R -s --arg issue "$issue" '[split("\n")[] | fromjson? | select(.msg == "workflow: root waits on a person and returns its admission slot" and .issue == $issue)] | length' "$daemon_log")
-  note "$issue: it waited on the human without a slot $waits times before the approval, and holds a slot again"
+  waits=$(jq -R -s --arg issue "$issue" '[split("\n")[] | fromjson? | select(.msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)] | length' "$daemon_log")
+  note "$issue: it waited on the human $waits times before the approval, holding its admission slot throughout, and has resumed"
   approved=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.approvedVersion')
   asks=$(dispatch_get "issues/$issue/asks")
   events=$(dispatch_events "$issue")
@@ -3820,7 +3829,7 @@ begin issue-independence
 # scheduler's: with no affinity they bin-pack where the pool has room, so two or more nodes are
 # asserted only when preflight read the NodePool's instance bounds as holding no two of the run's
 # pods (two_pods_fit); otherwise the placement is recorded and the count noted. Tree 2's planner
-# holds for the driver as before. The four issues at work — tree 1's root, its two children and
+# holds for the driver as before. The four issues the daemon has started — tree 1's root, its two children and
 # tree 2's root — are the whole of admission_cap 4, which is where the run reads the line: tree 3,
 # set todo here, waits in it until one of them leaves (child-release). The memory hog stays: it is
 # the pod watch's negative control, the one OOMKilled container pod-watch-verdict must have seen.
@@ -3845,10 +3854,10 @@ for child in "$child1" "$child2"; do
     fail "the daemon records $child's planner claim under tree '${child_tree:-none}', not $tree1: $(claims_cli list --json | jq -c --arg issue "$child" '[.claims[] | select(.issue == $issue) | {role, tree, state}]')"
 done
 set_status "$tree3" todo
-until_true 300 "the cap full of the four issues at work, with tree 3 waiting in the line" sh -c \
+until_true 300 "the cap full of the four issues the daemon has started, with tree 3 waiting in the line" sh -c \
   "'$work/legion' state --json --config '$work/legion.yaml' | jq -e --arg a '$tree1' --arg b '$tree2' --arg c '$tree3' --arg one '$child1' --arg two '$child2' '.admission.cap == 4 and (.admission.active | sort) == ([\$a,\$b,\$one,\$two] | sort) and .admission.waiting == [\$c]'"
 state_file cap-full
-note "active $(jq -c .admission.active "$evidence/cap-full.json"), waiting $(jq -c .admission.waiting "$evidence/cap-full.json"): a slot is one issue with work, so tree 1's root, $child1, $child2 and tree 2's root hold the whole cap and tree 3 ($tree3) waits"
+note "active $(jq -c .admission.active "$evidence/cap-full.json"), waiting $(jq -c .admission.waiting "$evidence/cap-full.json"): a slot is one issue the daemon has started, so tree 1's root, $child1, $child2 and tree 2's root hold the whole cap and tree 3 ($tree3) waits"
 root_pod=$(claim_sandbox "$tree1" architect) || fail "tree 1's architect has no Sandbox locator"
 child1_pod=$(claim_sandbox "$child1" planner) || fail "$child1's planner has no Sandbox locator"
 child2_pod=$(claim_sandbox "$child2" planner) || fail "$child2's planner has no Sandbox locator"
@@ -4758,8 +4767,8 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
-# children-first-acceptance's prompt. A root in accepting is at work no longer, so it holds no
-# admission slot there either.
+# children-first-acceptance's prompt. A root in accepting keeps the admission slot it took when
+# the daemon started it: no worker of it runs, and the slot is not a worker.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
@@ -4772,11 +4781,11 @@ pending_phase=$(claim_pending_phase "$tree1" implementer)
 [ "$pending_phase" != retro ] || fail "the implementer of $tree1 holds a retro task at accepting: the approval started a worker"
 jq -e --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)] | length == 0' "$evidence/accepting.json" >/dev/null ||
   fail "a status write is pending for $tree1 at accepting, which writes none: $(jq -c --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and (.admission.trees | index($issue)) != null' "$evidence/accepting.json" >/dev/null ||
-  fail "$tree1 holds an admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
+jq -e --arg issue "$tree1" '(.admission.active | index($issue)) != null and (.admission.trees | index($issue)) != null' "$evidence/accepting.json" >/dev/null ||
+  fail "$tree1 holds no admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
 dispatch_status_is "$tree1" needs_review >/dev/null ||
   fail "Dispatch shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
-note "the reviewer's approval moved $tree1 to accepting (no worker started, no slot held, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
+note "the reviewer's approval moved $tree1 to accepting (no worker started, the slot kept, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
 pass
 
 begin children-first-acceptance
@@ -4791,8 +4800,9 @@ begin children-first-acceptance
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
-# later). The root in accepting holds no slot of its own, so the two children beside tree 3 keep
-# the run within admission_cap 4 and within the pods preflight sized the pool for. And an issue
+# later). The root in accepting keeps its own slot, so it, tree 3 and these two children are the
+# four of admission_cap 4 — tree 2 left the workflow at issue-cap-moves and child 2 is parked
+# again — which keeps the run within the cap and within the pods preflight sized the pool for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
 # child at admitted and starts nothing for it (CHILD_UNDER_ACCEPTED_PARENT, record.Accepted),
 # so accepting is the last moment of tree 1's run at which a child of it still runs.
@@ -6324,8 +6334,8 @@ told=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")
   fail "$tree1's architect was told $told pr-merged notices, which only a close that waits for the rest of its tree sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
-# No issue of tree 1 holds an admission slot once it closes: the root gave its own up at
-# accepting, its children theirs at their parks, and the close frees whatever is left.
+# No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
+# awaiting_merge, its children's at their parks, and the close frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"

@@ -711,9 +711,9 @@ A file, URL or token that prevents Dispatch fails the baseline read, naming it; 
 The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
 
 It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue with work, and this child's tree has not opened its design gate, so it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
+— a slot is one issue the daemon has started, and an issue keeps it until it is done, leaves the workflow or waits only for its merge; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
-its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, no slot, architect live), the human approval, the root's return to a slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, merger READY, the daemon's merge of the READY head, which closes the issue (`daemon-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
+its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, merger READY, the daemon's merge of the READY head, which closes the issue (`daemon-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
 — a review ends when its reviewer completes it, so the round returns to implementing only once the reviewer's handoff is recorded on the Dispatch issue under the reviewer's claim session, and each review, like the final approval, names the issue branch's head at that round's reviewer completion, the implementer's last pushed head (the order the Go reviewer prompt gives;
 the proof names only the decision); in round one the proof human, a GitHub App and so a bot account like a CI bot and none of Legion's role Apps, also opens a file-level review thread (the run reads the thread's author back and stops, naming it, when the devbox `gh` posted as anything else, such as the user after its App routing failed).
@@ -726,8 +726,8 @@ the correction counts only in that file's patch on the pull request) and reaches
 It also proves `pr-blocked`, READY refusing after a later spec version until a human approves it (`ready-gated-on-new-spec-version`, which ends on Dispatch carrying the human's approval forward:
 after the gate-state negative control below, the proof inserts a decision block at the end of the spec through the edits route in a stand-in architect session's name (`dispatch_agent` in `lib/workflow.sh`), the merger's READY is refused at that version, and the proof human answers the block, which is the whole change since the version he approved;
 the issue reaches `awaiting_merge` on the carried `artifact.approved` at the version after the refused one, the spec's newest review is pinned to that version in his name with the carry's reason and no ask, no approval request is opened, and the proof writes no review through the reviews route between the refusal and the release), a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
-the root waits on the person without a slot, the human's changes request answers it and the root takes a slot back at `admitted` with its architect's session resumed, which `close_root` requires;
-the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the freed slot goes to the next root, and the journal has the root's wait, the gate's changes request, two slot releases (the wait and the close) and two slot takes (its admission and its return), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
+the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
+the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
 in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
 — authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and whose root (`LEGION_GH_OWNERS_DIR`) holds that one owner's directory alone, that directory holding `config.yml`, `hosts.yml` and a directory per other repository the project serves under that owner, each holding those two files alone;
 the shared clone's helper is `!legion git-credential` with `credential.useHttpPath`;
@@ -2085,8 +2085,8 @@ the human replies in the request's thread, or answers Request changes;
 the revision raises a block; the human answers it;
 and the architect hands the request back, or requests approval again, which opens a new request since Request changes answered the old one.
 It keeps the issue's asks as `<issue>-asks.json`, approval events as `<issue>-events.json`, each requested version as `<issue>-spec-v<N>.json`, and the verdict as `<issue>-gate-verdict.json`.
-While tree 1 waits on the human (its question, or a closed gate it registered) it is in `awaiting_person` with no slot and its architect live;
-once the gate opens, `spec-posted` waits for the root to hold a slot again (`await_root_slot`, which tree 1, the run's one issue at work under `admission_cap: 4`, takes at once) before it waits for planning, and notes how many times the daemon logged the root giving its slot back.
+While tree 1 waits on the human (its question, or a closed gate it registered) it is in `awaiting_person`, keeping the slot it took at its admission, with its architect live;
+once the gate opens, `spec-posted` waits for the root to resume (`await_root_slot`, which needs no slot of its own, so it comes on the pass that reads the approval) before it waits for planning, and notes how many times the daemon logged the root waiting on the human.
 
 `LEGION_E2E_POD_FILE` names a JSON file holding a deployment's own worker pod block, the `runtime.kubernetes.pod` value its configuration renders (`service_account`, `env`, `volumes`, `volume_mounts`, in the shape `packages/daemon/internal/config/kubernetes.go` reads).
 The run copies it once, at prerequisites, as `jq -cS .` into its work directory and records the copy's sha256;
@@ -2112,13 +2112,13 @@ A pass proves that and no more:
 
 - The pod is an issue pod; the daemon's own controller pod, under `controller: daemon`, is not launched or checked.
 
-Four roots run under `admission_cap: 4`, a cap of issues at work rather than of trees (dispatch://INFRA-980):
+Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each of which keeps its slot until it is done, leaves the workflow or waits only for its merge:
 
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
   the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.
   While its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own:
-  the four issues at work fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 parked in backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
-  Children 3 and 4, filed while the root stands in `accepting` and holds no slot of its own, hold its sign-off:
+  the four issues the daemon has started fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 parked in backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
+  Children 3 and 4, filed while the root stands in `accepting` holding its own slot, hold its sign-off:
   the daemon refuses it `SIGNOFF_CHILD_IN_WORKFLOW` naming both, the proof human parks them one at a time, the refusal after the first park names the one that remains, and the sign-off lands only once the last has left.
 
 - Tree 2 runs through its planner beside tree 1, in an issue pod of its own, carrying the repository-configuration fixture (the loading paths' markers, two skills, a Go, a TypeScript and a Python root, and a `.omp/config.yml`), whose tools its planner uses in its checkout (`repository-tools`), supplies the capability report every session measures at an idle tick of the 5 s interval it already runs rather than at its boot (`full-agent`, INFRA-927), and is then moved to backlog.
@@ -2350,7 +2350,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   and no pod can read another issue's workspace, each way between the root's pod and child 1's (`ls` of the other's workspace path answers `No such file or directory`, while the same path exists in its own pod).
   Their nodes are recorded (`issue-independence-pods.txt`);
   two or more are asserted only when preflight read the NodePool's instance bounds as holding no two of the run's pods, otherwise the count is noted.
-  Tree 3 is then set todo, and the state reads the cap full of the four issues at work — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue with work, so one tree's children fill a cap beside another tree's root.
+  Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
   The proof's instructions tell every phase worker that the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`) is not the driver's instruction.
@@ -2475,7 +2475,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   the bot's may still be open there, since the approval does not wait for the implementer's resolution).
   The approval moves the issue to `accepting`, read directly:
   no worker starts (the implementer's claim holds no retro task, `claim_pending_phase`;
-  its state alone says nothing, since it may still be resolving the bot's thread), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
+  its state alone says nothing, since it may still be resolving the bot's thread), the daemon queues no status write and Dispatch keeps `needs_review`, the root keeps its admission slot there while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
 
 - `children-first-acceptance`
 
@@ -2719,7 +2719,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `awaiting_merge` → `done` within 900 s (the daemon log's `workflow: phase changed … from=awaiting_merge to=done trigger=pull_request_merged`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
-  No issue of tree 1 holds an admission slot at the close: the root gave its own up at `accepting`, its children theirs at their parks, and the close frees whatever is left.
+  No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `awaiting_merge`, its children's at their parks, and the close frees whatever is left.
   The proof sends it nothing there, so the fixture's instructions say a check task waits for no targeted message and acts on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
   `looks: 1, lookOpen: false`, the check still open); the smoke main's cleanup (`clean_smoke_main`) runs while it works.
@@ -2944,8 +2944,8 @@ The project maps `sjawhar/legion-smoke` as its default repository.
 **Files.**
 The work directory is `/tmp/legion-e2e-pd.<pid>.<random>`.
 
-- `legion.yaml`: Stage 3's daemon configuration, with `gates.design: root-issues`, `admission_cap: 3` and `controller_wake_interval_seconds: 86400`.
-  Three slots, since trees 1 and 4 run again and tree 3 still needs one.
+- `legion.yaml`: Stage 3's daemon configuration, with `gates.design: root-issues`, `admission_cap: 4` and `controller_wake_interval_seconds: 86400`.
+  Four slots: the four roots that wait on a person at `trees-wait-on-a-person` each keep the slot the daemon gave them, and that peak returns later as tree 5, waiting on its gate throughout, beside trees 1 and 4 running again and tree 3 taking one in `walk-on-start`.
   At a day, the one tick is the tick at boot, before a tree exists.
   Thus no tick walk races the notice, and the walk runs only when a controller starts.
 
@@ -3747,7 +3747,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one tree:
-a root in `accepting` on a reviewed, open pull request, holding no admission slot (an issue that only waits holds none), with one child implementing beneath it on an open pull request of its own, holding one.
+a root in `accepting` on a reviewed, open pull request, seeded holding no admission slot, with one child implementing beneath it on an open pull request of its own, holding one.
 A second issue of that tree is written at step 3, with the shape the wait is driven from; it is one of its own rather than the parked child, whose workers the park's own suspension is still stopping.
 Every fact it drives enters by a transport production has
 — a GitHub or Dispatch envelope on the `ENVOY_NOTIFICATIONS` stream, or one of the daemon's own HTTP routes
@@ -5165,9 +5165,9 @@ a correction round, the retro, and planning, whose planner runs its gap analyst 
 `round_correction_pushed ROUND` accepts the round's line only as an addition in `smoke_file`'s patch, never in a notes file that quotes it.
 
 With the design gate armed (`gates.design: root-issues`), a root whose architect registers a closed gate while no worker of its tree runs waits on a person:
-`drive_gate ISSUE LABEL [SECONDS]` runs `architect_registers_gate`, then `await_gate_wait` (the root in `awaiting_person` with `waitingOn.kind` `gate` and no `answeredAt`, no `.slot` and absent from `admission.active`, while its architect stays live within `phase_seconds`), approves the registered version as the proof human, then `await_answered_slot`:
-the answer (`waitingOn.answeredAt`, or the root already holding a slot, since a slot free at the answer is taken in the same transaction) within 120 s, then `await_root_slot`, the root out of `awaiting_person` holding a slot in `admission.active`, within `SECONDS` (`phase_seconds` by default;
-Stage 3's first root passes 1800, since its slot comes back only when a root that took the slot it gave up registers its own gate in turn).
+`drive_gate ISSUE LABEL [SECONDS]` runs `architect_registers_gate`, then `await_gate_wait` (the root in `awaiting_person` with `waitingOn.kind` `gate` and no `answeredAt`, holding its `.slot` and named by `admission.active`, while its architect stays live within `phase_seconds`), approves the registered version as the proof human, then `await_answered_slot`:
+the answer (`waitingOn.answeredAt`, or the root already out of `awaiting_person`) within 120 s, then `await_root_slot`, the root resumed out of `awaiting_person` with its wait cleared and its architect live, within `SECONDS` (`phase_seconds` by default;
+Stage 3's first root passes 1800, which is slack now that a resume takes no slot and waits for no other root).
 A timeout in any of them prints the root's phase, slot, `waitingOn` and architect state and the admission state.
 Only then does it wait for planning.
 `wait_for_architect ISSUE` and so `architect_registers_gate` require that architect to remain live even after the root's wait began.
