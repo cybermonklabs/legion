@@ -12,11 +12,13 @@
 # them; paying for them here would add 150 s to every case that exhausts the ladder, so `sleep`
 # is a no-op stand-in on this PATH, as the retry delay this file used to set to zero was. It
 # records the seconds each call asked for, so a case still reads which waits the ladder made
-# without waiting them. Those recordings are what catch a stand-in lost from this PATH: with
-# the real `sleep` running, nothing is written under `$work/sleeps`, so `waited` answers an
-# empty line where a case holds it to `10 20 40 80` and `sleeps` answers 0 where a case holds
-# it to one. Both fail the moment a case drives the ladder, whatever else the machine is busy
-# with, and they name the ladder rather than the 150 s the suite would have spent on it.
+# without waiting them. Two checks are what catch a stand-in lost from this PATH: with the real
+# `sleep` running, nothing is written under `$work/sleeps`, so `waited` answers an empty line
+# where :326 holds it to `10 20 40 80` and :594 holds it to `10`. Both fail the moment a case
+# drives the ladder, whatever else the machine is busy with, and they name the ladder rather
+# than the 150 s the suite would have spent on it. `sleeps` is no such guard: the only check of
+# it holds the negative control to 0, which a lost stand-in also gives. The exhausting-timeout
+# case below holds no `waited` of its own, so it rests on those two.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `sleep`, a
 # stand-in `timeout` that four cases opt into call by call and that otherwise execs the real
