@@ -21,16 +21,25 @@ import (
 // the repeat and the retry's row records it as a duplicate rather than a fresh delivery. A missed
 // receipt is tried again inside the listener take-over window (takeoverRetry) under the same key,
 // so the attempt is recorded failed only when every try of that window missed; this listener
-// misses every one until the comment's own request has answered.
+// answers none of them until the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	t.Parallel()
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
 		delivered map[string]struct{}
-		answering bool
 	}
 	listenerState.delivered = map[string]struct{}{}
+	// answering is closed when the comment's own request has answered. Until then this listener
+	// takes every send and answers none of them, so a try misses the client's window because its
+	// answer never comes at all, whatever the machine does with the goroutines meanwhile. A sleep
+	// longer than that window ordered the two by wall clock instead, and a runner stalled for
+	// longer than the sleep left the client's expiry and the listener's answer both due at the
+	// same moment: the try that was answered first inside the window recorded the attempt sent,
+	// where this test wants every try of the first request to miss (CI job 128890477766 of this
+	// branch read sent at the first assertion below). released frees a send this listener is
+	// still holding when the test ends before it answered anything, so Close waits on no request.
+	answering, released := make(chan struct{}), make(chan struct{})
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -48,14 +57,15 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 			}
 			listenerState.Lock()
 			listenerState.keys = append(listenerState.keys, request.IdempotencyKey)
-			missing := !listenerState.answering
 			key := request.IdempotencyKey + "@" + request.TargetSession
 			_, held := listenerState.delivered[key]
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
-			if missing {
-				// The send lands; the answer misses the client's window.
-				time.Sleep(400 * time.Millisecond)
+			select {
+			case <-answering:
+			case <-released:
+				// The send landed; the answer never came, which is the whole of this test.
+				return
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"mention-envelope-2","recipient":"s1","duplicate":true}`))
@@ -67,7 +77,20 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	// Runs before the Close above: a send this listener holds is let go whatever the test did.
+	defer close(released)
+	// envoyTimeout is the listener client's window: what ends a try this listener answers nothing
+	// to, and what every call it does answer - each resolution, and the retry's send - has to
+	// finish inside. While a missed try was a sleep waited out, the window had to be the shorter
+	// of that pair, and 150 ms was all any answered call got; now that nothing is answered until
+	// the request has, the window is free to be the generous one a loaded machine needs, and it
+	// costs this test only the length of the tries nobody answers. takeoverWindow is this test's
+	// own for the same reason: testTakeoverWindow's 750 ms is shorter than one try here, and this
+	// one leaves room for the second try the key is proved stable across (the window plus
+	// takeoverFirstBackoff's 250 ms).
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: 1500 * time.Millisecond, takeoverWindow: 2 * time.Second,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "A mention that landed then timed out", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "The mention landed; the answer did not.", "mentions": []map[string]any{{"target": "session:s1"}},
@@ -75,9 +98,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 	if len(comment.Deliveries) != 1 || comment.Deliveries[0].State != "failed" {
 		t.Fatalf("first attempt = %#v, want it recorded failed once every try missed its receipt", comment.Deliveries)
 	}
-	listenerState.Lock()
-	listenerState.answering = true
-	listenerState.Unlock()
+	close(answering)
 
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
@@ -98,16 +119,18 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 		t.Fatalf("the listener delivered %d distinct keys %#v, want the agent to receive the mention once", delivered, keys)
 	}
 
-	var state string
+	var state, failure string
 	var duplicate bool
 	if err := database.Pool.QueryRow(context.Background(), `
-		select state, duplicate from comment_deliveries
+		select state, duplicate, coalesce(error, '') from comment_deliveries
 		where comment_id = $1 and target = 'session:s1' order by attempt desc limit 1
-	`, comment.ID).Scan(&state, &duplicate); err != nil {
+	`, comment.ID).Scan(&state, &duplicate, &failure); err != nil {
 		t.Fatalf("read the retried mention attempt: %v", err)
 	}
 	if state != "sent" || !duplicate {
-		t.Fatalf("retried mention attempt = %s/duplicate=%v, want sent and duplicate", state, duplicate)
+		// The row's own error, so a failure here says what the send reported rather than only
+		// that it was not what this test wants.
+		t.Fatalf("retried mention attempt = %s/duplicate=%v/error=%q, want sent and duplicate", state, duplicate, failure)
 	}
 }
 

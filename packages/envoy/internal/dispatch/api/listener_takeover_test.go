@@ -179,23 +179,47 @@ func deliveryReceiptsOf(t *testing.T, database *store.Store, receiptType, field,
 // a few seconds. A send that meets one of those waits out the take-over under the attempt it
 // holds and its own key, and reaches the session once the listener answers. Anything else the
 // listener says - the session does not take this mode, the send itself is refused - is its
-// answer, and the attempt settles failed on that first try. The server's window is a short one
-// of its own, which still fits every try a case's take-over takes: a receipt timeout's 300 ms try
-// and its retry, and the starting gate's two retries 250 ms and 750 ms after the first try.
+// answer, and the attempt settles failed on that first try. The listener client's window is this
+// test's own: nothing here is answered on a timer any more, so the window only has to be longer
+// than an answer a loaded machine takes, and the one try nothing answers in time - the receipt
+// timeout's - is all it costs this table. The take-over window is the generous one for the same
+// reason, so every try a case takes still starts inside it: that missed try's retry, and the
+// starting gate's two retries 250 ms and 750 ms after the first try.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.server.URL, envoyTimeout: 300 * time.Millisecond, takeoverWindow: 3 * time.Second,
+		envoyURL: listener.server.URL, envoyTimeout: 1500 * time.Millisecond, takeoverWindow: 6 * time.Second,
 	})
 
+	// The retry's send is this test's own evidence that the first try's window has ended: a
+	// sender tries again only after a try it recorded failed, and the only thing that ends the
+	// try below is that window. answered is closed when the retry arrives, and the first try,
+	// which this listener is still holding, answers then: late, as the answer of a listener that
+	// published and lost its client is, but ordered on an event the test can observe. A sleep
+	// longer than the window ordered the two by wall clock instead, and a runner stalled for
+	// longer than the sleep left the client's expiry and this answer both due at the same moment:
+	// an answer taken inside the window settles attempt 1 sent on its first try, where this case
+	// wants that receipt missed and the retry answered duplicate. released lets a held try go
+	// when no retry came, so Close waits on no request.
+	answered, released := make(chan struct{}), make(chan struct{})
+	defer close(released)
 	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, _ *http.Request, send resumeSend) {
 		// The listener publishes before it answers, and this answer misses the client's window.
 		l.mu.Lock()
 		l.sends = append(l.sends, send)
 		l.mu.Unlock()
-		time.Sleep(600 * time.Millisecond)
+		select {
+		case <-answered:
+		case <-released:
+		}
 		_, _ = w.Write([]byte(`{"event_id":"takeover-late","recipient":"s1"}`))
+	}
+	// The retry of that send, which frees the try still held before it answers as the listener
+	// does once it holds the session: the key and recipient were published above, so duplicate.
+	answerTheRetry := func(l *takeOverListener, w http.ResponseWriter, _ *http.Request, send resumeSend) {
+		close(answered)
+		l.publish(w, send)
 	}
 	for _, tc := range []struct {
 		name   string
@@ -225,7 +249,9 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 				w.WriteHeader(http.StatusBadGateway)
 			}},
 		}},
-		{name: "the send's receipt timed out", script: []takeOverAnswer{{takeOverSend, lateAnswer}}, wantDuplicate: true},
+		{name: "the send's receipt timed out", script: []takeOverAnswer{
+			{takeOverSend, lateAnswer}, {takeOverSend, answerTheRetry},
+		}, wantDuplicate: true},
 		{name: "the session does not take the mode", script: []takeOverAnswer{
 			{takeOverRegistry, answerJSON(http.StatusOK, `{"session_id":"s1","title":"planner","capabilities":["btw"]}`)},
 		}, failure: "session s1 (planner) does not advertise steer", triesRoute: takeOverRegistry},
