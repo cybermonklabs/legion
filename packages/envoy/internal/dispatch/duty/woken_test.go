@@ -1,4 +1,4 @@
-package duty
+package duty_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -24,12 +25,12 @@ func signal(wake chan struct{}) {
 
 // runLoop runs loop with exclusive in place of Exclusive until the returned cancel is called, and
 // done closes once it has returned.
-func runLoop(loop WokenLoop, exclusive ExclusiveFunc) (cancel context.CancelFunc, done <-chan struct{}) {
+func runLoop(loop duty.WokenLoop, exclusive duty.ExclusiveFunc) (cancel context.CancelFunc, done <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		loop.run(ctx, exclusive)
+		loop.Run(ctx, exclusive)
 	}()
 	return cancel, finished
 }
@@ -59,8 +60,8 @@ func wantPassesAt(t *testing.T, passes *passClock, start time.Time, offsets ...t
 }
 
 // noLease is an exclusive the rows without a lease never call.
-func noLease(t *testing.T) ExclusiveFunc {
-	return func(context.Context, Leases, string, time.Time, time.Duration, func(context.Context)) bool {
+func noLease(t *testing.T) duty.ExclusiveFunc {
+	return func(context.Context, duty.Leases, string, time.Time, time.Duration, func(context.Context)) bool {
 		t.Error("a loop with no lease asked for one")
 		return false
 	}
@@ -72,7 +73,7 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			Wake:   make(chan struct{}, 1),
 			MinGap: 5 * time.Second,
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
@@ -91,7 +92,7 @@ func TestWakesInsideTheMinimumGapCollapseIntoOnePass(t *testing.T) {
 		var passes passClock
 		wake := make(chan struct{}, 1)
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			Wake:   wake,
 			MinGap: 5 * time.Second,
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
@@ -119,7 +120,7 @@ func TestAWakeDuringAPassEarnsAPassAfterIt(t *testing.T) {
 		inside, release := make(chan struct{}), make(chan struct{})
 		first := true
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			Wake:   wake,
 			MinGap: 5 * time.Second,
 			Pass: func(context.Context) time.Time {
@@ -147,7 +148,7 @@ func TestADueTimeAPassReturnsFiresOnce(t *testing.T) {
 		var passes passClock
 		calls := 0
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			MinGap: 5 * time.Second,
 			Pass: func(context.Context) time.Time {
 				passes.record()
@@ -172,7 +173,7 @@ func TestALaterPassesDueTimeReplacesTheEarlierOne(t *testing.T) {
 		wake := make(chan struct{}, 1)
 		calls := 0
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			Wake:   wake,
 			MinGap: time.Second,
 			Pass: func(context.Context) time.Time {
@@ -202,7 +203,7 @@ func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
 		var passes passClock
 		calls := 0
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			MinGap: 5 * time.Second,
 			Pass: func(context.Context) time.Time {
 				passes.record()
@@ -231,7 +232,7 @@ type fakeLease struct {
 	periods  []time.Duration
 }
 
-func (f *fakeLease) exclusive(ctx context.Context, _ Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+func (f *fakeLease) exclusive(ctx context.Context, _ duty.Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
 	f.mu.Lock()
 	f.attempts = append(f.attempts, time.Now())
 	f.names = append(f.names, name)
@@ -257,7 +258,7 @@ func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
 		var passes passClock
 		lease := &fakeLease{refusals: 3}
 		booted := time.Now()
-		cancel, done := runLoop(WokenLoop{
+		cancel, done := runLoop(duty.WokenLoop{
 			Lease:  "suggestion-outcomes",
 			Wake:   make(chan struct{}, 1),
 			MinGap: minGap,
@@ -304,21 +305,21 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 
 	t.Run("idle", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			cancel, done := runLoop(WokenLoop{Wake: make(chan struct{}, 1), Pass: idlePass}, noLease(t))
+			cancel, done := runLoop(duty.WokenLoop{Wake: make(chan struct{}, 1), Pass: idlePass}, noLease(t))
 			returnsAtOnce(t, cancel, done)
 		})
 	})
 	t.Run("waiting to retry a refused lease", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			lease := &fakeLease{refusals: 1 << 30}
-			cancel, done := runLoop(WokenLoop{Lease: "l", MinGap: time.Hour, Pass: idlePass}, lease.exclusive)
+			cancel, done := runLoop(duty.WokenLoop{Lease: "l", MinGap: time.Hour, Pass: idlePass}, lease.exclusive)
 			returnsAtOnce(t, cancel, done)
 		})
 	})
 	t.Run("waiting out the gap", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			wake := make(chan struct{}, 1)
-			cancel, done := runLoop(WokenLoop{Wake: wake, MinGap: time.Hour, Pass: idlePass}, noLease(t))
+			cancel, done := runLoop(duty.WokenLoop{Wake: wake, MinGap: time.Hour, Pass: idlePass}, noLease(t))
 			synctest.Wait()
 			signal(wake)
 			returnsAtOnce(t, cancel, done)
@@ -328,13 +329,13 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			attempts := 0
-			cutShort := func(context.Context, Leases, string, time.Time, time.Duration, func(context.Context)) bool {
+			cutShort := func(context.Context, duty.Leases, string, time.Time, time.Duration, func(context.Context)) bool {
 				attempts++
 				cancel()
 				return false
 			}
-			loop := WokenLoop{Lease: "l", MinGap: time.Second, Pass: idlePass}
-			loop.run(ctx, cutShort)
+			loop := duty.WokenLoop{Lease: "l", MinGap: time.Second, Pass: idlePass}
+			loop.Run(ctx, cutShort)
 			if attempts != 1 {
 				t.Errorf("attempts = %d, want the one shutdown cut short", attempts)
 			}
@@ -356,7 +357,7 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	}
 	defer holder.Release()
 	var locked bool
-	if err := holder.QueryRow(ctx, takeLease, leaseNamespace, name).Scan(&locked); err != nil || !locked {
+	if err := holder.QueryRow(ctx, duty.TakeLease, duty.LeaseNamespace, name).Scan(&locked); err != nil || !locked {
 		t.Fatalf("hold the lease: %v (%t)", err, locked)
 	}
 
@@ -365,7 +366,7 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunWoken(loopCtx, WokenLoop{
+		duty.RunWoken(loopCtx, duty.WokenLoop{
 			Lease:  name,
 			Leases: leases,
 			Wake:   make(chan struct{}, 1),
@@ -384,7 +385,7 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 	}
 	var freed bool
-	if err := holder.QueryRow(ctx, freeLease, leaseNamespace, name).Scan(&freed); err != nil || !freed {
+	if err := holder.QueryRow(ctx, duty.FreeLease, duty.LeaseNamespace, name).Scan(&freed); err != nil || !freed {
 		t.Fatalf("let the lease go: %v (%t)", err, freed)
 	}
 	select {

@@ -198,6 +198,16 @@ type eventListQuery struct {
 	Limit int `query:"limit"`
 }
 
+// eventLogQuery is GET /api/v1/events/log's query: one page of the whole event log, which is
+// read forward by id and nothing else.
+type eventLogQuery struct {
+	// After reads the events above this event id, oldest first; 0, its default, reads the log
+	// from its start.
+	After int `query:"after"`
+	// Limit is how many events the page holds, 1 to 1000, and 1000 by default.
+	Limit int `query:"limit"`
+}
+
 // issueReferencesQuery is GET /api/v1/issues/{key}/references's query.
 type issueReferencesQuery struct {
 	// Versions, `latest`, leaves each member's artifact.versions holding only its latest
@@ -757,6 +767,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: userAskSnooze{}, Request: askSnoozeInput{},
 	},
 	"DELETE /api/v1/me/asks/{id}/snooze": {Status: http.StatusNoContent},
+	"GET /api/v1/events/log":             {Status: http.StatusOK, Response: []model.Event{}, Params: eventLogQuery{}},
 	// The relay rows. Dispatch writes the broker's bytes unparsed (relayBrokerResponse), so each
 	// Response names the shape the broker's own handler answers with, declared in
 	// internal/broker/wire and matched through the agentsecrets.Client method the handler calls.
