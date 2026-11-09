@@ -2116,7 +2116,7 @@ check_a16() {
   local pattern hits unrelated paths
   store=-
   printf '== A16: the search for the loop described as tool-less finds no line about the loop\n'
-  pattern=$(jq -r '.a16.phrases | join("|")' "$questions_file")
+  pattern=$(a16_pattern)
   paths=(packages/daemon/internal/answer packages/daemon/internal/answerloop packages/daemon/internal/ghtool
     packages/daemon/internal/conversation packages/daemon/internal/agenthistory packages/daemon/internal/prompts skills docs)
   hits=$(cd "$root" && {

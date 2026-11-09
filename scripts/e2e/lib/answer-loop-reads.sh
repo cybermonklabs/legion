@@ -350,6 +350,17 @@ recorded_hit() {
     'any(.a16.unrelated_hits[]; .file == $f and (.text == $t or (.starts_with as $s | $s != null and ($t | startswith($s)))))' \
     "$questions_file" >/dev/null
 }
+# a16_pattern prints A16's own search pattern: the questions file's a16.phrases joined with `|`,
+# an extended regular expression. A phrase may carry a word boundary (`never give\b`), which is
+# what keeps the search off `is never given up`, a sentence about the outbox retry and not about
+# the loop. a16_hit TEXT: TEXT holds one of the phrases, case-insensitively, as a line of the
+# search does; no text at all is no hit, and no run of its own ends here.
+a16_pattern() { jq -r '.a16.phrases | join("|")' "$questions_file"; }
+a16_hit() {
+  local pattern
+  pattern=$(a16_pattern) || return 1
+  grep -qiE -- "$pattern" <<<"${1:-}"
+}
 
 # ---- Dispatch -------------------------------------------------------------------------------------
 # ask_of SESSION ISSUE prints the id of the newest ask SESSION opened on ISSUE, empty for none;

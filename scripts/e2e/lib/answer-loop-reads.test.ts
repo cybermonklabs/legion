@@ -536,6 +536,31 @@ describe("the questions file", () => {
     expect(run(`recorded_hit skills/envoy/SKILL.md 'a line nobody recorded'`).code).toBe(1);
     expect(run(`recorded_hit '' ''`).code).toBe(1);
   });
+
+  test("a16_pattern joins the phrases and a16_hit reads a line of A16's search", () => {
+    expect(read("a16_pattern").text).toBe("no tools|tool-less|never give\\b");
+    expect(run(`a16_hit 'the loop will never give the agent a tool'`).code).toBe(0);
+    expect(run(`a16_hit 'A peer with no tools of its own still answers.'`).code).toBe(0);
+    // The word boundary: `give` whole, so a sentence about a row that is never given up, or
+    // about what the daemon never gives, is no hit of a search for the loop described as
+    // tool-less.
+    expect(run(`a16_hit 'a row whose decision or publish fails is never given up'`).code).toBe(1);
+    expect(run(`a16_hit 'the daemon never gives the loop a tool of its own'`).code).toBe(1);
+    expect(run(`a16_hit 'never giving the loop a tool'`).code).toBe(1);
+    expect(run(`a16_hit ''`).code).toBe(1);
+  });
+
+  test("the rig's own phrases keep A16's search off the outbox retry's sentence", () => {
+    // The file the live proof reads, not the fixture: the words of the two lines A16's search
+    // turned up, one a hit this check is for and one it was never for.
+    const real = `questions_file=${shq(join(e2e, "answer-loop", "questions.json"))}`;
+    const retry =
+      "a row whose decision or publish fails counts the attempt and backs off by `retry.Delay`, as an event does, and is never given up, its `retry.DeadLetterAttempts`th failure logged at Error.";
+    const skill =
+      "- Never give a peer the `subagent` field from `envoy_whoami`: it names your host session and is not an address.";
+    expect(run(`${real}; a16_hit ${shq(retry)}`).code).toBe(1);
+    expect(run(`${real}; a16_hit ${shq(skill)}`).code).toBe(0);
+  });
 });
 
 describe("Dispatch", () => {
