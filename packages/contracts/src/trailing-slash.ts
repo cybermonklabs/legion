@@ -1,8 +1,11 @@
-// The one rule every half of this codebase reads a configured address by. An operator types a
-// server or broker URL by hand into a unit file, a pod's environment or a shell, so an address
-// ending in more than one slash is a typo rather than a shape to refuse; two clients that trimmed
-// differently would post `//v1/...` and `/v1/...` for the same configuration. Go's half is
-// `brokerclient.WithoutTrailingSlashes`.
+// How a client of this workspace reads a configured address: the Dispatch client and its
+// configuration, the Envoy client and its settings, the broker's token client and the Legion
+// daemon's client all trim through this one function. An operator types a server or broker URL
+// by hand into a unit file, a pod's environment or a shell, so an address ending in more than
+// one slash is a typo rather than a shape to refuse; two clients that trimmed differently would
+// post `//v1/...` and `/v1/...` for the same configuration. Go's half is
+// `brokerclient.WithoutTrailingSlashes`. The scenario scripts under `packages/pi-legion/scripts`
+// and `scripts/e2e` still carry trims of their own.
 
 /**
  * `url` without the slashes it ends in, counted from the right.

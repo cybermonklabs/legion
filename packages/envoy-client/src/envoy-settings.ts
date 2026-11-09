@@ -380,7 +380,7 @@ export function envoySettings(
   // made here instead of making it again from the variable (`startNotice`, session-settings.ts).
   return {
     enabled: true,
-    url: normalizeEnvoyUrl(url),
+    url: withoutTrailingSlashes(url),
     credential,
     inbound,
     heartbeatMs,
@@ -394,8 +394,4 @@ export function envoySettings(
         ? namedPassDeadlineMs
         : undefined,
   };
-}
-
-export function normalizeEnvoyUrl(value: string): string {
-  return withoutTrailingSlashes(value);
 }

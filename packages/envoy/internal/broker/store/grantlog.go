@@ -126,16 +126,15 @@ type GrantLogQuery struct {
 // out.
 var ErrGrantLogLimit = errors.New("store: the grant log is read a page at a time: Limit must be positive")
 
-// maxGrantLogPagePrealloc is the largest page ReadGrantLog sizes its slice for before it has read
-// a row. The limit itself stays the caller's: it is what the SQL's `limit $4` holds the read to,
-// so what a query answers is what it always answered. Only the allocation is capped, because
-// Limit arrives unchecked and a caller that asks for a billion rows of a period holding five
-// would otherwise have the store reserve a billion GrantLogEvents for them. The cap is the
-// largest page the one production caller can ask for (api's grantLogLimit, a thousand, which it
-// holds every larger limit at), so for every real read the slice is still allocated once and
-// grows no further; a larger limit than that reads its rows through append, which is the cheaper
-// of the two mistakes.
-const maxGrantLogPagePrealloc = 1000
+// MaxGrantLogPage is the largest page the grant log is read in: the route holds every larger
+// limit at it (api's grantLogLimit is this constant), and ReadGrantLog sizes its slice for it
+// before it has read a row. The limit itself stays the caller's — it is what the SQL's `limit $4`
+// holds the read to, so what a query answers is what it always answered — and only the
+// allocation is capped, because Limit arrives unchecked and a caller asking for a billion rows
+// of a period holding five would otherwise have the store reserve a billion GrantLogEvents. So
+// every page a caller can really ask for is allocated once and grows no further; a limit above
+// this one reads its rows through append, which is the cheaper of the two mistakes.
+const MaxGrantLogPage = 1000
 
 // readGrantLog is the one SQL read behind the grant log. It is ordered by id and filtered on at
 // because the audit table's only index besides its primary key is audit_request (request_id):
@@ -195,7 +194,7 @@ func ReadGrantLog(ctx context.Context, pool *pgxpool.Pool, q GrantLogQuery) ([]G
 	}
 	defer rows.Close()
 	// A page the SQL's limit allows is read into one allocation, up to the cap above.
-	events := make([]GrantLogEvent, 0, min(q.Limit, maxGrantLogPagePrealloc))
+	events := make([]GrantLogEvent, 0, min(q.Limit, MaxGrantLogPage))
 	for rows.Next() {
 		var ev GrantLogEvent
 		var secrets, raw []byte

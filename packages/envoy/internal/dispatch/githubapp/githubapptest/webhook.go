@@ -363,27 +363,30 @@ func (w *Webhook) attempt(rw http.ResponseWriter, r *http.Request) {
 	_, _ = rw.Write([]byte("{}"))
 }
 
+// DescribeAuthorization says what an Authorization header carried, for a test fake whose check of
+// it failed: the scheme alone, never the credential behind it. Such a check is about the scheme,
+// and a failure's text is kept by CI and pasted into issues; a header with no space in it is one
+// whole word, which could be the credential itself, so it is counted rather than printed.
+func DescribeAuthorization(header string) string {
+	scheme, _, found := strings.Cut(header, " ")
+	switch {
+	case header == "":
+		return "no Authorization header"
+	case found:
+		return fmt.Sprintf("the %q scheme", scheme)
+	default:
+		return fmt.Sprintf("one word of %d characters and no scheme", len(header))
+	}
+}
+
 // verifyAppJWT checks the bearer is an RS256 JWT that verifies against the fake's public key and
 // carries the claims GitHub requires of an App JWT.
 func (w *Webhook) verifyAppJWT(r *http.Request) {
 	w.t.Helper()
-	authorization := r.Header.Get("Authorization")
-	raw, ok := strings.CutPrefix(authorization, "Bearer ")
+	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		// The scheme alone, never the credential behind it: this check is about the scheme,
-		// and a failure's text is kept by CI and pasted into issues. A header with no space
-		// in it is one whole word, which could be the credential itself, so it is counted
-		// rather than printed.
-		var carried string
-		switch scheme, _, found := strings.Cut(authorization, " "); {
-		case authorization == "":
-			carried = "no Authorization header"
-		case found:
-			carried = fmt.Sprintf("the %q scheme", scheme)
-		default:
-			carried = fmt.Sprintf("one word of %d characters and no scheme", len(authorization))
-		}
-		w.t.Errorf("%s %s called with %s, want an App JWT", r.Method, r.URL.Path, carried)
+		w.t.Errorf("%s %s called with %s, want an App JWT", r.Method, r.URL.Path,
+			DescribeAuthorization(r.Header.Get("Authorization")))
 		return
 	}
 	parts := strings.Split(raw, ".")
