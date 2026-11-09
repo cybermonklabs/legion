@@ -1,5 +1,5 @@
 kind: Changed
-body: A phase worker reads the plan from the issue's plan.md at its newest version, not from the plan version its task line's accepted handoff record cites. It reads that document again before each task of the plan it begins and before it writes its handoff, because the planner goes on writing the plan after its own phase ends.
+body: A phase worker reads the plan from the issue's plan.md at the newest version the plan review approved, not from the plan version its task line's accepted handoff record cites, and it does not build a newer version that no review has approved. It reads that document again before each task of the plan it begins and before it writes its handoff, because the planner goes on writing the plan after its own phase ends; where the issue holds no plan.md, or no approval of one, the plan is the plan record the daemon accepted.
 time: 2026-11-08T21:09:43.558079867Z
 custom:
     Issue: pr3108
