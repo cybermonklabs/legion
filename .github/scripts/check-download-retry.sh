@@ -34,8 +34,12 @@
 #      this check computes is the sum of those waits with the attempts themselves taking no time,
 #      which is the longest one the options allow; a curl whose longest ladder is under 120 s is
 #      refused with the figure. `--retry 7 --retry-delay 1` is 7 s and `--retry 7
-#      --retry-max-time 5` is 7 s, and both pass every other test of this floor. No site in the
-#      tree writes either option today. Rule 8 reads this same ladder when it prices the curl's
+#      --retry-max-time 5` is 7 s, and both pass every other test of this floor. One site in
+#      the tree writes one of the two: .github/scripts/ci-tools.sh's ci_tools_curl carries
+#      `--retry-max-time 120`, which keeps its eighth attempt — the seventh wait is decided
+#      with the timer at 63 s, inside that limit — so its ladder is the full 127 s and clears
+#      the floor; that file derives the 120 itself. No site writes `--retry-delay`.
+#      Rule 8 reads this same ladder when it prices the curl's
 #      attempts against the step's budget, so a curl's floor and its arithmetic are one
 #      computation rather than two that can drift apart.
 #   3. inside a Dockerfile, one canonical inline `retry()` definition, the same text in every
@@ -289,6 +293,25 @@
 #      at least one call of itself, whatever the run finds for it to do, and a figure under
 #      that floor is refused naming the site and the floor.
 #
+#      A per-attempt bound this check cannot read is the other reading that stops rule 8, and
+#      a DeclaredArithmetic entry answers that one too. A curl writing `--max-time "$T"` is
+#      bounded — the option is there, and the attempt really is bounded when the step runs —
+#      while the seconds are the caller's, so one_call answers None for it and there is no
+#      per-call figure for any pass count to multiply. Such a site needs no loop around it to
+#      be unpriceable: with the passes read and the bound unread, what the step waits for is
+#      as unknown as with neither read. So an entry writes the whole of what that site
+#      contributes rather than one call of it, the floor above is not asked of it — there is
+#      no one call to compare it with — and a site no entry covers is refused in the bound's
+#      place, with the two ways out: write the bound as a number, or declare the site. A site
+#      that writes no bound at all is rule 4's refusal and stays rule 8's silence, since the
+#      figure this rule would ask its author for is the one rule 4 is already asking them to
+#      write. The call is a wait all the same and not an absence of one, so a script holding it
+#      is a script whatever runs it waits for, and a loop this check cannot count around a call
+#      of that script is refused rather than dropped. .github/scripts/ci-tools.sh's
+#      ci_tools_curl is the one such site in this tree — the helper every tool install of
+#      .github/ci-tools.yaml fetches through — and rule 8 priced it, and so those installs, at
+#      nothing until the declaration below priced it (dispatch://INFRA-1545, R9).
+#
 #      WHAT IT COUNTS ONCE OR MISCOUNTS, which is the other half of this rule and the half a
 #      reader is owed plainly. A shape this check reads as neither a loop nor a call of a
 #      function is no refusal: the call is counted once, the budget is judged against that one
@@ -324,14 +347,6 @@
 #        * one script that two of a step's paths reach, counted once, because the `seen` set
 #          is shared across a step's scripts. That set exists to stop a cycle, and this is the
 #          same mechanism read from the other side.
-#        * a curl making its own attempts whose `--max-time` is written as a variable rather
-#          than as a number, as in `--max-time "$T"`: the option is there, so rule 1 reads
-#          each attempt as bounded, and the seconds are not, so the call adds nothing to its
-#          step's budget. A figure this check did not compute is the defect this rule exists
-#          to refuse, so it writes none. The call is still read as a wait rather than as no
-#          wait at all — one_call answers None for it and not 0 — so a script holding one is
-#          a script whatever runs it waits for, and a loop whose passes this check cannot
-#          count around a call of that script is refused rather than dropped.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
@@ -355,13 +370,15 @@
 #      and for which no DeclaredArithmetic entry writes the seconds, is refused in place of
 #      being judged, and the refusal names the file, the line and the verb, the loop line it
 #      could not read, and what answers it. That refusal is the default for the loops this
-#      check reads, and for those alone. This rule has been wrong here three times, each fix
-#      teaching the reading one more loop shape while leaving the default on pass; a loop read
-#      with no count is refused now, and a declaration carries its own arithmetic or it is not
-#      one.
+#      check reads, and for those alone. This rule has been wrong here four times: three fixes
+#      taught the reading one more loop shape each while leaving the default on pass, and the
+#      fourth was a figure of 0 written for a bound nobody read. A loop read with no count is
+#      refused now, a bound read with no number is refused with it, and a declaration carries
+#      its own arithmetic or it is not one.
 #
 #      An entry matching no such site fails this check, as a stale exception does, so a
-#      declaration cannot outlive its loop; and an entry whose file, step and verb match sites
+#      declaration cannot outlive the loop or the unread bound it was written for; and an
+#      entry whose file, step and verb match sites
 #      in two loops fails as well, because it writes one figure and the second loop would take
 #      it without anybody writing it one. A loop in a script no step runs is nobody's
 #      arithmetic and is left alone, and so is a Dockerfile's, whose RUN lines sit in no step's
@@ -1462,28 +1479,35 @@ class Call:
         return Call(self.line, self.factor + other.factor, self.wait + other.wait, None)
 
 
-# What one Uncounted names: a fetch written in the body itself, or a call of a script that
-# body runs. The two are read differently and take different advice, and the `kind` field
-# below is the one place that difference is written down.
+# What one Uncounted names: a fetch written in the body itself, a fetch of that body whose own
+# per-attempt bound this check cannot read, or a call of a script that body runs. The three are
+# read differently and take different advice, and the `kind` field below is the one place those
+# differences are written down.
 UNCOUNTED_SITE = "site"
+UNCOUNTED_UNREAD_BOUND = "unread bound"
 UNCOUNTED_SCRIPT_CALL = "script call"
 
 
 class Uncounted:
-    """One thing a step waits for that this check can put no figure on: a retried call, or a
-    script the body runs, inside a loop whose passes it cannot read, and for which no
-    DeclaredArithmetic entry writes the seconds.
+    """One thing a step waits for that this check can put no figure on, and for which no
+    DeclaredArithmetic entry writes the seconds: a retried call, or a script the body runs,
+    inside a loop whose passes it cannot read; or a retried call whose attempts are bounded by
+    a variable rather than by a number, wherever that call sits and whether or not a loop is
+    around it.
 
     `what` is the verb, or the script's path; `one` is what one call of it costs, left None
     wherever no figure can be made of that — a script, whose arithmetic is read when the
     refusal is written because the scripts are read after the steps that run them, and a site
     whose bound is written as a variable rather than as a number.
 
-    `kind` tells apart the two things this class holds: UNCOUNTED_SITE, a fetch written in the
-    body the item was read from, and UNCOUNTED_SCRIPT_CALL, a call of a script that body runs.
-    Every reader asking which of the two it has asks this field. Reading `one is None` for
-    that question was wrong, because None is an answer about a figure and not about a kind: a
-    site whose bound is a variable has no figure either, so it read as a script call, and the
+    `kind` tells apart the three things this class holds: UNCOUNTED_SITE, a fetch written in
+    the body the item was read from, inside a loop with no pass count; UNCOUNTED_UNREAD_BOUND,
+    a fetch of that same body whose passes this check did read — there may be no loop around
+    it at all — and whose per-attempt bound it could not, which is a wait no budget can be
+    held above either; and UNCOUNTED_SCRIPT_CALL, a call of a script that body runs. Every
+    reader asking which of the three it has asks this field. Reading `one is None` for that
+    question was wrong, because None is an answer about a figure and not about a kind: a site
+    whose bound is a variable has no figure either, so it read as a script call, and the
     filter that drops a script waiting for nothing dropped it instead of refusing it
     (dispatch://INFRA-1545, R8)."""
 
@@ -1508,10 +1532,13 @@ def one_call(site: Site) -> int | None:
     Three answers, not two. A number is the seconds one call takes; 0 is a call this check puts
     no wait behind at all — a `mise x`, whose retry rule 7 refuses, and a verb whose attempts
     neither the helper nor curl itself makes; and None is a call that does make attempts whose
-    length is written where this check cannot read it, a bound given as `"$T"` rather than as a
-    number. There is no arithmetic to do for that last one, and rule 4 is what refuses an
-    attempt with no bound at all, but it is not the same answer as 0: the body holding it waits
-    for something of unread length rather than for nothing. Two readers need the pair apart.
+    length is written where this check cannot read it, a bound given as `"$T"` rather than as
+    a number — or none at all, which is the shape rule 4 refuses and which bound_written below
+    tells from this one. No arithmetic can be made of an unread bound from the call itself — a
+    DeclaredArithmetic entry of DECLARED_LOOPS below is what writes its seconds instead, and
+    rule 4 is what refuses an attempt with no bound at all — but it is not the same answer as
+    0: the body holding it waits for something of unread length rather than for nothing. Two
+    readers need the pair apart.
     retries_nothing, through script_waits, asks whether a script holds any call at all, and
     reading both as 0 is the hole round 6 of dispatch://INFRA-1545 found there: a `curl -fsSL
     --retry 7 --retry-all-errors --max-time "$T"` inside a script made that script read as one
@@ -1532,6 +1559,19 @@ def one_call(site: Site) -> int | None:
             retries, delay, max_time = RETRY_FLOOR, None, None
         return (retries + 1) * site.bound + curl_ladder(retries, delay, max_time)
     return 0
+
+
+def bound_written(site: Site) -> bool:
+    """Whether anything bounds one attempt of this site, which is rule 4's question: the
+    `timeout` or `retry_fetch` seconds around it, or curl's own `--max-time`. The number may
+    still be unreadable — `--max-time "$T"` writes the option and leaves the seconds to the
+    caller — and that is the pair rule 8 needs told apart from a site that writes no bound at
+    all. A site writing none is rule 4's refusal, and rule 8 adds nothing to it: one fault
+    reads better as one annotation, and the figure rule 8 would ask for is the very thing
+    rule 4 is already asking the author to write."""
+    if site.bounded:
+        return True
+    return site.verb == "curl" and site.retry is None and curl_options(site.words)[2]
 
 
 def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
@@ -1587,27 +1627,33 @@ def times_run(loops: Loops, line: int, stack: list[int] | None = None,
 
 def arithmetic_of(site: Site) -> int | None:
     """Rule 8's arithmetic for one site: one call of it for each time the step runs it, with
-    the waits of the loops that run it. Where one of those loops makes a count this check
-    cannot read, the figure is the DeclaredArithmetic entry's own seconds, and None where no
-    such entry covers the site — which is a site refused below rather than a budget
-    undercounted here. A site one_call can put no figure on — its bound is written as a
-    variable — adds nothing to the sum rather than making it unreadable: the seconds are not
-    there to add, a number written for them would be this check stating a cost it did not
-    compute, and the step's other sites are still worth holding under its budget. What that
-    site is read for instead is waits_for_nothing's question, which is whether the body
-    holding it waits for anything at all."""
+    the waits of the loops that run it. Two readings stop that sum, and a DeclaredArithmetic
+    entry's own seconds answer both: a loop around the call whose passes this check cannot
+    read, and a call one_call itself can put no figure on because its bound is written as a
+    variable. Where no entry covers such a site the answer is None, which is a site refused
+    below rather than a budget undercounted here.
+
+    The unread bound is the whole of that second reading: there is no per-call number to
+    multiply by anything, so the entry's figure is the site's whole contribution whether the
+    passes around it were read or not. That site answered 0 here until round 9 of
+    dispatch://INFRA-1545, which is what priced every tool install fetching through
+    .github/scripts/ci-tools.sh at nothing, loop or no loop."""
     one = one_call(site)
-    if not one:
-        return 0
-    if site.factor is not None:
-        return site.factor * one + site.wait
+    if one is not None:
+        if not one:
+            return 0
+        if site.factor is not None:
+            return site.factor * one + site.wait
     entry = declared_arithmetic(site)
     if entry is None:
         return None
     entry.used += 1
     if site.blocked is not None:
         entry.loops.add(site.blocked)
-    if entry.seconds < one:
+    if one is not None and entry.seconds < one:
+        # The floor is about one call of a site that has a figure. Where one_call answered
+        # None there is nothing to compare the entry with: that answer is the absence of the
+        # very number this comparison would read, so the entry stands on its own `why` alone.
         entry.below[site.line] = one
     return entry.seconds
 
@@ -1749,29 +1795,43 @@ def sites_of(path: str, body: str, first_line: int, step: str,
 
 
 def uncounted_of(found: list[Site]) -> list[Uncounted]:
-    """The sites of one body this check can put no figure on: a retried call inside a loop
-    whose passes it cannot read, and for which no DeclaredArithmetic
-    entry writes the seconds either. A step whose budget reaches one of these is refused in
-    the loop's place, and a loop no budget reaches costs nobody anything and is left alone —
-    rule 2 is what reads a loop wherever it sits.
+    """The sites of one body this check can put no figure on and no DeclaredArithmetic entry
+    writes the seconds of: a retried call inside a loop whose passes it cannot read, and a
+    retried call whose own per-attempt bound is written as a variable rather than as a number.
+    A step whose budget reaches one of these is refused in its place — in the loop's, or in
+    the bound's — and a site no budget reaches costs nobody anything and is left alone, rule 2
+    being what reads a loop wherever it sits.
 
     A site one_call answers 0 for is left out: a `mise x`, or a verb whose attempts neither the
     helper nor curl itself makes, is a wait of no length, and a loop around no wait is a loop
     rule 8 has nothing to compare a budget with. A site it answers None for is kept, because
-    that is a wait of unread length and not an absent one: the bound is written as a variable,
-    so one call of it has no figure, the loop around it has no pass count, and both halves of
-    the step's wait are unreadable. Dropping it priced the step's whole wait at 0 and refused
-    nobody for it (dispatch://INFRA-1545, R8). The refusal below reads the kind field, not
-    `one`, to tell these items from blocked_calls's script calls, so a None written here blurs
-    nothing."""
+    that is a wait of unread length and not an absent one. Inside a loop it has no pass count
+    either, so both halves of the step's wait are unreadable; with the passes read it is still
+    one wait nobody can price, and pricing it at 0 is what let every tool install of
+    .github/scripts/ci-tools.sh sit under a budget of one minute (dispatch://INFRA-1545, R8
+    and R9). Dropping it inside a loop priced the step's whole wait at 0 and refused nobody
+    for it (R8). A site rule 4 refuses for writing no bound at all is left to rule 4, which
+    is the bound_written question above: what rule 8 would ask its author for is the figure
+    rule 4 is already asking them to write. The refusals below read the kind field, not
+    `one`, to tell these items from blocked_calls's script calls, so a None written here
+    blurs nothing."""
     kept = []
     for site in found:
-        if site.factor is not None or site.path in DOCKERFILES:
+        if site.path in DOCKERFILES:
             continue
         one = one_call(site)
-        if one != 0 and declared_arithmetic(site) is None:
-            kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one,
-                                  UNCOUNTED_SITE))
+        if declared_arithmetic(site) is not None:
+            continue
+        if site.factor is None:
+            if one != 0:
+                kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one,
+                                      UNCOUNTED_SITE))
+        elif one is None and bound_written(site):
+            # No loop in the item: `loop` names the one whose passes could not be read, and
+            # this site's were read, whether it sits in a loop or in none. The refusal below
+            # names the bound instead, which is the half nobody can read here.
+            kept.append(Uncounted(site.path, site.line, site.verb, None, None,
+                                  UNCOUNTED_UNREAD_BOUND))
     return kept
 
 
@@ -1916,21 +1976,26 @@ EXEMPTIONS = [
 
 
 class DeclaredArithmetic:
-    """One figure a reader writes down where rule 8's own reading of a loop stops, matched to a
-    site by the file, the step and the verb it names. It answers for a site whose pass count
-    this check cannot resolve — a `while read` over a list the run makes, a `while :` over the
-    pages of a route — and it answers in seconds rather than in passes, because a loop this
+    """One figure a reader writes down where rule 8's own reading stops, matched to a site by
+    the file, the step and the verb it names. It answers for a site whose pass count this
+    check cannot resolve — a `while read` over a list the run makes, a `while :` over the
+    pages of a route — and for a site whose per-attempt bound is written as a variable rather
+    than as a number, which is a call this check can put no seconds behind however plainly it
+    can count the passes. It answers in seconds rather than in passes, because a loop this
     check could not read is a loop nobody has priced, and a pass number written over it is an
-    excuse rather than a declaration. It writes the seconds that site contributes to the budget
-    of the step holding it, and `why` writes that figure out as a sum, so a reader checks the
-    arithmetic rather than taking the number on trust. This check uses it in place of the
-    arithmetic it could not compute.
+    excuse rather than a declaration; and because a site whose bound is unread has no per-call
+    figure for a pass count to multiply at all. It writes the seconds that site contributes to
+    the budget of the step holding it, and `why` writes that figure out as a sum, so a reader
+    checks the arithmetic rather than taking the number on trust. This check uses it in place
+    of the arithmetic it could not compute.
 
     An entry matching nothing fails this check, as a stale exception does, so a declaration
     cannot outlive what it was written for; an entry two loops of one file match fails as well,
     because it writes one figure and the second loop would take it without anybody writing it
     one; and a figure below one call of the site is refused with that floor, because a site
-    costs at least one call of itself, whatever the run finds for it to do."""
+    costs at least one call of itself, whatever the run finds for it to do. That floor is
+    asked of the sites that have a figure: where the bound is the unread half there is no one
+    call to compare, and the entry's own `why` is the whole of what a reader checks."""
 
     def __init__(self, path: str, step: str | None, verb: str, seconds: int, why: str) -> None:
         self.path = path
@@ -1959,7 +2024,10 @@ class DeclaredArithmetic:
         return f"{self.seconds} s"
 
 
-# Every loop in this tree that rule 8 cannot read is one whose passes are as many as the run
+# Two readings of rule 8 stop at something this table answers, and the entries below are of
+# both kinds.
+#
+# A loop in this tree that rule 8 cannot read is one whose passes are as many as the run
 # finds work: a `while read` over a list the run wrote, a `while :` over the pages of a route.
 # Each one's figure is the passes its own prose argues for at one call of that site, and the sum
 # is written out beside it so that a reader checks it rather than takes it. What every entry of
@@ -1968,6 +2036,12 @@ class DeclaredArithmetic:
 # exhausts its five attempts is not the transient fault a retry exists to survive but an outage
 # of the host, which ci.yaml's Budgets note leaves to the job's own ceiling rather than to the
 # step's.
+#
+# A call whose per-attempt bound is written as a variable is the other kind, and it needs no
+# loop around it to need an entry: what one call of it takes is the figure one_call cannot
+# make, so the entry writes the whole of what that site contributes and the sum it comes from.
+# One such entry's figure is one figure for every caller of the site, which is the limit of
+# this mechanism and is said out loud in the `why` that has to live with it.
 DECLARED_LOOPS: list[DeclaredArithmetic] = [
     DeclaredArithmetic(".github/workflows/ci.yaml",
                        "Force-cancel the runs of the groups the queue removed", "gh api", 300,
@@ -2028,6 +2102,38 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "for the row the package already holds and once for the row it is about "
                        "to copy — two written calls of which a pass runs one, so the figure is "
                        "twice what a row costs: 2 x (5 x 60 + 150) = 900 s"),
+    # Not a loop. ci_tools_curl writes `--max-time "$max_time"`, the row's own field, so one
+    # call of this one curl has no figure and rule 8 priced every tool install of this tree at
+    # nothing without this entry (dispatch://INFRA-1545, R9).
+    DeclaredArithmetic(".github/scripts/ci-tools.sh", None, "curl", 741,
+                       "the three fetches one failing `ci_tools_fetch` of a ghcr-mirror row "
+                       "with a release asset of its own makes: the asset, then the anonymous "
+                       "pull token and then the blob of the copy (ci_tools_fetch, "
+                       "ci_tools_ghcr_token, ci_tools__fetch_ghcr). What one of those ladders "
+                       "costs is decided by `--retry-max-time 120`, which this file writes "
+                       "beside `--retry 7`, and the two faults cost differently under it. "
+                       "Against a host that answers at once the attempts themselves take no "
+                       "time, so the ladder's eight are all made and the whole of it is its "
+                       "waits, 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. Against a host that "
+                       "accepts and then sends nothing every attempt spends the whole "
+                       "`max_time: 60` every row of .github/ci-tools.yaml carries, so the "
+                       "ladder's timer passes two minutes inside the third attempt and curl "
+                       "starts no attempt after the fourth: at most 4 x 60 s of attempts and "
+                       "the 1, 2 and 4 s waits between them, 247 s, which is the shape run "
+                       "42573254973's job 129015393389 read at 258 s for two of these ladders "
+                       "and a 10 s probe. 247 s is the larger of the two, and 3 x 247 = 741 s. "
+                       "One figure cannot be true of every caller of one helper, and this one "
+                       "is written for the worst of the installs: .github/actions/install-crane "
+                       "and .github/actions/install-changie each fetch such a row, and "
+                       ".github/actions/install-jj's mise step fetches the mise row the same "
+                       "way. A row whose `primary` is empty costs the second source alone - "
+                       "2 x 247 = 494 s for the jj row's token and blob, and one npm tarball, "
+                       "247 s, for a bun row - and a step that sources this file twice is "
+                       "charged this figure twice, so those callers are over-priced rather "
+                       "than under-priced. The caller this figure is under is "
+                       ".github/scripts/mirror-ci-tools.sh, which makes nine of these requests "
+                       "for each ghcr-mirror row it fills; ci.yaml's ci-images job writes that "
+                       "run out and says there why its ceiling does not carry it"),
 ]
 
 
@@ -2638,6 +2744,14 @@ for budget in budgets:
     # list and the lists of the scripts and actions it reaches alike, because a call of a
     # script that waits for nothing is the same wait of no length wherever it is written.
     blocking = [item for item in blocking if not waits_for_nothing(item)]
+    # Two refusals and not one, so the items are told apart here. A loop with no pass count is
+    # refused in the loop's place and its sentence names the line that loop sits on; a call
+    # whose per-attempt bound is written as a variable is refused in the bound's place, and
+    # such a call needs no loop around it to be unpriceable, so a sentence naming one would
+    # name nothing. Round 8 refused the first and priced the second at 0 wherever its passes
+    # could be read, which is every tool install of this tree (dispatch://INFRA-1545, R9).
+    unpriced = [item for item in blocking if item.kind == UNCOUNTED_UNREAD_BOUND]
+    blocking = [item for item in blocking if item.kind != UNCOUNTED_UNREAD_BOUND]
     carries = (f"carries `timeout-minutes: {budget.minutes}`" if budget.minutes is not None
                else "carries no `timeout-minutes`")
     if blocking:
@@ -2687,17 +2801,23 @@ for budget in budgets:
                          "check cannot make, because its bound is written as a variable "
                          "rather than as a number, and the step waits for that once per pass "
                          "of a loop whose passes this check cannot read either")
-        elif one is None:
-            cost_read = (f"One run of `{blocking[0].what}` reaches a loop, its own or one in a "
-                         "script it calls, whose passes this check cannot read either, so what "
-                         "one run of it takes is a figure this check cannot make, and the step "
-                         "waits for that once per pass of the loop above it")
         elif script_call and unpriced_wait(blocking[0].what, set()):
+            # Before the loop sentence below, because a script holding a call whose bound is
+            # unread answers None for its whole arithmetic now, as a script reaching an
+            # uncounted loop does, and the two read the same from here. The unread bound is
+            # the one this sentence can name a cure for, so it is asked first; a script with
+            # both faults is told about the bound and told about the loop the next time
+            # (dispatch://INFRA-1545, R9).
             cost_read = (f"One run of `{blocking[0].what}` makes attempts whose bound is "
                          "written as a variable rather than as a number, there or in a script "
                          "it calls, so what one run of it takes is a figure this check cannot "
                          "make either, and the step waits for that once per pass of the loop "
                          "above it")
+        elif one is None:
+            cost_read = (f"One run of `{blocking[0].what}` reaches a loop, its own or one in a "
+                         "script it calls, whose passes this check cannot read either, so what "
+                         "one run of it takes is a figure this check cannot make, and the step "
+                         "waits for that once per pass of the loop above it")
         else:
             waiting = ("One run of that script takes" if script_call
                        else "One call there takes")
@@ -2714,23 +2834,22 @@ for budget in budgets:
         elif unread_bound:
             # The bound first and the loop second, and in that order rather than as a choice:
             # a bound written as a number leaves the loop still unread, which is this rule's
-            # ordinary refusal and the one a declaration answers, while a pass count written
-            # over an unread bound takes the site out of this list and prices the step's whole
-            # wait at nothing, which is the hole this branch exists to close. No declaration
-            # answers the bound: arithmetic_of reads one_call first and returns 0 where there
-            # is no figure, so an entry pointed at such a site is counted by nothing and this
-            # check then refuses the entry itself for matching no call (R8).
+            # ordinary refusal, while a pass count written over an unread bound leaves the
+            # site with no per-call figure for those passes to multiply. A declaration answers
+            # this site whole, as it answers the ordinary one: arithmetic_of asks
+            # DECLARED_LOOPS for the seconds of a site one_call puts no figure on, before it
+            # answers anything else about it, so an entry pointed here is counted and the
+            # site is priced at that entry's figure (R9).
             instead = (
                 "write that bound as a number, which is the figure this check multiplies by "
-                "the passes it reads. No entry of DECLARED_LOOPS answers this one: an entry "
-                "writes the seconds a site contributes to a budget, and a site whose bound is "
-                "unread contributes a figure nobody can write, so an entry pointed at it is "
-                "counted by nothing and fails this check in its own right. Where the loop's "
-                "passes are still unread once that bound is a number, this check refuses the "
-                "step again with the seconds one call takes, and an entry of DECLARED_LOOPS "
-                "answers that refusal: it matches a site by its file, the verb it retries and "
-                "the step where the site is written in a workflow, a site inside a script "
-                "being read with no step at all.")
+                "the passes it reads, or declare that site in DECLARED_LOOPS in "
+                ".github/scripts/check-download-retry.sh. An entry there writes the seconds "
+                "the site contributes to this budget, whole, because neither half of what the "
+                "step waits for — what one call takes, or how many calls the loop makes — is "
+                "a figure this check can make, and its `why` writes that sum out. It matches "
+                "a site by its file, the verb it retries and the step where the site is "
+                "written in a workflow, a site inside a script being read with no step at "
+                "all.")
         else:
             instead = (
                 "where the passes are as many as the run finds work, declare that site in "
@@ -2747,6 +2866,24 @@ for budget in budgets:
                 f"passes it cannot read — {named}. {cost_read}, so a budget written for one "
                 "pass is a step the runner "
                 f"cuts in the middle of the retry it exists to allow. {count_advice}{instead}")
+        continue
+    if unpriced:
+        named = "; ".join(f"`{item.what}` at {item.path}:{item.line}" for item in unpriced)
+        problem(budget.path, budget.line,
+                f"step '{budget.step}' {carries} and this check can put no figure on it: it "
+                "runs a retried call whose attempts are bounded by a variable rather than by "
+                f"a number — {named}. What one call there takes is therefore a figure this "
+                "check cannot make, and a budget cannot be held above a wait nobody can "
+                "price: a number written for it would be this check stating a cost it did "
+                "not compute, which is the defect this rule exists to refuse. Two things "
+                "answer it. Write that bound as a number, which is the figure this check "
+                "multiplies by the passes it reads; or, where the seconds are the caller's "
+                "to choose and no number belongs at the call, declare that site in "
+                "DECLARED_LOOPS in .github/scripts/check-download-retry.sh: a "
+                "DeclaredArithmetic entry there writes the seconds the site contributes to "
+                "this budget and the sum they come from, and it matches a site by its file, "
+                "the verb it retries and the step where the site is written in a workflow, a "
+                "site inside a script being read with no step at all.")
         continue
     if cost is None or not cost:
         continue
@@ -2834,10 +2971,12 @@ for entry in DECLARED_LOOPS:
     if entry.used:
         continue
     problem(SELF, 1,
-            f"the declared loop for {entry.names()} matches no retried call in a loop whose "
-            "passes this check cannot read. A declaration outliving its loop is a figure "
-            "nobody checks again: drop it, or point it at where that loop moved. It said the "
-            f"budgets reaching it are written for {entry.figure()}, because {entry.why}.")
+            f"the declared arithmetic for {entry.names()} matches no retried call this check "
+            "could not price of itself: one inside a loop whose passes it cannot read, or "
+            "one whose per-attempt bound is written as a variable rather than as a number. A "
+            "declaration outliving what it answered for is a figure nobody checks again: "
+            "drop it, or point it at where that call moved. It said the budgets reaching it "
+            f"are written for {entry.figure()}, because {entry.why}.")
 
 if LIST_MODE and not problems:
     # A reader of this list pipes it (`| head`, `| cut`), so a closed pipe ends this the way any

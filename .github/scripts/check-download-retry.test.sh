@@ -270,6 +270,21 @@ while IFS=$'\t' read -r registry tag digest source claimed_go; do
   have=$(retry_fetch "the digest of $registry:$tag" 60 -- crane digest "$registry:$tag")
 done <<<"$rows"
 SH
+  # The entry of that table which is no loop: the one curl of .github/scripts/ci-tools.sh,
+  # whose `--max-time` is the row's own field and so is a bound the check cannot read. One
+  # call of it has no figure, so the declaration writes what the site contributes whole, and
+  # an entry matching nothing fails the check — which is why every fixture carries this file
+  # too. No step here runs it, so the seconds that entry writes sit in no budget a case has
+  # to reckon with. It is sourced and not executed in the repository, and it is not
+  # executable here either.
+  cat > "$root/.github/scripts/ci-tools.sh" <<'SH'
+#!/usr/bin/env bash
+ci_tools_curl() {
+  local file=$1 max_time=$2 url=$3
+  shift 3
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 120 --max-time "$max_time" -o "$file" "$@" "$url"
+}
+SH
   chmod +x "$root/.github/scripts/check-pr-text.sh" "$root/.github/scripts/ci-ok-reconcile.sh" \
     "$root/.github/scripts/mirror-ci-images.sh"
   echo "$root"
@@ -1419,14 +1434,133 @@ check "prices the site at nothing nowhere" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 check "gives the site's advice and not a script call's" \
   "$(contains "$out" 'write that bound as a number')"
-check "says no declaration answers an unread bound" \
-  "$(contains "$out" 'No entry of DECLARED_LOOPS answers this one: an entry writes the seconds a site contributes to a budget')"
-check "names the refusal that follows a bound written as a number, and what answers it" \
-  "$(contains "$out" 'this check refuses the step again with the seconds one call takes, and an entry of DECLARED_LOOPS answers that refusal')"
+check "says a declaration answers an unread bound" \
+  "$(contains "$out" 'or declare that site in DECLARED_LOOPS in .github/scripts/check-download-retry.sh. An entry there writes the seconds the site contributes to this budget, whole')"
+check "says why that entry writes the whole of it" \
+  "$(contains "$out" 'neither half of what the step waits for — what one call takes, or how many calls the loop makes — is a figure this check can make')"
+check "names what such an entry matches a site by" \
+  "$(contains "$out" 'It matches a site by its file, the verb it retries and the step where the site is written in a workflow, a site inside a script being read with no step at all')"
+check "no longer says no entry of DECLARED_LOOPS answers this one" \
+  "$(is "$(contains "$out" 'No entry of DECLARED_LOOPS answers this one')" false)"
 check "offers no pass count as a way out of this one" \
   "$(is "$(contains "$out" 'Write the count where this check reads it')" false)"
 check "does not tell the author to take a call out of a loop" \
   "$(is "$(contains "$out" 'take the call out of the loop')" false)"
+
+# The fourth member of that family, and the one with no loop anywhere in it. A curl whose
+# `--max-time` is written as a variable is bounded, so rule 4 passes it, and the seconds are
+# the caller's, so one_call answers None: the passes here are plainly one, and one times a
+# figure nobody can read is still no figure. Round 8 answered 0 for the site and the step
+# passed under any budget at all, which is how every tool install fetching through
+# .github/scripts/ci-tools.sh read green at a minute (dispatch://INFRA-1545, R9).
+echo "case: a step whose curl writes its bound as a variable, in no loop, is refused"
+root=$(fixture site-unread-bound-no-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 1
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the site whose bound it cannot read" \
+  "$(contains "$out" "step .Install the tool this job runs. carries .timeout-minutes: 1. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/case.yaml:10")"
+check "says a budget cannot be held above a wait nobody can price" \
+  "$(contains "$out" 'a budget cannot be held above a wait nobody can price')"
+check "offers the bound written as a number" \
+  "$(contains "$out" 'Write that bound as a number')"
+check "offers the declaration beside it" \
+  "$(contains "$out" 'declare that site in DECLARED_LOOPS')"
+check "names no loop, there being none" \
+  "$(is "$(contains "$out" 'inside the loop at line')" false)"
+check "prices the step at nothing nowhere" \
+  "$(is "$(contains "$out" 'holds 0 s of retries')" false)"
+
+# And the declaration answers it, with no loop for the entry to name: the figure is the whole
+# of what the site contributes, since there is no per-call number for a pass count to
+# multiply. The entry is counted where it is read, so this check refuses it for matching
+# nothing no more than it refuses the entries that answer a loop.
+echo "case: a declaration answers that site, and is counted"
+root=$(fixture site-unread-bound-declared)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 31
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 1821, "the three fetches one failing install makes, at 8 x 60 + 127 = 607 s each: 3 x 607 = 1821 s"),'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no figure of its own" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "refuses the entry for matching no call nowhere" \
+  "$(is "$(contains "$out" 'matches no retried call')" false)"
+
+# The entry's seconds are the site's contribution and not a note beside it: the budget is held
+# above that figure, and a budget under it is refused with it.
+echo "case: the declared seconds are what that step's budget is held above"
+root=$(fixture site-unread-bound-declared-under)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 30
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 1821, "the three fetches one failing install makes, at 8 x 60 + 127 = 607 s each: 3 x 607 = 1821 s"),'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "holds the budget above the declared figure" \
+  "$(contains "$out" 'carries .timeout-minutes: 30., 1800 s, and its own retries take 1821 s to exhaust')"
+
+# The floor an entry is held to is one call of the site it covers, and this site has none:
+# one_call answered None, which is the absence of the very figure that comparison reads. An
+# entry below one call of a site that has one is still refused, which the case for that floor
+# elsewhere proves; here there is nothing to compare and the entry stands on its own `why`.
+echo "case: no floor is compared with an entry answering a bound nobody can read"
+root=$(fixture site-unread-bound-declared-small)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 2
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 60, "one attempt of one fetch, which is all this fixture claims"),'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "compares the entry with no floor it cannot read" \
+  "$(is "$(contains "$out" 'A site costs at least one call of itself')" false)"
 
 # The other half of that reading, which the case above must not take with it: a site one_call
 # prices at 0 is still dropped. The loop the exempt action writes is as unreadable as the one
@@ -1638,7 +1772,7 @@ rm "$root/.github/scripts/mirror-ci-images.sh"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the declaration and what it no longer covers" \
-  "$(contains "$out" 'the declared loop for .github/scripts/mirror-ci-images.sh .crane copy. matches no retried call')"
+  "$(contains "$out" 'the declared arithmetic for .github/scripts/mirror-ci-images.sh .crane copy. matches no retried call this check could not price of itself')"
 check "says what the declaration was for" "$(contains "$out" 'written for 1650 s')"
 
 # A site whose passes this check cannot resolve is answered in seconds, not in passes, and the
