@@ -45,10 +45,12 @@
 --     thumbprint stays right afterwards, because a pod's own re-login moves its own row's key
 --     under the same id; check that each still gives that re-login race as its reason.
 --   - enroll.Service.Revoke's doc and its ownPod branch. The pod uid refuses a sibling pod's
---     enrollment on either schema, since cred.PodUID is the caller's own pod; what the drop
---     changes is the enrolling-credential test, which lets a sibling through while the row is
---     shared and refuses it once each pod holds a row of its own -- so check the worked example
---     in that doc, not its conclusion, which holds on either.
+--     enrollment on either schema, since cred.PodUID is the caller's own pod, and after the drop
+--     it is left refusing only the enrollments made under a shared row: Create lets a credential
+--     enrol its own pod alone (podUnderTokenLogin), and on the per-pod schema a row's pod_uid
+--     never moves, since the conflict target is (subject, pod_uid) and the claim update fills a
+--     null pod_uid alone. So re-read whether that doc still says why both tests are needed. Put
+--     no time limit on how long such an enrollment lasts: a pod that keeps renewing one holds it.
 --   - the two paragraphs of packages/envoy/AGENTS.md on those two, which must go on saying only
 --     what holds on either schema.
 --   - enroll.Service.IssueTokenLoginTx's conflict target and legacySubjectIndex, which read at
