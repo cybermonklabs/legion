@@ -121,6 +121,11 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 		{"scheme-less citation at the start of the body", "github.com/acme/other/issues/5 is the context.", "ATTR-112"},
 		{"a lookalike host is not github.com", "See https://evilgithub.com/acme/widgets/issues/77 for context.", ""},
 		{"a subdomain of github.com is not github.com", "See https://pages.github.com/acme/widgets/issues/77 for context.", ""},
+		// www.github.com serves the same pages as github.com, so a reader writing a citation by
+		// hand is likelier to type it than any other lookalike. What the boundary does with it is
+		// pinned here rather than left to be rediscovered: it is a subdomain like any other, and
+		// no citation.
+		{"www.github.com is a subdomain too", "See https://www.github.com/acme/widgets/issues/77 for context.", ""},
 		{"first linked citation in body order", "Unlinked #12, then #88, then https://github.com/acme/other/issues/5.", "ATTR-113"},
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {
