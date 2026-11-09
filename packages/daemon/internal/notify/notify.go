@@ -270,6 +270,130 @@ type SessionDeleted struct {
 	Reason  string
 }
 
+// SessionRegistration is what the listener's registry holds for one session id at the moment it
+// was read (GET /v1/registry/<session_id>?view=registration, sessionRegistration in
+// packages/envoy/cmd/listener/api.go). Registered is false for the 404 that route answers: a
+// listener carrying that selector writes it only where the session bucket holds no record at
+// all, and one predating it writes it for a record past the gone horizon as well, since the
+// full answer it falls back to still judges the record's state. ClientInstanceID names the
+// client process whose registration it is, empty for an entry a client predating that field
+// wrote and for every answer a listener predating the field gives, and LastSeen is that
+// registration's own write in unix milliseconds.
+type SessionRegistration struct {
+	Registered       bool
+	ClientInstanceID string
+	LastSeen         int64
+}
+
+// registrationReadBodyLimit bounds the body ReadSessionRegistration decodes an entry from. It is
+// deliberately not refusalBodyLimit, which bounds an error body: a listener that predates the
+// view selector ignores it and answers the whole session row here — its topics, its roles, its
+// capabilities — and nothing bounds a long-lived session's topic count, so a row cut off at
+// 4 KiB would fail to decode and the stop of exactly the busiest sessions would be reported as a
+// read that failed and send no delete at all. It is bounded at all because the read drains the
+// body, so the connection is reused for the delete that follows rather than dropped mid-answer,
+// and an unbounded read of a body this daemon did not write is memory it cannot refuse. 1 MiB is
+// far past the largest row the listener writes and far short of a body that could cost the
+// daemon anything.
+const registrationReadBodyLimit = 1 << 20
+
+// ReadSessionRegistration reads what the listener's registry holds for session, the read the
+// daemon's clean stop makes before it deletes anything: the delete it then sends names the
+// client instance the entry carries, so it can only take that process's registration and never
+// its successor's (DeleteSession).
+//
+// The read asks include=unresponsive and view=registration together: view=registration is what a
+// listener carrying it answers from the session bucket alone, cheaply and whatever state the
+// record is in, while include=unresponsive is what a listener predating the selector needs in
+// order to answer a record past its live window at all — it ignores the unknown selector and
+// answers the full row, which carries no client_instance_id, so against that listener the stop
+// rests on the moment alone. Which probe judged the death decides whether that matters: the one
+// the shim's closing stream starts reads the record moments after the death, while it is still
+// live, while the resync tick's can be a probe interval later, past the live window, and it is
+// for the second that include=unresponsive is sent at all.
+//
+// A 404 is no failure and no error: there is no registration for the stop to name, which is the
+// outcome the stop wanted, and Registered is false. Every other status is an error naming what
+// the listener said, as a refused delete is, and the caller then sends nothing (sessionStop.send
+// in packages/daemon/internal/daemon/daemon.go says why).
+func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
+	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
+	}
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		// Read whole within registrationReadBodyLimit and then unmarshalled, rather than
+		// decoded off the stream: the read drains the body, so this connection is reused
+		// for the delete that follows.
+		body, err := io.ReadAll(io.LimitReader(response.Body, registrationReadBodyLimit))
+		if err != nil {
+			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		}
+		var entry struct {
+			ClientInstanceID string `json:"client_instance_id"`
+			LastSeen         int64  `json:"last_seen"`
+		}
+		if err := json.Unmarshal(body, &entry); err != nil {
+			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		}
+		return SessionRegistration{Registered: true, ClientInstanceID: entry.ClientInstanceID, LastSeen: entry.LastSeen}, nil
+	case http.StatusNotFound:
+		return SessionRegistration{}, nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
+		session, response.Status, strings.TrimSpace(string(body)))
+}
+
+// DeleteConditions is what one clean stop of a dead role's session holds under, and where this
+// daemon's code argues the rule in full: its other comments point here.
+//
+// The delete must take the dead process's registration and never the registration a relaunch of
+// the same claim writes under the same session id, so it carries both conditions at once. The
+// listener keeps the entry when either refuses it (session.DeleteConditions.keeps,
+// packages/envoy/internal/session/delete.go), so neither widens what the other admits; each is
+// there to make the other's weakness bearable.
+//
+// NotRegisteredAfter is the moment the daemon's probe judged the process gone, and rides as
+// if_not_registered_after with nothing subtracted from it. The probe runs after the dead
+// process's last heartbeat, so on clocks that agree the listener stamped that heartbeat at or
+// before this moment and the registration goes; a listener clock ahead of this daemon's by more
+// than the time between that heartbeat and the probe keeps it. A moment dated earlier than the
+// probe's, to cover a clock, puts that heartbeat after it and refuses the stop that is owed,
+// because UpdatedAt is the listener's own stamp at every write
+// (packages/envoy/internal/session/registry.go) and tells a dead process's heartbeat from a
+// successor's registration not at all.
+//
+// ClientInstanceID is the id the entry itself carried when the stop read it
+// (ReadSessionRegistration), and names that one client process, which no comparison of moments
+// can. It is what makes carrying the probe's moment undated safe: where the read answered the
+// dead process's own entry, a relaunch's registration is refused by its own identity, whatever
+// the daemon's clock and the listener's say about the moment. Where the read was answered after
+// the relaunch had registered, the id handed back is the successor's and only the moment keeps
+// that registration — the listener judges both at the revision it deletes, under its own
+// compare-and-swap (session.SessionRegistry.DeleteIf), so what is stored when the delete lands
+// decides it, whatever this daemon knew when it sent it. Against a listener that answers no
+// client_instance_id at all the id is empty and the moment judges alone, which is the whole of
+// the condition until that listener is upgraded.
+//
+// An empty ClientInstanceID is left out of the request rather than sent empty: the listener
+// compares no instance for an empty value as for an absent one (session.InstanceMatches), so the
+// two are the same delete and the shorter query states only what the stop really holds.
+type DeleteConditions struct {
+	ClientInstanceID   string
+	NotRegisteredAfter time.Time
+}
+
 // DeleteSession removes session's registration from the listener's registry (DELETE
 // /v1/sessions/<session>), the clean stop the daemon sends for a Legion role whose agent process
 // is gone. The listener then reads the session `gone` at once rather than at the end of its live
@@ -278,15 +402,13 @@ type SessionDeleted struct {
 // for the session answers 404: it is already gone, which is the outcome asked for, so that is no
 // failure.
 //
-// goneAt is the moment the stop belongs to — when the daemon's probe judged the agent process
-// gone — and rides as if_not_registered_after, the condition the listener deletes under: a
-// registration written after it belongs to the process that replaced the dead one, and the
-// listener keeps it and says so (SessionDeleted.Deleted false). Without that condition a stop
-// slow to land would take a live session's registration, which is the loss this clean stop
-// exists to prevent.
-func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, goneAt time.Time) (SessionDeleted, error) {
+// The two conditions it carries, and why neither alone would do, are on DeleteConditions.
+func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
 	target := fmt.Sprintf("%s/v1/sessions/%s?if_not_registered_after=%d",
-		p.baseURL, url.PathEscape(session), goneAt.UnixMilli())
+		p.baseURL, url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
+	if conditions.ClientInstanceID != "" {
+		target += "&client_instance_id=" + url.QueryEscape(conditions.ClientInstanceID)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
 		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)

@@ -3435,6 +3435,44 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 	}
 }
 
+// The route names the client process whose registration it answers, so a reader holding a session
+// id can tell one client process's registration from its successor's under the same session id.
+// The Legion daemon's clean stop of a dead role rests on that: a relaunch of the claim registers
+// the same session id again with an instance id of its own, and a stop naming the session id alone
+// would clear the live relaunch's registration. A session whose entry names no process - a client
+// predating the field, or one that states no instance - leaves client_instance_id out of the body
+// entirely, as GET /v1/roles/<role> leaves its own out, so a client reads an absent field as "this
+// registration names no process" rather than as the empty string. That half is read off the raw
+// body, because a decoded empty string cannot tell a field omitempty left out from one present and
+// empty.
+func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
+	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{registry: registry, sessions: sessions}
+	registerInstance(t, sessions, "ses_instanced", instance)
+	registerInstance(t, sessions, "ses_instanceless", "")
+
+	named := sessionEntryRoute(t, state, "ses_instanced")
+	if named.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_instanced: status %d %s, want 200", named.Code, named.Body.String())
+	}
+	if got := decodeSessionInfo(t, named); got.ClientInstanceID != instance {
+		t.Fatalf("client_instance_id = %q, want the registering client instance %q", got.ClientInstanceID, instance)
+	}
+
+	instanceless := sessionEntryRoute(t, state, "ses_instanceless")
+	if instanceless.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_instanceless: status %d %s, want 200", instanceless.Code, instanceless.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(instanceless.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the answer for a session registered with no client instance: %v", err)
+	}
+	if raw, ok := body["client_instance_id"]; ok {
+		t.Fatalf("client_instance_id = %s, want the field left out where the registration names no process", raw)
+	}
+}
+
 // The route reads; every other method on it is the caller's mistake, answered as every other /v1
 // handler answers one.
 func TestSessionEntryRouteRefusesANonGETMethod(t *testing.T) {
@@ -3446,6 +3484,242 @@ func TestSessionEntryRouteRefusesANonGETMethod(t *testing.T) {
 	}
 	if body := strings.TrimSpace(recorder.Body.String()); body != `{"error":"method not allowed"}` {
 		t.Fatalf("body = %s, want the file's own method refusal", body)
+	}
+}
+
+// registrationViewRoute asks d's per-session route for sessionID under view=registration, as the
+// Legion daemon's clean stop of a dead role's session asks it before it deletes that
+// registration (ReadSessionRegistration, packages/daemon/internal/notify/notify.go). It states
+// no include, since that selector decides nothing under this view.
+func registrationViewRoute(t *testing.T, d *listenerDeps, sessionID string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	sessionEntryHandler(d).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/v1/registry/"+sessionID+"?view=registration", nil))
+	return recorder
+}
+
+// decodeRegistrationView reads the answer the registration view writes, which is a shape of its
+// own (sessionRegistration) and not the full answer's row.
+func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) sessionRegistration {
+	t.Helper()
+	var answer sessionRegistration
+	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode the registration view's answer: %v", err)
+	}
+	return answer
+}
+
+// registrationViewDeps opens one listener's stores over the test bus, with both caches waited
+// for, and answers its deps. The two tests below each break one of the reads the full answer
+// makes and the registration view does not - the role claim view, and the session's interest
+// record - so each needs a registry of its own to break and the bus client behind it to write
+// the record with.
+func registrationViewDeps(t *testing.T) *listenerDeps {
+	t.Helper()
+	client := setupPublishTestClient(t)
+	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	waitForRegistry(t, registry)
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	t.Cleanup(sessions.StopWatch)
+	waitForSessions(t, sessions)
+	return &listenerDeps{client: client, registry: registry, sessions: sessions}
+}
+
+// A listener whose role claim view has completed no scan refuses every read of it
+// (store.ErrRoleViewNotReady: a start, a recreated bucket being refilled, a copy gone stale, a
+// watcher that ended), and the full answer of GET /v1/registry/<session_id> is the
+// bus-unavailable 503 for it, because it joins the session's roles (sessionInfoFor). The
+// registration view joins nothing, so it answers the entry the session bucket holds all the
+// same: its client instance, its last registration and its state. The daemon's clean stop of a
+// dead role rests on that - a read it cannot make sends no delete at all, and the dead session
+// then holds its role claim and its issue claims until the gone horizon takes them, which is the
+// delay the stop exists to remove.
+func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnswer(t *testing.T) {
+	const (
+		sessionID = "ses_claims_view_refilling"
+		instance  = "9a8b7c6d5e4f3a2b9a8b7c6d5e4f3a2b"
+	)
+	d := registrationViewDeps(t)
+	registerInstance(t, d.sessions, sessionID, instance)
+	stored, _ := d.sessions.Lookup(sessionID)
+	refuseRoleClaimView(t, d.registry)
+
+	full := sessionEntryRoute(t, d, sessionID)
+	if full.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /v1/registry/%s while the claims view refuses: status %d %s, want the 503 that makes this view necessary",
+			sessionID, full.Code, full.Body.String())
+	}
+
+	answer := registrationViewRoute(t, d, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s?view=registration while the claims view refuses: status %d %s, want 200",
+			sessionID, answer.Code, answer.Body.String())
+	}
+	got := decodeRegistrationView(t, answer)
+	if got.SessionID != sessionID || got.ClientInstanceID != instance ||
+		got.LastSeen != stored.UpdatedAt || got.UpdatedAt != stored.UpdatedAt || got.State != session.Live {
+		t.Fatalf("the registration view answered %#v, want %s live, instance %q, last seen %d",
+			got, sessionID, instance, stored.UpdatedAt)
+	}
+}
+
+// A session's interest record that this build cannot decode is answered 500 by the full answer,
+// which reads that record for the session's topics, and a 500 reaches the daemon as a read that
+// failed, on which it sends no delete: such a session could never be clean-stopped. The
+// registration view reads no interest record, so it answers the registration the stop needs.
+func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannotBeRead(t *testing.T) {
+	const (
+		sessionID = "ses_unreadable_interest_registration"
+		instance  = "3c2b1a0f9e8d7c6b3c2b1a0f9e8d7c6b"
+	)
+	d := registrationViewDeps(t)
+	registerInstance(t, d.sessions, sessionID, instance)
+	stored, _ := d.sessions.Lookup(sessionID)
+	interests, err := d.client.JS().KeyValue(bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("open the interest bucket: %v", err)
+	}
+	if _, err := interests.Put(sessionID, []byte("not a json interest record")); err != nil {
+		t.Fatalf("write %s's unreadable interest record: %v", sessionID, err)
+	}
+
+	full := sessionEntryRoute(t, d, sessionID)
+	if full.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /v1/registry/%s over an unreadable interest record: status %d %s, want the 500 that makes this view necessary",
+			sessionID, full.Code, full.Body.String())
+	}
+
+	answer := registrationViewRoute(t, d, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s?view=registration over an unreadable interest record: status %d %s, want 200",
+			sessionID, answer.Code, answer.Body.String())
+	}
+	if got := decodeRegistrationView(t, answer); got.ClientInstanceID != instance || got.LastSeen != stored.UpdatedAt {
+		t.Fatalf("the registration view answered %#v, want instance %q last seen %d", got, instance, stored.UpdatedAt)
+	}
+}
+
+// The registration view reads the session bucket itself and never this listener's cache, because
+// that cache trails the bucket and the entry it still holds can carry a client instance id the
+// session has since replaced (bucketSessionEntry). The caller decides a delete on that id, so a
+// replaced one would have the listener keep the stop as another instance's and leave the dead
+// role's claims standing. The full answer reads the cache first, as it must for a session the
+// cache has not caught up with, and is asked here first to show that the two really differ.
+func TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTheCachedOne(t *testing.T) {
+	const (
+		sessionID = "ses_replaced_instance"
+		cached    = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+		inBucket  = "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+	)
+	claimant, observer := trailingListeners(t)
+	registerInstance(t, observer.sessions, sessionID, cached)
+	registerInstance(t, claimant.sessions, sessionID, inBucket)
+	if entry, _ := observer.sessions.Lookup(sessionID); entry.ClientInstanceID != cached {
+		t.Fatalf("the observer's cache holds instance %q, so it is not the stale entry this test is about", entry.ClientInstanceID)
+	}
+
+	full := sessionEntryRoute(t, observer, sessionID)
+	if full.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s: status %d %s, want 200", sessionID, full.Code, full.Body.String())
+	}
+	if got := decodeSessionInfo(t, full); got.ClientInstanceID != cached {
+		t.Fatalf("the full answer named instance %q, want the cached %q: the cache does not trail the bucket here, so this test proves nothing",
+			got.ClientInstanceID, cached)
+	}
+
+	answer := registrationViewRoute(t, observer, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s?view=registration: status %d %s, want 200", sessionID, answer.Code, answer.Body.String())
+	}
+	if got := decodeRegistrationView(t, answer); got.ClientInstanceID != inBucket {
+		t.Fatalf("the registration view named instance %q, want the bucket's %q", got.ClientInstanceID, inBucket)
+	}
+}
+
+// No state filter applies under the registration view: every entry the session bucket holds is
+// answered 200 with the state its own record puts it in, so a caller that states no include
+// still reads a session past the live window and one past the gone horizon. That is what the
+// stop needs - it runs exactly when the dead process has stopped registering - and a
+// registration that exists is one the caller may remove whatever state it reads. Only the
+// bucket's word that it holds no record is a 404, in the words the full answer uses for it.
+func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHolds(t *testing.T) {
+	const instance = "7e6d5c4b3a291807e6d5c4b3a2918070"
+	d, now := stalledSessionsRig(t)
+	stoppedAt := register(t, d, "ses_stopped", session.SessionEntry{
+		MachineID: "test-machine", Dir: "/test/stopped", SelfSubscribed: true, ClientInstanceID: instance,
+	})
+
+	// Past the live window and inside the gone horizon: the full answer asked without include is
+	// the 404 it has always been, and the registration view answers the record.
+	now.advance(90 * time.Second)
+	if refused := sessionEntryRoute(t, d, "ses_stopped"); refused.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/registry/ses_stopped without include: status %d %s, want the 404 this view is asked instead of",
+			refused.Code, refused.Body.String())
+	}
+	stalled := registrationViewRoute(t, d, "ses_stopped")
+	if stalled.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_stopped?view=registration past the live window: status %d %s, want 200",
+			stalled.Code, stalled.Body.String())
+	}
+	if got := decodeRegistrationView(t, stalled); got.State != session.Unresponsive ||
+		got.ClientInstanceID != instance || got.LastSeen != stoppedAt {
+		t.Fatalf("the registration view answered %#v, want state unresponsive, instance %q, last seen %d",
+			got, instance, stoppedAt)
+	}
+
+	// Past the gone horizon the record still stands in the bucket, and this view answers it: a
+	// registration no state filter would show is exactly the one a stop is owed for.
+	now.advance(2 * time.Minute)
+	gone := registrationViewRoute(t, d, "ses_stopped")
+	if gone.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_stopped?view=registration past the gone horizon: status %d %s, want 200",
+			gone.Code, gone.Body.String())
+	}
+	if got := decodeRegistrationView(t, gone); got.State != session.Gone ||
+		got.ClientInstanceID != instance || got.LastSeen != stoppedAt {
+		t.Fatalf("the registration view answered %#v, want state gone, instance %q, last seen %d",
+			got, instance, stoppedAt)
+	}
+
+	missing := registrationViewRoute(t, d, "ses_never_registered")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/registry/ses_never_registered?view=registration: status %d %s, want 404",
+			missing.Code, missing.Body.String())
+	}
+	var refusal noLiveSessionRefusal
+	if err := json.Unmarshal(missing.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode the refusal %s: %v", missing.Body.String(), err)
+	}
+	if !strings.HasPrefix(refusal.Error, "no live session ses_never_registered") || refusal.State != session.Gone {
+		t.Fatalf("the refusal = %+v, want the full answer's own wording and state gone", refusal)
+	}
+}
+
+// A view value this build does not know is refused 400 naming the selector, as
+// if_not_registered_after refuses a value it cannot read (deleteSessionHandler): a caller whose
+// selector was dropped in silence would be handed the full answer it asked not to have, and
+// would read that answer's 503 as its own session's.
+func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/v1/registry/ses_live?view=rows", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("GET /v1/registry/ses_live?view=rows: status %d %s, want 400", recorder.Code, recorder.Body.String())
+	}
+	var refusal apiError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
+	}
+	if !strings.Contains(refusal.Error, "view") || len(refusal.Expected) != 1 || refusal.Expected[0] != "view" {
+		t.Fatalf("the refusal = %+v, want it naming the view selector", refusal)
 	}
 }
 
