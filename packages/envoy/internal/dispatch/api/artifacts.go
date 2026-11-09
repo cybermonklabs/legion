@@ -98,8 +98,12 @@ func (target artifactTarget) refPrefix() string {
 }
 
 type jsonArtifactUpload struct {
-	Name    string          `json:"name"`
-	Content *string         `json:"content"`
+	Name string `json:"name" required:"true"`
+	// Content is required of a JSON upload, which is always a markdown document: a body with
+	// no content, or whose content is blank, is refused (400 ARTIFACT_INPUT, uploadArtifactFor).
+	// A multipart upload sends its bytes as the `file` part instead and carries no content at
+	// all, which is a body of its own (openAPIMultipartSchema).
+	Content *string         `json:"content" required:"true"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
 	Actor   *model.Actor    `json:"actor"`
@@ -170,6 +174,13 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		}
 		s.writeHandlerError(w, refusal)
 	}
+}
+
+// artifactUploadResponse is the body POST /api/v1/issues/{key}/artifacts,
+// POST /api/v1/projects/{key}/artifacts and POST /api/v1/agents/{session_id}/artifacts answer.
+type artifactUploadResponse struct {
+	Artifact model.Artifact `json:"artifact"`
+	Version  model.Version  `json:"version"`
 }
 
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
@@ -693,7 +704,7 @@ func (s *server) storeArtifact(
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
 	}
-	responsePayload := map[string]any{"artifact": artifact, "version": version}
+	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
 	if target.IssueKey != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
 	} else if blocks != nil || superseded != nil {
@@ -718,6 +729,15 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	// (`GET /api/v1/references?to=`, and `GET /api/v1/artifacts/{id}/references` for agents),
 	// so this read does not pay for them.
 	WriteJSON(w, http.StatusOK, artifact)
+}
+
+// artifactText is the body GET /api/v1/artifacts/{id}/text,
+// GET /api/v1/issues/{key}/artifacts/{slug}/text and
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer.
+type artifactText struct {
+	Markdown string `json:"markdown"`
+	Token    string `json:"token"`
+	Version  *int   `json:"version"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -747,7 +767,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{"markdown": markdown, "version": version, "token": token})
+	WriteJSON(w, http.StatusOK, artifactText{Markdown: markdown, Token: token, Version: version})
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
@@ -857,6 +877,13 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 	return references, nil
 }
 
+// artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
+// answers, on all three artifact patterns.
+type artifactVersionText struct {
+	Markdown string `json:"markdown"`
+	model.Version
+}
+
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -881,10 +908,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
-		WriteJSON(w, http.StatusOK, struct {
-			Markdown string `json:"markdown"`
-			model.Version
-		}{Markdown: markdown, Version: version})
+		WriteJSON(w, http.StatusOK, artifactVersionText{Markdown: markdown, Version: version})
 		return
 	}
 	var content []byte
@@ -933,14 +957,18 @@ func (s *server) commitArtifactVersionEvent(
 	return event, nil
 }
 
+// createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
+// project artifact patterns.
+type createVersionInput struct {
+	Summary string       `json:"summary" required:"true"`
+	Actor   *model.Actor `json:"actor"`
+}
+
 func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Summary string       `json:"summary"`
-		Actor   *model.Actor `json:"actor"`
-	}
+	var input createVersionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1004,16 +1032,36 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, version)
 }
 
+// editArtifactInput is the body of POST /api/v1/artifacts/{id}/edits and its issue and project
+// artifact patterns.
+type editArtifactInput struct {
+	Ops          []model.EditOp          `json:"ops"`
+	Summary      string                  `json:"summary"`
+	Precondition *model.EditPrecondition `json:"precondition"`
+	Actor        *model.Actor            `json:"actor"`
+}
+
+// editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
+// artifact patterns answer.
+type editArtifactResponse struct {
+	Applied int  `json:"applied"`
+	Changed bool `json:"changed"`
+	// LostOps are which operations the live document did not hold once this write reached it: a
+	// concurrent change that landed after the version was rendered and before the publish is
+	// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
+	// check reached no verdict - the publish failed and the room is reloading, or the room
+	// holds a tree too deep to read - which is not the same statement as the empty list.
+	LostOps      []int          `json:"lost_ops"`
+	Token        string         `json:"token"`
+	UnchangedOps []int          `json:"unchanged_ops"`
+	Version      *model.Version `json:"version"`
+}
+
 func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Ops          []model.EditOp          `json:"ops"`
-		Summary      string                  `json:"summary"`
-		Precondition *model.EditPrecondition `json:"precondition"`
-		Actor        *model.Actor            `json:"actor"`
-	}
+	var input editArtifactInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1143,18 +1191,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if unchanged == nil {
 		unchanged = []int{}
 	}
-	responsePayload := map[string]any{
-		"applied":       edit.Applied,
-		"version":       version,
-		"changed":       edit.Changed,
-		"unchanged_ops": unchanged,
-		// Which operations the live document did not hold once this write reached it: a
-		// concurrent change that landed after the version was rendered and before the publish is
-		// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
-		// check reached no verdict - the publish failed and the room is reloading, or the room
-		// holds a tree too deep to read - which is not the same statement as the empty list.
-		"lost_ops": lostOps(ledger, artifact.ID),
-		"token":    edit.Token,
+	responsePayload := editArtifactResponse{
+		Applied:      edit.Applied,
+		Changed:      edit.Changed,
+		LostOps:      lostOps(ledger, artifact.ID),
+		Token:        edit.Token,
+		UnchangedOps: unchanged,
+		Version:      version,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of
@@ -1968,9 +2011,7 @@ func (s *server) setRoomBudget(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Bytes int64 `json:"bytes"`
-	}
+	var input roomBudgetInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1979,7 +2020,7 @@ func (s *server) setRoomBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_JSON", http.StatusBadRequest, "bytes is the budget in bytes, or 0 to restore the real one")
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]int64{"bytes": s.deps.Docs.SetRoomBudgetForTest(input.Bytes)})
+	WriteJSON(w, http.StatusOK, roomBudgetState{Bytes: s.deps.Docs.SetRoomBudgetForTest(input.Bytes)})
 }
 
 // roomCharges answers what the room budget charges each room it holds a charge for, beside its own
@@ -1992,7 +2033,7 @@ func (s *server) roomCharges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	charges, used, limit := s.deps.Docs.RoomChargesForTest()
-	WriteJSON(w, http.StatusOK, map[string]any{"charges": charges, "used": used, "limit": limit})
+	WriteJSON(w, http.StatusOK, roomChargesState{Charges: charges, Used: used, Limit: limit})
 }
 
 // artifactRoomLive answers whether the document's room is resident in this server, a read that
@@ -2011,7 +2052,13 @@ func (s *server) artifactRoomLive(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]bool{"live": s.deps.Docs.RoomLiveForTest(artifact.ID)})
+	// "holding" names what holds the room open, so a drive can wait for the room to be closable
+	// rather than for a clock: the empty string is a room nothing holds, which is the one state
+	// the budget's sweep can close (docs' RoomHoldingForTest).
+	WriteJSON(w, http.StatusOK, roomLiveState{
+		Live:    s.deps.Docs.RoomLiveForTest(artifact.ID),
+		Holding: s.deps.Docs.RoomHoldingForTest(artifact.ID),
+	})
 }
 
 // maxAdmissionHold is the longest a test may hold a document's next socket before its admission
@@ -2037,9 +2084,7 @@ func (s *server) holdArtifactAdmission(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var input struct {
-		MS int64 `json:"ms"`
-	}
+	var input holdAdmissionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

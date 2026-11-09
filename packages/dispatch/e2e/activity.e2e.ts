@@ -127,7 +127,8 @@ test("Activity breaks its rows by day and marks where the reader stopped", async
     await page.goto(`/issues/${issue.key}/activity`);
 
     const list = page.getByRole("list", { name: "Issue activity" });
-    const dividers = list.getByRole("separator");
+    // The dividers are the list's labelled items: a day's, and the unread watermark's.
+    const dividers = list.locator("li[aria-label]");
     await expect(dividers).toHaveCount(3);
     expect(
       await dividers.evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")))
@@ -187,6 +188,42 @@ test("an Activity row pins into the review margin and unpins from it", async ({ 
     await margin.getByRole("button", { name: "Unpin" }).click();
     await expect(margin.getByText("No pinned items.")).toBeVisible();
     await expect(row.getByRole("button", { name: "Pin" })).toHaveAttribute("aria-pressed", "false");
+  } finally {
+    await alice.close();
+  }
+});
+
+// The fake listener holds no record of `ghost`, so the mention is refused as `no live session
+// ghost` and its receipt settles `failed`: the row must not read as a delivery.
+test("an Activity row says a mention that could not be delivered was not delivered", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Mention of a missing session" });
+  await createComment(
+    issue.key,
+    { body: "Look at this, @session:ghost.", mentions: [{ target: "session:ghost" }] },
+    { login: "alice" }
+  );
+  await expect
+    .poll(async () =>
+      (await getIssueEvents(issue.key, { limit: 100 })).flatMap((event) =>
+        event.type === "comment.delivery" ? [event.payload.state] : []
+      )
+    )
+    .toEqual(["failed"]);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/activity`);
+    const list = page.getByRole("list", { name: "Issue activity" });
+    await expect(
+      list
+        .getByRole("listitem")
+        .filter({ hasText: "could not deliver a comment mention to session:ghost" })
+    ).toHaveCount(1);
+    await expect(list).not.toContainText("delivered a comment mention");
   } finally {
     await alice.close();
   }

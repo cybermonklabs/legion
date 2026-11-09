@@ -211,6 +211,12 @@ approval page, which the approver's Dispatch Inbox links to. The docs site's
 [Concepts](https://cybermonklabs.github.io/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) page has the full
 table.
 
+`--reason` is necessary wherever a person approves: a request naming a secret that goes to
+someone for approval, and carrying no reason, is denied whole, and the session reads
+`<NAME>: a reason is necessary; ask again with --reason` and exits 77. Write what the
+credential is for, in a sentence the approver can decide on. A request every name of which is
+granted at once reaches nobody and needs none.
+
 ```sh
 agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- ./deploy.sh
 agent-secrets request DEMO_API_KEY --reason "Deploy" --ttl 1h

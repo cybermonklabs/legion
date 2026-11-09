@@ -732,6 +732,12 @@ describe("AskGate at the dispatch CLI", () => {
 
 describe("AskGate at the dispatch entry, across processes", () => {
   const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+  // The 30 s limit is a hang guard, not a budget: the row spawns two child processes that each
+  // start the dispatch entry, and bun's unwritten 5,000 ms per-test default is a limit on that
+  // work rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out,
+  // 3 runs of 3, at 5,104 to 5,202 ms with this file alone. Measured there: 0.71 s idle in a
+  // whole-suite run and 3.00 s with this file alone; under those loops, 8.78 s at most in a
+  // whole-suite run and 5.20 s with this file alone. It fires only if a child never exits.
   test("one marker and two concurrent calls of its argv: exactly one posts", async () => {
     writeRecord();
     mint(MESSAGE, null);
@@ -755,11 +761,19 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(results.find((r) => r.code === 1)?.stdout).toStartWith(REFUSAL);
     expect(messagePosts()).toHaveLength(1);
     expect(readdirSync(markers())).toEqual([]);
-  });
+  }, 30_000);
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
   // the session, finds the live record and no marker, and is refused before any request. With no
   // record the same form posts: the check is inert outside a gated Oh My Pi session.
+  //
+  // The 240 s limit is a hang guard, not a budget, and sits above the suite's 30 s default. The row
+  // runs twelve child process trees, six caller forms twice, and none of that is spare: each form
+  // is a caller kind the row covers, and the second pass is the inertness claim, so the work cannot
+  // shrink without dropping an assertion. Measured in a 2-CPU pod: 3.67 s idle in a whole-suite run
+  // and 23.90 s with this file alone; under 16 busy loops (8 x nproc), 58.37 s at most in a
+  // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
+  // It fires only if a child never exits.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
     const bin = join(stateDir, "bin");
     mkdirSync(bin);
@@ -818,5 +832,5 @@ describe("AskGate at the dispatch entry, across processes", () => {
     rmSync(join(stateDir, "sessions", "ses-1", "askgate"), { recursive: true });
     for (const [, command] of forms) await runForm(command);
     expect(messagePosts()).toHaveLength(forms.length);
-  }, 60_000);
+  }, 240_000);
 });

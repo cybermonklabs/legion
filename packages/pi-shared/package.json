@@ -93,9 +93,25 @@
       "types": "./src/stall-limits.ts",
       "bun": "./src/stall-limits.ts"
     },
+    "./stall-watchdog": {
+      "types": "./src/stall-watchdog.ts",
+      "bun": "./src/stall-watchdog.ts"
+    },
     "./workspace-recreated": {
       "types": "./src/workspace-recreated.ts",
       "bun": "./src/workspace-recreated.ts"
+    },
+    "./provider-refusal": {
+      "types": "./src/provider-refusal.ts",
+      "bun": "./src/provider-refusal.ts"
+    },
+    "./fallback-cooldown": {
+      "types": "./src/fallback-cooldown.ts",
+      "bun": "./src/fallback-cooldown.ts"
+    },
+    "./fallback-chain": {
+      "types": "./src/fallback-chain.ts",
+      "bun": "./src/fallback-chain.ts"
     },
     "./jj-attribution": {
       "types": "./src/jj-attribution.ts",

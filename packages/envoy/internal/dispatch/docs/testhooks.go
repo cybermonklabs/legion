@@ -53,6 +53,31 @@ func (s *Service) RoomLiveForTest(artifactID string) bool {
 	return s.srv.GetDoc(artifactID) != nil
 }
 
+// RoomHoldingForTest names what holds the document's room open, as the sweep's own line does: the
+// first of the things unusedLocked reads that is not clear, "the room is gone" where ygo holds no
+// room for the document, and the empty string for a room nothing holds, which is the one state in
+// which the budget's sweep can close it (holdingLocked, sweepRooms).
+//
+// It is what a real-process drive waits on in place of a clock. A browser's departure is not over
+// when its socket closes: ygo reports it at the end of the peer's teardown, the settlement the
+// room owes runs inside that report, and only then does the handler forget the connection. A
+// drive that asks for the next admission before that is refused, and on a loaded pod the window
+// is long - the settlement of a mebibyte of prose took 10 to 20 s with the pod's rooms full and
+// two processors to share (dispatch://INFRA-179, A3's one_after_another, which failed this way
+// under the merge queue's sharded runners twice). Waiting for this to come back empty waits for
+// the event itself, and a drive that times out can say which of the holds it was.
+func (s *Service) RoomHoldingForTest(artifactID string) string {
+	state := s.lockExistingState(artifactID)
+	if state == nil {
+		return "the room is gone"
+	}
+	defer s.unlockState(artifactID, state)
+	if s.unusedLocked(state) {
+		return ""
+	}
+	return s.holdingLocked(state)
+}
+
 // RoomChargesForTest is what the room budget charges each room it holds a charge for, beside the
 // budget's own used and limit (roomBudget.figures). It is the budget's own reading of which rooms
 // it still carries: a room whose charges were given back is absent from it, not zero, which is how

@@ -99,7 +99,7 @@ func newRig(t *testing.T) *rig {
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := brokertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
@@ -127,6 +127,20 @@ func newRig(t *testing.T) *rig {
 }
 
 // --- the broker's machine and session side, which makes the records a person decides ---
+
+// retag puts changed into the rig's secret store, replacing each secret of the same name, and
+// reloads the policy, as the broker's next refresh does after someone edits a secret in Secrets
+// Manager. It is how a test moves the policy under a request that is already pending.
+func (r *rig) retag(t *testing.T, changed ...secrets.LocalSecret) {
+	t.Helper()
+	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	for _, s := range changed {
+		local.Put(s)
+	}
+	if err := r.machine.Policy.Refresh(t.Context()); err != nil {
+		t.Fatalf("policy refresh: %v", err)
+	}
+}
 
 // call sends a JSON request to the broker with headers and answers its status and body.
 func (r *rig) call(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
@@ -257,9 +271,10 @@ func (r *rig) enroll(t *testing.T, host, runtimeID, sessionID string) (string, *
 // pending is one pending agent_secret request and its record.
 type pending struct{ requestID, recordID string }
 
-// request has the session ask for names with reason, lifetime (nil until the session ends) and
-// the request's own session claim (none when empty), and answers the pending request it opened.
-func (r *rig) request(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, reason string, lifetime *int, sessionClaim string, names ...string) pending {
+// ask has the session POST a signed agent_secret request for names with reason, lifetime (nil
+// until the session ends) and the request's own session claim (none when empty), and answers the
+// broker's response body.
+func (r *rig) ask(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, reason string, lifetime *int, sessionClaim string, names ...string) []byte {
 	t.Helper()
 	details := make([]record.AuthorizationDetail, len(names))
 	for i, n := range names {
@@ -277,6 +292,14 @@ func (r *rig) request(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, 
 	if status != http.StatusOK {
 		t.Fatalf("POST /v1/requests %v = %d: %s", names, status, out)
 	}
+	return out
+}
+
+// request has the session ask for names with reason, lifetime (nil until the session ends) and
+// the request's own session claim (none when empty), and answers the pending request it opened.
+func (r *rig) request(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, reason string, lifetime *int, sessionClaim string, names ...string) pending {
+	t.Helper()
+	out := r.ask(t, enrollmentID, key, reason, lifetime, sessionClaim, names...)
 	created := decode[struct {
 		RequestID string  `json:"request_id"`
 		State     string  `json:"state"`
@@ -286,6 +309,23 @@ func (r *rig) request(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, 
 		t.Fatalf("POST /v1/requests %v = %s, want a pending request with a record", names, out)
 	}
 	return pending{requestID: created.RequestID, recordID: *created.RecordID}
+}
+
+// requestDenied has the session ask for names with reason, which the request machine is expected
+// to deny outright, and answers the broker's own one sentence about why. It fails when the
+// broker let the request through, since a denial that opened a record would still have a page.
+func (r *rig) requestDenied(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, reason string, names ...string) string {
+	t.Helper()
+	out := r.ask(t, enrollmentID, key, reason, nil, "", names...)
+	created := decode[struct {
+		State    string  `json:"state"`
+		RecordID *string `json:"record_id"`
+		Detail   *string `json:"detail"`
+	}](t, out)
+	if created.State != "denied" || created.RecordID != nil || created.Detail == nil {
+		t.Fatalf("POST /v1/requests %v = %s, want it denied with no record and a detail", names, out)
+	}
+	return *created.Detail
 }
 
 // benSession is a session of ben's machine on host, stating no session id.

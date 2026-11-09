@@ -34,6 +34,11 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 type Client struct {
 	Token string
 	API   string
+	// JobLogTimeout is how long one of this client's JobLog reads takes before it gives up.
+	// Zero, which is what every client in the tree is built with, is DefaultJobLogTimeout, the
+	// production bound; JobLogTimeBound answers the one in force, and a test that would
+	// otherwise wait that bound out sets this field on its own client.
+	JobLogTimeout time.Duration
 }
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
@@ -278,17 +283,26 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, ro
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		refused := &Answer{Method: method, Path: c.answerPath(request.URL), Status: response.StatusCode, Body: strings.TrimSpace(string(answer)),
-			RateLimited: RateLimited(response, answer), RetryAfter: retryAfter(response, answer, time.Now())}
-		if refused.RateLimited {
-			refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0", route)
-		}
-		return "", response.Header, refused
+		return "", response.Header, c.refusal(method, request.URL, response, answer, RateLimited(response, answer), route)
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
 	}
 	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+}
+
+// refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
+// caller returns: the status, the body as GitHub sent it, whether the answer is GitHub's rate
+// limit (limited, which the caller has read already where it decides something of its own by it,
+// as JobLog's 403 does) and, when it is, how long to wait and which budget it spent — route's,
+// the called API's own, when GitHub names no other.
+func (c Client) refusal(method string, target *url.URL, response *http.Response, body []byte, limited bool, route Budget) *Answer {
+	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
+		RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now())}
+	if refused.RateLimited {
+		refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0", route)
+	}
+	return refused
 }
 
 // answerPath is the path an Answer names for target, its query left out: the path under the

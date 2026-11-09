@@ -67,6 +67,9 @@ type RequestReply struct {
 	RecordID   *string         `json:"record_id"`
 	Approver   json.RawMessage `json:"approver"`
 	ApproveURL string          `json:"approve_url"`
+	// Detail is the broker's own one sentence about why it denied the request, empty when it
+	// denied none.
+	Detail string `json:"detail"`
 }
 
 // LogIn logs service in with a token for account and returns its launcher credential.

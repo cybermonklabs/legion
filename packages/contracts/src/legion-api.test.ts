@@ -10,6 +10,8 @@ import {
   LegionActivityRequest,
   LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimRequest,
+  LegionCompactResponse,
   LegionControllerCredentialResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
@@ -17,6 +19,7 @@ import {
   LegionEmptyResponse,
   LegionErrorResponse,
   LegionEscalateRequest,
+  LegionFreshSessionResponse,
   LegionGateRegisterRequest,
   LegionGrantRequest,
   LegionGrantResponse,
@@ -73,6 +76,8 @@ const schemas: Record<string, z.ZodType> = {
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
   "issue-status.json": LegionEmptyResponse,
+  "fresh-session.json": LegionFreshSessionResponse,
+  "compact.json": LegionCompactResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -85,6 +90,23 @@ const schemas: Record<string, z.ZodType> = {
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
   "version.json": z.strictObject({ daemonApiVersion: z.number().int().positive() }),
+  // Nor this one: the numbers a worker's own stall watch runs on, written from the daemon's
+  // copies of them (`internal/config/stalldefaults.go`) so that
+  // `packages/pi-shared/src/stall-limits.test.ts` can hold the plugin's own numbers — the one
+  // source — to the numbers the daemon computes its backstop floor from. The three defaults are
+  // `src/stall-limits.ts`'s; `declaredDeadlineMostMs` is the hour the host clamps a call's own
+  // declared deadline to (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), the other half of
+  // that floor.
+  "stall-defaults.json": z.strictObject({
+    callGraceMs: z.number().int().positive(),
+    callBoundMs: z.number().int().positive(),
+    stepMs: z.number().int().positive(),
+    declaredDeadlineMostMs: z.number().int().positive(),
+    callBoundMsByRole: z.record(
+      z.enum([...LEGION_ROLES, "controller"]),
+      z.number().int().nonnegative()
+    ),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -753,6 +775,65 @@ test("the state golden carries a worker's handoff record", () => {
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
+// The state shows what the daemon last saw a claim's agent do: the turn it is in, the call it is
+// in, and the length and fingerprint of that call's arguments, never their text. A call still
+// open carries `startedAt` and no `endedAt`, which is the shape a turn that stopped moving
+// leaves behind; a claim whose agent has not stepped carries no `step` at all, as does every
+// claim view served to a pod below contract 57.
+test("the state golden carries what the daemon last saw an agent do", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        architect?: { step?: Record<string, unknown> };
+        workers: Record<string, { claim: { step?: Record<string, unknown> } }>;
+      }
+    >;
+  };
+  const implementer = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const architect = state.issues["LEGION-208"]?.architect;
+  if (implementer === undefined || architect === undefined) {
+    throw new Error("state fixture lacks LEGION-208's architect and implementer");
+  }
+  expect(implementer.step).toEqual({
+    at: "2026-09-22T09:17:12Z",
+    turnStartedAt: "2026-09-22T09:16:30Z",
+    tool: "bash",
+    callId: "toolu_impl_11",
+    argsBytes: 128,
+    argsHash: "9b2e45c0d1f8a673",
+    startedAt: "2026-09-22T09:17:12Z",
+  });
+  expect(architect.step?.endedAt).toBe("2026-09-22T09:16:58Z");
+
+  implementer.step = { argsBytes: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = { tool: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// The only surface a controller's record reaches is the operator's claim listing: the state puts
+// the controller's claim on no issue, so no claim view of it can carry one.
+test("an operator's claim carries what the daemon last saw its agent do", () => {
+  const claim = fixture("operator-claim.json") as { step?: Record<string, unknown> };
+  expect(claim.step).toEqual({
+    at: "2026-09-22T09:31:22Z",
+    turnStartedAt: "2026-09-22T09:31:06Z",
+    tool: "eval",
+    callId: "toolu_impl_209_4",
+    argsBytes: 412,
+    argsHash: "c40d9e1b7a52f368",
+    startedAt: "2026-09-22T09:31:22Z",
+  });
+
+  claim.step = { argsBytes: -1 };
+  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  claim.step = undefined;
+  expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
+});
+
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
 // leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {
@@ -831,6 +912,11 @@ test("every request the plugin sends parses and names its required fields", () =
       "issue status",
       LegionIssueStatusRequest,
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
+    ],
+    [
+      "claim recovery",
+      LegionClaimRequest,
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
     [
       "gate register",
@@ -942,7 +1028,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211"]);
+  expect(state.admission.waiting).toEqual(["LEGION-211", "LEGION-212"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
@@ -1633,19 +1719,20 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
 });
 
-// The daemon's resolved legion.yaml (contract 35): the golden carries the file's `max_fix_attempts`
-// and `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
-// Stage 3 state carries the defaults, the two typed keys are positive integers, the rest rides
+// The daemon's resolved legion.yaml (contract 35): the golden carries the file's
+// `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
+// Stage 3 state carries the defaults, the one typed key is a positive integer, the rest rides
 // loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
+// `max_fix_attempts` rode here until contract 59 removed the key.
 test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  expect(state.settings.max_fix_attempts).toBe(5);
+  expect(state.settings.max_fix_attempts).toBeUndefined();
   expect(state.settings.worker_boot_timeout_seconds).toBe(180);
   const apps = state.settings.github_apps as { implement: Record<string, unknown> };
   expect(Object.keys(apps.implement).sort()).toEqual(["app_id", "installations"]);
 
   const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
-  expect(stage3.settings.max_fix_attempts).toBe(3);
+  expect(stage3.settings.max_fix_attempts).toBeUndefined();
   expect(stage3.settings.worker_boot_timeout_seconds).toBe(120);
 
   const dropped = fixture("state.json") as Record<string, unknown>;
@@ -1653,11 +1740,11 @@ test("the state golden carries the daemon's settings with no credential, and the
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 
   const zero = fixture("state.json") as { settings: Record<string, unknown> };
-  zero.settings.max_fix_attempts = 0;
+  zero.settings.worker_boot_timeout_seconds = 0;
   expect(LegionStateResponse.safeParse(zero).success).toBeFalse();
 
   const typed = fixture("state.json") as { settings: Record<string, unknown> };
-  typed.settings.max_fix_attempts = "5";
+  typed.settings.worker_boot_timeout_seconds = "180";
   expect(LegionStateResponse.safeParse(typed).success).toBeFalse();
 
   const text = readFileSync(path.join(fixtureDir, "state.json"), "utf8");

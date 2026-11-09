@@ -692,7 +692,11 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 // the deployment's pods then live from an issue's first role start to its close — while a
 // negative minute count, a zero backstop and a backstop below the idle period are refused naming
 // the key: a backstop shorter than the idle period would wake a pod the daemon has only just
-// released.
+// released. Each is bounded at the timer bound in whole minutes (maxTimerMinutes, about 24
+// days), as every duration key of the file is: a number of minutes beyond that is no wait the
+// daemon could serve, and multiplied into a time.Duration (IdleReleaseConfig.Idle, Backstop) it
+// wraps negative, which is an idle period every pod has already passed and a backstop every
+// released worker is already due.
 func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	const key = kubernetesKey + ".idle_release"
 	settled := defaultIdleRelease
@@ -714,9 +718,12 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 		if *idle < 0 {
 			return IdleReleaseConfig{}, fmt.Errorf("%s.idle_minutes must be a positive number of minutes, or 0 to release no pod", key)
 		}
+		if *idle > maxTimerMinutes {
+			return IdleReleaseConfig{}, fmt.Errorf("%s.idle_minutes must be at most %d", key, maxTimerMinutes)
+		}
 		settled.IdleMinutes = *idle
 	}
-	backstop, err := readPositiveInteger(fields["backstop_minutes"], key+".backstop_minutes", 0)
+	backstop, err := readPositiveInteger(fields["backstop_minutes"], key+".backstop_minutes", maxTimerMinutes)
 	if err != nil {
 		return IdleReleaseConfig{}, err
 	}

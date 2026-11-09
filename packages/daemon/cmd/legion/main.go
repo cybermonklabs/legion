@@ -262,8 +262,10 @@ func pluginsLine(cfg config.Config) string {
 // it named them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS
 // nkey seed's public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
-// still sets that this daemon no longer reads — so a deprecation is the first thing an operator
-// reads, and the exit stays 0, since such a key is ignored and never refused.
+// still sets that this daemon no longer reads, whether a project sets it or the file does at its
+// top level — in the words boot logs it with: what the key would have been refused for, and what
+// to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
+// since such a key is ignored and never refused.
 // Then one line per project, in key order, naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge. After them, one line per configured repository rename
@@ -401,8 +403,12 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
 	}
-	// Each warning the loader has (config.Config.Warnings) is logged once, before any other work
-	// this boot does with the configuration, so the lines are the first a reader of the log meets
+	// Each warning the loader has (config.Config.Warnings) is logged once, here and nowhere
+	// further down: daemon.Run logs none of them, so a boot that goes on to serve writes each
+	// line once and not twice. They come before any other work this boot does with the
+	// configuration — before the team is claimed, which another legion's entry refuses — so a
+	// start that never reaches a boot has logged them too, and the lines are the first a reader of
+	// the log meets
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
 	// The boot goes on: a key another deployment still sets is ignored, never refused.
 	for _, warning := range cfg.Warnings {
@@ -599,6 +605,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
+	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -681,22 +688,32 @@ func memorySummary(issues map[string]api.Issue) string {
 	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
 }
 
-// awaitingSummary is the one line an operator reads for the roots that gave their admission slot
-// up to wait on a person (api.WaitingOnView): an unanswered one holds no slot and is in neither
-// `active` nor `waiting`, only among the live trees, so without this line the capacity it freed
-// looks idle. It says how many, how many a person answered (each at the front of the waiting line
-// for the next free slot), and each by key with what it waits on and whether, when and by what act
-// it was answered.
+// awaitingSummary is the one line an operator reads for the roots that wait on a person
+// (api.WaitingOnView): such a root keeps the slot it took when the daemon started it, so it
+// stands in `active` while it waits and `active` alone does not say what it waits for. It says
+// how many, how many of them a person answered and the daemon's own published
+// line names (api.WaitingLineView), and each by key with what it waits on and whether, when and by
+// what act it was answered.
+//
+// The second count reads the published line rather than judging the wait a second time. An
+// answered root stands in that line, among the issues whose work came back, oldest first
+// (record.Waiting carries every answered root there, whatever its design gate
+// says), until the pass that resumes it. Two answered roots are in no line this summary reads:
+// one of another Dispatch project, whose line this daemon does not build, and every one of them
+// when the daemon answering is older than contract 58 and has no `waitingLine` to send. The
+// caller is the operator's `legion state`, which a daemon of this release serves in full
+// (api's stateFor), so nothing strips the field from this reader. So the count is 0 against a
+// daemon older than contract 58, which is the true answer for a reader that cannot see the line.
 func awaitingSummary(issues map[string]api.Issue) string {
 	var keys []string
-	answered := 0
+	standing := 0
 	for key, issue := range issues {
 		if issue.WaitingOn == nil {
 			continue
 		}
 		keys = append(keys, key)
-		if issue.WaitingOn.AnsweredAt != nil {
-			answered++
+		if issue.WaitingOn.AnsweredAt != nil && issue.WaitingLine != nil {
+			standing++
 		}
 	}
 	if len(keys) == 0 {
@@ -716,8 +733,8 @@ func awaitingSummary(issues map[string]api.Issue) string {
 		}
 		waits[i] = key + " waits on " + on + ", " + state
 	}
-	return fmt.Sprintf("roots waiting on a person: %d, %d answered and waiting for a slot — %s",
-		len(keys), answered, strings.Join(waits, "; "))
+	return fmt.Sprintf("roots waiting on a person: %d, %d answered and standing in the admission line — %s",
+		len(keys), standing, strings.Join(waits, "; "))
 }
 
 // pendingSummary is the one line an operator reads for the Dispatch status writes the daemon has
@@ -846,6 +863,63 @@ func roundsSummary(issues map[string]api.Issue) string {
 		named[i] = fmt.Sprintf("%s on %s: %s", round.issue, round.round, strings.Join(round.roles, ", "))
 	}
 	return fmt.Sprintf("open update rounds: %d — %s", len(rounds), strings.Join(named, "; "))
+}
+
+// claimCall is one claim's open tool call: the issue and role whose claim it is, and the record
+// of the call (api.StepView).
+type claimCall struct {
+	issue string
+	role  string
+	step  api.StepView
+}
+
+// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
+// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
+// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
+// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
+// reads the same record to decide a turn has stopped moving, and this is where an operator reads
+// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
+// read with `legion claims list` instead.
+func openCalls(issues map[string]api.Issue) []claimCall {
+	var calls []claimCall
+	open := func(issue, role string, view api.ClaimView) {
+		if openCallWord(view.Step) == "" {
+			return
+		}
+		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
+	}
+	for key, issue := range issues {
+		if issue.Architect != nil {
+			open(key, string(legionclaim.RoleArchitect), *issue.Architect)
+		}
+		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
+			open(key, string(role), issue.Workers[role].Claim)
+		}
+	}
+	slices.SortFunc(calls, func(a, b claimCall) int {
+		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+	})
+	return calls
+}
+
+// openCallsSummary is the one line an operator reads for the agents in a tool call right now: how
+// many, and each by issue and role with the call its stream named and when that call started
+// (claims.go's openCallWord, Go-quoted because the tool and the call id are the agent's own
+// word). A call that has been open for hours is this issue's whole shape — the daemon's backstop
+// ends such a turn, and until it does this line says which agent is in one.
+//
+// The call's arguments are in no column of it: the daemon keeps their length and a fingerprint
+// alone, because a shell command routinely holds a credential (supervise.StepRecord).
+func openCallsSummary(issues map[string]api.Issue) string {
+	calls := openCalls(issues)
+	if len(calls) == 0 {
+		return "agents in a tool call: none"
+	}
+	named := make([]string, len(calls))
+	for i, call := range calls {
+		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.step)))
+	}
+	return fmt.Sprintf("agents in a tool call: %d — %s", len(calls), strings.Join(named, "; "))
 }
 
 // heldSummary is the one line an operator reads for the lifecycle rows the daemon holds behind
