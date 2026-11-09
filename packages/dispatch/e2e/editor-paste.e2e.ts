@@ -52,7 +52,8 @@ function drawnRows(page: Page) {
 // artifact and the reload, the one path that is not the editor's serializer alone. The same
 // clipboard's markdown is asserted headless; this row is the round trip.
 const copiedCells = "<table><tr><th>one</th><th>two</th></tr><tr><td>1</td><td>2</td></tr></table>";
-test("cells pasted onto a selection of cells are stored and read back after a reload", async ({
+// @pr: The live document: the one editor-paste row that goes through the clipboard, the document socket, the stored artifact and a reload.
+test("cells pasted onto a selection of cells are stored and read back after a reload @pr", async ({
   browser,
 }) => {
   const { alice, issue, page } = await openWithCellsSelected(browser, "alpha one", "delta four");

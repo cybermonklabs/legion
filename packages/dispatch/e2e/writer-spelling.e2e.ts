@@ -28,7 +28,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a document with escapes beside emphasis around a tilde is stored, and its page draws the runs the engine reads", async ({
+// @pr: The stored-markdown family's one row on the lane: escapes beside emphasis around a tilde are stored and drawn as the engine reads them.
+test("a document with escapes beside emphasis around a tilde is stored, and its page draws the runs the engine reads @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

@@ -83,7 +83,8 @@ for (const { name, edge, type, code } of cases) {
 
 // @webkit: where a caret lands beside a collaborator's own caret, here the one a reader outside
 // the editor sees over their own stale selection.
-test("a reader outside the editor sees a collaborator's cursor even where their own stale selection sits @webkit", async ({
+// @pr: A two-context race: a collaborator's caret is drawn for a reader whose own selection is stale over the same text.
+test("a reader outside the editor sees a collaborator's cursor even where their own stale selection sits @webkit @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

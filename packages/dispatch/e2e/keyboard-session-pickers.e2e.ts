@@ -186,7 +186,8 @@ test.beforeEach(async () => {
 // SLOW(>=2s): two switches through the fake Envoy and back, each read from the server, in every
 // engine the rule has to hold in.
 // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
-test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox", async ({
+// @pr: A write a person makes: the header picker must step without switching the session, and Enter must switch it once.
+test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox @pr", async ({
   browser,
 }) => {
   const session = liveSession(11);

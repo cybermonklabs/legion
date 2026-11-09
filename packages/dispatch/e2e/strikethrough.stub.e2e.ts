@@ -1,3 +1,7 @@
+/** Tilde runs of different lengths, read in a past version of the spec: the engine's own parse of
+ *  what the server stored, drawn from one fixed answer, so it runs against a recording
+ *  (packages/dispatch/AGENTS.md, "The stubbed layer").
+ */
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createIssue, createProject } from "./api";
 import { expectParagraphReadings } from "./editor";

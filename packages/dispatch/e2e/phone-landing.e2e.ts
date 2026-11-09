@@ -195,7 +195,8 @@ async function openWithReadLast(
 // SLOW(>=2s): three opens, each a fresh page because only a page with no history entry is a
 // first open (`history.length` 1 above), each holding the 300 ms margin the partial-data state
 // has no in-page signal for, plus the top-of-page control the fixture needs to stay honest.
-test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone", async ({
+// @pr: The phone Conversation's first paint: it opens on the newest message whichever of its reads answers last.
+test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone @pr", async ({
   browser,
 }) => {
   const { issue, newest } = await seedConversation("Landing on the newest message");

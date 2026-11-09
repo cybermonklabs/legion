@@ -1,3 +1,7 @@
+/** A directive the schema does not know, drawn wherever the page draws a body: what the renderer
+ *  does with one fixed answer, so it runs against a recording (packages/dispatch/AGENTS.md, "The
+ *  stubbed layer").
+ */
 import { expect } from "@playwright/test";
 
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";

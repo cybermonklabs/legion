@@ -25,7 +25,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("the ask card lists every session that wrote to the ask and a human can unfollow one", async ({
+// @pr: A write the server settles: the ask card lists every session that wrote to the ask, and an unfollow takes one off.
+test("the ask card lists every session that wrote to the ask and a human can unfollow one @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

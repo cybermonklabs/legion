@@ -122,7 +122,8 @@ async function states(state: string): Promise<string[]> {
   );
 }
 
-test("from the Inbox, a live broker session lands on the record's page with no sign-in, and one Approve grants it", async ({
+// @pr: Sign-in and tokens: a live broker session reaches the record's page with no sign-in, and one Approve grants the credential.
+test("from the Inbox, a live broker session lands on the record's page with no sign-in, and one Approve grants it @pr", async ({
   browser,
 }, testInfo) => {
   requireRealBroker(testInfo);
@@ -166,7 +167,8 @@ test("from the Inbox, a live broker session lands on the record's page with no s
   }
 });
 
-test("from the Inbox, a lapsed broker session signs in once and returns to the same record's page", async ({
+// @pr: Sign-in and tokens: a lapsed session signs in once and comes back to the same record's page.
+test("from the Inbox, a lapsed broker session signs in once and returns to the same record's page @pr", async ({
   browser,
 }, testInfo) => {
   requireRealBroker(testInfo);
@@ -287,7 +289,8 @@ async function hostileSibling(request: SeededRequest): Promise<{ origin: string;
   return { origin: `http://127.0.0.1:${address.port}`, server };
 }
 
-test("a page on a sibling origin cannot decide the record with a form, a credentialed fetch, or a frame", async ({
+// @pr: Sign-in and tokens: the approval route must refuse a sibling origin's form, credentialed fetch and frame.
+test("a page on a sibling origin cannot decide the record with a form, a credentialed fetch, or a frame @pr", async ({
   browser,
 }, testInfo) => {
   requireRealBroker(testInfo);
@@ -374,7 +377,8 @@ test("a page on a sibling origin cannot decide the record with a form, a credent
   }
 });
 
-test("signed in as another person, the record's page offers only the switch, which signs in its approver", async ({
+// @pr: Sign-in and tokens: signed in as the wrong person, the record's page offers only the switch, which signs in its approver.
+test("signed in as another person, the record's page offers only the switch, which signs in its approver @pr", async ({
   browser,
 }, testInfo) => {
   requireRealBroker(testInfo);

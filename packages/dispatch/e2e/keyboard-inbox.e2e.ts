@@ -124,7 +124,8 @@ test.describe("inbox selection", () => {
     }
   });
 
-  test("a refused bulk snooze names the count and keeps the refused rows marked", async ({
+  // @pr: A write the server refuses: a refused bulk snooze names the count and leaves the refused rows marked.
+  test("a refused bulk snooze names the count and keeps the refused rows marked @pr", async ({
     browser,
   }) => {
     await seedInbox();

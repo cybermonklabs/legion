@@ -82,7 +82,8 @@ async function expectOpenedMarginItem(page: Page, id: string): Promise<void> {
   await expect(item).toBeInViewport();
 }
 
-test("an item address that writes its id short opens the item and is replaced by the whole id", async ({
+// @pr: The short-id family's one row on the lane: an address written short opens its item and is replaced by the whole id.
+test("an item address that writes its id short opens the item and is replaced by the whole id @pr", async ({
   browser,
 }) => {
   const world = await seedReferenceWorld();

@@ -223,7 +223,8 @@ for (const form of FORMS) {
   });
 }
 
-test("a reply made only of a bare key and a dispatch:// address shows a card for each in the margin, the Inbox thread and a Conversation message", async ({
+// @pr: The reference-card family's one row on the lane: a reply of two addresses shows a card for each, in all three surfaces.
+test("a reply made only of a bare key and a dispatch:// address shows a card for each in the margin, the Inbox thread and a Conversation message @pr", async ({
   browser,
 }, testInfo) => {
   const world = await seedReferenceWorld();

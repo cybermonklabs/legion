@@ -29,7 +29,8 @@ const reopener = {
 // would answer the question the row asks.
 // @webkit @firefox: the socket the engine reconnects and the paint that follows it, which decide
 // whether a read-only admission landing before the issue read leaves a reader with no way out.
-test("a reconnect admitted read-only before the issue read names the reload @webkit @firefox", async ({
+// @pr: The live document's admission: a reconnect admitted read-only before the issue read must name the reload, or the reader has no way out.
+test("a reconnect admitted read-only before the issue read names the reload @webkit @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "DOC", name: "Doc reload" });

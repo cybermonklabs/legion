@@ -28,7 +28,8 @@ function commentMarks(page: Page): Locator {
 // Ctrl+Alt+M (Cmd+Option+M on a Mac) is Google Docs' chord for the bar's Comment button. The
 // editor's own keymap must leave it alone - it reaches the page only once ProseMirror passes on
 // it - and it belongs to the editor: from the composer it opens, it types and opens nothing.
-test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and only from the editor", async ({
+// @pr: The document keyboard surface's own row: Ctrl+Alt+M comments on the selection, and only from the editor.
+test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and only from the editor @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

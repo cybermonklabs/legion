@@ -1,3 +1,7 @@
+/** How the Inbox bands its rows by priority and by whose turn it is, and that the bands leave one
+ *  flat keyboard list: what the page arranges out of one fixed answer, so it runs against a
+ *  recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ */
 import { expect, type Page } from "@playwright/test";
 
 import {

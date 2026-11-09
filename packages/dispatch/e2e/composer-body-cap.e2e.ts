@@ -21,7 +21,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph", async ({
+// @pr: A write the server refuses: a 40,000-character body goes whole, and one long paragraph comes back with the server's own refusal beside the draft.
+test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph @pr", async ({
   browser,
 }) => {
   test.skip(test.info().project.name !== "chromium", "one browser proves the composer");

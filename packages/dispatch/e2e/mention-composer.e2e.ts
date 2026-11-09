@@ -105,7 +105,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("E1 and E2: explicit role mentions deliver once while /btw without a mention stays a plain comment", async ({
+// @pr: A write a person makes: an explicit role mention is delivered once, and a /btw with no mention stays a plain comment.
+test("E1 and E2: explicit role mentions deliver once while /btw without a mention stays a plain comment @pr", async ({
   browser,
 }) => {
   await setLiveSessions([planner]);

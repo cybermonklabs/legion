@@ -24,7 +24,8 @@ async function openOnEmptyLine(browser: Browser) {
   return { ...opened, messages };
 }
 
-test("an ask holding a heading, pasted as plain text, keeps every word as its lines", async ({
+// @pr: The typed-block paste rule's one row on the lane: an ask holding a heading, pasted as plain text, keeps every word.
+test("an ask holding a heading, pasted as plain text, keeps every word as its lines @pr", async ({
   browser,
 }) => {
   const { alice, issue, messages, page } = await openOnEmptyLine(browser);

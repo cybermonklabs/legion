@@ -67,7 +67,8 @@ function postAsPage(page: Page, path: string, data?: object) {
 
 // SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
 // and comparison, and the references and phone layout read after them.
-test("artifacts upload, version, references, and phone layout @phone", async ({
+// @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
+test("artifacts upload, version, references, and phone layout @phone @pr", async ({
   page,
 }, testInfo) => {
   const sockets = countDocumentSockets(page);

@@ -12,7 +12,8 @@ test.beforeEach(async () => {
 // A session title is free text of any length, and the claim chip renders it on the issue
 // header, so a long holder name must not widen the page. The long-payload shape is
 // labels.e2e.ts's; the width assertion is the one above.
-test("a long holder name never widens the issue page", async ({ browser }, testInfo) => {
+// @pr: The claim chip's only width row: a session title is free text of any length and must not widen the issue page.
+test("a long holder name never widens the issue page @pr", async ({ browser }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Claimed by a long name" });
   const token = await mintAgentToken("claim-e2e", "alice");

@@ -60,7 +60,8 @@ test.beforeEach(async () => {
 // Verification document of three checks and two recorded results, each result's record route
 // reading through to that fake for the pull request's head, before one load of the tab, which
 // opens the document's live room and draws all three checks with every field of both results.
-test("the Verification tab lists every check of the document, each with the results recorded against it", async ({
+// @pr: The Verification tab's own row: every check of the document, each with the results recorded against it.
+test("the Verification tab lists every check of the document, each with the results recorded against it @pr", async ({
   browser,
 }, testInfo) => {
   const issue = await seedIssue("Verification tab", secondHead);

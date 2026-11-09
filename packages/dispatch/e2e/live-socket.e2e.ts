@@ -202,7 +202,10 @@ test.beforeEach(async () => {
 // draws all three in the one tab - the project's board, the session's live thread and the
 // delivery timeline - and each is a page's worth of rendering the claim cannot do without.
 // @webkit @firefox: the one-socket invariant, which must hold in every engine people read in.
-test("a tab holds one live socket for every live view @webkit @firefox", async ({ browser }) => {
+// @pr: The live socket: one socket per tab, read over three live views at once.
+test("a tab holds one live socket for every live view @webkit @firefox @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Board issue" });
   await seedDeliveryFixture();
@@ -421,7 +424,10 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
 
 // SLOW(>=2s): a cold load in WebKit and in Firefox with the page's first live socket held open
 // through it, which each engine then has to replay the missed change on.
-test("a change committed while the page loads is shown without a reload", async ({ browser }) => {
+// @pr: The live socket: a change committed while the page loads has to be replayed, with no reload.
+test("a change committed while the page loads is shown without a reload @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Before the page load" });
 
@@ -503,7 +509,8 @@ test("a first live socket opening without a change makes no API request", async 
   }
 });
 
-test("an agent live view survives a rotation in place", async ({ browser }) => {
+// @pr: The live socket: a rotation the server makes the page spend must leave the agent's live view where it was.
+test("an agent live view survives a rotation in place @pr", async ({ browser }) => {
   await setLiveSessions([agent]);
   await publishAgentStreamFrame(agent.session_id, replay(agent.session_id), "replay");
 

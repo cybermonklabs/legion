@@ -60,7 +60,8 @@ test.beforeEach(async () => {
 
 // SLOW(>=2s): the row crosses four surfaces - Settings, the Architecture page, the issue's
 // Components picker and a reload for persistence - over two source saves and two imports.
-test("a project with two architecture sources shows both in Settings, on its Architecture page and in an issue's Components picker", async ({
+// @pr: The Architecture-sources surface's only row: two sources read in Settings, on the Architecture page and in an issue's Components picker.
+test("a project with two architecture sources shows both in Settings, on its Architecture page and in an issue's Components picker @pr", async ({
   browser,
 }) => {
   // Step 1: project CORE and two repositories, each with its own component files.

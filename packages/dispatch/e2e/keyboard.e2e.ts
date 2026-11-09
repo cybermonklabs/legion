@@ -16,7 +16,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("c opens the create dialog; project and title create an issue the API returns and the SPA opens", async ({
+// @pr: Create through answer to close: the create itself - c opens the dialog, and the issue the API returns is the one the SPA opens.
+test("c opens the create dialog; project and title create an issue the API returns and the SPA opens @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

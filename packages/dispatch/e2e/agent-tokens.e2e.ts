@@ -18,7 +18,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a personal agent token attributes its ask, remains private, and is revoked from Settings", async ({
+// @pr: Sign-in and tokens: a personal token's ask is attributed to its owner, stays private, and Settings revokes it.
+test("a personal agent token attributes its ask, remains private, and is revoked from Settings @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

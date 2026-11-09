@@ -155,7 +155,8 @@ async function expectWithdrawn(
 
 // SLOW(>=2s): two pages of the issue, one of them the document editor with its own socket, then a
 // close, the version history, a reopen and a reload.
-test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back", async ({
+// @pr: Create through answer to close: the Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings them back.
+test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr", async ({
   browser,
 }) => {
   const seeded = await seedIssue("CLOSE");

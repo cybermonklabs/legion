@@ -255,7 +255,8 @@ test("an agent's quote-anchored comment and ask render as highlights in open edi
   }
 });
 
-test("highlights follow edits in the other browser and preserve their anchor state", async ({
+// @pr: A two-context race: a highlight has to follow the other browser's edits and keep its anchor state.
+test("highlights follow edits in the other browser and preserve their anchor state @pr", async ({
   browser,
 }) => {
   await createProject({ key: "FOLLOW", name: "Following highlights" });
@@ -335,7 +336,8 @@ test("highlights follow edits in the other browser and preserve their anchor sta
 });
 
 // SLOW(>=2s): two browser contexts, two suggestion sends and the accept and reject round trips.
-test("accepting a suggestion changes the text in both browsers and names a version; rejecting leaves the text", async ({
+// @pr: The live document's settlement: an accepted suggestion changes the text in both browsers and names a version; a rejected one leaves it.
+test("accepting a suggestion changes the text in both browsers and names a version; rejecting leaves the text @pr", async ({
   browser,
 }) => {
   await createProject({ key: "SUG", name: "Suggestions" });

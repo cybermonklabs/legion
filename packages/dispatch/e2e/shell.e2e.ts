@@ -38,7 +38,8 @@ test.beforeEach(async () => {
 
 // It is no stubbed row: the row's own 503s are recorded beside the answer that follows them, and
 // a replay is given the first of them for every ask, so the page never opens.
-test("a transient whoami failure shows a retry banner and keeps the app, not the sign-in page", async ({
+// @pr: Sign-in and tokens: a whoami that fails must leave the person in the app behind a Retry, never on the sign-in page.
+test("a transient whoami failure shows a retry banner and keeps the app, not the sign-in page @pr", async ({
   browser,
 }) => {
   const context = await asUser(browser, "alice");
@@ -116,7 +117,8 @@ test("a page asks whoami again while it answers EVENT_HEAD_UNAVAILABLE, and open
 
 // It is no stubbed row: the claim is the server's, that logout advanced alice's session
 // generation there.
-test("signing out revokes the session on the server and returns to the sign-in page", async ({
+// @pr: Sign-in and tokens: the sign-out revokes the session on the server, not only in the page.
+test("signing out revokes the session on the server and returns to the sign-in page @pr", async ({
   browser,
 }) => {
   const context = await asUser(browser, "alice");
@@ -151,7 +153,8 @@ test("signing out revokes the session on the server and returns to the sign-in p
 //
 // It is no stubbed row: the `firefox-download-navigation` project selects it by this file's name
 // (e2e/playwright.config.ts), and the engine it covers is the point of the row.
-test("a chunk that fails after a Download link was followed reloads the page", async ({
+// @pr: Upload and download, and the nearest the lane has to the rolling-release walk: a chunk that fails after a Download link was followed reloads the page.
+test("a chunk that fails after a Download link was followed reloads the page @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(

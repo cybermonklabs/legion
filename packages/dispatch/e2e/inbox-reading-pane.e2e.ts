@@ -272,7 +272,8 @@ test("a withdrawn question the reader was answering keeps its text in the column
   }
 });
 
-test("an options-only answer the server refuses keeps its question in the column, with a Retry", async ({
+// @pr: An ask answered and refused: the server's No keeps the question in the column with a Retry, rather than losing the answer.
+test("an options-only answer the server refuses keeps its question in the column, with a Retry @pr", async ({
   browser,
 }) => {
   const seed = await seedInbox();

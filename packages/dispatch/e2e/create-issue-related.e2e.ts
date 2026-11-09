@@ -65,7 +65,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a title checked before an issue was filed is checked again, not answered from before", async ({
+// @pr: Create through answer to close: the related-issue check behind the create dialog must ask again once an issue was filed, not answer from before.
+test("a title checked before an issue was filed is checked again, not answered from before @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

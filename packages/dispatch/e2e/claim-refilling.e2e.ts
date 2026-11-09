@@ -39,7 +39,8 @@ async function seedSessionClaim(): Promise<string> {
   return issue.key;
 }
 
-test("a refilling agent list never lapses a session's claim on the chip or in the Unclaimed filter", async ({
+// @pr: A refilling agent list must never lapse a claim: the chip and the Unclaimed filter both read the live list, and both are wrong if this breaks.
+test("a refilling agent list never lapses a session's claim on the chip or in the Unclaimed filter @pr", async ({
   browser,
 }) => {
   test.setTimeout(120_000);

@@ -16,7 +16,8 @@ test.beforeEach(async () => {
 
 // SLOW(>=2s): one document editor, a comment anchored to a block, a reword and a deletion -
 // every one a real live write.
-test("a block-anchored comment remains with its block through a reword and quote deletion", async ({
+// @pr: The live document: a block-anchored comment stays with its block through a reword and a deletion.
+test("a block-anchored comment remains with its block through a reword and quote deletion @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

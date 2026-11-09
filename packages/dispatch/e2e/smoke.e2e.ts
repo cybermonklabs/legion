@@ -12,7 +12,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an anonymous user is sent to Google sign-in", async ({ browser }) => {
+// @pr: Sign-in and tokens: the first thing an anonymous person meets, and the row the whole lane rests on.
+test("an anonymous user is sent to Google sign-in @pr", async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
 

@@ -46,7 +46,8 @@ async function readingAnchor(page: Page, root: string, item: string): Promise<st
   return value ?? "";
 }
 
-test("a reader scrolled up keeps their Conversation viewport when a new card arrives", async ({
+// @pr: A delivery arriving: a new card must not move the Conversation under a reader who scrolled up.
+test("a reader scrolled up keeps their Conversation viewport when a new card arrives @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

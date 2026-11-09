@@ -47,7 +47,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("the unified composer offers live roles and sessions and posts canonical mention targets", async ({
+// @pr: A write a person makes: the composer offers the live roles and sessions and posts the canonical mention target for the one picked.
+test("the unified composer offers live roles and sessions and posts canonical mention targets @pr", async ({
   browser,
 }) => {
   await setLiveSessions([planner, worker]);

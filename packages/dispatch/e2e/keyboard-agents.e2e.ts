@@ -21,7 +21,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 test.describe("agents page", () => {
-  test("j/k rove the agent rows, Enter opens the composer, i the issue picker, x selects and Shift+P pins", async ({
+  // @pr: The Agents page's keyboard surface: j/k over the rows, Enter into the composer, i into the issue picker, x to select and Shift+P to pin.
+  test("j/k rove the agent rows, Enter opens the composer, i the issue picker, x selects and Shift+P pins @pr", async ({
     browser,
   }, testInfo) => {
     await seedAgents();

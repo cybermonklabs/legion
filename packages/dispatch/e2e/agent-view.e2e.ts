@@ -385,7 +385,8 @@ test.beforeEach(async () => {
   await setLiveSessions([planner]);
 });
 
-test("the conversation view replays what the session held, streams its next turn, and sends as Send, the terminal's Enter, through the existing delivery", async ({
+// @pr: Live delivery: the transcript replays, the next turn streams in, and Send reaches the session through the existing delivery.
+test("the conversation view replays what the session held, streams its next turn, and sends as Send, the terminal's Enter, through the existing delivery @pr", async ({
   browser,
 }) => {
   await publishAgentStreamFrame(planner.session_id, replay, "replay");

@@ -323,7 +323,8 @@ test.describe("agents page pins", () => {
   // A pin made while the row's message is in the air moves the row with the send still out. The
   // composer that made the send is the one the reader sees, so it answers for it: held until the
   // server does, then empty.
-  test("a pin mid-send keeps the send's own composer, which empties when it lands", async ({
+  // @pr: A write on the wire: a pin that moves the row mid-send leaves the send with the composer that made it, which empties when it lands.
+  test("a pin mid-send keeps the send's own composer, which empties when it lands @pr", async ({
     browser,
   }) => {
     await seedWithFold();

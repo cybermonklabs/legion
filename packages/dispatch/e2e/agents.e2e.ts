@@ -86,7 +86,8 @@ test.beforeEach(async () => {
 // SLOW(>=2s): one page tour over four sessions - order, folds, pills, pin, clipboard and an
 // issue-less BTW conversation. Every second is a step the row asserts, and the seed's order is
 // what "who needs you first" is read against, so its writes keep theirs.
-test("Agents puts who needs you first, folds silent and inactive sessions, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation", async ({
+// @pr: The Agents page's own tour - order, folds, pills, a pin and a BTW conversation - so the page is never silent on a pull request.
+test("Agents puts who needs you first, folds silent and inactive sessions, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation @pr", async ({
   browser,
 }, testInfo) => {
   await setLiveSessions([planner, reviewer, silent, archivist]);
@@ -1438,7 +1439,8 @@ test("a second broadcast pressed while the first is on the wire waits its turn, 
   }
 });
 
-test("a send the server refuses keeps its row after a later send succeeds, and Retry sends it again as it was", async ({
+// @pr: A write the server refuses: the refused broadcast keeps its row after a later send lands, and Retry sends exactly what was refused.
+test("a send the server refuses keeps its row after a later send succeeds, and Retry sends it again as it was @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");

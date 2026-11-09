@@ -75,7 +75,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("one click marks six hundred and twenty threads read, leaves every row in the list, and the counts stay down", async ({
+// @pr: A write the server settles: one Mark all read over 620 threads, with every row kept and the counts down.
+test("one click marks six hundred and twenty threads read, leaves every row in the list, and the counts stay down @pr", async ({
   browser,
 }) => {
   const seeded = await seedMany();

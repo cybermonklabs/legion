@@ -47,7 +47,8 @@ test.beforeEach(async () => {
 // document's one check, each result's record route reading through to the fake for the commit
 // it holds and the pull request's head; then one load of the Activity tab, two pin writes and
 // the margin's Pinned tab, which draws each pinned event's own line.
-test("a result's line names the whole commit, so a result at a mistyped commit is told from one at the head", async ({
+// @pr: The verification-result surface's own row: a result's line names the whole commit, so a mistyped one is told from the head.
+test("a result's line names the whole commit, so a result at a mistyped commit is told from one at the head @pr", async ({
   browser,
 }) => {
   await createProject({ key: "VER", name: "Verification" });

@@ -24,7 +24,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("grouping two sessions makes them one Parent agent", async ({ browser }) => {
+// @pr: Live delivery: a session group is one Parent agent on the delivery page, which no other row reads.
+test("grouping two sessions makes them one Parent agent @pr", async ({ browser }) => {
   await seedSessionGroupsFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

@@ -63,7 +63,8 @@ test.beforeEach(async () => {
 
 // SLOW(>=2s): two focus traps of 32 presses each, every one read back from the page, on an
 // emulated phone - the cycle is the property, and both containers hold more than eight stops.
-test("the phone shell traps focus, dismisses on Escape at the right nesting level, never wraps a key, and renders a pinned event's own description @phone", async ({
+// @pr: The phone shell itself: the focus traps, Escape at the right nesting level, and a pinned event's own description.
+test("the phone shell traps focus, dismisses on Escape at the right nesting level, never wraps a key, and renders a pinned event's own description @phone @pr", async ({
   browser,
 }, testInfo) => {
   const isPhone = testInfo.project.name === "iphone";

@@ -2475,6 +2475,84 @@ over real time - that no request happens within a second - needs no such project
 cannot make that claim false. A project whose dependency has a failing row does not run at all,
 so a red run leaves these rows unrun rather than measured beside a retry.
 
+## The stubbed layer
+
+Most rows of this suite need a real engine and not a real server: ProseMirror and Milkdown,
+Mermaid in a worker, `contenteditable`, the highlight API, forced colours, the phone. Such a row
+runs in the `stub` and `stub-phone` projects, in a real browser, against a recording of the API:
+a static file server over the build under test serves the document and its assets
+(`e2e/stub/static-server.ts`), every `/api/v1/**` and `/auth/whoami` answer is replayed from a
+HAR committed under `e2e/__recordings__/`, `/ws/live` answers from the contract fixtures, and the
+run holds no Go server, no Postgres, no fake listener, no sign-in and no database reset at all.
+`bun run e2e:stub` is that run, and it needs none of the harness.
+
+What a stubbed row may assert is what the browser does with a fixed answer: a layout, a width, a
+computed colour, focus and roving, a chord, an address, an accessibility scan, the markdown or
+directive the page draws from what the API returned, and a rule the page applies itself, which
+such a row proves by asserting that no request was made. What only a real-stack row may assert
+is anything the server decides. Four shapes, and a row of any of them stays where it is:
+
+- it reads something the server computes, enforces, refuses or ranks — a validation, a claim, an
+  admission, a settlement, a permission, an idempotency key, a search result's own ranking;
+- it **writes and then reads its own write**: a recording answers a refetch with the state
+  recorded before the write, so the row passes while proving nothing. This is the exclusion a
+  reader of "no coverage is lost" would miss, and it is mechanical rather than semantic: a row
+  that posts, patches or deletes and then asserts on a refetch, a reload, a second page or
+  another context belongs on the real stack whatever it asserts;
+- it needs a frame the server sends: a delivery arriving, an agent's turn streaming, or the live
+  document, whose Yjs socket no recording replays and whose editor an in-memory Hocuspocus does
+  not hold (measured on this issue: the editor reaches `connected` and takes the first keystroke
+  and no more);
+- it reads a clock the server keeps moving. A recording freezes `last_seen`, so a row whose
+  claim depends on how long ago something happened rots: ten minutes after a re-recording the
+  Agents page folds every seeded session under `Inactive (N)` (`isInactive`,
+  `web/src/features/agents/AgentsPage.tsx`). That is why no row of `agents.e2e.ts`,
+  `keyboard-agents.e2e.ts` or `keyboard-agents-pin.e2e.ts` is here.
+
+A row moves by moving its file, never by an annotation: 150 spec files reset the database in a
+`beforeEach` and most of them sign in and seed through the API, so a stubbed row left among them
+would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps its title
+and every assertion it had, and the file it left keeps its own rows and hooks. Such a file
+declares its `test` with `stubbed(seed)` (`e2e/stub/stub-test.ts`): `seed` is the API seeding the
+rows need, which runs in record mode alone, and what it returns is written beside the recording
+as a scene file and handed back to each row as `scene`, so no row ever names an id the server
+minted. The fixture's `page` is already signed in, because the recording answers `/auth/whoami`.
+
+A recording is made with `bun run e2e:stub:record`, which runs the same rows against the real
+harness and writes each row's HAR and scene under `e2e/__recordings__/<family>/<row>.har`.
+It is normalised as it is written (`e2e/stub/recording.ts`): the volatile transport erased, the
+entries in an order two recordings agree on, every URL on a placeholder origin, and every
+credential gone — the `dsession` cookie among them, since these files are committed to a public
+repository and a recording that still carries one is refused rather than cleaned at review time.
+The bodies are kept exactly as the server wrote them, so the page renders what it would have
+rendered; the masking that lets two recordings be compared is a second pass that is written
+nowhere.
+
+Two guards keep a recording from drifting out of step with the server unseen, and neither is
+optional. `e2e/__tests__/stub-recordings.test.ts` runs on every pull request that touches this
+package and holds every committed recording to
+`packages/contracts/schemas/dispatch-openapi.json`: the route, the method, the status and the
+body against that status's schema, so a response shape that changes fails on the commit that
+changes it. The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs daily,
+re-records every stubbed row against the real harness and fails naming each recording that no
+longer matches, which catches what a schema cannot see: a changed value, an order, a route the
+page stopped asking for. It uploads the re-recorded set, so applying it is one copy.
+
+The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
+pull-request lane runs `--grep=@pr` over `chromium`, `iphone`, `stub` and `stub-phone`; the full
+lane, which the merge queue and the nightly run, runs every project and no grep. So a tagged row
+answers a pull request and an untagged one gates `main` at the merge queue, and nothing is
+deleted either way. Every stubbed row carries the tag, which
+`e2e/__tests__/pull-request-lane.test.ts` enforces along with the lane's budget: at most 330
+rows, at most 150 of them outside the stubbed projects. A real-stack row carries it only when a
+pull request needs to see its failure first, with a `// @pr: ` line above it saying why. **A new
+row defaults to neither**: write it where its claim belongs, and tag it only if the lane has room
+and the pull request needs it.
+
+`e2e/row-map.md` holds what moved, what stayed and what left the pull-request lane, with the
+reason for each; `bun e2e/tools/row-map.ts --write` writes it and
+`e2e/__tests__/row-map.test.ts` fails when the committed file and a fresh generation differ.
+
 ## Accessibility and visual review
 
 Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on

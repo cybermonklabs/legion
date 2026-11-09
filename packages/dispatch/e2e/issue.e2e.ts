@@ -59,7 +59,8 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   }
 });
 
-test("issue header closes an issue and reopens it into Backlog", async ({ browser }) => {
+// @pr: Create through answer to close: the header's own Close, and the Reopen that puts the issue back into Backlog.
+test("issue header closes an issue and reopens it into Backlog @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Close from the header" });
 
@@ -527,7 +528,8 @@ test("a quote-anchored ask identifies its document in the margin and Conversatio
   }
 });
 
-test("closing an issue removes its asks from the inbox and pinning stays private", async ({
+// @pr: Create through answer to close: a close has to take the issue's asks out of the Inbox, and a pin stays the pinner's own.
+test("closing an issue removes its asks from the inbox and pinning stays private @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

@@ -287,7 +287,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a comment holding a mermaid block draws a diagram, its source behind Mermaid source", async ({
+// @pr: The diagram family's one row on the lane: a mermaid block in a comment draws, with its source behind Mermaid source.
+test("a comment holding a mermaid block draws a diagram, its source behind Mermaid source @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

@@ -303,7 +303,8 @@ async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<
   }
 }
 
-test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written", async ({
+// @pr: The reference-title family's one row on the lane: an author's own wording is kept, and an address with no target reads as written.
+test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written @pr", async ({
   browser,
 }, testInfo) => {
   const seeded = await seedTitles();

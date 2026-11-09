@@ -42,7 +42,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an ask is a thread: replies before and after answering, then a live agent reply", async ({
+// @pr: Create through answer to close: an ask is a thread - replies before and after the answer, and then a live agent's reply.
+test("an ask is a thread: replies before and after answering, then a live agent reply @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

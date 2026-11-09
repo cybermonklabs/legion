@@ -14,7 +14,8 @@ test.beforeEach(async () => {
 // the headless parser - used to leave that singleton's parser stack open, so the next, perfectly
 // ordinary paste in the same document also failed to reach it, for the rest of the session.
 // proof-editor's lib.ts now rebuilds the parser on a throw instead of reusing the corrupted one.
-test("a refused paste no longer breaks the next paste in the live document", async ({
+// @pr: The live document: a refused paste must not break the next one for the rest of the session.
+test("a refused paste no longer breaks the next paste in the live document @pr", async ({
   browser,
 }) => {
   const { alice, page } = await openWithCaret(

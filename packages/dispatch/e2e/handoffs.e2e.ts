@@ -66,7 +66,8 @@ test.beforeEach(async () => {
 
 // The Conversation half. Against the build of the commit before the Conversation change, this
 // test fails (no handoff card) while the Activity test below passes: that is the negative control.
-test("the Conversation lists each handoff version, and expanding one shows its fields and every proof entry", async ({
+// @pr: The handoff surface's own row: each recorded version is a Conversation card that opens to its fields and every proof entry.
+test("the Conversation lists each handoff version, and expanding one shows its fields and every proof entry @pr", async ({
   browser,
 }, testInfo) => {
   const key = await seedHandoffs();

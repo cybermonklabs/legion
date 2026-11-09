@@ -122,7 +122,8 @@ test("a project's default repository moves with its Default radio, and a mapping
 // server saves the pick of acme/gadgets at once, another browser makes acme/widgets the default
 // again (which this page hears and shows), and only then does the first answer reach the page: the
 // page reads the mappings again rather than put acme/gadgets back.
-test("a late answer to a Default pick does not undo a default another browser set since", async ({
+// @pr: A two-context race: a late answer to this page's pick must not undo the default another browser set since.
+test("a late answer to a Default pick does not undo a default another browser set since @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

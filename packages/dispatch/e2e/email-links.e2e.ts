@@ -39,7 +39,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an email address written into a spec is a mailto link in the editor and in a past version", async ({
+// @pr: The mailto family's only row: an address written into a spec is a link in the editor and in a past version.
+test("an email address written into a spec is a mailto link in the editor and in a past version @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

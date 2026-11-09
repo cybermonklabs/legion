@@ -105,7 +105,8 @@ async function send(page: Page, path: string): Promise<void> {
   await expect(form.getByLabel("Comment")).toHaveValue("");
 }
 
-test("a comment written in a closed issue's Conversation posts", async ({ browser }) => {
+// @pr: Create through answer to close: a closed issue still takes a comment, which is the write people make most often after a close.
+test("a comment written in a closed issue's Conversation posts @pr", async ({ browser }) => {
   const { issueKey } = await seedClosedIssue();
   const alice = await asUser(browser, "alice");
 

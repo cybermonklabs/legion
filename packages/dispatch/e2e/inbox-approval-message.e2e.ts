@@ -188,7 +188,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("the reading pane draws the request's whole question as markdown above the document", async ({
+// @pr: An approval: the reading pane has to draw the request's whole question above the document it asks about.
+test("the reading pane draws the request's whole question as markdown above the document @pr", async ({
   browser,
 }) => {
   const seed = await seedApproval(RICH_SUMMARY);

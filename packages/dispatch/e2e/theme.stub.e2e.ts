@@ -1,3 +1,7 @@
+/** Every registered palette token read off the live elements of the Inbox, a spec and a
+ *  Conversation, in light and in dark: a computed colour is the browser's answer and not the
+ *  server's, so it runs against a recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ */
 import { expect, type Locator } from "@playwright/test";
 
 import * as C from "../web/src/theme/classes";

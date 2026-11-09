@@ -23,7 +23,8 @@ test.beforeEach(async () => {
 });
 
 // @firefox: the engine's focus rule for a click on a link inside the editor.
-test("a fallback link far down the document opens the artifact's page on a plain click @firefox", async ({
+// @pr: The picture-link family's one row on the lane: a fallback link far down the document opens the artifact's page on a plain click.
+test("a fallback link far down the document opens the artifact's page on a plain click @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

@@ -1,3 +1,6 @@
+/** The Plan tab's own drawing of a plan and its review: what the page renders from one fixed
+ *  answer, so it runs against a recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ */
 import { expect } from "@playwright/test";
 
 import { createIssue, createIssueArtifact, createPlanReview, createProject } from "./api";

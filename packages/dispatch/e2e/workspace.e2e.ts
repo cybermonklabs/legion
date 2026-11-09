@@ -16,7 +16,8 @@ test.beforeEach(async () => {
 // Inbox, Agents page or broadcast would prove nothing about a change to it.
 // SLOW(>=2s): the whole workspace seed, the four surfaces it has to fill and three full-page
 // screenshots of them.
-test("the seeded workspace fills every surface the person scope opens", async ({
+// @pr: The seeded workspace every other row builds on: each surface the person scope opens has to come up non-empty.
+test("the seeded workspace fills every surface the person scope opens @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one browser proves the seeded workspace");

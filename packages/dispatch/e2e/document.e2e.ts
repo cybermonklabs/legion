@@ -87,7 +87,10 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
   }
 });
 
-test("picking a file on the Documents tab uploads it at once and lists it", async ({ browser }) => {
+// @pr: Upload and download: a file picked on the Documents tab is uploaded at once and listed.
+test("picking a file on the Documents tab uploads it at once and lists it @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const alice = await asUser(browser, "alice");
 
@@ -120,7 +123,8 @@ test("picking a file on the Documents tab uploads it at once and lists it", asyn
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, a comment, a
 // suggestion accepted into a named version, an ask answered from bob's Inbox, and a full-page
 // screenshot.
-test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox", async ({
+// @pr: The live document on a project document: a comment, a suggestion accepted into a named version, and an ask answered from the other person's Inbox.
+test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

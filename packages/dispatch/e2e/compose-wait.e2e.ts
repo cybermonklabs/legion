@@ -297,7 +297,8 @@ test("a comment whose mark another writer's edit removed re-anchors to the same 
   }
 });
 
-test("a comment whose selected text another writer deleted says so and keeps its draft", async ({
+// @pr: A two-context race: another writer deletes the text a comment is being written about, and the composer says so and keeps the draft.
+test("a comment whose selected text another writer deleted says so and keeps its draft @pr", async ({
   browser,
 }) => {
   const issue = await reviewIssue();
