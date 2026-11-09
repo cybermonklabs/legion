@@ -540,7 +540,10 @@ export async function runDispatchCli(
   // One decision point, and one invariant (dispatch://INFRA-2079, row 3.5): a refusal is only
   // ever the verdict of a review that ran, and a write posts unreviewed only where the CLI can
   // positively establish that no verdict exists. Absence counts as a statement only when the
-  // evidence store was readable and complete; cannot tell is never nothing there.
+  // store could answer for this write; cannot tell is never nothing there. Not "read whole":
+  // a verdict is read by name, so a store that cannot be listed but can be opened answers
+  // every named read and an absence in it is certain, while one that refuses the named read
+  // makes every write of that session uncertain.
   //
   // That second half is the correction. The gate mints nothing when its review rejects
   // (askgate-core's `mints`), so a missing marker is three statements at once: never reviewed,
@@ -569,7 +572,7 @@ export async function runDispatchCli(
      *   session chose block, as it always has.
      * - `unknown`: evidence exists and cannot be read, so a refusal may be what it holds.
      *   Refuses where the session chose block, and where no mode could be read at all.
-     * - `none`: the stores were read whole and hold neither a marker nor a refusal. The only
+     * - `none`: the stores answered for this write and hold neither a marker nor a refusal. The only
      *   state that posts, and the one the fleet meets: a subagent, an eval cell, a script, any
      *   call the gate never read.
      *
@@ -893,7 +896,7 @@ export async function runDispatchCli(
       ).length;
       // The one decision. A verdict of no is the session's mode to record and not to overrule;
       // everything short of a verdict is refused only where the session chose block; and only a
-      // store read whole and holding nothing lets the write out.
+      // store that answered for this write and holds nothing lets the write out.
       // `refused` is set by every verdict that can reach this, and `none` cannot: falling back
       // to the posted text here would render a message announcing a post as a refusal.
       const held = finding.advice.refused;

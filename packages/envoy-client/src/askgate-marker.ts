@@ -49,8 +49,8 @@ import { hasErrnoCode, messageFor } from "./errors";
  * verdict AskGate wrote down (`readVerdict`) holds the write in either mode; a marker of this
  * argv that the verdict does not cover — other arguments, a file whose bytes changed, one past
  * its age — holds it where the session chose block; evidence that exists and cannot be read does
- * the same, since a refusal may be what it holds. Only a store read whole and holding neither
- * lets the write post, with a warning on both streams, whatever mode the session chose: that is
+ * the same, since a refusal may be what it holds. Only a store that answered for this write and
+ * holds neither lets the write post, with a warning on both streams, whatever mode the session chose: that is
  * a call no review ever saw. A refusal consumes nothing, so the same call meets the same answer
  * when it is sent again. The process makes its store again before each write of its own owner
  * file (`keepStore`), so a store another process removed never outlives the owner's next call.
@@ -331,13 +331,14 @@ function ownerLive(owner: AskgateOwner, now: number): boolean {
     try {
       return now - storeTouched(owner.store) <= MARKER_MAX_AGE_MS;
     } catch (error) {
-      // Deliberately unguarded, and this says so rather than leaving the next reader to
-      // wonder. No row detects a change here: every arrangement tried refuses for the other
-      // reason, because `askgateState`'s own store check answers `broken` on the same fault
-      // and short-circuits it. A detecting state needs a store `askgateState` can stat but
-      // `storeTouched` cannot read, which nothing found. A row that passes because something
-      // else refused is worse than none — this branch has shipped two of those and caught
-      // both late.
+      // Covered, and the row is worth naming because the reasoning that said it could not be
+      // is a trap: with this guard an unreadable store reaches `askgateState`'s own check and
+      // answers `broken`, which refuses — so it looks as though nothing could tell the two
+      // apart. Without it the owner is judged dead, no owner is live, the state is `off`, and
+      // that check never runs at all. The measurement has to be taken on the mutated tree.
+      // `dispatch-askgate.test.ts`'s cross-namespace row holds it: a numeric namespace, since
+      // `isOwnerText` takes digits only, and the store under a parent of its own, since a
+      // stat of the store directory succeeds while a stat through a closed parent does not.
       //
       // Only ENOENT is the store being gone — its process removed it at exit, or it ended long
       // ago. Anything else (EACCES, ENOTDIR, EIO, ELOOP) is a store that cannot be read, which
@@ -901,7 +902,7 @@ function readMarker(file: string): Marker | "gone" | "unreadable" {
  *   since the review read them, a marker past its age. `changed` names the first such file.
  * - `unknown`: evidence exists for this call and cannot be read. Absence of a marker is not a
  *   statement here, since the thing that cannot be read may be a refusal.
- * - `none`: the stores were read whole and hold no marker for this argv. Only this is a positive
+ * - `none`: the stores answered for this argv and hold no marker for it. Only this is a positive
  *   showing that no marker was minted; a stored verdict is looked for separately (`readVerdict`),
  *   since AskGate mints nothing when it rejects.
  */
@@ -1296,7 +1297,7 @@ export type VerdictRead =
   | { readonly kind: "refused"; readonly reason: string; readonly at: number }
   /** A verdict for it, or the mark of one that was lost, is there and cannot be read. */
   | { readonly kind: "unknown"; readonly why: string; readonly path: string }
-  /** The store was read whole and holds no verdict for this write, and none was lost. */
+  /** The store answered for this write, holds no verdict for it, and none was lost. */
   | { readonly kind: "none" }
   /**
    * No verdict for this write, but this session lost one it could not write down. `path` is the

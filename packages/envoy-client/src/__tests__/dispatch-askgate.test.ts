@@ -20,6 +20,7 @@ import {
   MARKER_MAX_AGE_MS,
   markVerdictsLost,
   mintMarker,
+  pidNamespace,
   setRecordMode,
   verdictsUnkeepable,
   writeIdentity,
@@ -797,8 +798,9 @@ describe("AskGate at the dispatch CLI", () => {
 
 // INFRA-2079, row 3.5. A refusal is only ever the verdict of a review that ran, and a write
 // posts unreviewed only where the CLI can positively establish that no verdict exists. Absence
-// counts as a statement only when the evidence store was readable and complete: cannot tell is
-// never nothing there.
+// counts as a statement only when the store could answer for this write: cannot tell is never
+// nothing there. Not "read whole" — a verdict is read by name, so a store that cannot be listed
+// but can be opened answers every named read, which the `0o111` row below holds.
 //
 // The second half is the correction Sol's review forced at 21146dfe. AskGate mints nothing when
 // its review rejects, so a missing marker was three statements at once — never reviewed,
@@ -806,7 +808,7 @@ describe("AskGate at the dispatch CLI", () => {
 // the first let a rejected write post by being sent again in any form the gate does not read.
 // So a rejection writes itself down, and evidence that exists and will not be read is its own
 // answer.
-describe("absence is a statement only when the store was read whole", () => {
+describe("absence is a statement only when the store could answer for this write", () => {
   /** The start of the warning the CLI prints for a write it posted with no review behind it. */
   const POSTED = "dispatch: warning: dispatch message posted without review:";
   /** A standing refusal, as the gate writes one for a write its review did not send. */
@@ -1405,13 +1407,32 @@ describe("absence is a statement only when the store was read whole", () => {
   // this namespace reached `askgateState`'s own check and refused: one fault, two verdicts,
   // decided by a namespace.
   test("a cross-namespace owner whose store cannot be read keeps the gate on", async () => {
+    // The store under a parent of its own, so that parent can be closed without closing the
+    // session directory with it. Blocking the store directory itself is not the fault: a stat
+    // of it still succeeds, needing only search permission on its parent, so `storeTouched`
+    // never throws and the catch under test is never entered.
+    const enclosing = join(stateDir, "stores");
     const self = {
       pid: process.pid,
       start: startOf(process.pid),
-      ns: "ns-elsewhere",
-      store: store(),
+      // A real namespace, numerically: `isOwnerText` requires digits, so a record naming
+      // "ns-elsewhere" parses as no record at all and this row measured a broken record
+      // rather than a cross-namespace owner — from the round that wrote it to the round that
+      // mutated the guard and saw nothing move.
+      ns: String(Number(pidNamespace()) + 1),
+      store: join(enclosing, "one"),
     };
-    const file = ownerFile("ses-1", self);
+    // Named as the gate names it, namespace included: the fixture's `ownerFile` leaves the
+    // namespace out, and a record whose filename does not carry it is read as no record at
+    // all — so this row measured a broken record, not a cross-namespace owner, from the round
+    // that added it until the round that mutated the guard and saw nothing move.
+    const file = join(
+      stateDir,
+      "sessions",
+      "ses-1",
+      "askgate",
+      `${self.pid}-${self.start}-${self.ns}.json`
+    );
     mkdirSync(dirname(file), { recursive: true });
     mkdirSync(join(self.store, "markers"), { recursive: true });
     writeFileSync(
@@ -1424,17 +1445,14 @@ describe("absence is a statement only when the store was read whole", () => {
       })
     );
     await refused();
-    // The store itself, not its parent: blocking the parent blocks the session directory with
-    // it, so the record cannot be read either and the row passed on the wrong fault — green
-    // with the guard removed.
-    chmodSync(self.store, 0o000);
+    chmodSync(enclosing, 0o000);
     try {
       const { code, stdout } = await run(MESSAGE);
       expect(code).toBe(1);
       expect(stdout).toContain("AskGate reviewed this write and did not send it");
       expect(messagePosts()).toHaveLength(0);
     } finally {
-      chmodSync(self.store, 0o700);
+      chmodSync(enclosing, 0o700);
     }
   });
 
