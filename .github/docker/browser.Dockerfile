@@ -33,7 +33,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:bb05d66d2963b1cc48073190781c3dd29e2c
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
 
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
-LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with PostgreSQL 18 and pgvector, weed, jq, python3, flock, a C/C++ toolchain and a DejaVu core font: the image every CI job that can launch WebKit or Firefox runs in"
+LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with PostgreSQL 18 and pgvector, weed, jq, python3 with PyYAML, flock, a C/C++ toolchain and a DejaVu core font: the image every CI job that can launch WebKit or Firefox runs in"
 
 # What the base image already carries, read from its own config history and then from the built
 # image rather than guessed: node 26 and npm (NODE_VERSION=26, not 24), yarn, curl, wget, gpg,
@@ -99,6 +99,15 @@ RUN set -eux; \
       "postgresql-client-${PG_MAJOR}" \
       "postgresql-${PG_MAJOR}-pgvector" \
       python3 \
+      # yaml, which .github/scripts/ci-tools.sh imports to read a row of
+      # .github/ci-tools.yaml (its `python3 -` heredocs at lines 158 and 285). GitHub's
+      # ubuntu-24.04 runner carries PyYAML in its system python, so the second source every
+      # tool install reads was written against an interpreter that has it; this base's python3
+      # has it not. Without this package ./.github/actions/setup-bun dies with
+      # `ModuleNotFoundError: No module named 'yaml'` in its second-source step, which is the
+      # first step of every job of this image -- measured on jobs 128987854416 and
+      # 128987683881, where all eight browser legs died there before a browser started.
+      python3-yaml \
       util-linux \
       jq \
       # fc-list and fc-match, and the font the runner image resolves `sans-serif` to.
@@ -198,4 +207,7 @@ RUN set -eux; \
       || { echo "::error::fc-match sans-serif answered '$answer', not '$expected'"; exit 1; }; \
     pg_config --version; \
     python3 --version; \
+    # The module above, since `python3 --version` passes without it and the step that needs it
+    # is the first step of every job that runs this image.
+    python3 -c 'import yaml; print("python3 yaml", yaml.__version__)'; \
     weed version
