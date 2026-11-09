@@ -7,7 +7,8 @@
 -- drops after 20261102233625 keep their recorded versions, so the first free version is used.
 -- Databases that already applied the former index build in 20261102233625 keep their valid
 -- index (including its window-kind predicate). A failed concurrent build leaves an INVALID
--- index, which the runner refuses with DROP INDEX CONCURRENTLY recovery instructions.
+-- index of this name on embeddings, which the runner drops with DROP INDEX CONCURRENTLY and
+-- builds again on the next attempt.
 create index concurrently if not exists embeddings_window_owner
     on embeddings (kind, split_part(id, '#', 1))
     where kind in ('document_block', 'comment_block', 'message_block', 'ask_part');
