@@ -671,6 +671,14 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
+    // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
+    // takes the session's Envoy name now rather than at its bound — the lane the listener kept
+    // for the role is then handed over inside a turn that is already running, instead of taking
+    // the session's first turn ahead of the daemon's task. A `task` subagent's event is not a
+    // turn of this session (`subagentEvent`), and the controller's own claim is not this one's:
+    // it sends its first turn and claims its role after it (`src/controller-session.ts`), and
+    // this signal reaches a claim session that booted nothing there.
+    if (!subagentEvent(context)) claimSession.firstTurnStarted();
   });
   pi.on("session_shutdown", async (_event, context) => {
     clearStartupTurn(context.sessionManager.getSessionId());
