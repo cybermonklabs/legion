@@ -1648,6 +1648,9 @@ test("IssuePage renders an image artifact at its own address", async () => {
     await expectPreset("Tree");
     expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
+    // The ring says so to a reader and the mark says so to a layer that reads the page as a
+    // reader does, which waits for both to go (`e2e/review-routes.ts`'s `waitForRouteSettled`).
+    expect(screen.getByTestId("artifact-header").getAttribute("data-landing-ring")).toBe("true");
   } finally {
     view.unmount();
     restore();

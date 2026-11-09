@@ -610,12 +610,26 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row: no element may be left carrying
- *  `data-markdown-pending`, the mark a body wears while the parse worker owes its formatting
+ *  The other half is page-wide and belongs to no row. Two marks say the page still owes
+ *  something, and neither may be left on it.
+ *
+ *  `data-markdown-pending` is the mark a body wears while the parse worker owes its formatting
  *  (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that long holds
  *  its own literal text until the answer lands, so a page read in between is a page of
  *  unformatted source, and it is cheap to rule out for every row at once rather than to argue
  *  per row about which bodies cross the threshold.
+ *
+ *  `data-landing-ring` is the mark an artifact header wears for the two seconds after the
+ *  address landed on it (`web/src/features/artifacts/ArtifactHeader.tsx`). That ring is the
+ *  whole of why `issue-artifact-dark` was the one image of the twenty that two regenerations
+ *  of this lane disagreed about: `e2e/visual.e2e.ts` shoots light and then dark on one load,
+ *  the ring's two seconds expire somewhere between the two, and the later shot is the one the
+ *  expiry can fall inside - so light matched itself and dark did not. It is a box shadow, so
+ *  it moves nothing and the two images were the same size, which is why reading the DOM found
+ *  it where reading the text did not: measured on this page, the ring is 2,604 pixels of the
+ *  header's own outline (x=342-873, y=1013-1128 of a 1280x2239 shot), against the 2,428 the
+ *  container measured. The page is right to draw it - a reader following a link to a document
+ *  is meant to see which one it landed on - so the wait is here and the cue is untouched.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -628,4 +642,5 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
 }

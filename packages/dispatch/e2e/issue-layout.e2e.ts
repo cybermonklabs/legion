@@ -1823,10 +1823,28 @@ test("the new page carries every element of the old one @phone", async ({ browse
       .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state)
       .toBe("approved");
 
-    // Keep and Change, on the decision node they moved to.
+    // Keep and Change, on the decision node they moved to. Both are named by the inventory's own
+    // words, so they are still read by role and name - but scoped to one decision row. `Keep` is
+    // drawn only while a decision waits for review and `Change` wherever the decision's quote has
+    // resolved (`DecisionActions.tsx`), so a page whose second decision has its quote offers two
+    // `Change` controls and one `Keep`, and an unscoped read of `Change` is ambiguous rather than
+    // wrong. The row that offers `Keep` is the decision this phase is about.
     await openPreset(page, seeded.key, "decisions");
-    await offered(page, "button", CONTROL_LABELS.keep_decision).click();
-    await offered(page, "button", CONTROL_LABELS.change_decision).click();
+    const deciding = page
+      .locator('[data-node-row][data-node-type="decision"]')
+      .filter({ has: offered(page, "button", CONTROL_LABELS.keep_decision) });
+    const decidingId = await deciding.first().getAttribute("data-node-id");
+    expect(
+      decidingId,
+      "exactly one decision waits for review, and it is the one Keep names"
+    ).not.toBeNull();
+    const decidingRow = page.locator(`[data-node-row][data-node-id="${decidingId}"]`);
+    await decidingRow
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
+      .click();
+    await decidingRow
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision })
+      .click();
     // The change is written in the decision's own composer, which names its box and its send
     // apart from the conversation's (`DecisionActions.tsx`, R7).
     await page

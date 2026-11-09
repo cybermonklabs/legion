@@ -99,10 +99,18 @@ export function ArtifactHeader({
 
   return (
     <section className="space-y-4">
+      {/* The ring is a two-second cue that the address landed here, so for two seconds this
+          header draws something the page is about to stop drawing. It is marked while it does,
+          as a Markdown body is marked while it still owes its formatting
+          (`data-markdown-pending`): a reader is meant to see the ring, and a layer that reads
+          the page as a reader does has to be able to wait for it to go
+          (`e2e/review-routes.ts`'s `waitForRouteSettled`). The ring is a box shadow and moves
+          nothing, so what it moved was the pixels of one baseline and nothing else. */}
       <header
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
+        data-landing-ring={highlighted || undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">

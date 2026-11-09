@@ -453,6 +453,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // padding beside a rail that is not there. "Full width" means no expanded column on either
   // side - on a route with no margin, a hidden sidebar is enough.
   const hasMargin = routeHasMargin(location.pathname, location.search);
+  // 16 px of padding on a phone, 24 px from `sm`, on the issue page alone: 48 px of a 390 px
+  // screen is an eighth of its width, and the lines it costs are lines of the issue page's head
+  // that the first open question needs (dispatch://INFRA-1196 R6). Every other page keeps the
+  // 24 px it has always had, because nothing has measured them at 16 and a shell-wide change
+  // would move every page below `sm`.
+  const mainPaddingClass =
+    parseIssuePath(location.pathname, location.search) === undefined ? "p-6" : "p-4 sm:p-6";
   const marginRailShown = hasMargin && marginHidden;
   const marginColumnShown = hasMargin && !marginHidden;
   const fullWidth = sidebarHidden && !marginColumnShown;
@@ -838,11 +845,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <PageFrameProvider>
               {(frameAttributes) => (
                 <div className="flex min-h-0 min-w-0 flex-1 xl:order-2" {...frameAttributes}>
-                  {/* 16 px of padding on a phone, 24 px from `sm`: 48 px of a 390 px screen is an
-                    eighth of its width, and the lines it costs are lines of the issue page's
-                    head that the first open question needs (dispatch://INFRA-1196 R6). */}
+                  {/* The padding is `mainPaddingClass`, above: a phone's 16 px is the issue
+                    page's alone. */}
                   <main
-                    className={`min-w-0 flex-1 p-4 outline-none sm:p-6 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
+                    className={`min-w-0 flex-1 outline-none ${mainPaddingClass} ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
                     data-shell-layout={fullWidth ? "full-width" : "standard"}
                     data-testid="main-content"
                     id="main-content"
