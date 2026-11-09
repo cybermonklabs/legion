@@ -181,16 +181,21 @@ func TestAWriteThatCannotGetRoomInTheCopyPoolIsRefusedAtTheWaitBound(t *testing.
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
 	sourceID, _ := memory.storedDocument(t, proseMarkdown(t, pmdoc.MaxDocumentBytes))
-	// Exactly as many parked forks as the calibration's pool has room for, at the production
-	// figures: a fork of a mebibyte of prose is charged its state at docs' bytesOfHeapAStateByte,
-	// 42,493,360 bytes, and fourteen of those are 594,907,040 of the pool's 600,000,000 - a
-	// fifteenth needs 637 MB and cannot be admitted at all. Each parked write holds its grant
-	// until it is released (docs' PauseAfterFirstAppend parks a write that has forked), so the
-	// pool is held full by real writes rather than by a shrunken figure, and the probe below
-	// cannot have room however long it waits. A filler that does not park inside thirty seconds
-	// fails the test rather than being passed over: fourteen fit by the arithmetic above, so one
-	// that does not park is a reading this test is built to catch.
-	const fillers = 14
+	// As many parked forks as the calibration's pool has room for, computed from the prices
+	// rather than written down: a fork of a mebibyte of prose is charged the heavier of its state
+	// at docs' per-state-byte price and its structs at the per-struct one, and the pool is
+	// docs.LoadSlotsForTest slots of docs.LoadSlotBytesForTest each. Each parked write holds its
+	// grant until it is released (docs' PauseAfterFirstAppend parks a write that has forked), so
+	// the pool is held full by real writes at the production figures rather than by a shrunken
+	// one, and the probe below cannot have room however long it waits.
+	//
+	// It is computed because it moved: when a room's price gained its per-struct term the fork of
+	// a mebibyte went from 42,493,360 bytes to 51,599,080, and a count written down as fourteen
+	// left the twelfth filler waiting for room that would never come, which this test read as a
+	// write that never parked. A filler that does not park inside thirty seconds still fails the
+	// test rather than being passed over: the count fits by the arithmetic below, so one that
+	// does not park is a reading this test is built to catch.
+	fillers := memory.forksFillingTheCopyPool(t, sourceID)
 	copies := memory.projectDocumentCopies(t, sourceID, fillers+1)
 	server := memory.start(t)
 	requirePodGoMemoryLimit(t, server)
@@ -278,4 +283,27 @@ func (p *memoryServer) releaseLiveWritePause(t *testing.T, artifactID string, po
 	if answer.status != http.StatusOK && answer.status != http.StatusNoContent {
 		t.Logf("release the live write pause of %s at %s: %d %s", artifactID, point, answer.status, answer.body)
 	}
+}
+
+// forksFillingTheCopyPool is how many forks of the source document the pod's copy pool has room
+// for at once: the pool is loadSlotsForTest slots of loadSlotBytesForTest each, and one fork is
+// charged the heavier of its state at the per-state-byte price and its structs at the per-struct
+// one, for the one copy a fork is (docs' copyWeight). It reads the document's own shape from the
+// store rather than assuming one, so a change of either price or of the fixture moves the count
+// instead of breaking the test.
+func (h *memoryHarness) forksFillingTheCopyPool(t *testing.T, artifactID string) int {
+	t.Helper()
+	shape := h.storedShape(t, "the document the fillers fork", artifactID)
+	fork := max(int64(shape.stateBytes)*bytesOfHeapAStateByteForTest, shape.structs*bytesOfHeapAStructForTest)
+	if fork <= 0 {
+		t.Fatalf("a fork of document %s weighs %d bytes of the pool, want a weight of its own", artifactID, fork)
+	}
+	fits := int(int64(worstCaseLoadSlotBytesForTest) / fork)
+	if fits < 2 {
+		t.Fatalf("the pod's %d-byte copy pool has room for %d forks of %d bytes, want at least two so a probe can wait behind them",
+			worstCaseLoadSlotBytesForTest, fits, fork)
+	}
+	t.Logf("a fork of the fillers' document weighs %d bytes of the pod's %d-byte copy pool, which has room for %d of them",
+		fork, worstCaseLoadSlotBytesForTest, fits)
+	return fits
 }

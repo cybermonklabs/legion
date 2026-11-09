@@ -269,12 +269,32 @@ func peerApplyAllowance(update, rendering, stateBytes int64, structs int, measur
 		allowance.budget.Bytes, allowance.bytes, allowance.bytesLimit = state, ruleStateCap, maxRoomStateBytes
 	}
 	if full {
-		allowance.budget.Structs, allowance.budget.Split = 0, 0
+		allowance.budget.Structs = 0
+		allowance.budget.Split = min(allowance.budget.Split, pressureSplits)
 		allowance.structs, allowance.structsLimit = rulePressure, 0
 		allowance.budget.Bytes, allowance.bytes, allowance.bytesLimit = 0, rulePressure, 0
 	}
 	return allowance
 }
+
+// pressureSplits is how many items a browser's update may cut while the open rooms are past
+// their budget and nothing can be closed: eight, which is four delete ranges at their two edges
+// each, and far more than an editor sends - a person's delete of a selection is one range and
+// cuts at most two items.
+//
+// It is not nothing, which is what the pressure allows an update to carry. R3 promises that a
+// full document can still be cut back down, and a delete that falls inside a word or a paragraph
+// cuts the item it lands in: with no split allowed at all, the hundred shrinking updates A4
+// drives were refused 4503 DOC_BUSY on a full server and a person could shrink a document only by
+// deleting whole items (TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks caught it).
+//
+// It is also not the decode cap's headroom, which is what an unpressed room allows: the measured
+// attack this field exists for is one 2.2 MB frame whose delete set cut a run into 1,100,002
+// pieces and grew the room's two copies by 336.6 MB (room_prices.go), and under pressure the pod
+// has nothing to spare for it. Eight splits cost the two copies 10,080 bytes at the measured
+// per-struct price, which is nothing beside the budget they are weighed against, so this is
+// arithmetic rather than a shape anyone measured.
+const pressureSplits = 8
 
 // clampedStructs is what is left of the decode cap, never below nothing and never above the cap
 // itself: a room already past it may add no struct, and a field below zero would read as no
