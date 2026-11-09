@@ -252,11 +252,13 @@ COMMON_FIELDS = (
     "second_source",
     "max_time",
 )
-# The two more fields each word of a second source carries, which is the one table of them: the
-# helper reads a `github-release`, `pypi` or `pulumi-releases` second source at the row's own
-# `second_url`, a `ghcr-mirror` one in the package `registry:` names, and an `npm` one in the
-# package the row names. Its order is the helper's, so the words a refusal lists here and the
-# words it lists there are one list in one order.
+# The two more fields each word of a second source carries, which is the one table of those
+# fields: the helper reads a `github-release`, `pypi` or `pulumi-releases` second source at
+# the row's own `second_url`, a `ghcr-mirror` one in the package `registry:` names, and an
+# `npm` one in the package the row names. Its order is the helper's, so the words a refusal
+# lists here and the words it lists there are one list in one order. The places of this tree
+# that decide a source word are listed at ci_tools__source_fetch in .github/scripts/ci-tools.sh,
+# this table among them, and this gate keeps no count of its own.
 SECOND_FIELDS = {
     "github-release": ("second_url", "second_member"),
     "ghcr-mirror": ("mirror_from", "mirror_member"),

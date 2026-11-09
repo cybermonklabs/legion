@@ -593,9 +593,11 @@ packed_back() {
   rm -f -- "$back"
   report=$(ci_tools_extract "$archive" "$member" "$back" "$archive") || status=$?
   [ "$status" -eq 0 ] || die "$row: the $what this rig packed did not give $member back: $report"
-  # The word is the row's own for the source whose archive this pack stands in for, read where
-  # every other call site of this repository reads one.
-  ci_tools_verify "$row" "$back" "$(ci_tools_source_name "$row" second)" || status=$?
+  # The label is this rig, because this rig packed the archive the member came out of. No
+  # service served these bytes, so naming one — the row's own second source, say — would put
+  # a service that served nothing into the line, and a mismatch would read as that service
+  # serving bytes this row does not pin.
+  ci_tools_verify "$row" "$back" "the $what this rig packed" || status=$?
   rm -f -- "$back"
   [ "$status" -eq 0 ] ||
     die "$row: the $what this rig packed does not give the bytes this row pins back"
@@ -1195,9 +1197,9 @@ origin_served() {
 # route_of <source> <the caller a refusal names>: the origin route one source serves, read from
 # the one word that source has — the name a refusal of .github/scripts/ci-tools.sh carries,
 # which is also the manifest's own `second_source` word.
-# It is this shell's one reading of those five words: `payload_names` above decides which
-# fields a row's second-source names come from by the route this answers, so nothing in this
-# shell holds a second list of them.
+# It is the one place in this shell that turns a source word into a route: `payload_names`
+# above decides which fields a row's second-source names come from by the route this answers,
+# so nothing in this shell holds a second mapping of them.
 # The places of this tree that decide a source word are listed at ci_tools__source_fetch in
 # .github/scripts/ci-tools.sh — this function and the origin's own GITHUB_WORDS and URL_WORDS
 # among them, the origin being a program of its own, started with the manifest and no word of

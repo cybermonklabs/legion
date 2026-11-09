@@ -204,11 +204,11 @@ ci_tools__error() {
   printf '::error::ci-tools: %s\n' "$*" >&2
 }
 
-# The two exit codes ci_tools_extract's zip reader answers with, for the two failures it tells
-# apart itself: a member the archive does not hold, and a failure the archive itself raised.
-# Neither is 1, so python3's own exit 1 — anything else it raises, which is no failure of the
-# archive: an OSError on the destination, an interpreter that died — stays a code of its own,
-# and the three are told apart by these two numbers rather than by reading a message. The
+# The two exit codes ci_tools_extract's zip reader answers with, for the two causes it can
+# PROVE: a member the archive does not hold, and damage the archive itself raised. Neither is
+# 1, so python3's own exit 1 — every other exception, which may be the archive and may be this
+# run and which this file therefore refuses without clearing the bytes — stays a code of its
+# own, and the three are told apart by these two numbers rather than by reading a message. The
 # reader is handed both as arguments, so these lines are the one place either is written.
 ci_tools__no_such_member=3
 ci_tools__damaged_archive=4
@@ -735,29 +735,51 @@ ci_tools__fetch_npm() {
 # leaves nothing at <destination>, the bytes a reader had already written there included, so the
 # promise this file's header makes holds for a caller that hands this function the destination
 # itself and not a temporary file of its own.
-# THE WAYS THAT CAN HAPPEN ARE NOT ALIKE, and the zip arm says which of three it met. A member
-# the archive does not hold is a row naming a path that archive has not got, which is a mistake
-# in this repository. What the ARCHIVE raises — zipfile.BadZipFile, zlib.error, EOFError: a zip
-# that cannot be read at all, a member whose CRC-32 the archive's own header no longer matches,
-# an inflate that failed, a stream that ended early — is the bytes at that address not being the
-# bytes they should be, which is the supply-chain signal this file's header is about, and the
-# sentence says so. Anything else python3 raises is neither of those: an OSError on the
-# destination is a directory that is not there or a runner out of space, and the bytes that
-# address served are not what failed, so that sentence says so instead. Both of those two quote
-# python3's last line.
-# The tar arm tells one failure of its own from the two it cannot tell apart. A destination it
-# cannot even open is refused before tar runs, and is its own sentence for the reason the zip
-# arm's third one is. After that, `tar -xzO` answers an absent member and a damaged stream with
-# the same exit 2 — one changed byte breaks the gzip framing — so its sentence claims neither
-# cause, names the member and the archive, and leaves tar's own words on stderr to say which of
-# the two it was. Nothing unverified is installed in any of them: this returns non-zero and the
-# caller places nothing.
+# THE WAYS THAT CAN HAPPEN ARE NOT ALIKE, AND THE RULE BOTH ARMS KEEP IS THAT THIS FUNCTION
+# PROVES THE CAUSE IT CAN PROVE AND CLAIMS NOTHING ABOUT THE REST. Each arm taught the other
+# half of it. `tar -xzO` answers an absent member and a damaged stream with the same exit 2 —
+# one changed byte breaks the gzip framing — so the tar arm never could name a cause and says
+# none. The zip arm has a vocabulary of exceptions and that vocabulary does not partition
+# cause either: python3 raises OSError on a damaged member's stream and on the destination
+# alike, and a tampered central directory reaches it as RuntimeError (an encrypted flag it
+# never set), NotImplementedError (a compression method nobody implements) or
+# UnicodeDecodeError (a member name that is no UTF-8). So the three proofs are these, and
+# everything else is refused without clearing the bytes:
+#
+#   A destination this run cannot even open is THE ONE RUN-SIDE FAILURE either arm can prove,
+#   and it is proved by the pre-check both arms share, before a byte of either archive is
+#   read. bash says on stderr why it could not be opened, and the sentence claims nothing
+#   about the archive because nothing of the archive has been read.
+#   A member the archive does not hold is the zip arm's own proof: the archive read, and it
+#   holds no member of that name, which is a row naming a path that archive has not got and a
+#   mistake in this repository.
+#   What the ARCHIVE raises — zipfile.BadZipFile, zlib.error, EOFError: a zip that cannot be
+#   read at all, a member whose CRC-32 the archive's own header no longer matches, an inflate
+#   that failed, a stream that ended early — is definite damage, which is the supply-chain
+#   signal this file's header is about, and the sentence says so and quotes python3's last
+#   line.
+#
+# EVERY OTHER FAILURE OF EITHER ARM CLEARS NOTHING. The zip arm quotes what python3 raised and
+# says that this helper cannot tell from it whether the archive or this run is what failed, so
+# a full disk part way through the write and a tampered archive are refused in the one
+# sentence that rules out neither. The tar arm names the member, the archive and tar's exit,
+# and leaves tar's own words on stderr to say why. Nothing unverified is installed in any of
+# them: this returns non-zero and the caller places nothing.
 # It is public because .github/scripts/ci-tools-proof.sh takes a row's pinned member out of the
 # archive ci_tools_fetch_primary staged for it, rather than fetching that archive a second time
 # through ci_tools_fetch, and a second extractor there would be a second rule for how an
 # archive is read.
 ci_tools_extract() {
   local archive=$1 member=$2 destination=$3 url=$4 name reported='' status=0
+  # The one failure of this run either arm can prove, and the one thing proved before a byte
+  # of the archive is read: a destination this run cannot even open. It guards both arms,
+  # because neither reader may call the archive's bytes into question for a file this runner
+  # would not let it write. bash says on stderr why it could not be opened.
+  if ! : > "$destination"; then
+    printf 'this run cannot write %s, so %s was never read for %s, and nothing here is a statement about the bytes that address served\n' \
+      "$destination" "$url" "$member"
+    return 1
+  fi
   # The suffix is read off the address with no query and no fragment, which PyPI writes.
   name=${url%%\?*}
   name=${name%%#*}
@@ -789,8 +811,10 @@ except (zipfile.BadZipFile, zlib.error, EOFError):
     traceback.print_exc()
     sys.exit(int(damaged))
 # Every other exception is left to python3 itself, so its traceback reaches stderr and its own
-# exit 1 reaches the caller: an OSError on the destination is not the archive answering, and
-# the sentence it gets says nothing about these bytes.
+# exit 1 reaches the caller: it may be the archive and it may be this run — an OSError is
+# raised by the stream of a damaged member and by the destination alike — so the sentence it
+# gets clears neither. This program is a single-quoted argument, so no line of it may carry an
+# apostrophe.
 ' "$archive" "$member" "$destination" "$ci_tools__no_such_member" "$ci_tools__damaged_archive" 2>&1
       ) || status=$?
       # Whatever went wrong, what the reader had already written is taken away, so no caller
@@ -811,24 +835,19 @@ except (zipfile.BadZipFile, zlib.error, EOFError):
       fi
       if [ "$status" -ne 0 ]; then
         [ -z "$reported" ] || printf '%s\n' "$reported" >&2
-        printf 'the archive at %s did not give up %s, and the archive is not what failed: %s. That is this run itself, the destination it writes the member to or python3, so it is no signal about the bytes that address served (python3 exit %s)\n' \
+        printf 'the archive at %s did not give up %s: %s. python3 raised that, and this helper cannot tell from it whether the archive or this run is what failed — damage reaches python3 as an OSError, a RuntimeError, a NotImplementedError or a UnicodeDecodeError, and so does a destination that filled up part way through the write — so these bytes are not cleared (python3 exit %s)\n' \
           "$url" "$member" "${reported##*$'\n'}" "$status"
         return 1
       fi
       ;;
     *)
-      # The destination is opened before tar reads anything, so a destination this run cannot
-      # write is told from what tar answers for: bash says on stderr why it could not be
-      # opened, and this sentence claims nothing about the archive.
-      if ! : > "$destination"; then
-        printf 'this run cannot write %s, so %s was never read for %s, and nothing here is a statement about the bytes that address served\n' \
-          "$destination" "$url" "$member"
-        return 1
-      fi
       tar -xzOf "$archive" "$member" > "$destination" || status=$?
       if [ "$status" -ne 0 ]; then
         rm -f -- "$destination"
-        printf 'the archive at %s did not give up %s, and this arm claims neither cause: tar answers an archive that holds no such member and a damaged stream with the same exit, so what tar printed on stderr is what says which of the two it was (tar exit %s)\n' \
+        # No set of causes is named, because this arm knows none: an absent member, a damaged
+        # stream and a destination that filled up part way through the write are one exit 2
+        # here. What tar printed is the only thing that says more, and it is on stderr above.
+        printf 'the archive at %s did not give up %s (tar exit %s); what tar printed on stderr above says why\n' \
           "$url" "$member" "$status"
         return 1
       fi

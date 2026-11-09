@@ -6,10 +6,12 @@
 # kind leaves a file at the destination. A row whose second source writes an address of its own is
 # served whole or by the member it names, a zip that holds no such member and one that holds it
 # and cannot give it back are refused in different words while the tar arm, which can tell
-# those two apart no better than tar can, refuses both in one sentence that claims neither
-# cause, a destination this run cannot write is refused as this run's own failure by either arm
-# and no failure of either leaves anything at the destination it was given, a row whose primary
-# carries a `primary_digest` is held to it before its `primary_member` is taken out, and
+# those two apart no better than tar can, names no cause at all and leaves tar's own words to
+# say why, a zip damaged in a way python3 raises no BadZipFile for is refused without a word
+# that clears the bytes, a destination this run cannot write is refused by the one pre-check
+# both arms share before either reads the archive and no failure of either leaves anything at
+# the destination it was given, a row whose primary carries a `primary_digest` is held to it
+# before its `primary_member` is taken out, and
 # ci_tools_fetch_primary leaves the archive the primary served rather than that member. It also
 # runs the repository's own .github/ci-tools.yaml through the helper, so a row this file cannot
 # parse fails here rather than in a job.
@@ -172,6 +174,49 @@ last = bytes_of.rindex(payload) + len(payload) - 1
 Path(archive).write_bytes(bytes_of[:last] + bytes([bytes_of[last] ^ 0x01]) + bytes_of[last + 1:])
 PY
 
+# Two more copies of that wheel, each with one field of the member's central-directory header
+# changed, which is what a tampered archive looks like and what no exception list can catch:
+# python3 raises neither a BadZipFile nor a zlib.error for either, so both leave the zip arm's
+# list of definite damage. Bit 0 of the general purpose bit flag says the member is encrypted,
+# which python3 answers with RuntimeError, and a compression method nobody implements it
+# answers with NotImplementedError. The cases below read what each is refused with.
+cp "$work/payloads/wheeled.whl" "$work/payloads/wheeled.flagged.whl"
+cp "$work/payloads/wheeled.whl" "$work/payloads/wheeled.method.whl"
+PYTHONDONTWRITEBYTECODE=1 python3 - wheeled-7.0.0.data/scripts/wheeled \
+  "$work/payloads/wheeled.flagged.whl" "$work/payloads/wheeled.method.whl" <<'PY'
+import struct
+import sys
+from pathlib import Path
+
+member = sys.argv[1].encode()
+flagged, methoded = (Path(name) for name in sys.argv[2:4])
+
+
+def header_of(body: bytearray) -> int:
+    """Where that member's own central-directory header begins, headers being walked in
+    order: the last one in the file belongs to whichever member was written last."""
+    at = body.find(b"PK\x01\x02")
+    while at != -1:
+        length, extra, comment = struct.unpack_from("<HHH", body, at + 28)
+        if bytes(body[at + 46:at + 46 + length]) == member:
+            return at
+        at = body.find(b"PK\x01\x02", at + 46 + length + extra + comment)
+    raise SystemExit(f"no central-directory header for {member!r}")
+
+
+def patch(archive: Path, offset: int, value: int) -> None:
+    body = bytearray(archive.read_bytes())
+    struct.pack_into("<H", body, header_of(body) + offset, value)
+    archive.write_bytes(bytes(body))
+
+
+# +8 is the general purpose bit flag, whose bit 0 is the encrypted flag; +10 is the
+# compression method, and 99 is no method python3 has.
+body = bytearray(flagged.read_bytes())
+patch(flagged, 8, struct.unpack_from("<H", body, header_of(body) + 8)[0] | 0x0001)
+patch(methoded, 10, 99)
+PY
+
 # The plugin tarball a second source serves whole, and a tarball whose member is the row's bytes,
 # which is the member rule on an archive that is no wheel.
 mkdir -p "$work/plugin-build" "$work/tarmember-build"
@@ -194,10 +239,11 @@ archive.write_bytes(body[:-1] + bytes([body[-1] ^ 0x01]))
 PY
 
 # The clause both tar outcomes are refused in, written once because that is what the two cases
-# below claim: `tar -xzO` answers an archive that holds no such member and a damaged stream
-# with the same exit, so the refusal names the member and the archive, claims neither cause and
-# leaves tar's own words on stderr to say which it was.
-TAR_NEITHER='and this arm claims neither cause: tar answers an archive that holds no such member and a damaged stream with the same exit, so what tar printed on stderr is what says which of the two it was (tar exit 2)'
+# below claim: `tar -xzO` answers an archive that holds no such member, a damaged stream and a
+# destination that filled up part way through the write with the same exit, so the refusal
+# names the member and the archive, names no cause at all, and leaves tar's own words on
+# stderr to say why.
+TAR_WHY='(tar exit 2); what tar printed on stderr above says why'
 
 # The CLI tarball: one archive two services serve, which is the row whose primary is a service
 # of its own and whose second source is the release asset.
@@ -857,14 +903,14 @@ check "and leaves nothing at the destination it was given" "$(nothing_at "$dest"
 echo "case: npm — the package tarball holds no such member"
 # The first of the tar arm's two outcomes: a healthy tarball the member is not in. The arm
 # cannot tell it from the case after it, so the sentence names the member and the archive,
-# claims neither cause, and leaves tar's own words on stderr to say which it was.
+# names no cause at all, and leaves tar's own words on stderr to say why.
 origin npm-member-missing
 cp "$work/payloads/packaged.no-member.tgz" "$root/npm/@fixture/packaged/-/packaged-3.0.0.tgz"
 dest="$work/dest/npm-member-missing"
 run ci_tools_fetch_fallback packaged "$dest"
 check "fails" "$(is "$status" 1)"
-check "names the source, the member and the archive, and claims neither cause" \
-  "$(contains "$out" "^::error::ci-tools: packaged: no source served the bytes; npm: the archive at $base/npm/@fixture/packaged/-/packaged-3.0.0.tgz did not give up package/bin/packaged, $TAR_NEITHER\$")"
+check "names the source, the member and the archive, and names no cause" \
+  "$(contains "$out" "^::error::ci-tools: packaged: no source served the bytes; npm: the archive at $base/npm/@fixture/packaged/-/packaged-3.0.0.tgz did not give up package/bin/packaged $TAR_WHY\$")"
 check "and tar's own words are in the log" "$(contains "$out" '^tar: ')"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
@@ -872,33 +918,44 @@ check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 echo "case: pulumi-releases — the .tar.gz holds the member and its bytes are damaged"
 # The other tar outcome: the tarball does hold the member and one changed byte of its gzip
 # framing means no reader reaches it. The refusal is the sentence of the case above, word for
-# word, which is this arm's statement that it cannot tell the two apart.
+# word, which is this arm's statement that it names no cause it cannot prove.
 origin url-tar-damaged
 cp "$work/payloads/tarmembered.damaged.tar.gz" "$root/$TARMEMBER_URL_PATH"
 dest="$work/dest/url-tar-damaged"
 run ci_tools_fetch tarmembered "$dest"
 check "fails" "$(is "$status" 1)"
 check "is refused in the sentence the absent member above is refused in" \
-  "$(contains "$out" "^::error::ci-tools: tarmembered: no source served the bytes; pulumi-releases: the archive at https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz did not give up ./jjlike, $TAR_NEITHER\$")"
+  "$(contains "$out" "^::error::ci-tools: tarmembered: no source served the bytes; pulumi-releases: the archive at https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz did not give up ./jjlike $TAR_WHY\$")"
 check "and tar's own words are in the log" "$(contains "$out" '^tar: ')"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+# That same tarball through ci_tools_extract itself, as the damaged wheel above is read: the
+# fetches hand this function a temporary file of their own and remove it themselves, so what
+# a caller that names its own destination is left with when tar fails is pinned here and
+# nowhere else.
+base="http://127.0.0.1:1"
+dest="$work/dest/extract-tar-damaged"
+run ci_tools_extract "$work/payloads/tarmembered.damaged.tar.gz" ./jjlike \
+  "$dest" https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
+check "ci_tools_extract called directly fails too" "$(is "$status" 1)"
+check "and leaves nothing at the destination it was given" "$(nothing_at "$dest")"
 
-echo "case: ci_tools_extract — a destination this run cannot write"
-# Neither arm may read a destination it cannot write as a statement about the bytes an address
-# served: it is this runner — a directory that is not there, a disk that is full — and each arm
-# says so in a sentence of its own. The destination here is under a directory this file never
-# makes. These two calls read the manifest and no source, so the base is a port nothing listens
-# on.
+echo "case: ci_tools_extract — a destination this run cannot write, by either arm"
+# The one failure of this run either arm can prove, and the one thing proved before a byte of
+# an archive is read: the pre-check above the case opens the destination, so both arms refuse
+# it in the one sentence, before the wheel below reaches python3 and before the tarball below
+# reaches tar. The destination here is under a directory this file never makes.
+# ci_tools_extract takes no row, so neither call reads the manifest, and neither reads a
+# source: the base is a port nothing listens on.
 base="http://127.0.0.1:1"
 dest="$work/dest/no-such-directory/extract-oserror"
 run ci_tools_extract "$work/payloads/wheeled.whl" wheeled-7.0.0.data/scripts/wheeled \
   "$dest" https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
 check "the zip arm fails" "$(is "$status" 1)"
-check "saying the archive is not what failed, and quoting python3" \
-  "$(contains "$out" "^the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl did not give up wheeled-7.0.0.data/scripts/wheeled, and the archive is not what failed: FileNotFoundError: .* That is this run itself, the destination it writes the member to or python3, so it is no signal about the bytes that address served (python3 exit 1)$")"
-check "and calls it no signal about those bytes" \
-  "$(is "$(contains "$out" "which is a signal about those bytes")" false)"
+check "saying this run cannot write the destination, and claiming nothing of the archive" \
+  "$(contains "$out" "^this run cannot write $dest, so https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl was never read for wheeled-7.0.0.data/scripts/wheeled, and nothing here is a statement about the bytes that address served$")"
+check "and gives no exit of a python3 it never ran" \
+  "$(is "$(contains "$out" "python3 exit")" false)"
 check "and does not call the member absent" \
   "$(is "$(contains "$out" "holds no wheeled-7.0.0.data/scripts/wheeled")" false)"
 check "and nothing is at the destination" "$(nothing_at "$dest")"
@@ -906,10 +963,36 @@ dest="$work/dest/no-such-directory/extract-oserror-tar"
 run ci_tools_extract "$work/payloads/tarmembered.tar.gz" ./jjlike \
   "$dest" https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
 check "the tar arm fails" "$(is "$status" 1)"
-check "saying this run cannot write the destination, and claiming nothing of the archive" \
+check "in the same sentence, which is the one pre-check both arms share" \
   "$(contains "$out" "^this run cannot write $dest, so https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz was never read for ./jjlike, and nothing here is a statement about the bytes that address served$")"
 check "and gives no exit of a tar it never ran" "$(is "$(contains "$out" "tar exit")" false)"
 check "and nothing is at the destination" "$(nothing_at "$dest")"
+
+echo "case: ci_tools_extract — a tampered zip python3 raises no BadZipFile for"
+# Archive damage no exception list catches, which is why no sentence of this arm may clear the
+# bytes: one flipped bit of the member's central-directory flag word reaches python3 as a
+# RuntimeError about an encrypted member, and a compression method nobody implements reaches
+# it as a NotImplementedError. Both are the archive, not this run, and both exit 1, so what
+# they are refused with must rule neither in nor out — a run that said "the archive is not
+# what failed" here would be telling its reader that tampered bytes are fine.
+# The exception's name is all these cases read of that quote, for the reason the CRC case
+# above gives: the message beside it is CPython's wording.
+for damage in flagged:RuntimeError method:NotImplementedError; do
+  dest="$work/dest/extract-${damage%%:*}"
+  run ci_tools_extract "$work/payloads/wheeled.${damage%%:*}.whl" \
+    wheeled-7.0.0.data/scripts/wheeled "$dest" \
+    https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
+  check "the ${damage%%:*} wheel fails" "$(is "$status" 1)"
+  check "quoting the ${damage#*:} python3 raised and clearing nothing" \
+    "$(contains "$out" "^the archive at https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl did not give up wheeled-7.0.0.data/scripts/wheeled: ${damage#*:}: .* python3 raised that, and this helper cannot tell from it whether the archive or this run is what failed — damage reaches python3 as an OSError, a RuntimeError, a NotImplementedError or a UnicodeDecodeError, and so does a destination that filled up part way through the write — so these bytes are not cleared (python3 exit 1)$")"
+  check "and never says the archive is not what failed" \
+    "$(is "$(contains "$out" "the archive is not what failed")" false)"
+  check "and never calls itself no signal about those bytes" \
+    "$(is "$(contains "$out" "no signal about the bytes")" false)"
+  check "and does not call the member absent" \
+    "$(is "$(contains "$out" "holds no wheeled-7.0.0.data/scripts/wheeled")" false)"
+  check "and nothing is at the destination" "$(nothing_at "$dest")"
+done
 
 echo "case: ci_tools_fetch_primary places the archive the primary served"
 # What .github/scripts/ci-tools-proof.sh needs: a row whose `digest` is of a member is staged as
