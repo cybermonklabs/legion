@@ -1812,6 +1812,21 @@ tests and build, beside the proof editor's, and runs no browser row.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
+A WebKit row can be run on an issue pod, which matters because four projects run rows no other
+engine does and a reader of a red one would otherwise have only CI to read it in.
+`bunx playwright install webkit` fetches the bundle, and Debian 13 has none of its 35 host
+libraries;
+they resolve as `.deb`s into a directory of your own with `apt-get` pointed at state and cache
+directories you can write, no root needed, and go in the bundle's own
+`minibrowser-wpe/sys/lib`, which its wrapper already puts on `LD_LIBRARY_PATH`.
+Three variables then let it start: `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`,
+`EGL_PLATFORM=surfaceless` and `LIBGL_ALWAYS_SOFTWARE=1`.
+A fourth is the one that is easy to miss, because the failure names nothing:
+`__EGL_VENDOR_LIBRARY_DIRS` has to name the glvnd vendor directory of that unpacked tree, since
+the host has no vendor file of its own, and without it WebKit aborts with
+`Could not create EGL display: no supported platform available`, which Playwright reports as
+`browserContext.newPage: Target page, context or browser has been closed`.
+
 One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
 samplers, run from `packages/dispatch` with a Postgres provider the lanes above name:
 `DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4`.
