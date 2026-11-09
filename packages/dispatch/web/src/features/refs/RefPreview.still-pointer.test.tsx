@@ -84,3 +84,35 @@ test("a reference that slid out from under a still pointer opens its card, and t
     getIssue.mockRestore();
   }
 });
+
+test("a reference the page moves in the moment the pointer reaches it still opens its card", () => {
+  // The row above has nothing move the pointer at all, which no reader can do: a reader reaches
+  // a reference by moving onto it, and that movement lands milliseconds before the page draws
+  // whatever slides the reference away. So this row sends the arrival first, and the page's move
+  // inside the same instant - which is `e2e/hover-preview.e2e.ts`'s ordinary conversation page in
+  // CI's container (run 42628596511, shard 2, red on both attempts: the card never opened).
+  // Nothing about the arrival says the reader is leaving; the anchor's measured box is what says
+  // the page moved, and their next movement is what decides a request kept on it.
+  const getIssue = spyOn(api, "getIssue").mockImplementation(() => new Promise(() => {}));
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    const reference = screen.getByRole("link", { name: "the reference" });
+    fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
+    fireEvent.pointerOver(reference, { pointerType: "mouse" });
+
+    spyOn(reference, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 24,
+    } as DOMRect);
+    fireEvent.pointerOut(reference, { pointerType: "mouse", relatedTarget: document.body });
+
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip").textContent).toContain("CORE-1");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});

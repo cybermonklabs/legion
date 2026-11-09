@@ -149,8 +149,7 @@ function attachTriggers(): () => void {
     // has slid out from under a pointer that never moved - a card above it settling its height,
     // a picture landing, a long body formatting, the issue page's own header, tab strip and
     // margin landing over the body they are pointing at - the card stays, measured where the
-    // anchor is now, until the reader themselves moves away. The reader leaving is the reader
-    // doing something, and that is what tells the two apart.
+    // anchor is now, until the reader themselves moves away.
     //
     // A hover still waiting out its delay is kept on the same terms as a card already drawn,
     // because what is kept is the reader's request rather than the pixels it has put on the
@@ -163,13 +162,19 @@ function attachTriggers(): () => void {
     // reference, and in CI's runner all three land inside the delay (run 42597442001, red in
     // chromium, firefox and webkit alike). `reposition` keeps the pending target, so the delay
     // runs on and the card opens where the anchor is now.
+    //
+    // THE CLOCK CANNOT TELL THE TWO APART, and a bound on it is the one thing this must not
+    // use: a reader reaches a reference by moving onto it, so their own last movement is always
+    // milliseconds old when the page slides it away, and reading that arrival as a departure
+    // closed the card on the ordinary conversation page in CI's container, deterministically
+    // and on both attempts (run 42628596511, shard 2, `e2e/hover-preview.e2e.ts:72`). The
+    // anchor's MEASURED BOX is what says the page moved - a reader moving away leaves it where
+    // it was - and `keptUnderAStillPointer` is the correction: the reader's next movement
+    // closes a request kept over nothing, and a movement is what their own leaving always
+    // sends, since the browser dispatches the move at the new place after the boundary pair.
     const waiting = previewState();
     const anchor = waiting?.target.anchor;
-    if (
-      anchor !== undefined &&
-      anchorWas?.anchor === anchor &&
-      event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
-    ) {
+    if (anchor !== undefined && anchorWas?.anchor === anchor) {
       const place = placeOf(anchor);
       if (place.left !== anchorWas.left || place.top !== anchorWas.top) {
         anchorWas = { anchor, ...place };
