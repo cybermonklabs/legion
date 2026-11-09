@@ -11,6 +11,7 @@ import {
   conversation,
   DEADLINE_MS,
   exitsFile,
+  gone,
   ISSUE,
   kernelOf,
   lastMessage,
@@ -158,7 +159,7 @@ test.skipIf(skip)(
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
 
     // The cell was waiting on that child, so the call came back on its own: the next turn carries
@@ -207,7 +208,7 @@ test.skipIf(skip)(
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
     expect(pane.publishes().map((publish) => publish.topic)).toEqual([ARCHITECT_TOPIC]);
 
@@ -450,7 +451,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(runner.pid)).toBe(false);
+    await gone(pane, runner.pid);
 
     // Ending the runner ends the call: the host hands back a dead kernel, so the ladder takes no
     // second step and this worker goes on with its work.
@@ -495,7 +496,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
 
     // Then the turn the abort ended settles, and the host has the steered message to go on with:
     // the run's own end says so — `isTerminal` false on the RPC frame — and the host starts

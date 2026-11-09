@@ -116,6 +116,23 @@ export async function runs(pid: number): Promise<boolean> {
   );
 }
 
+/**
+ * Waits until `pid` is gone, and fails at the pane's own deadline if it never is.
+ *
+ * The ladder's first step sends SIGKILL and counts the signal (`src/stall-recovery.ts:242-243`);
+ * it does not wait for the task to end, and the kernel ends it after that call has returned. So
+ * the step's record is written while the process may still be on its way out, and a read of
+ * `/proc` taken the moment a case sees that record can still find it running — once in 20 runs
+ * of the first case under six busy loops on a 2-CPU pod, where the margin is thinnest
+ * (dispatch://INFRA-2188). Waiting proves what the immediate read meant to prove, since a
+ * process the step never ended still fails the case.
+ */
+export async function gone(pane: StallPane, pid: number): Promise<void> {
+  await pane.until(`process ${pid} to be gone after the step ended it`, async () =>
+    (await runs(pid)) ? undefined : true
+  );
+}
+
 /** A directory of this case's own: the claim's state directory, or where a cell writes the pid of
  * the child it started. */
 export async function scratchDir(name: string): Promise<string> {
