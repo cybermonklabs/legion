@@ -1425,15 +1425,21 @@ export default function envoyExtension(pi: PiApi): void {
             turn.messageId
           );
         }
-        pi.sendMessage(
-          {
-            content: shellCommandMessage(report),
-            customType: "envoy-message",
-            details: LOCAL_ENVOY_NOTICE,
-            display: true,
-          },
-          { deliverAs: "nextTurn", triggerTurn: false }
-        );
+        // The agent's copy goes to the session the command was asked for and to no other: a
+        // `/new` or a `/resume` fires no shutdown and so does not stop a running command, and the
+        // session the host moved to would otherwise read "A person ran this shell command in this
+        // session" over another conversation's output, from another working directory.
+        if (sessionID === session) {
+          pi.sendMessage(
+            {
+              content: shellCommandMessage(report),
+              customType: "envoy-message",
+              details: LOCAL_ENVOY_NOTICE,
+              display: true,
+            },
+            { deliverAs: "nextTurn", triggerTurn: false }
+          );
+        }
         return report;
       } finally {
         if (runningShellCommand === claim) runningShellCommand = undefined;
@@ -2685,6 +2691,12 @@ export default function envoyExtension(pi: PiApi): void {
     }
     const waited = Date.now() - agentStreamContextRefreshedAt;
     if (waited >= CONTEXT_FRAME_INTERVAL_MS) {
+      // A trailing frame still owed is due by now and holds the older reading: it is dropped
+      // before this one goes out, or its callback would publish after this frame and leave a
+      // session that then stays idle showing the earlier figure.
+      clearTimeout(agentStreamContextTrailing);
+      agentStreamContextTrailing = undefined;
+      agentStreamContextHeld = undefined;
       publishAgentStreamContext(session, usage);
       return;
     }

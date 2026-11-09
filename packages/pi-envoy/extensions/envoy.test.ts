@@ -13366,6 +13366,59 @@ console.log(JSON.stringify(args));
         );
       }, 20_000);
 
+      // `/new` and `/resume` fire `session_switch`, not `session_shutdown`, so neither stops a
+      // running command: a command asked of one session can end with the host on another. The
+      // report is that first session's - its line, its working directory, its output - and the
+      // session the host moved to must not be handed it as its own, while the person is answered
+      // and the live view of the session that ran it still shows the report.
+      test("hands the agent no copy when the session moved on while the command ran", async () => {
+        const { agent, fixture, replied, replies, work } = await bootShellSession(
+          "shell-command-switched",
+          {
+            accept: () => ({
+              accepted: true,
+              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+            }),
+          }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
+        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+
+        // A `/new` while the command runs. The viewer follows the session the host moved to, as
+        // the relay's watch does, so the publisher is armed again and the frame this command
+        // still records on the session it was asked of goes out.
+        await fixture.handlers.get("session_switch")?.(
+          { reason: "new" },
+          sessionContext("ses_after_shell")
+        );
+        natsState.controls
+          .get("agentstream.ses_after_shell.control")
+          ?.push(JSON.stringify({ type: "watch", v: 1 }));
+        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+        writeFileSync(join(work, "go"), "");
+        await replied(1);
+
+        // The person is answered, and the live view of the session that ran the command carries
+        // the report, keyed on the Dispatch message it answers.
+        expect(replies[0]?.body).toMatchObject({
+          body: expect.stringContaining("```\nhi\n```"),
+        });
+        const frames = streamFrames();
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+        expect(frames[0]?.message.parts).toEqual([
+          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+        ]);
+        // The session the host moved to reads nothing of a command it was never asked for.
+        expect(
+          fixture.deliveries.filter((delivery) =>
+            delivery.content.includes("A person ran this shell command")
+          )
+        ).toEqual([]);
+      }, 20_000);
+
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
       // command run on with its session gone. What this row proves is the plugin's half: the
@@ -14113,6 +14166,45 @@ console.log(JSON.stringify(args));
 
       await until(() => publishedContext().length > 1, "the frame the message's reading was owed");
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
+    });
+
+    // No older reading may follow a newer one. The trailing frame is due at the interval's end,
+    // and a message that ends after that time but before the timer's callback runs publishes at
+    // once: the reading that frame still holds is the earlier one, and a session that then stays
+    // idle would keep it on the viewer's ring - the stale ring the holding exists to prevent.
+    test("drops the reading a trailing frame holds when a newer one goes out at once", async () => {
+      process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
+      let tokens = 50_000;
+      const { context, fixture } = await bootDirectSession("context-frame-overtaken", {
+        contextUsage: () => ({ contextWindow: 200_000, percent: tokens / 2_000, tokens }),
+      });
+      await attachViewer();
+
+      await fixture.handlers.get("turn_start")?.({}, context);
+      tokens = 60_000;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+
+      // The interval is up and the trailing timer is due, with nothing having let the event loop
+      // run its callback yet: this is the window the message below ends in. The loop is held on
+      // the real clock rather than awaited, and no fake one serves here: the publisher arms the
+      // global `setTimeout` and reads `Date.now()` itself, and advancing a fake clock past the
+      // interval would run the very callback this row must leave pending.
+      // Ten milliseconds past the 50 ms interval set above.
+      const due = performance.now() + 60;
+      while (performance.now() < due) {
+        // Held on purpose; see above.
+      }
+      tokens = 70_000;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+
+      // The trailing timer came due before this one was armed, so the loop runs its callback
+      // first: once this resolves, a frame it would have published has been published.
+      const ran = Promise.withResolvers<void>();
+      setTimeout(ran.resolve, 0);
+      await ran.promise;
+      // Nothing older followed the newer reading, and the last frame a viewer draws is that one.
+      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
     });
 
     for (const [name, usage] of [
