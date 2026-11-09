@@ -11,7 +11,14 @@ import {
   useState,
 } from "react";
 
-import { ApiError, type ArtifactOwner, api, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  type ArtifactOwner,
+  api,
+  isArtifactNotFound,
+  isDocumentSchemaError,
+  type WriteBounds,
+} from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -42,48 +49,101 @@ export interface UploadResult {
   version: Version;
 }
 
+/** The media type of `file` as Dispatch reads it: the server parses what the browser declared
+ *  with `mime.ParseMediaType` (`artifactKind` in the server's `api/artifacts.go`), which drops
+ *  the parameters and lowercases the type, so a browser's `text/markdown; charset=utf-8` is
+ *  `text/markdown` there. A page comparing the raw string would read no base for a file the
+ *  server stores as a document, and upload over that document naming nothing. */
+function mediaTypeOf(file: File): string {
+  return (file.type.split(";")[0] ?? "").trim().toLowerCase();
+}
+
+/** The name an upload is stored under: the one its surface fixes - a document's own name, so a
+ *  repair replaces that document whatever the picked file is called - else the file's own. */
+function uploadName(file: File, name: string | undefined): string {
+  return name ?? (file.name || "artifact");
+}
+
 /**
- * The base a replacement names: the token of the live document the owner already holds under
- * `name`, read by the route that resolves a slug or a filename. Nothing when the owner holds no
- * document under that name, so this upload is the first one; nothing when the read fails, which
- * is what a document whose tree is outside the Proof schema answers — it renders no markdown and
- * so has no token, and an upload is the only way to repair it, which the server lets through
- * (`refuseUploadNamingNoBase`). Only a document has a base, and Dispatch decides that by the
- * media type alone (`artifactKind` in the server's `api/artifacts.go`: `text/markdown` is a
- * document and everything else is a file or an image), so the name counts for nothing here and
- * a base sent for anything else is refused `400 INVALID_PRECONDITION`. A conversation holds
- * files and images and no document at all.
+ * The base one press of Upload sends: the token of the document it replaces, `undefined` where
+ * there is none to name, or the failure the read of it ended with.
+ *
+ * It is read once, when the person chooses the file, and every attempt of that press sends this
+ * one value. Dispatch's key covers the whole body, the `precondition` field included
+ * (`bodyDigest` in the server's `api/request_keys.go`), so an attempt made again under the key
+ * with a base read afresh would be answered `422 KEY_REUSED` rather than with what the first
+ * attempt did.
  */
-async function uploadBase(
+export type UploadBase = { readonly token: string | undefined } | { readonly unreadable: unknown };
+
+/**
+ * Reads the base for `file`'s upload to `owner`: the token of the live document the owner
+ * already holds under the name this upload is stored as, through the route that resolves a slug
+ * or a filename.
+ *
+ * Two answers mean there is no base to name, and no others: `404 ARTIFACT_NOT_FOUND`, where the
+ * owner holds no document under that name and this upload is its first; and `409 DOC_SCHEMA`,
+ * where the document's tree is outside the Proof schema, so it renders no markdown and has no
+ * token, and an upload is the only way to repair it, which the server takes naming no base
+ * (`refuseUploadNamingNoBase`). Every other failure - the request never reached Dispatch, the
+ * session lapsed, Dispatch answered a 5xx, or the name is one that more than one document
+ * answers to (`400 ARTIFACT_REFERENCE_AMBIGUOUS`) - comes back as `unreadable` and ends the
+ * upload (`UploadBaseUnreadableError`): the page does not know what it would be replacing, and
+ * an upload naming no base replaces it without saying so.
+ *
+ * Only a document has a base, and Dispatch decides that by the media type alone (`artifactKind`
+ * in the server's `api/artifacts.go`: a `text/markdown` upload is a document and everything else
+ * is a file or an image), so the name counts for nothing here and a base sent for anything else
+ * is refused `400 INVALID_PRECONDITION`. A conversation holds files and images and no document
+ * at all.
+ */
+export async function captureUploadBase(
   owner: ArtifactOwner,
-  name: string,
-  type: string
-): Promise<string | undefined> {
-  if ("session" in owner || type !== "text/markdown") {
-    return undefined;
+  file: File,
+  name?: string
+): Promise<UploadBase> {
+  if ("session" in owner || mediaTypeOf(file) !== "text/markdown") {
+    return { token: undefined };
   }
   try {
-    return (await api.ownerArtifactText(owner, name)).token;
-  } catch {
-    return undefined;
+    return { token: (await api.ownerArtifactText(owner, uploadName(file, name))).token };
+  } catch (error) {
+    if (isArtifactNotFound(error) || isDocumentSchemaError(error)) {
+      return { token: undefined };
+    }
+    return { unreadable: error };
   }
 }
 
-/** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`). An upload over a
- *  document the owner already holds names the base it replaces (`uploadBase`). */
+/** What ends an upload whose base could not be read (`captureUploadBase`): nothing was sent, and
+ *  the row says so. It is none of the failures a write is made again for (`retryAfter` in
+ *  `features/writes/keyed-write.ts`), so the write ends on it at once rather than trying under
+ *  its key. */
+export class UploadBaseUnreadableError extends Error {
+  constructor(cause: unknown) {
+    super("the document this upload would replace could not be read", { cause });
+    this.name = "UploadBaseUnreadableError";
+  }
+}
+
+/** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`), naming the base
+ *  read for this press (`options.base`, from `captureUploadBase`). The base is read before the
+ *  write rather than here, so every attempt under one key sends the same bytes. */
 export async function uploadFile(
   owner: ArtifactOwner,
   file: File,
-  options: { name?: string; summary?: string },
+  options: { base: UploadBase; name?: string; summary?: string },
   bounds: WriteBounds
 ): Promise<UploadResult> {
-  const name = options.name ?? (file.name || "artifact");
-  const base = await uploadBase(owner, name, file.type);
+  if ("unreadable" in options.base) {
+    throw new UploadBaseUnreadableError(options.base.unreadable);
+  }
+  const base = options.base.token;
   return api.uploadArtifact(
     owner,
     {
       file,
-      name,
+      name: uploadName(file, options.name),
       summary: options.summary,
       ...(base === undefined ? {} : { precondition: { document: base } }),
     },
@@ -94,20 +154,44 @@ export async function uploadFile(
 /** What the row says when the document moved under an upload the dashboard sent a base for. The
  *  server writes its own refusal for a caller holding the `dispatch` command, naming the command
  *  that reads the token and the argument that sends it; a person uploading here runs no command
- *  and pastes no token, and the dashboard reads the token for them on every attempt, so pressing
- *  Upload again sends the base the document has now. Reading what changed first is the point of
- *  the guard, which is why the row says to open the document rather than only to try again. */
+ *  and pastes no token. Pressing Upload again reads the token afresh, so it sends the base the
+ *  document has now - but reading what changed first is the point of the guard, which is why the
+ *  row says to open the document rather than only to try again. */
 export const UPLOAD_BASE_REFUSAL =
   "This document changed while you were uploading it. Open it to see what it says now, then upload again.";
 
+/** What the row says when Dispatch asks every replacement for a base and this upload named none
+ *  (`400 PRECONDITION_REQUIRED`, the server's `DISPATCH_UPLOAD_BASE_REQUIRED`). It does not mean
+ *  the document changed: the page names a base for every document whose token it could read, and
+ *  ends an upload whose read failed, so what reaches this is an upload whose read found no
+ *  document under the name while the server found one - a document created in the moment between
+ *  that read and the post. */
+export const UPLOAD_BASE_REQUIRED_REFUSAL =
+  "The page could not say which text this upload replaces, and Dispatch requires it. Open the document to see what it says now, then upload again.";
+
+/** What the row says when the base could not be read at all (`UploadBaseUnreadableError`),
+ *  followed by what Dispatch said of that read where it answered at all. */
+export const UPLOAD_BASE_UNREADABLE_REFUSAL =
+  "Could not read the document this upload would replace, so nothing was uploaded.";
+
 // A refused upload is described by the server, which names the bound it hit: a markdown document
-// is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message. The two
-// refusals of the document base are the exception: the server writes those for the `dispatch`
-// command and the dashboard says what they mean to a person (UPLOAD_BASE_REFUSAL).
+// is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message. The refusals
+// about the document base are the exception: the server writes those for the `dispatch` command
+// and the dashboard says what they mean to a person. They are three sentences, not one - the
+// document moved under the upload, the upload named no base where Dispatch requires one, and the
+// base could not be read at all - and a person told the wrong one of those is told something
+// untrue.
 export function uploadErrorMessage(error: unknown): string {
+  if (error instanceof UploadBaseUnreadableError) {
+    const said = error.cause instanceof ApiError ? ` ${error.cause.message}` : "";
+    return `${UPLOAD_BASE_UNREADABLE_REFUSAL}${said}`;
+  }
   if (error instanceof ApiError) {
-    if (error.code === "PRECONDITION_FAILED" || error.code === "PRECONDITION_REQUIRED") {
+    if (error.code === "PRECONDITION_FAILED") {
       return UPLOAD_BASE_REFUSAL;
+    }
+    if (error.code === "PRECONDITION_REQUIRED") {
+      return UPLOAD_BASE_REQUIRED_REFUSAL;
     }
     return error.message;
   }
@@ -173,7 +257,9 @@ export interface DraftUpload {
   /** The name of the last file Dispatch stored with no answer to give for it, so its reference
    *  could not be added to the draft; null otherwise. */
   madeUnanswered: string | null;
-  /** Uploads the last refused file again, to the owner it was sent to. */
+  /** Uploads the last refused file again, to the owner it was sent to, reading its base afresh:
+   *  a press of its own, which Dispatch takes under the first one's key while the two send the
+   *  same bytes. */
   retry(): void;
 }
 
@@ -184,7 +270,8 @@ export interface DraftUpload {
  * upload as its own mutation variable, as a send carries its request: TanStack gives a pending
  * mutation each new render's options before `mutationFn` runs, so an owner read from the closure
  * would follow a pick made in the paste's own task. The text, the refreshed lists and a Retry all
- * read that same owner.
+ * read that same owner. The base rides with it (`captureUploadBase`), read once for the press
+ * before the write is made, so every attempt of that press sends the same bytes.
  */
 export function useDraftUpload(insert: (text: string) => void): DraftUpload {
   const queryClient = useQueryClient();
@@ -194,17 +281,16 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
   // its file kept across a reload with it.
   const upload = useKeyedWrite<
     { file: File; owner: ArtifactOwner; result: UploadResult },
-    { file: File; owner: ArtifactOwner }
+    { base: UploadBase; file: File; owner: ArtifactOwner }
   >({
-    write: async ({ file, owner }, bounds) => ({
+    write: async ({ base, file, owner }, bounds) => ({
       file,
       owner,
-      result: await uploadFile(owner, file, {}, bounds),
+      result: await uploadFile(owner, file, { base }, bounds),
     }),
     file: ({ file }) => file,
     inline: true,
     label: ({ file }) => `Upload of ${file.name || "a file"}`,
-    onMutate: () => setPending((count) => count + 1),
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
     onSuccess: (landed, { file, owner }) => {
@@ -216,13 +302,24 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
       retryGuard.release();
     },
   });
+  /** Uploads `files` to `owner`, each as a press of its own, in the order they were taken in:
+   *  each base is read before its press is made, which holds that order through the reads.
+   *  `pending` counts from the press rather than from `onMutate`, which the base read comes
+   *  before: a draft that said nothing was uploading would take a Reply over an upload to come. */
+  const send = async (files: readonly File[], owner: ArtifactOwner): Promise<void> => {
+    for (const file of files) {
+      setPending((count) => count + 1);
+      upload.mutate({ base: await captureUploadBase(owner, file), file, owner });
+    }
+  };
   const receive = (files: FileList, owner: ArtifactOwner, event: { preventDefault(): void }) => {
     if (files.length === 0) {
       return;
     }
     event.preventDefault();
     upload.forgetUnanswered();
-    for (const file of [...files]) upload.mutate({ file, owner });
+    // The files are taken here: a clipboard event's own list is good for this task alone.
+    void send([...files], owner);
   };
   return {
     drop: (event, owner) => receive(event.dataTransfer.files, owner, event),
@@ -234,7 +331,13 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
     paste: (event, owner) => receive(event.clipboardData.files, owner, event),
     pending,
     retry: () => {
-      retryGuard.retryLast(upload);
+      const last = upload.variables;
+      if (last === undefined) {
+        return;
+      }
+      retryGuard.guard(() => {
+        void send([last.file], last.owner);
+      });
     },
   };
 }
@@ -273,7 +376,11 @@ interface ArtifactDropTarget {
 }
 
 export interface ArtifactUpload {
+  /** Discards the staged file, its summary and the base read for it. */
   cancel(): void;
+  /** Uploads the staged file, under the base read when it was chosen. A press that follows a
+   *  press Dispatch decided reads the base again: the person has read what the document says
+   *  now, so their next press names what it says now. */
   confirm(): void;
   dropTarget: ArtifactDropTarget;
   error: unknown;
@@ -299,6 +406,11 @@ export interface ArtifactUpload {
  * the picked file's own name. Success invalidates the owner's artifact list and, for an issue, the
  * issue itself. With a `refusal` - the issue is closed - nothing can be picked or dropped, so no
  * upload starts that Dispatch would refuse, and the row says why on its Upload control.
+ *
+ * The base a replacement names is read when the file is chosen (`captureUploadBase`), and one
+ * press sends that one value however many attempts it takes. So the window this upload guards
+ * runs from the choice to the post: a write landing in it is refused rather than written over,
+ * and a change made before the file was chosen is replaced with no refusal.
  */
 export function useArtifactUpload(
   owner: ArtifactOwner,
@@ -313,17 +425,23 @@ export function useArtifactUpload(
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [summary, setSummary] = useState("");
   const [isDragging, setIsDragging] = useState(false);
-  const upload = useKeyedWrite<UploadResult, File>({
-    write: (file, bounds) =>
+  /** The base read when the staged file was chosen, for the press that sends it to take. */
+  const chosenBase = useRef<Promise<UploadBase> | undefined>(undefined);
+  // One press per answer: `confirm` reads the base before it mutates, so a second click within
+  // that read would be a second upload, which `isPending` is too late to hold.
+  const pressGuard = useSubmitGuard();
+  const upload = useKeyedWrite<UploadResult, { base: UploadBase; file: File }>({
+    write: ({ base, file }, bounds) =>
       uploadFile(
         owner,
         file,
-        { name, summary: summary.trim() === "" ? undefined : summary.trim() },
+        { base, name, summary: summary.trim() === "" ? undefined : summary.trim() },
         bounds
       ),
-    file: (file) => file,
+    file: ({ file }) => file,
     inline: true,
-    label: (file) => `Upload of ${file.name || "a file"}`,
+    label: ({ file }) => `Upload of ${file.name || "a file"}`,
+    onSettled: () => pressGuard.release(),
     onSuccess: (result) => {
       // Stored either way: the staged file and its summary go, so a second press sends nothing;
       // with no answer to give, the row says so (`upload.unanswered`).
@@ -335,27 +453,39 @@ export function useArtifactUpload(
       }
     },
   });
+  const send = async (file: File, base: Promise<UploadBase>): Promise<void> => {
+    upload.mutate({ base: await base, file });
+  };
   const receive = (file: File | undefined) => {
     if (file === undefined || refusal !== null) {
       return;
     }
     upload.forgetUnanswered();
+    const base = captureUploadBase(owner, file, name);
     if (immediate) {
-      upload.mutate(file);
+      void send(file, base);
     } else {
+      chosenBase.current = base;
       setPendingFile(file);
     }
   };
 
   return {
     cancel: () => {
+      chosenBase.current = undefined;
       setPendingFile(null);
       setSummary("");
     },
     confirm: () => {
-      if (pendingFile !== null) {
-        upload.mutate(pendingFile);
+      const file = pendingFile;
+      if (file === null) {
+        return;
       }
+      pressGuard.guard(() => {
+        const base = chosenBase.current ?? captureUploadBase(owner, file, name);
+        chosenBase.current = undefined;
+        void send(file, base);
+      });
     },
     dropTarget: {
       isDragging,
@@ -377,7 +507,7 @@ export function useArtifactUpload(
     madeUnanswered:
       upload.unanswered === undefined
         ? null
-        : (name ?? (upload.unanswered.variables.name || "the file")),
+        : (name ?? (upload.unanswered.variables.file.name || "the file")),
     openPicker: () => {
       if (refusal === null) fileInputRef.current?.click();
     },

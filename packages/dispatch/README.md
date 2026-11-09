@@ -25,8 +25,11 @@ opening a thread uses a full-height view with a bottom-pinned composer. Controls
 minimum touch targets.
 
 An upload replaces whatever document the owner already holds under the name being uploaded, so it names the base it replaces.
-It reads that document's token first (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so an upload over a document someone changed first is refused `409 PRECONDITION_FAILED` instead of writing over their text.
+It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
+That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.
+Every attempt of one press sends that one token, because the idempotency key covers the whole request body.
 A first upload of a name names no base, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
+Any other failure of that read ends the upload and says so, rather than uploading with no base: the page does not know what it would be replacing.
 
 ## Development
 
