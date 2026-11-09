@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  A second `agentloop` run of a conversation a caller grew by an exchange now reads from
+  Anthropic's prompt cache what the run before it wrote. On the kinds Anthropic serves the
+  package marked the history's end and the newest message and nothing else, so each run's
+  breakpoints sat two messages past the ones the run before had written entries at, and a
+  caller that appends every exchange — which is what the daemon's answer loop does between two
+  questions to the same stopped agent — wrote the whole conversation again on every question
+  and read none of it: in a live run two questions 2.5 seconds apart wrote 2,125 then 2,578
+  tokens and read 0 both times, over prefixes that were identical through the earlier
+  question. A run now also marks, where the conversation holds enough text for Anthropic to
+  cache a prefix of it at all (2,048 characters, which is the lowest minimum cacheable length
+  Anthropic states, 512 tokens, at four characters to the token), the two boundaries the run
+  before it marked: the history's last question, which was that run's newest message, and the
+  message before it, which was the end of the history as that run was given it. Anthropic
+  writes an entry at a breakpoint and nowhere else and reads one only where an earlier request
+  wrote, so the breakpoint now sits on the entry itself instead of leaving the lookback, which
+  reaches twenty block positions back and only finds an entry already in place, to happen upon
+  it. That is four breakpoints with the newest message's, which is all Anthropic allows, and a
+  conversation too short to cache is marked exactly as before.
+time: 2026-11-09T09:30:00.000000000Z
+custom:
+    Issue: INFRA-204

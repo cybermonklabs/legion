@@ -222,15 +222,17 @@ type Request struct {
 	History []Message
 	Input   []Message
 	// NoCache turns this package's cache marks off. With it unset, anthropic-messages and
-	// azure-anthropic take one ephemeral mark at the end of the history and one on the
+	// azure-anthropic take an ephemeral mark at the end of the history and one on the
 	// newest message, which lands on the last of Input, or on a tool result the run itself
-	// adds, even where History is empty; openai-responses takes an explicit prompt cache
-	// breakpoint at the end of the history; openai-chat takes none, so setting the field
-	// changes nothing there. The marks are not free: a provider prices a cache write above
-	// plain input, so a single call that is never re-sent pays the write premium and reads
-	// nothing back. They pay off on the next call of the run, and on a later run that
-	// re-sends the marked prefix within the cache's life, which reads it at the cache's
-	// price instead of the input price.
+	// adds, even where History is empty, and, where the conversation is long enough for
+	// the provider to cache it, two more at the boundaries the run before this one marked,
+	// so this run reads the entries that one wrote; openai-responses takes an explicit
+	// prompt cache breakpoint at the end of the history; openai-chat takes none, so
+	// setting the field changes nothing there. The marks are not free: a provider prices
+	// a cache write above plain input, so a single call that is never re-sent pays the
+	// write premium and reads nothing back. They pay off on the next call of the run, and
+	// on a later run that re-sends the marked prefix within the cache's life, which reads
+	// it at the cache's price instead of the input price.
 	NoCache bool
 	// Tools are the tools the model may call.
 	Tools []Tool

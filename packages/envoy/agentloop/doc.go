@@ -50,13 +50,17 @@
 // # Cache marks
 //
 // The package places them by default, where the provider wants them: anthropic-messages takes
-// one ephemeral mark at the end of the history and one on the newest message, and never more
-// than the four Anthropic allows; openai-responses takes an explicit prompt cache breakpoint at
-// the end of the history; openai-chat takes none. A caller that wants none of them anywhere
-// sets Request.NoCache, which takes off the marks this package places and nothing else: a
-// provider's own caching is not the field's to turn off, openai-responses keeps the implicit
-// breakpoint it puts after the newest message, and on openai-chat, which this package never
-// marks, the field changes nothing at all.
+// an ephemeral mark at the end of the history, one on the newest message, and, where the
+// conversation is long enough for the provider to cache it, two more at the boundaries the
+// run before it marked, which are the two the provider wrote its entries at: the history's
+// last question and the message before it. That is four marks, which is all Anthropic allows,
+// and a run of a conversation a caller grew by an exchange then reads what the run before it
+// wrote. openai-responses takes an explicit prompt cache breakpoint at the end of the history;
+// openai-chat takes none. A caller that wants none of them anywhere sets Request.NoCache,
+// which takes off the marks this package places and nothing else: a provider's own caching is
+// not the field's to turn off, openai-responses keeps the implicit breakpoint it puts after
+// the newest message, and on openai-chat, which this package never marks, the field changes
+// nothing at all.
 //
 // # The structured reply
 //
