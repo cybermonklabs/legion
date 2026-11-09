@@ -213,17 +213,24 @@ ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # Its host carries the owner one path element later than github.com's does, so it is a pattern
 # of its own rather than another branch of the first.
 #
-# WHAT IS NOT READ, measured and left open deliberately: every other spelling of the same path.
-# Each reading below was taken between two readings of the canonical address and counts only
-# because both of those answered 302 — a release asset answering 504 in an outage and one
-# answering 504 because GitHub does not serve that shape look alike, and that control is what
-# tells them apart. github.com answered 302 with the asset to an extra slash before the owner,
-# after the owner and after `releases`, and to a `/.` segment; an extra slash after `download`
-# answered 504 between two 302 controls, three times over. So most of this class is reachable
-# and the rule does not read it: normalising a path would have to take in percent-encoding and
-# dot segments as well, which is not a class a text comparison can close. Nor is any other host
-# that can serve the bytes, the `release-assets.githubusercontent.com` address these redirects
-# land on among them.
+# WHAT IS NOT READ, and why each one is out rather than in. Four spellings of the same path are
+# invisible to these patterns, and the reason is the patterns' own shape rather than anything a
+# server does: an extra slash before the owner or after it leaves a path element empty, which
+# `[^/\s"'`]+` cannot match; an extra slash after `releases` puts `/download` where `download`
+# must stand; and a `/.` segment takes the owner's place, so `/releases/download/` then falls in
+# the wrong element. Driven at this head, the gate exits 0 on all four.
+# An extra slash after `download` is NOT one of them: the trailing `[^\s"'`]*` swallows it, so
+# the rule reads that URL and refuses it, and the suite drives it.
+# github.com answered 302 with the asset to each of the four, read between two readings of the
+# canonical address and counted only where both answered 302 — a release asset answering 504 in
+# an outage and one answering 504 because GitHub does not serve that shape look alike, and that
+# control is what tells them apart. For the after-`download` shape the server half is
+# UNESTABLISHED: it answered 302 four times in an hour and 504 ten minutes later with its own
+# canonical control at 504 beside it, so neither reading is readable while github.com 504s
+# intermittently. It changes nothing here, since that shape is read whatever the server does.
+# Closing the four would mean normalising a path — percent-encoding and dot segments included —
+# which is not a class a text comparison can close. Nor is any other host that can serve the
+# bytes, the `release-assets.githubusercontent.com` address these redirects land on among them.
 GITHUB_HOST = r"(?i:(?:www\.)?github\.com)\.?(?::(?:80|443))?"
 ASSET_URL = re.compile(
     rf"https?://{GITHUB_HOST}/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)"

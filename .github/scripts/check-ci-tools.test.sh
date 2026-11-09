@@ -523,6 +523,28 @@ YAML
 run_gate "$root"
 check "exits 0, which is the gap AGENTS.md names" "$(is "$status" 0)"
 
+echo 'case: rule 3 — an extra slash after download, which the rule does read'
+# The case above lists the path spellings the rule misses. This one is the neighbour that looks
+# like them and is not: the patterns end in a wildcard, which swallows a slash after `download`,
+# so that URL IS read and refused. It sits here because the four above are a named gap and a
+# named gap is a claim — one spelling more in that list than the code supports is the same
+# defect as one spelling fewer, and only a case tells the two apart.
+root=$(fixture reach-slash-after-download)
+cat > "$root/.github/workflows/after-download.yaml" <<'YAML'
+name: After download
+on: [push]
+jobs:
+  after-download:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O https://github.com/other/thing/releases/download//v3.0.0/thing-3.0.0.tar.gz
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the URL with the doubled slash" \
+  "$(contains "$out" '^.github/workflows/after-download.yaml:8: this file fetches a release asset of other/thing at https://github.com/other/thing/releases/download//v3.0.0/thing-3.0.0.tar.gz, and no row of .github/ci-tools.yaml names that URL')"
+
 echo "case: rule 3 — a workflow that fetches Bun's own release asset"
 # No bun row carries a primary, because oven-sh/setup-bun fetches that asset. So this URL is a
 # release asset no row and no entry names, and the gate refuses it as it refuses any other,
