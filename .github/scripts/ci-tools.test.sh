@@ -93,10 +93,12 @@ SH
 chmod 0755 "$work/bin/curl"
 
 # The mktemp those cases run, beside that curl. The control file holds `<row> <target>`, and the
-# answer is one symlink at a fixed path, so the case knows the name the refusal will carry and
-# the helper's own `rm -f` takes the symlink away as it would the temporary file.
+# answer is one symlink at a fixed path under the runner's temporary directory, where the real
+# mktemp's answer would be, so the case knows the name the refusal will carry and
+# `temporary_files` reads it: the helper's own `rm -f` takes the symlink away as it would the
+# temporary file.
 mktemp_control="$work/mktemp-control"
-mktemp_answer="$work/mktemp-answer"
+mktemp_answer="$runner_temp/mktemp-answer"
 real_mktemp=$(command -v mktemp)
 cat > "$work/bin/mktemp" <<SH
 #!/usr/bin/env bash
@@ -286,7 +288,7 @@ TAR_WHY='(tar exit 2); what tar printed on stderr above says why'
 # The sentence a write error of this run is refused in, written once because that is what the
 # four cases below claim: the stand-in mktemp hands one fetch the file the sentence names, curl
 # cannot write it, and the refusal names this run and that file and no service at all.
-WRITE_WHY="this run could not write $mktemp_answer (curl exit 23), so nothing here is a statement about the bytes that address serves — refusing"
+WRITE_WHY="this run could not write $mktemp_answer (curl exit 23), which says nothing about any source or the bytes it serves — refusing"
 
 # The CLI tarball: one archive two services serve, which is the row whose primary is a service
 # of its own and whose second source is the release asset.
@@ -640,16 +642,16 @@ check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 echo "case: github-release — the primary's fetch cannot write the file this run gave it"
 # curl exits 23 where it could not write the file it was handed, which is a failure of this run
 # and of nothing else: a runner with no room left is the live shape of it. So the refusal names
-# this run and that file, says nothing about what the address serves, and the fetch stops there
-# — the second source cannot serve a file this runner will not let a fetch write, and reading it
-# would cost a second full retry ladder for that answer.
+# this run and that file, says nothing of any source or the bytes it serves, and the fetch stops
+# there — the second source cannot serve a file this runner will not let a fetch write, and
+# reading it would cost a second full retry ladder for that answer.
 # The stand-in mktemp is what lets a case name that file: it hands this row's fetch a symlink to
 # a directory, which curl cannot open at any attempt of its ladder.
 origin primary-write-error
 dest="$work/dest/primary-write-error"
 run_with_mktemp tarred "$work/dest" ci_tools_fetch tarred "$dest"
 check "fails" "$(is "$status" 1)"
-check "names this run and the file, and claims nothing of what the address serves" \
+check "names this run and the file, and claims nothing of any source" \
   "$(contains "$out" "^::error::ci-tools: tarred: $WRITE_WHY$")"
 check "and says of no source that it did not serve the bytes" \
   "$(is "$(contains "$out" 'did not serve the bytes')" false)"
@@ -657,7 +659,6 @@ check "curl asked the origin for the release asset" "$(is "$(asked_for "$log" "/
 check "and the second source was never read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
-rm -f -- "$mktemp_answer"
 
 echo "case: github-release — ci_tools_fetch_primary cannot write the file this run gave it"
 # The fetch that reads the primary alone has a write error arm of its own, and this is what
@@ -673,7 +674,6 @@ check "and says of no source that it did not serve the bytes" \
   "$(is "$(contains "$out" 'did not serve the bytes')" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
-rm -f -- "$mktemp_answer"
 
 echo "case: github-release — the second source's own fetch cannot write it either"
 # The same exit on the other side, refused in the same words: ci_tools_fetch_fallback reads the
@@ -689,7 +689,6 @@ check "and says of no source that it served nothing" \
   "$(is "$(contains "$out" 'no source served the bytes')" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
-rm -f -- "$mktemp_answer"
 
 echo "case: github-release — a destination that fills part way through the write"
 # The shape a runner actually meets: a destination this run can open and cannot fill. /dev/full
@@ -708,7 +707,6 @@ check "the release asset was asked for" \
 check "and the second source was never read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
 check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
-rm -f -- "$mktemp_answer"
 
 echo "case: github-release — a primary that does not serve the bytes still reads the second source"
 # The control for the four cases above: the fall-through is narrowed to curl's write error and

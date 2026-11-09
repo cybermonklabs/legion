@@ -26,13 +26,15 @@
 #
 #   A LOCAL WRITE ERROR OF THIS RUN, which curl's own exit 23 proves: this run could not write
 #   the file curl was handed, so the sentence names this run and that file and says nothing
-#   whatever about the bytes the address serves. The shape a runner meets is a destination
-#   that opens and fills part way through the write, which is ENOSPC: curl spends whatever of
-#   the ladder it retries it on and answers with that same 23. ci_tools_extract opens its
-#   destination before it reads a byte of an archive, and the sentence it refuses an
-#   unwritable one with says the same of this run; its status is 1, so a caller reports it as
-#   it reports every other failure of that read, with the source that served the archive
-#   named.
+#   whatever of any source or of the bytes one serves. The shape a runner meets is a
+#   destination that opens and fills part way through the write, which is ENOSPC: curl spends
+#   whatever of the ladder it retries it on and answers with that same 23.
+#   ci_tools_extract meets that same fault on the other side and is not refused the same way.
+#   It opens its destination before it reads a byte of an archive, and the sentence it refuses
+#   an unwritable one with says the same of this run — but its status is 1 and not 23, so its
+#   caller reports it as it reports every other failure of that read, which does name a
+#   source: `no source served the bytes; pypi: this run cannot write …`. That naming is the
+#   caller's and not this cause's, and it is why the rule below is written of exit 23 alone.
 #   A MEMBER THE ARCHIVE DOES NOT HOLD, which python3's zipfile answers for by name: the archive
 #   read, and it holds no member of that name, which is a row naming a path that archive has not
 #   got and a mistake in this repository.
@@ -48,10 +50,12 @@
 # the three proofs are theirs, and neither writes this rule a second time.
 #
 # Every exit names the source that served the bytes — `github-release`, `ghcr-mirror`, `npm`,
-# `pypi` or `pulumi-releases` — except a local write error of this run, which names none,
-# because no source is what failed. A failure leaves no file at the destination, so a call
-# site that checks the exit status never runs a half-written or unverified file, and one that
-# does not check it finds nothing to run.
+# `pypi` or `pulumi-releases` — except the one curl answers with exit 23, which names none,
+# because no source is what failed. ci_tools_extract's unwritable destination is that same
+# fault of this run and not that exit, and its caller does name a source, as the rule above
+# says. A failure leaves no file at the destination, so a call site that checks the exit
+# status never runs a half-written or unverified file, and one that does not check it finds
+# nothing to run.
 # Those five words are the whole vocabulary of a source, and a row writes one of them on each of
 # its two sides, in `primary_source` and in `second_source`, so a line, a refusal and the
 # manifest say one word for one source. A call site takes the word from the row with
@@ -532,15 +536,16 @@ ci_tools_curl() {
 # primary's, the second source's, the ghcr blob's with the token request before it, and the
 # npm tarball's — say one thing about a local write error.
 # Exit 23 is curl's own, and the one cause a fetch can prove: this run could not write that
-# file, and the sentence says that and nothing of the bytes the address serves. The status is
-# that 23, which a caller reads to refuse rather than fetch again elsewhere.
+# file, and the sentence says that and nothing of any source or the bytes it serves. The status
+# is that 23, which a caller reads to refuse rather than fetch again elsewhere.
 # Every other exit keeps the sentence its caller wrote and returns 1: the bytes did not arrive,
-# and nothing here says why. The address is no argument of this function: the write error's
-# sentence is about this run and that file, and the caller wrote the other one already.
+# and nothing here says why. This function is handed no address, and neither sentence names
+# one: the write error's sentence is about this run and that file, and the caller wrote the
+# other one already.
 ci_tools__curl_report() {
   local status=$1 file=$2 otherwise=$3
   if [ "$status" -eq "$ci_tools__write_error" ]; then
-    printf 'this run could not write %s (curl exit %s), so nothing here is a statement about the bytes that address serves\n' \
+    printf 'this run could not write %s (curl exit %s), which says nothing about any source or the bytes it serves\n' \
       "$file" "$status"
     return "$ci_tools__write_error"
   fi
