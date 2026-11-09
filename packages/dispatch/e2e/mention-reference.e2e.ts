@@ -82,14 +82,21 @@ test("a picked party is the text's own reference: no mentions array, and the com
       .poll(() => getSentMessages())
       .toMatchObject([{ target_session: plannerSession.session_id }]);
 
-    // And every reader sees the party named, as a link into its own live conversation.
+    // And every reader sees the party named in the text itself, as a link into its own live
+    // conversation. Taken from the turn's body: the card also lists the delivery the mention
+    // made, whose own link names the same session.
     const turn = page
       .getByRole("list", { name: "Conversation turns" })
       .locator(":scope > li")
       .filter({ hasText: "please look." });
-    await expect(
-      turn.getByRole("link", { exact: true, name: plannerSession.title })
-    ).toHaveAttribute("href", `/agents/${plannerSession.session_id}/live`);
+    const named = turn
+      .locator("[data-markdown-preview], [data-markdown-body]")
+      .getByRole("link", { exact: true, name: plannerSession.title });
+    await expect(named).toHaveAttribute("href", `/agents/${plannerSession.session_id}/live`);
+    await expect(named).toHaveAttribute(
+      "data-dispatch-ref",
+      `dispatch://agent/${plannerSession.session_id}`
+    );
   } finally {
     await alice.close();
   }

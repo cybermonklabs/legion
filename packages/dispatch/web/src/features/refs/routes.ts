@@ -1050,7 +1050,11 @@ export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: str
 }
 
 export function buildIssuePath(route: IssueRoute): string {
-  const issue = `/issues/${route.key}`;
+  // Encoded although an issue key is `[A-Z][A-Z0-9]{1,9}-<digits>` and so already a path
+  // segment: a key that reached this builder out of a reference a person typed has been read
+  // by a pattern, never trusted, and encoding says so where the path is built rather than at
+  // each of the places one is written into an `href`.
+  const issue = `/issues/${encodeURIComponent(route.key)}`;
   if (route.kind === "issue") {
     return issue;
   }
@@ -1076,7 +1080,10 @@ export function buildIssuePath(route: IssueRoute): string {
 }
 
 export function buildProjectPath(route: ProjectRoute): string {
-  const project = `/projects/${route.project}`;
+  // Encoded for the reason `buildIssuePath` gives: a project key is `[A-Z][A-Z0-9]{1,9}`, so
+  // this is identity for every key the server makes, and the path carries no caller's
+  // characters whatever reached it.
+  const project = `/projects/${encodeURIComponent(route.project)}`;
   if (route.kind === "project") {
     return project;
   }

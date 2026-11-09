@@ -36,7 +36,6 @@ export function ThreadTitle({
   }`;
   const line = (
     <MarkdownPreview
-      className={text}
       fullTitle
       lines={1}
       markdown={thread.subject}
@@ -46,12 +45,13 @@ export function ThreadTitle({
   return (
     <>
       {href === undefined ? (
-        line
+        <span className={text}>{line}</span>
       ) : (
         // The title is the link the row's `o` follows, so a reference in the subject reads as a
-        // link inside it and is none.
+        // link inside it and is none. The link keeps the row's own classes, the weight that
+        // says the thread is unread among them, as it did when it drew the words itself.
         <ReferenceHostIs host="control">
-          <a className="min-w-0" data-inbox-owner="" href={href}>
+          <a className={text} data-inbox-owner="" href={href}>
             {line}
           </a>
         </ReferenceHostIs>

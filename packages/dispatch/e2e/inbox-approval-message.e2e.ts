@@ -289,12 +289,16 @@ test("an approval whose document cannot be read falls back to the card, which dr
     await expect.poll(() => refused).toBeGreaterThanOrEqual(3);
 
     // The card takes the document's place, and the block above it is not drawn: the card asks
-    // the whole question itself, so the question is on screen once.
+    // the whole question itself, so the question is in the pane once.
     const card = pane.getByTestId(`ask-${seed.askId}`);
     await expect(card).toBeVisible();
     await expect(pane.getByTestId("pane-approval-question")).toHaveCount(0);
     await expect(card.getByText(FALLBACK_MARK)).toHaveCount(1);
-    await expect(page.getByText(FALLBACK_MARK)).toHaveCount(1);
+    await expect(pane.getByText(FALLBACK_MARK)).toHaveCount(1);
+    // Twice on the page in all: the list row draws the same subject in its own line, which the
+    // one renderer flattens whole where the regular-expression stripper INFRA-1702 R6 deleted
+    // showed its first line alone.
+    await expect(page.getByText(FALLBACK_MARK)).toHaveCount(2);
   } finally {
     await alice.close();
   }

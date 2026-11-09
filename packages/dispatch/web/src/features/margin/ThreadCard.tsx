@@ -525,74 +525,71 @@ export function ThreadCard({
             )}
           </>
         ) : (
-          // The collapsed card is one button, which opens the thread: nothing inside it is a
-          // link of its own, and the thread it opens holds every reference as a link.
-          <ReferenceHostIs host="control">
-            <button
-              aria-expanded={false}
-              className={`block w-full text-left ${textPrimaryOnSurface}`}
-              onClick={() => {
-                if (
-                  pulseOrphanBlock &&
-                  thread.anchor?.orphaned &&
-                  typeof thread.anchor.block_id === "string"
-                ) {
-                  focusBlock(thread.anchor.block_id);
-                }
-                onToggle();
-              }}
-              type="button"
-            >
-              {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
+          // The collapsed card is a record a reader reads - it is the Conversation tab's whole
+          // default view of a turn - so its references are links, as they were before the host
+          // decided it (`links="live"` at both previews below). The button around it opens the
+          // thread; it is not the link-or-button shape R6 names, which is a reference drawn
+          // inside a control that navigates somewhere else.
+          <button
+            aria-expanded={false}
+            className={`block w-full text-left ${textPrimaryOnSurface}`}
+            onClick={() => {
+              if (
+                pulseOrphanBlock &&
+                thread.anchor?.orphaned &&
+                typeof thread.anchor.block_id === "string"
+              ) {
+                focusBlock(thread.anchor.block_id);
+              }
+              onToggle();
+            }}
+            type="button"
+          >
+            {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
                 wrapper keeps the preview's rows stacked. */}
-              <span className="block w-full">
-                {rootSuggestion !== null && root.anchor !== null ? (
-                  <>
-                    {root.anchor.orphaned ? (
-                      <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>
-                        Text changed.
-                      </p>
-                    ) : null}
-                    <span className="block space-y-1 font-mono text-xs">
-                      <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
-                    </span>
-                    {root.body === "Suggested replacement." ? null : (
-                      <MarkdownPreview
-                        className={`mt-2 text-xs ${textSecondaryOnSurface}`}
-                        lines={1}
-                        markdown={root.body}
-                        source={textSourceOf("comment", root.id)}
-                      />
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {root.anchor === null ? null : (
-                      <blockquote
-                        className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
-                      >
-                        {root.anchor.quote}
-                      </blockquote>
-                    )}
+            <span className="block w-full">
+              {rootSuggestion !== null && root.anchor !== null ? (
+                <>
+                  {root.anchor.orphaned ? (
+                    <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>
+                  ) : null}
+                  <span className="block space-y-1 font-mono text-xs">
+                    <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
+                  </span>
+                  {root.body === "Suggested replacement." ? null : (
                     <MarkdownPreview
-                      lines={2}
+                      className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                      lines={1}
                       markdown={root.body}
                       source={textSourceOf("comment", root.id)}
                     />
-                  </>
-                )}
-                {thread.replies.length === 0 ? null : (
-                  <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
-                    {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} ·
-                    last reply{" "}
-                    {thread.lastReplyAt === undefined ? null : (
-                      <Timestamp at={thread.lastReplyAt} />
-                    )}
-                  </p>
-                )}
-              </span>
-            </button>
-          </ReferenceHostIs>
+                  )}
+                </>
+              ) : (
+                <>
+                  {root.anchor === null ? null : (
+                    <blockquote
+                      className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
+                    >
+                      {root.anchor.quote}
+                    </blockquote>
+                  )}
+                  <MarkdownPreview
+                    lines={2}
+                    markdown={root.body}
+                    source={textSourceOf("comment", root.id)}
+                  />
+                </>
+              )}
+              {thread.replies.length === 0 ? null : (
+                <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
+                  {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} · last
+                  reply{" "}
+                  {thread.lastReplyAt === undefined ? null : <Timestamp at={thread.lastReplyAt} />}
+                </p>
+              )}
+            </span>
+          </button>
         )}
         {composerFirst ? null : replyComposer}
         {expanded ? null : renderDeliveries?.(root)}
