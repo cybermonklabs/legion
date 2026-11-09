@@ -56,6 +56,93 @@ export interface ShotSet<Seeded> {
   readonly allowEmpty?: readonly string[];
 }
 
+/** Every `<time>` the page shows when a shot is taken, written beside nothing the site serves:
+ *  `.work/time-elements/<set>-<id>.json`, which `docs-site.yaml` uploads with the shots.
+ *
+ *  The pages' images are made rather than committed, so the only way to ask whether two builds
+ *  render them the same is to compare two runs' images; and the dashboard draws its times as
+ *  relative labels from the clock over rows seeded at run time, so two runs of one commit differ
+ *  wherever a label crossed a rounding boundary between them. That is what this file tells apart
+ *  from a difference in shape at identical text, which is what a changed font looks like: a
+ *  region that moved is the clock only where it lies inside one of these boxes AND that
+ *  element's text differs between the two runs. Reading the pixels cannot show the second half.
+ *
+ *  Each box is given twice: `viewport`, as Playwright reports it in CSS pixels, and `image`, the
+ *  same box in the pixels of the PNG this shot wrote — scaled by the device pixel ratio and, for
+ *  a shot of one element, with that element's own origin taken off, so a reader compares it with
+ *  a difference box without doing arithmetic. */
+async function recordTimeElements(
+  page: Page,
+  element: Locator | undefined,
+  set: string,
+  id: string,
+  seededAt: string
+): Promise<void> {
+  const capturedAt = new Date().toISOString();
+  const origin = (await element?.boundingBox()) ?? { x: 0, y: 0 };
+  // One `evaluate`, and not a locator call per attribute, because this reading has to be a
+  // snapshot: the page goes on deriving its relative labels from the clock after the screenshot
+  // is written, so a scan spread over one round trip per attribute could record text the PNG
+  // does not hold, which is the one thing the file exists to be right about. An `evaluate` runs
+  // as a single JS task, so no text, box or node identity moves inside it.
+  const {
+    ratio,
+    pageText,
+    elements: times,
+  } = await page.evaluate(() => ({
+    ratio: window.devicePixelRatio,
+    // Every word the page showed, beside the time elements, because a `<time>` is not the only
+    // thing on these pages a run can render differently: a pair of runs of one commit was
+    // measured differing in five images whose every `<time>` carried the same text, three of
+    // them on pages holding no `<time>` at all (runs 42405578277 attempts 1 and 2). With this,
+    // a reader of two runs can say whether a difference is text that moved or the same text
+    // drawn differently, and only the second is what a changed font looks like.
+    pageText: document.body.innerText,
+    // `getBoundingClientRect()` answers a zero box for an element with no box at all, where
+    // Playwright's own `boundingBox()` answers null; `getClientRects()` is what tells the two
+    // apart, and a reader of this file needs that difference kept. `querySelectorAll` sees the
+    // main frame alone, which is every frame a locator saw here too.
+    elements: [...document.querySelectorAll("time")].map((el) => {
+      const box = el.getClientRects().length === 0 ? null : el.getBoundingClientRect();
+      return {
+        dateTime: el.getAttribute("datetime"),
+        title: el.getAttribute("title"),
+        text: el.innerText.trim(),
+        viewport: box && { x: box.x, y: box.y, width: box.width, height: box.height },
+      };
+    }),
+  }));
+  const elements = times.map((one) => ({
+    ...one,
+    image: one.viewport && {
+      x: Math.round((one.viewport.x - origin.x) * ratio),
+      y: Math.round((one.viewport.y - origin.y) * ratio),
+      width: Math.round(one.viewport.width * ratio),
+      height: Math.round(one.viewport.height * ratio),
+    },
+  }));
+  const out = join(WORK, "time-elements", `${set}-${id}.json`);
+  mkdirSync(dirname(out), { recursive: true });
+  await Bun.write(
+    out,
+    `${JSON.stringify(
+      {
+        set,
+        id,
+        seededAt,
+        capturedAt,
+        elapsedSeconds: (Date.parse(capturedAt) - Date.parse(seededAt)) / 1000,
+        devicePixelRatio: ratio,
+        origin,
+        elements,
+        pageText,
+      },
+      null,
+      2
+    )}\n`
+  );
+}
+
 /** Resets and seeds the harness, takes every shot in `set` (or those `only` names) in `browser`,
  *  and returns one line per shot that failed. A failed shot leaves what the page showed in
  *  `.work/`. Every shot's `prepare` runs, in order, whether or not the shot is taken. The reset
@@ -72,6 +159,10 @@ export async function runShotSet<Seeded>(
     () => `${set.set}: the reset and seed`,
     harness.reset().then(() => set.seed())
   );
+  // When this set's rows were written, which with each shot's own capture instant is the
+  // elapsed time every relative label on the page is a function of. Both go into the
+  // time-element file below, so the arithmetic reads one file and no log.
+  const seededAt = new Date().toISOString();
   const failures: string[] = [];
   for (const shot of set.shots) {
     let doing = "its prepare";
@@ -98,7 +189,9 @@ export async function runShotSet<Seeded>(
           ...(shot.allowEmpty ?? []),
         ]);
         const options = { animations: "disabled", caret: "hide", path: out } as const;
-        await (shot.element?.(page, seeded) ?? page).screenshot(options);
+        const element = shot.element?.(page, seeded);
+        await (element ?? page).screenshot(options);
+        await recordTimeElements(page, element, set.set, shot.id, seededAt);
         console.log(`${set.set}/${shot.id}: ${relative(REPO, out)}`);
       } catch (error) {
         doing = "keeping what its page showed";
