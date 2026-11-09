@@ -238,10 +238,7 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 // and keep the old body until the issue's next write, and the two builds of a rolling deploy
 // would give one validator for two different answers - which the dashboard's own page already
 // avoids by naming its build in its ETag (routes.pageTag). It is the commit the process was
-// handed at boot (Deps.BuildCommit, cmd/dispatch's `buildCommit`), not something read back out
-// of the binary: a build nothing stamped - every `go test` binary - names itself the empty
-// commit, which is one identity for every such build and is why a deploy is what this is for
-// rather than a cache key anything depends on being unique.
+// handed at boot (Deps.BuildCommit, which says what an unstamped build hashes).
 func (s *server) listETag(hash hash.Hash, trees bool) string {
 	_, _ = fmt.Fprintf(hash, "trees=%t\nparser=%d\nbuild=%q\n",
 		trees, pmdoc.DisplayTreeVersionNow(), s.deps.BuildCommit)

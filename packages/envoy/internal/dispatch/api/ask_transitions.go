@@ -388,8 +388,8 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	s.publish(ctx, events...)
 	// What the transition wrote: an answer's own words, and the reason a resolution recorded.
 	// Which of the two the ask holds is the transition's, so both are read from the ask it left,
-	// through the one walk of an ask's stored texts (texttrees.VisitAskTexts), so a text added
-	// to that walk is stored by this write too.
+	// through the one walk of an ask's stored texts (texttrees.VisitAskTexts), so an answer or
+	// resolution text added to that walk is stored by this write too.
 	written := texttrees.AppendAskTexts(nil, texttrees.AskContent{Answer: ask.Answer, Resolution: ask.Resolution})
 	s.storeDisplayTrees(ctx, ask.ID, written...)
 	return ask, nil
