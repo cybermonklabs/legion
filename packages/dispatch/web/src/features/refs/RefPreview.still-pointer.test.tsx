@@ -98,13 +98,20 @@ test("a reference the page moves in the moment the pointer reaches it still open
   const view = render(<Harness />);
   try {
     const reference = screen.getByRole("link", { name: "the reference" });
+    // The reader's arrival, at a position of its own: what this row is about is the host reading
+    // that movement, and user-event's hover sends neither the `clientX`/`clientY` the host tells a
+    // moved pointer by nor the `pointerType` its hover-intent gate reads.
     fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
+    // The hover itself, for the same `pointerType` the row above names.
     fireEvent.pointerOver(reference, { pointerType: "mouse" });
 
     spyOn(reference, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 24,
     } as DOMRect);
+    // The page, not the reader, taking the reference out from under the pointer: no pointer
+    // movement of user-event's can send a boundary event with its `relatedTarget` while the
+    // pointer stays where the reader left it, which is the whole state this row sets up.
     fireEvent.pointerOut(reference, { pointerType: "mouse", relatedTarget: document.body });
 
     act(() => {
