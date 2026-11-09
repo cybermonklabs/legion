@@ -359,12 +359,21 @@ func StreamCaptures(topic string) bool {
 // 238 reads from 01:53:37Z to 02:33:35Z gave 42 new ids, 63.1 an hour, 36 of them stamped inside
 // the window by their UUIDv7, 54.0 an hour, against 663 live; 136 reads from 04:23:40Z to
 // 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them stamped inside it, 75.0 an hour, against
-// 668 live. The population is live + 72 x rate: 4,551 to 5,206 by the first reading and 6,068 to
-// 6,447 by the second.
+// 668 live. That population was live + 72 x rate: 4,551 to 5,206 by the first reading and 6,068
+// to 6,447 by the second.
+//
+// What bounds the population today is not that threshold but two deletes, which it only backs up
+// (SessionConsumerInactiveThreshold): a deregistration deletes the session's consumer
+// (cmd/listener/api.go), and the listener's sweep deletes the consumer of every session the
+// session registry judges gone, at most 256 a pass, every ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL,
+// 5 minutes by default (cmd/listener/session_consumer_sweep.go). The population is therefore the
+// live sessions, plus those that ended in the last sweep interval - about 7 at the rates above -
+// plus the consumers a hub still holds from before the sweep existed, which drain 256 a pass. The
+// readings stand as what the cap was sized against, and are now an upper bound on what it covers.
 //
 // dispatch://INFRA-514's capacity gate asks for at least twice the larger of the stream's consumer
-// count and that population, so the gate's own number is 9,102 to 12,894 across the two readings.
-// 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times the population. The second
+// count and that measured population, so the gate's own number is 9,102 to 12,894 across the two
+// readings. 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times that population. The
 // reading sets it: at the fleet's growth between the two, a cap only 1.2 to 1.3 times the gate's
 // own number would need raising again within a release or two, and the cap costs nothing while it
 // is not reached, since the server allocates per live consumer. It costs what its consumers cost
