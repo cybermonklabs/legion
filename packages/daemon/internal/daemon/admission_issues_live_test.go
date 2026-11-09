@@ -89,10 +89,11 @@ type admissionIssuesArchitect struct {
 
 // TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive drives the four steps of the proof
 // against one booted daemon, in the order each step's state follows from the last: two live trees
-// holding no slot at all, the two released children holding both slots of a cap that counts
-// issues while their parent waits, a red head that returns the second tree's root to implementing
-// and leaves its start waiting for a slot the full cap has none of, and the parking of the two
-// children, which frees the slots that return and that parent's first phase then take.
+// holding no admission row at all, the two released children holding both rows of a cap that
+// counts issues while their parent waits, a red head that returns the second tree's root to
+// implementing and leaves its start waiting for a row the full cap has none of, and the
+// parking of the two children, which frees the rows that return and that parent's first phase
+// then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
@@ -157,13 +158,14 @@ func admissionIssuesGitHub(t *testing.T) string {
 }
 
 // seedTrees records the two trees as the daemon would hold them at the moment this proof begins,
-// and neither holds a slot: the root at admitted with its design gate approved, so its architect's
-// spec is written and its own first phase is the next thing due, and two children filed beneath it
-// in Dispatch that no release has run yet; and the second tree's root in accepting on its
-// reviewed, open pull request, whose base requires one check. Each tree's lifecycle is open under
-// the workflow, and each architect's claim is a launch a previous daemon began and never recorded,
-// which this boot relaunches — which is how the proof reaches a live architect session without the
-// operator's spawn, which would take the tree's lifecycle from the workflow.
+// and this fixture writes no admission row for either: the root at admitted with its design
+// gate approved, so its architect's spec is written and its own first phase is the next thing
+// due, and two children filed beneath it in Dispatch that no release has run yet; and the
+// second tree's root in accepting on its reviewed, open pull request, whose base requires one
+// check. Each tree's lifecycle is open under the workflow, and each architect's claim is a
+// launch a previous daemon began and never recorded, which this boot relaunches — which is how
+// the proof reaches a live architect session without the operator's spawn, which would take
+// the tree's lifecycle from the workflow.
 func (r *admissionIssuesLive) seedTrees() {
 	t := r.t
 	t.Helper()
@@ -182,8 +184,8 @@ func (r *admissionIssuesLive) seedTrees() {
 		}); err != nil {
 			return err
 		}
-		// EverOpened is what tells a root whose architect is still writing its spec, which holds a
-		// slot, from one whose gate has opened and whose children now work, which holds none.
+		// EverOpened is what tells a root whose architect is still writing its spec from one
+		// whose gate has opened and whose children now do the work.
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{
 			Issue: r.root, ArtifactID: "spec-" + r.root, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true,
 		}); err != nil {
@@ -404,7 +406,7 @@ func (r *admissionIssuesLive) liveTreesHoldNoSlot() {
 		t.Fatalf("admission.trees = %v, want the two live trees %s and %s", trees, r.root, r.accepting)
 	}
 	if holders := holders(state); len(holders) != 0 {
-		t.Fatalf("admission.active = %v, want no issue holding a slot: the gate of %s has opened and %s is accepting", holders, r.root, r.accepting)
+		t.Fatalf("admission.active = %v, want no issue holding a row: this fixture wrote none for %s or %s, and neither takes one where it stands", holders, r.root, r.accepting)
 	}
 	if want := []string{r.childOne, r.childTwo}; !slices.Equal(blockedBy(state, r.root), want) {
 		t.Fatalf("admission.blocked names %s waiting on %v, want its two filed children %v", r.root, blockedBy(state, r.root), want)

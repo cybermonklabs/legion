@@ -127,9 +127,9 @@ func superviseRequests(t *testing.T, pool *pgxpool.Pool, issue string) []record.
 	return got
 }
 
-// awaiting_person: its architect stays live while the root waits, the controller is told, and the
-// slot it gave back goes to the root waiting behind it.
-func TestARootWaitingOnAPersonReturnsItsSlot(t *testing.T) {
+// awaiting_person: its architect stays live while the root waits, the controller is told, and
+// the root keeps the row it took at its admission, so the root waiting behind it waits on.
+func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 	pool := migratedPool(t)
 	admission := awaitingRig(t, pool, 1)
 	tick(t, pool, admission, "tick-1")
@@ -141,7 +141,10 @@ func TestARootWaitingOnAPersonReturnsItsSlot(t *testing.T) {
 	if root.Awaiting.AnsweredAt != nil {
 		t.Fatalf("awaiting = %+v, want it unanswered", root.Awaiting)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-300", Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-208", Index: 0, AdmittedAt: fixedNow}})
+	if behind := issue(t, pool, "LEGION-300"); behind.Phase != phase.Admitted || behind.Status != "todo" {
+		t.Fatalf("the root waiting behind it = %+v, want it still waiting in line: the wait frees no row", behind)
+	}
 	var architectState string
 	if err := pool.QueryRow(context.Background(), `select state from claims where token = $1`, string(awaitingArchitect(t, "LEGION-208"))).Scan(&architectState); err != nil {
 		t.Fatalf("read the awaiting architect claim: %v", err)
@@ -167,24 +170,28 @@ func TestARootWaitingOnAPersonReturnsItsSlot(t *testing.T) {
 	}
 }
 
-// A person's answer puts the waiting root in the line,
-// among the issues whose work came back, oldest first, ahead of every root that never
-// ran, and the next free slot hands its architect the task in its live session, told what answered
-// it. The resume is a handout: what it handed back before is cleared, so only its next hand-back
-// starts the next wait.
-func TestAnAnsweredRootTakesTheNextSlotAndResumesItsArchitect(t *testing.T) {
+// A person's answer resumes the root in the pass that reads it, with the cap full. The root
+// stands in the line among the issues whose work came back, oldest first, holding the row it
+// took at its admission and kept through the wait, so its promotion takes no second row and
+// the cap holds it back for nothing. The resume is a handout: what it handed back before is
+// cleared, so only its next hand-back starts the next wait.
+func TestAnAnsweredRootResumesAtOnceAndKeepsItsRow(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool, 1)
+	// Two rows and two holders: the waiting root's own, and another issue's that fills the cap,
+	// so nothing below turns on a row the root's wait freed.
+	admission := awaitingRig(t, pool, 2)
+	seedSlotted(t, pool, "LEGION-400", "T")
 	tick(t, pool, admission, "tick-1")
 	if got := issue(t, pool, "LEGION-208").Phase; got != phase.AwaitingPerson {
 		t.Fatalf("phase = %s, want the root waiting", got)
 	}
-	// The root waiting behind it finishes, freeing the slot the answered root takes.
-	done := issue(t, pool, "LEGION-300")
-	done.Phase = phase.Done
-	putIssue(t, pool, done)
+	held := slots(t, pool)
+	if len(held) != 2 {
+		t.Fatalf("rows = %#v, want the cap's two, the waiting root holding one of them", held)
+	}
+
 	answerWait(t, pool, "LEGION-208", record.AnsweredByAsk, "ask-q")
-	assertWaiting(t, pool, []string{"LEGION-208"})
+	assertWaiting(t, pool, []string{"LEGION-208", "LEGION-300"})
 
 	tick(t, pool, admission, "tick-2")
 	root := issue(t, pool, "LEGION-208")
@@ -197,7 +204,9 @@ func TestAnAnsweredRootTakesTheNextSlotAndResumesItsArchitect(t *testing.T) {
 	if root.DeclaredSeq != 0 || root.HandoutSeq < 5 {
 		t.Fatalf("handout_seq = %d, declared_seq = %d, want the resume recorded as a handout", root.HandoutSeq, root.DeclaredSeq)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-208", Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, held)
+	// The root resumed, so the line no longer names it; LEGION-300 still waits for a row.
+	assertWaiting(t, pool, []string{"LEGION-300"})
 	requests := superviseRequests(t, pool, "LEGION-208")
 	if len(requests) != 1 || requests[0].Op != "start" || requests[0].Role != claim.RoleArchitect {
 		t.Fatalf("supervise requests = %+v, want the live architect's resume task", requests)

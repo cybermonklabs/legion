@@ -2,6 +2,8 @@ package admit
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,12 +17,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// slotTree is the running tree every slot-rule case stands in: its root LEGION-1, its lifecycle
-// open under the workflow, and its design gate registered. approved opens that gate, which is
-// what takes the slot away from the root itself, and leaves the root in accepting, where a
-// parent whose own phases are behind it waits: at admitted with an open gate the root's own
-// first phase can start, and a pass with a slot to spare would start it beside the member each
-// case is about.
+// slotTree is the running tree every row-rule case stands in: its root LEGION-1, its lifecycle
+// open under the workflow, and its design gate registered. approved opens that gate and leaves
+// the root in accepting, where a parent whose own phases are behind it waits. It writes no row
+// for the root: a caller that wants the root as the daemon leaves it — holding the row it took
+// at its admission — takes one with takeSlot.
 func slotTree(t *testing.T, pool *pgxpool.Pool, approved bool) {
 	t.Helper()
 	stands, status := phase.Admitted, "in_progress"
@@ -154,187 +155,194 @@ func dispatchStatuses(t *testing.T, pool *pgxpool.Pool) map[string]string {
 	return statuses
 }
 
-// A1. One slot rule per state, each read by one admission pass over a tree that runs.
-//
-// An issue in a state the spec's first list names — planning, implementing, testing, reviewing,
-// retro, merging with no READY the gate holds, and a root at admitted whose gate has never
-// opened — holds a slot as soon as one is free. An issue in a state of the second list — merging
-// with a READY the closed gate holds, a child at admitted, a root at admitted after its gate
-// opened, accepting, awaiting_merge, held, awaiting_person and done — holds none after one pass,
-// and neither does any issue of a tree that lingers.
-//
-// The slot is accounting and nothing else: the pass suspends no claim, moves no phase and writes
-// no Dispatch status, which the three unchanged reads below pin.
-//
-// Each state of the second list is read under a cap of none, which is the release rule on its
-// own: with a slot to spare the same pass would go on to start whatever of that tree can start
-// next, and the question here is which state holds a slot, not what the line does afterwards.
-func TestSlotPerState(t *testing.T) {
-	const member = "LEGION-2"
-	for _, tc := range []struct {
-		name  string
-		seed  func(t *testing.T, pool *pgxpool.Pool)
-		issue string
-		// wants says the issue must hold a slot after the pass. Each case starts in the state it
-		// names, and the pass is the whole of the rule.
-		wants bool
-	}{
-		{name: "planning", issue: member, wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Planning, "in_progress", nil)
-			oweStart(t, pool, member, phase.Planning)
-		}},
-		{name: "implementing", issue: member, wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Implementing, "in_progress", nil)
-			oweStart(t, pool, member, phase.Implementing)
-		}},
-		{name: "testing", issue: member, wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Testing, "testing", nil)
-			oweStart(t, pool, member, phase.Testing)
-		}},
-		{name: "reviewing", issue: member, wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Reviewing, "needs_review", nil)
-			oweStart(t, pool, member, phase.Reviewing)
-		}},
-		{name: "retro", issue: member, wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Retro, "retro", nil)
-			oweStart(t, pool, member, phase.Retro)
-		}},
-		{name: "merging with no pending READY", issue: member, wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Merging, "retro", nil)
-			oweStart(t, pool, member, phase.Merging)
-		}},
-		{name: "a root at admitted whose gate never opened", issue: "LEGION-9", wants: true, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			seedWaiting(t, pool, "LEGION-9", "A")
-		}},
-		{name: "merging with a READY the gate holds", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Merging, "retro", new(2))
-			takeSlot(t, pool, member)
-		}},
-		{name: "a child at admitted", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, false)
-			slotMember(t, pool, member, phase.Admitted, "todo", nil)
-			takeSlot(t, pool, member)
-		}},
-		{name: "a root at admitted after its gate opened", issue: "LEGION-1", seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			root := issue(t, pool, "LEGION-1")
-			root.Phase, root.Status = phase.Admitted, "in_progress"
-			putIssue(t, pool, root)
-			takeSlot(t, pool, "LEGION-1")
-		}},
-		{name: "accepting", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Accepting, "needs_review", nil)
-			takeSlot(t, pool, member)
-		}},
-		{name: "awaiting_merge", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.AwaitingMerge, "retro", nil)
-			takeSlot(t, pool, member)
-		}},
-		{name: "held", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Held, "in_progress", nil)
-			takeSlot(t, pool, member)
-		}},
-		{name: "done", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Done, "done", nil)
-			takeSlot(t, pool, member)
-		}},
-		{name: "an issue of a lingering tree", issue: member, seed: func(t *testing.T, pool *pgxpool.Pool) {
-			slotTree(t, pool, true)
-			slotMember(t, pool, member, phase.Implementing, "in_progress", nil)
-			takeSlot(t, pool, member)
-			root := issue(t, pool, "LEGION-1")
-			until := fixedNow.Add(time.Hour)
-			root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until
-			putIssue(t, pool, root)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			// A state that needs a slot is read with slots to spare; one that needs none is
-			// read with no cap at all, so the pass releases and promotes nothing.
-			cap := 0
-			if tc.wants {
-				cap = 4
-			}
-			admission := quiet(t, cap)
-			tc.seed(t, pool)
-			phases := map[string]phase.Phase{}
-			for _, key := range []string{"LEGION-1", member, "LEGION-9"} {
-				if got := maybeIssue(t, pool, key); got != nil {
-					phases[key] = got.Phase
-				}
-			}
-			claims, statuses := claimStates(t, pool), dispatchStatuses(t, pool)
+// issuePhases is the phase of every issue in the store, by key.
+func issuePhases(t *testing.T, pool *pgxpool.Pool) map[string]phase.Phase {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select key, phase from issues`)
+	if err != nil {
+		t.Fatalf("list issues: %v", err)
+	}
+	defer rows.Close()
+	phases := map[string]phase.Phase{}
+	for rows.Next() {
+		var key string
+		var stands phase.Phase
+		if err := rows.Scan(&key, &stands); err != nil {
+			t.Fatalf("scan issue: %v", err)
+		}
+		phases[key] = stands
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate issues: %v", err)
+	}
+	return phases
+}
 
-			applyFact(t, pool, admission, "slot-rule", intake.ControllerTick{})
-
-			if held := holdsSlot(t, pool, tc.issue); held != tc.wants {
-				t.Fatalf("%s holds a slot = %t, want %t; slots = %#v", tc.issue, held, tc.wants, slots(t, pool))
-			}
-			for key, stood := range phases {
-				if got := issue(t, pool, key); got.Phase != stood {
-					t.Fatalf("%s moved from %s to %s, want the slot rule to move no phase", key, stood, got.Phase)
-				}
-			}
-			for token, state := range claimStates(t, pool) {
-				if state != claims[token] {
-					t.Fatalf("claim %s = %s, was %s; want the slot rule to suspend nothing", token, state, claims[token])
-				}
-			}
-			for key, status := range dispatchStatuses(t, pool) {
-				if status != statuses[key] {
-					t.Fatalf("the mirror row of %s = %s, was %s; want the slot rule to write no Dispatch status", key, status, statuses[key])
-				}
-			}
-		})
+// assertRowHolders compares the keys holding one of the project's rows, in key order, with want.
+func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
+	t.Helper()
+	var got []string
+	for _, slot := range slots(t, pool) {
+		got = append(got, slot.Issue)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the issues holding a row = %#v, want %#v", got, want)
 	}
 }
 
-// A1's awaiting_person case, which only a root reaches: a root enters that wait while it holds a
-// slot (workflow's decideAwait), and the pass that records the wait takes the slot back.
-func TestARootWaitingOnAPersonHoldsNoSlot(t *testing.T) {
+// A1. One row rule per phase, read by admission passes over trees that run.
+//
+// The daemon creates a slots row for an issue when it starts it, and deletes that row in four
+// cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox, triage or
+// done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or its
+// phase is awaiting_merge. No other phase deletes a row, so an issue keeps its place against
+// the cap while it waits — in awaiting_person, in accepting, in held, in merging while a closed
+// design gate holds its merge request, and as a root standing at admitted whose design gate has
+// opened.
+//
+// The first reading gives one started issue each of the phases that keep a row and reads the
+// rows one admission pass leaves. The one exception the rule keeps is read beside them: a
+// started issue in awaiting_merge, whose row goes on that same pass. The second reading makes
+// the three deletions that are left — a phase of done while Dispatch still shows the issue
+// in_progress, a Dispatch status of backlog while the phase is still in the workflow, and a
+// tree whose root closed — and reads that those three rows go and no others. A child the daemon
+// has not started holds no row in either reading.
+//
+// A row is accounting and nothing else: the pass suspends no claim, moves no phase and writes
+// no Dispatch status, which the three unchanged reads around each pass pin.
+func TestSlotPerPhase(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 2)
-	putIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-		Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.AwaitingPerson, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
-		Rank: "A", HandedOver: true, Awaiting: &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 9}}})
-	seedLifecycle(t, pool, "LEGION-1")
+	// A cap far above the rows seeded here, so the cap holds nothing back: each issue below
+	// keeps or loses its row because the rule says so, and the two issues that start nothing
+	// are held where they stand by a reason of their own.
+	admission := quiet(t, 16)
+
+	// Tree 1: its root at admitted with its design gate opened, one member in each phase that
+	// keeps a row, and one in awaiting_merge.
+	slotTree(t, pool, true)
+	root := issue(t, pool, "LEGION-1")
+	root.Phase, root.Status, root.DispatchStatus = phase.Admitted, "in_progress", "in_progress"
+	putIssue(t, pool, root)
 	takeSlot(t, pool, "LEGION-1")
+	// The root's own first phase could start on this very pass — its gate is open and it holds
+	// its row, so no cap can hold it back — which would move it out of the phase this case is
+	// about. An open Dispatch child holds it at admitted instead (record.LineFacts.ChildWaits),
+	// and the state names it under admission.blocked, read below beside its row.
+	seedMirror(t, pool, "LEGION-1", "in_progress")
+	seedMirrorChild(t, pool, "LEGION-99", "backlog", "LEGION-1")
 
-	applyFact(t, pool, admission, "tick", intake.ControllerTick{})
+	for _, member := range []struct {
+		key    string
+		stands phase.Phase
+		status string
+		ready  *int
+	}{
+		{key: "LEGION-2", stands: phase.Planning, status: "in_progress"},
+		{key: "LEGION-3", stands: phase.Implementing, status: "in_progress"},
+		{key: "LEGION-4", stands: phase.Testing, status: "testing"},
+		{key: "LEGION-5", stands: phase.Reviewing, status: "needs_review"},
+		{key: "LEGION-6", stands: phase.Accepting, status: "needs_review"},
+		{key: "LEGION-7", stands: phase.Retro, status: "retro"},
+		// A merger that has built its merge request and waits for a closed design gate to
+		// release it (record.ReadyPending).
+		{key: "LEGION-8", stands: phase.Merging, status: "retro", ready: new(2)},
+		{key: "LEGION-9", stands: phase.Held, status: "in_progress"},
+		// The one exception: this row goes on the pass that keeps every other row here.
+		{key: "LEGION-10", stands: phase.AwaitingMerge, status: "retro"},
+	} {
+		slotMember(t, pool, member.key, member.stands, member.status, member.ready)
+		takeSlot(t, pool, member.key)
+	}
 
-	if holdsSlot(t, pool, "LEGION-1") {
-		t.Fatalf("slots = %#v, want none: a root waiting on a person holds no slot", slots(t, pool))
+	// Tree 2: a root at work of its own, whose close ends the whole tree in the second reading.
+	putIssue(t, pool, record.Issue{Key: "LEGION-20", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: "LEGION-20", Tree: "LEGION-20", Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "C", HandedOver: true})
+	seedLifecycle(t, pool, "LEGION-20")
+	takeSlot(t, pool, "LEGION-20")
+
+	// Tree 3: a root waiting on a person, which keeps its row, and a child of it the daemon has
+	// never started. The root's wait is what holds that child where it stands, so its first
+	// phase does not start and it takes no row.
+	putIssue(t, pool, record.Issue{Key: "LEGION-30", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: "LEGION-30", Tree: "LEGION-30", Phase: phase.AwaitingPerson, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "D", HandedOver: true,
+		Awaiting: &record.Awaiting{Ask: "ask-30", Since: record.EventMark{Seq: 9}}})
+	seedLifecycle(t, pool, "LEGION-30")
+	takeSlot(t, pool, "LEGION-30")
+	unstarted := "LEGION-30"
+	putIssue(t, pool, record.Issue{Key: "LEGION-31", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: "LEGION-31", Tree: "LEGION-30", Parent: &unstarted, Phase: phase.Admitted, Generation: 1,
+		Status: "todo", DispatchStatus: "todo", Rank: "D1", LastDispatchSeq: 2})
+
+	// pass runs one admission pass and reads, around it, the three things a row never moves.
+	pass := func(stage, eventID string) {
+		t.Helper()
+		phases, claims, statuses := issuePhases(t, pool), claimStates(t, pool), dispatchStatuses(t, pool)
+
+		applyFact(t, pool, admission, eventID, intake.ControllerTick{})
+
+		for key, stood := range issuePhases(t, pool) {
+			if stood != phases[key] {
+				t.Fatalf("%s moved from %s to %s at %s, want the row rule to move no phase", key, phases[key], stood, stage)
+			}
+		}
+		for token, state := range claimStates(t, pool) {
+			if state != claims[token] {
+				t.Fatalf("claim %s = %s at %s, was %s; want the row rule to suspend nothing", token, state, stage, claims[token])
+			}
+		}
+		for key, status := range dispatchStatuses(t, pool) {
+			if status != statuses[key] {
+				t.Fatalf("the mirror row of %s = %s at %s, was %s; want the row rule to write no Dispatch status",
+					key, status, stage, statuses[key])
+			}
+		}
 	}
-	if got := issue(t, pool, "LEGION-1"); got.Phase != phase.AwaitingPerson || got.Answered() {
-		t.Fatalf("root = %#v, want it still waiting on its person", got)
+
+	pass("the first reading", "rows-per-phase")
+
+	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7",
+		"LEGION-8", "LEGION-9", "LEGION-20", "LEGION-30")
+	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
+		t.Fatalf("blocked = %#v, want %#v: the root keeps its row at admitted because an open Dispatch child holds it there",
+			blockedNow(t, pool, admission), want)
 	}
+
+	// The three deletions that are left, made together and read by one pass.
+	retro := issue(t, pool, "LEGION-7")
+	retro.Phase = phase.Done
+	putIssue(t, pool, retro)
+	parked := issue(t, pool, "LEGION-4")
+	parked.Status, parked.DispatchStatus = "backlog", "backlog"
+	putIssue(t, pool, parked)
+	closed := issue(t, pool, "LEGION-20")
+	lingers := fixedNow.Add(time.Hour)
+	closed.Phase, closed.Status, closed.DispatchStatus, closed.LingerUntil = phase.Done, "done", "done", &lingers
+	putIssue(t, pool, closed)
+
+	pass("the second reading", "rows-after-the-three-deletions")
+
+	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-5", "LEGION-6", "LEGION-8", "LEGION-9", "LEGION-30")
 }
 
-// A2. The cap counts issues, so one tree holds as many slots as it has issues at work: three
-// while its three children work, and four once the root works too.
+// A2. The cap counts issues, so one tree holds one row for each issue the daemon has started:
+// its root's own, taken at its admission and kept through accepting while its children work,
+// and one more for each child as its first phase starts.
 //
-// The root stands in accepting while its children work, which is where a parent whose own
-// phases are behind it waits: it holds no slot there, so the three the tree holds are its
-// children's, one each at its first phase. The root's own implementing then takes a fourth.
-func TestATreeHoldsOneSlotForEachIssueAtWork(t *testing.T) {
+// The root's row is what then lets its own work begin under a cap the tree has filled: an issue
+// holding a row starts its next phase whatever admission_cap says, so the root's implementing
+// starts on the row it has held all along and the tree still holds four.
+func TestATreeHoldsOneRowForEachIssueTheDaemonHasStarted(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 8)
+	admission := quiet(t, 4)
 	slotTree(t, pool, true)
 	root := issue(t, pool, "LEGION-1")
 	root.Phase, root.Status = phase.Accepting, "needs_review"
 	putIssue(t, pool, root)
+	takeSlot(t, pool, "LEGION-1")
 	children := []string{"LEGION-2", "LEGION-3", "LEGION-4"}
 	for i, child := range children {
 		parent := "LEGION-1"
@@ -347,18 +355,17 @@ func TestATreeHoldsOneSlotForEachIssueAtWork(t *testing.T) {
 
 	for _, child := range children {
 		if got := issue(t, pool, child); got.Phase != phase.Planning {
-			t.Fatalf("%s = %#v, want it planning at its own slot", child, got)
+			t.Fatalf("%s = %#v, want it planning on a row of its own", child, got)
 		}
 	}
-	if got := slots(t, pool); len(got) != 3 {
-		t.Fatalf("slots = %#v, want three: one for each child at work, and none for the root, which waits", got)
-	}
-	if holdsSlot(t, pool, "LEGION-1") {
-		t.Fatalf("slots = %#v, want none for the root: it waits in accepting while its children work", slots(t, pool))
+	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4")
+	rootRow := slots(t, pool)[0]
+	if rootRow.Issue != "LEGION-1" {
+		t.Fatalf("the first row = %#v, want the root's, taken at its admission before its children were started", rootRow)
 	}
 
-	// The root's own first phase begins: a fourth issue of the tree is at work, so the tree
-	// holds a fourth slot.
+	// The root's own first phase begins with the cap full. It holds a row already, so it takes
+	// no second one and the cap holds its start back for nothing.
 	root = issue(t, pool, "LEGION-1")
 	root.Phase, root.Status = phase.Implementing, "in_progress"
 	putIssue(t, pool, root)
@@ -366,10 +373,18 @@ func TestATreeHoldsOneSlotForEachIssueAtWork(t *testing.T) {
 
 	applyFact(t, pool, admission, "root-implementing", intake.ControllerTick{})
 
-	if got := slots(t, pool); len(got) != 4 {
-		t.Fatalf("slots = %#v, want four: the three children and the root", got)
+	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4")
+	if got := slots(t, pool)[0]; got != rootRow {
+		t.Fatalf("the root's row = %#v, want the same row it held in accepting, %#v", got, rootRow)
 	}
-	if !holdsSlot(t, pool, "LEGION-1") {
-		t.Fatalf("slots = %#v, want one for the root now that it works", slots(t, pool))
+	delivered := false
+	for _, start := range startsOf(t, pool, "LEGION-1") {
+		if start.task != "" && start.claimable {
+			delivered = true
+		}
+	}
+	if !delivered {
+		t.Fatalf("the root's starts = %#v, want its implementer's task claimable on the row the root already held",
+			startsOf(t, pool, "LEGION-1"))
 	}
 }

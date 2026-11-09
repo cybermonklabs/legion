@@ -80,7 +80,7 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 			waiting.Awaiting.GateVersion != 2 {
 			t.Fatalf("the root = %#v, want it waiting on the decisions document at version 2", waiting.Awaiting)
 		}
-		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
+		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
 		told := false
 		for _, effect := range effects(t, pool) {
 			if payload, ok := effect.payload.(record.ControllerNotice); ok && effect.issue == "LEGION-100" && payload.Kind == record.AwaitingPersonNotice {
@@ -175,7 +175,7 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 		waiting.Awaiting.GateVersion != 3 {
 		t.Fatalf("the root = %#v, want it waiting on its primary document at version 3", waiting.Awaiting)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
 }
 
 // The approval a re-admission keeps for the next architect's start carries the step it is of, so

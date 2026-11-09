@@ -253,11 +253,13 @@ func preReleaseStore(t *testing.T) *store.Store {
 // keeps working: the migration grants each of them the slot the new cap will ask it to hold,
 // even where that puts the project above its cap, so no turn is stopped by a deploy.
 //
-// What it must not grant is as much of the rule as what it must: an issue of a tree that lingers
-// has left the workflow and is started by nothing but its re-admission, and an issue waiting on
-// its gate or on its merge is waiting rather than working. The cap then does the draining: the
-// surplus is above it, so the root that never ran takes nothing while the count stands at or
-// above the cap, and takes a slot at the first pass where the count is under it.
+// What it must not grant is as much of the rule as what it must: an issue of a tree that
+// lingers has left the workflow and is started by nothing but its re-admission, and an issue
+// waiting only for its merge keeps no row. The root that waits in accepting while its children
+// work keeps the row it already held, since an issue keeps its row from the moment the daemon
+// started it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so
+// the root that never ran takes nothing while the count stands at or above the cap, and takes
+// a row at the first pass where the count is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	ctx := context.Background()
 	st := preReleaseStore(t)
@@ -328,8 +330,8 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 		t.Fatalf("apply the first boot on the release: %v", err)
 	}
 	working := slotHolders(t, pool)
-	if want := []string{spec, building, testing}; !reflect.DeepEqual(working, want) {
-		t.Fatalf("the slots after the first boot = %v, want %v: the spec's root and the two children at work, above the cap of 2",
+	if want := []string{spec, running, building, testing}; !reflect.DeepEqual(working, want) {
+		t.Fatalf("the slots after the first boot = %v, want %v: the spec's root, the root waiting in accepting and the two children at work, above the cap of 2",
 			working, want)
 	}
 	if len(working) <= 2 {
@@ -339,18 +341,27 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 		t.Fatalf("admission.waiting after the first boot = %v, want the root that never ran", waiting)
 	}
 
-	// The count falls to the cap as the first child finishes, and nothing new starts there: the
-	// loop admits while the holders are under the cap, never at it.
+	// The count falls as each issue finishes, and nothing new starts while it stands at the cap:
+	// the loop admits while the holders are under the cap, never at it.
 	finish(t, pool, records, building)
-	tick(t, pool, handlers, "tick-at-the-cap")
-	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, testing}) {
-		t.Fatalf("the slots at the cap = %v, want the two still at work and nothing new started", holders)
+	tick(t, pool, handlers, "tick-above-the-cap")
+	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, running, testing}) {
+		t.Fatalf("the slots after the first finish = %v, want the three still started and nothing new", holders)
 	}
 
 	finish(t, pool, records, testing)
+	tick(t, pool, handlers, "tick-at-the-cap")
+	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, running}) {
+		t.Fatalf("the slots at the cap = %v, want the two still started and nothing new started", holders)
+	}
+
+	// The root that waited in accepting now waits only for its merge, which is the one phase
+	// whose row the rule deletes: the count falls under the cap and the root that never ran
+	// takes the row it freed.
+	finish(t, pool, records, running)
 	tick(t, pool, handlers, "tick-under-the-cap")
 	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, queued}) {
-		t.Fatalf("the slots under the cap = %v, want the root that never ran admitted into the slot the drain freed", holders)
+		t.Fatalf("the slots under the cap = %v, want the root that never ran admitted into the row the drain freed", holders)
 	}
 }
 

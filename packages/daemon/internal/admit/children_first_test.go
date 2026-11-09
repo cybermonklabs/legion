@@ -89,12 +89,12 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 }
 
 // A5. A root whose gate opens with two Dispatch children in backlog does its own work after
-// theirs: it starts no phase while either is open, it holds no slot while it waits, its
-// architect is told once, admission.blocked names it with both children, and it starts planning
-// at the next free slot once both have left the workflow. The children are released in the
-// architect's design-approved turn, after the gate opened, which is exactly the window the
-// tree's own members cannot answer for — neither child is a member of the tree until it is
-// released.
+// theirs: it starts no phase while either is open, it keeps the row it took at its admission
+// while it waits, its architect is told once, admission.blocked names it with both children,
+// and it starts planning on that row once both have left the workflow. The children are
+// released in the architect's design-approved turn, after the gate opened, which is exactly
+// the window the tree's own members cannot answer for — neither child is a member of the tree
+// until it is released.
 func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -107,7 +107,7 @@ func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	if root.Phase != phase.Admitted {
 		t.Fatalf("the root at its gate's opening = %s, want it still at admitted while its children are open", root.Phase)
 	}
-	assertSlots(t, pool, nil)
+	assertSlots(t, pool, []record.Slot{{Issue: cfRoot, Index: 0, AdmittedAt: fixedNow}})
 	told := childrenFirstNotices(t, pool, cfRoot)
 	if len(told) != 1 {
 		t.Fatalf("children-first notices = %+v, want exactly one", told)
@@ -165,7 +165,9 @@ func TestAParentBelowTheRootWaitsForItsOwnChild(t *testing.T) {
 	if got := issue(t, pool, cfFirst); got.Phase != phase.Admitted {
 		t.Fatalf("the released child with an open child of its own = %#v, want it held at admitted", got)
 	}
-	assertSlots(t, pool, nil)
+	// The root's own row, taken at its admission and kept while it waits; the child it released
+	// holds none, its first phase having still to start.
+	assertSlots(t, pool, []record.Slot{{Issue: cfRoot, Index: 0, AdmittedAt: fixedNow}})
 	told := childrenFirstNotices(t, pool, cfFirst)
 	if len(told) != 1 || !strings.Contains(told[0].Reason, grandchild+" (backlog)") {
 		t.Fatalf("the child's children-first notices = %+v, want one naming %s", told, grandchild)

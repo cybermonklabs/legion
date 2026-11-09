@@ -103,9 +103,9 @@ func owedStarts(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart 
 
 // seedTreeAndMember records the tree every fixture of this file stands in: root, and the one
 // member of it, key, standing in stands at generation. The root waits in accepting while its
-// member works, so the member's is the one slot of the tree and nothing of the root competes for
-// another. A root that lingers stands in done instead, with its deadline still ahead of it, which
-// is how a parked tree reads.
+// member works and this fixture gives it no row of its own, so the member's is the one row of
+// the tree and nothing of the root competes for another. A root that lingers stands in done
+// instead, with its deadline still ahead of it, which is how a parked tree reads.
 //
 // What each caller adds after it is its own: seedSlotRepairRow takes the member's slot and writes
 // the role's phases row, the task its claim holds and the start it already has; seedOwedRepairRow
@@ -276,11 +276,13 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // retired claim's own slot is read by TestARetiredWorkersSlotIsNotRepaired, beside what the stop
 // costs.
 //
-// Each row reads its slot as well, because two of the four it passes over are passed over by the
-// pass before the repair ever reads them: no slot of an issue in accepting, and none of a member
-// of a lingering tree, survives the pass's own release of the slots an issue no longer needs
-// (record.NeedsSlot). The repair's two guards for them stand behind that release, so what those
-// two rows lock is the pass's answer rather than the guard.
+// Each row reads its slot as well, because one of the four it passes over is passed over by the
+// pass before the repair ever reads it: no slot of a member of a lingering tree survives the
+// pass's own release of the slots an issue no longer needs (record.NeedsSlot). That row's guard
+// stands behind the release, so what it locks is the pass's answer rather than the guard. The
+// architect's row is the repair's own skip and nothing else: an issue in accepting keeps its
+// row now (record.KeepsSlot), so the release leaves it standing and only the role test answers
+// it.
 //
 // The repair of a start that can no longer act (finishFencedStarts) ends an owed start row whose
 // worker was stopped, because the row would otherwise start that worker again the moment
@@ -315,8 +317,8 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				why: "this row changes suspended_by alone, from the daemon to the idle rule's release of the pod: the wake gives the role the one task that says its pod came back, so a start here would be a second task for work it already holds"},
 			{name: "an architect's role", root: "LEGION-560", key: "LEGION-561", stands: phase.Accepting,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
-				taskGeneration: 1, confirmed: true, slotGivenBack: true,
-				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The pass answers before the repair reads the slots — an issue in accepting is at work for nothing, so the pass gives its slot back first (record.NeedsSlot) — so what this row reads is the pass's whole answer rather than the repair's own skip of the role"},
+				taskGeneration: 1, confirmed: true,
+				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member keeps its row in accepting (record.KeepsSlot), so the release leaves the row standing and the repair's own skip of the role is the whole answer"},
 			{name: "a slot whose root lingers", root: "LEGION-570", key: "LEGION-571", stands: phase.Testing,
 				generation: 1, lingers: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,
@@ -348,7 +350,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				if held := holdsSlot(t, pool, row.key); held == row.slotGivenBack {
-					t.Fatalf("after the pass %s holds one of the cap's slots = %t, want %t: a slot stays with an issue while a worker of it has work and the pass gives it back when none has (record.NeedsSlot), which the repair neither does nor undoes: %s",
+					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue keeps its row from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
 						row.key, held, !row.slotGivenBack, row.why)
 				}
 				got := startsOf(t, pool, row.key)

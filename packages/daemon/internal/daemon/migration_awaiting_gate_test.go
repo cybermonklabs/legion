@@ -17,11 +17,11 @@ import (
 // that reads every row whose tree is this gate's issue reads the root itself and marks the gate
 // as having opened, though no version was ever approved.
 //
-// What that costs: a changes request answers the root, slotFor reads !EverOpened and gives it no
-// slot, record.AtWork is false for it too, so the release of slots takes back the one it holds
-// and the boot's catch-up passes over it — the architect rewrites the spec with no slot and
-// outside the cap. On a deployment that is every root waiting on its first approval at the
-// deploy.
+// What that costs: record.AtWork is false for a root whose gate has ever opened, so the boot's
+// catch-up passes over it and no hand-back of its architect can start a wait on a person for it
+// (record.CanWaitOnPerson) — the architect rewrites the spec with nobody recorded as waiting on
+// the person, and the waiting line reads the root's own first phase as the next thing to start.
+// On a deployment that is every root waiting on its first approval at the deploy.
 //
 // So the member test leaves the root's own row out, and only a member below it says the gate
 // opened.
@@ -33,7 +33,7 @@ func TestTheMigrationLeavesTheGateOfARootWaitingOnItsFirstApprovalUnopened(t *te
 	waiting := bootProject + "-1"
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		// The root as the pre-release daemon left it: version 1 of its spec with a person, the
-		// wait recorded, and the slot it holds while that wait lasts.
+		// wait recorded, and the row it keeps while that wait lasts.
 		root := bootIssue(waiting, waiting, "in_progress", phase.AwaitingPerson)
 		root.Awaiting = &record.Awaiting{GateVersion: 1, Artifact: "spec",
 			Since: record.EventMark{Seq: 3, At: time.Now().UTC()}}

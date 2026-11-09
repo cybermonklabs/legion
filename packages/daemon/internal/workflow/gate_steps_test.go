@@ -378,9 +378,9 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 
 	// The step the root hands to a person is the first gated step that is closed, and it moves on
 	// as each step is approved: with one step approved and the other's approval request still with
-	// the person, the root enters the wait once and gives its admission slot back, and the pass
-	// after it finds nothing more to do. No member of this tree is in a phase, because a member
-	// that is needs the slot and keeps the root where it stands.
+	// the person, the root enters the wait once, keeping the row it took at its admission, and
+	// the pass after it finds nothing more to do. No member of this tree is in a phase, because a
+	// member that is keeps the root where it stands.
 	for _, tc := range orders {
 		t.Run(tc.name+", the wait on the person", func(t *testing.T) {
 			pool := migratedPool(t)
@@ -398,7 +398,7 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 			apply("approve-one-step", stepApproval(gatedRoot, tc.approvedDoc, tc.approvedVersion, record.EventMark{Seq: 7}))
 
 			if entered := reconcileAwaiting(t, pool, engine); len(entered) != 1 || entered[0] != gatedRoot {
-				t.Fatalf("the pass returned %v, want the root alone, whose slot admission releases", entered)
+				t.Fatalf("the pass returned %v, want the root alone, which hands its work to the person", entered)
 			}
 			waiting := recordedRoot(t, pool)
 			if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != tc.closedDoc ||
@@ -406,8 +406,8 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 				t.Fatalf("the root = %#v, want it waiting unanswered on %s version %d", waiting.Awaiting, tc.closedDoc, tc.closedVersion)
 			}
 			reasons := awaitingNotices(t, pool, gatedRoot)
-			if len(reasons) != 1 || !strings.Contains(reasons[0], "its slot is released") {
-				t.Fatalf("awaiting-person notices = %q, want one saying the slot is released", reasons)
+			if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps its admission slot") {
+				t.Fatalf("awaiting-person notices = %q, want one saying the root keeps its admission slot", reasons)
 			}
 
 			if entered := reconcileAwaiting(t, pool, engine); len(entered) != 0 {
