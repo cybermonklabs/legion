@@ -352,8 +352,9 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 // its one start row stands in the outbox unrun — a row held for a slot is claimable by nothing
 // until the slot comes — and its tester is ready with no task. Two roots hold the cap's two
 // slots, so the member is in the line and nothing is granted it. The stop is made over the
-// operator's own route, which is what stamps the claim with where the outbox stood when it
-// retired (store's putClaim): the row was written before the stop, so the stop outlived it.
+// operator's own route, which is what stamps the claim with the write mark its retirement took
+// (store's putClaim): the row's payload was written before the stop was recorded, so its mark
+// is below the claim's and the stop outlived it.
 //
 // What the passes after the stop do is read twice, because the cap would explain the first read
 // on its own. First with both slots still held: the issue owes its tester nothing, the runtime is

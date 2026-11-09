@@ -2257,9 +2257,8 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // that would only ever start a stopped worker. Its three terms together say the stop is the whole
 // of this row's story, and held, the claim as record.Store.RoleClaims reads it (nil for a role
 // the store holds no claim of), carries all three: its state, the write mark its retirement took,
-// and the task it holds. That read runs after the owed rows the fences kept, which is what keeps
-// the second term honest: a stop made between the two reads is in the claim read here, so a row
-// the earlier read said was owed is weighed against a mark that is never older than it.
+// and the task it holds. That read runs after the owed rows the fences kept, so a stop made
+// between the two reads is in the claim read here.
 //
 // That second term compares write marks and not row ids, and both sides take their numbers from
 // one sequence (store's putClaim, whose doc holds what that sequence orders and what it does
@@ -2268,16 +2267,6 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // rewrites the start an issue already owes in place and keeps its id — so a start written after a
 // stop can carry an id from before it, which is exactly what `legion claims stop` and then
 // `legion claims retry`, with no admission pass between them, writes.
-//
-// Two other places could hold this rule instead, and neither can:
-//
-//   - ReplaceOwedStart declining to reuse a row at or below the target claim's mark. It matches
-//     by issue and not by role, deliberately, so it holds no claim token to read a mark from; and
-//     in the one case this rule exists for, it would cost the issue its place in the waiting line,
-//     which is the whole reason that rewrite is in place.
-//   - The stop ending the role's owed rows in its own write. putClaim is shared by every path
-//     that retires a claim, so that would make every retirement an outbox write, and a pass would
-//     still need a rule of its own for a row a dead lane's lease hid from that write.
 func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if held == nil || held.State != supervise.StateRetired {

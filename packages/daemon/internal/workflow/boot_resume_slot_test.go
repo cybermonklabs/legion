@@ -41,11 +41,10 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 // waits for the slot instead of putting a worker to work on an issue admission has not admitted,
 // and runs when the slot comes.
 //
-// The merger of an issue standing in merging while a closed design gate holds the READY it
-// already built is the holder that used to be marked for no slot, on the ground that it comes
-// back to wait on a person rather than to work. It is the case read here because it is the one
-// the conditional was for: it holds its slot like any other issue in merging, so the row it is
-// given is runnable at once all the same.
+// The slot holder read here is the merger of an issue standing in merging while a closed design
+// gate holds the READY it already built: it comes back to wait on a person rather than to work,
+// and it holds its slot all the same, so the row the resume writes it is marked for a slot and
+// runnable at once.
 //
 // The two issues differ in their phase, that held READY, and the slot: each is a root of its own
 // running tree whose phase owner the daemon's rule suspended.

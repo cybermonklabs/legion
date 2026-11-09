@@ -2304,6 +2304,15 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
+// ReplaceOutboxPayload replaces the payload of a leased row with one of the row's own kind,
+// answering false for a row the lease no longer holds.
+//
+// The rewrite takes a fresh number from outbox_write_mark_seq, as every other write of a
+// payload does (ReplaceOwedStart, and an insert through the column's own default): the mark is
+// the write that last put a payload in the row, and a rewrite that left it where it stood would
+// be a payload written at one moment carrying the number of another. No reader weighs this
+// caller's row — auto-merge's ready_merge row, which the stop rule never reads — so what the
+// mark buys here is that the column means one thing for every row of the table.
 func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, payload OutboxPayload) (bool, error) {
 	if err := validateOutboxPayload(payload); err != nil {
 		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
@@ -2323,7 +2332,8 @@ func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64
 	if kind != string(payload.OutboxKind()) {
 		return false, fmt.Errorf("replace the payload of outbox row %d: the row is %s, and the payload %s", id, kind, payload.OutboxKind())
 	}
-	if _, err := tx.Exec(ctx, "update outbox set payload = $2 where id = $1", id, string(encoded)); err != nil {
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2,
+		write_mark = nextval('outbox_write_mark_seq') where id = $1`, id, string(encoded)); err != nil {
 		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
 	}
 	return true, nil
@@ -2450,13 +2460,10 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 // supervise row of every issue that owes a start, once per admission pass.
 //
 // Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
-// claims must be read after the owed rows they are judged against, so that every claim read is
-// at least as new as the row beside it and a stop made between the two reads is seen here. What
-// that buys is the mark the stop rule weighs each owed row against
-// (RoleClaim.RetiredAtWriteMark, taken in store's putClaim, whose doc holds what the sequence
-// behind it orders): a claim retired in that window took its number after the write of every
-// row the earlier read saw, so such a row is at or below the mark and the rule ends it, where
-// reading the claims first would hold that row one pass longer. That is where the call sits —
+// claims must be read after the owed rows they are judged against, so that a stop made between
+// the two reads is in the claim read here and the rule acts on this pass rather than the next.
+// The mark it weighs each owed row against is RoleClaim.RetiredAtWriteMark, taken in store's
+// putClaim, whose doc holds what the sequence behind it orders. That is where the call sits —
 // the pass reads its owed rows into record.LineFacts first, and weighs them here after.
 func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error) {
 	held := make(map[claim.Token]*RoleClaim, len(tokens))
