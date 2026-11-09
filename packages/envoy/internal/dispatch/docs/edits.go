@@ -214,16 +214,22 @@ var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 // written there (api's uploadBaseAdvice).
 var ErrPreconditionRequired = errors.New("an upload replacing a document must name the token of the version it replaces")
 
+// ErrPreconditionUnavailable reports a whole-document upload repairing a document whose live
+// tree is outside the Proof schema and naming a token for the version it replaces. Such a tree
+// renders no markdown and has no token at all, so the caller named a token this document has
+// never had: the upload is refused rather than taken with its guard dropped, which would tell
+// the caller its write was conditional when nothing had checked it. The write read the live tree
+// to decide it and left it untouched. Its caller knows the document by name and words the
+// refusal for its reader (api's upload).
+var ErrPreconditionUnavailable = errors.New("an upload repairing a document outside the Proof schema must name no token, since such a document has none")
+
 // ErrPreconditionFailed reports a stale document or block token without changing the live tree.
-// CurrentVersion is the number of the newest version the document has, filled in by a caller that
-// has read it beside the write it refused (api's upload); an edit refuses without reading the
-// version rows at all, and leaves it nil. Advice is what that caller tells the reader to do next,
-// in its own words, appended to the refusal's sentence; an edit leaves it empty and its refusal
-// reads as it always has.
+// CurrentDocument is the token the live tree carries now, which is what the write read. How far
+// behind the client is, and what it should do next, are the caller's: the write reads no version
+// rows and knows no command its reader runs, so the route that answers the client words both
+// (api's uploadPreconditionFailed).
 type ErrPreconditionFailed struct {
 	CurrentDocument string
-	CurrentVersion  *int
-	Advice          string
 	Mismatches      []model.EditPreconditionMismatch
 }
 
@@ -240,11 +246,7 @@ func (e *ErrPreconditionFailed) Error() string {
 		}
 		reasons = append(reasons, fmt.Sprintf("block %q changed", mismatch.BlockID))
 	}
-	refusal := "document edit precondition failed: " + strings.Join(reasons, ", ")
-	if e.Advice != "" {
-		return refusal + "; " + e.Advice
-	}
-	return refusal
+	return "document edit precondition failed: " + strings.Join(reasons, ", ")
 }
 
 // nodeToken hashes a canonical semantic Proof representation, including inline marks but excluding
@@ -368,13 +370,17 @@ func validateEditPrecondition(precondition model.EditPrecondition) error {
 // ValidateUploadPrecondition holds a whole-document upload's precondition to what an upload can
 // mean. The upload replaces the whole document, so only the document token says which text it
 // believes it is replacing: a blocks precondition guards part of a tree the upload rewrites
-// whole. Everything else is held to the shape every edit's precondition is held to, so an upload
-// refuses a malformed one as `dispatch doc-edit` refuses it.
+// whole, and a precondition naming nothing guards nothing at all. Each is refused in words
+// true of an upload rather than in the doc-edit rule about selecting document or blocks, which
+// offers a choice an upload does not have.
 func ValidateUploadPrecondition(precondition model.EditPrecondition) error {
 	if len(precondition.Blocks) > 0 {
 		return &ErrInvalidPrecondition{Reason: "an upload's precondition names the document token and nothing else"}
 	}
-	return validateEditPrecondition(precondition)
+	if precondition.Document == "" {
+		return &ErrInvalidPrecondition{Reason: "an upload's precondition names the token of the version it replaces as document"}
+	}
+	return nil
 }
 
 // checkEditPrecondition refuses an edit whose precondition the document no longer meets, and

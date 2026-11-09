@@ -49,6 +49,10 @@ func BenchmarkUploadVersion(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
 			b.StopTimer()
+			// The upload replaces the spec whole, so it names the token of the version it
+			// replaces. That token is read before the eviction below, so the timed upload
+			// still loads the document cold.
+			base := specDocumentToken(b, handler, issueKey)
 			// The room's compaction as it closes folds only updates older than its tail window;
 			// an hour old, every one of them is.
 			if _, err := database.Pool.Exec(context.Background(), `update doc_updates set created_at = created_at - interval '1 hour' where artifact_id = $1`, artifactID); err != nil {
@@ -58,7 +62,7 @@ func BenchmarkUploadVersion(b *testing.B) {
 				b.Fatalf("evict spec room: %v", err)
 			}
 			b.StartTimer()
-			uploadSpecVersion(b, handler, issueKey, next)
+			uploadSpecVersion(b, handler, issueKey, next, base)
 			next++
 		}
 	})
@@ -136,7 +140,7 @@ func newUploadVersionSpec(tb testing.TB, handler http.Handler) (issueKey, artifa
 	issueKey = newBenchmarkIssue(tb, handler, "BENCH", "Benchmark project", "Upload benchmark")
 	comment := 0
 	for version := 1; version <= uploadVersionHistory; version++ {
-		uploaded := uploadSpecVersion(tb, handler, issueKey, version)
+		uploaded := uploadSpecVersion(tb, handler, issueKey, version, specDocumentToken(tb, handler, issueKey))
 		if version == 1 {
 			var upload struct {
 				Artifact struct {
@@ -169,16 +173,38 @@ func newUploadVersionSpec(tb testing.TB, handler http.Handler) (issueKey, artifa
 	return issueKey, artifactID
 }
 
-// uploadSpecVersion uploads version of the spec and fails unless the upload succeeds.
-func uploadSpecVersion(tb testing.TB, handler http.Handler, issueKey string, version int) *httptest.ResponseRecorder {
+// uploadSpecVersion uploads version of the spec and fails unless the upload succeeds. The issue's
+// creation made its spec, so every upload replaces a document that already exists and names base,
+// the token of the version it replaces.
+func uploadSpecVersion(tb testing.TB, handler http.Handler, issueKey string, version int, base string) *httptest.ResponseRecorder {
 	tb.Helper()
-	response := uploadVersionRequest(tb, handler, "/api/v1/issues/"+issueKey+"/artifacts", map[string]string{
-		"name": "spec.md", "content": uploadVersionMarkdown(version),
+	response := uploadVersionRequest(tb, handler, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
+		"name": "spec.md", "content": uploadVersionMarkdown(version), "precondition": map[string]string{"document": base},
 	})
 	if response.Code < 200 || response.Code > 299 {
 		tb.Fatalf("upload version %d: status=%d body=%s", version, response.Code, response.Body.String())
 	}
 	return response
+}
+
+// specDocumentToken is the token the issue's spec carries now, which the next upload over it
+// names. It reaches the handler as uploadVersionRequest does, signed in as alice.
+func specDocumentToken(tb testing.TB, handler http.Handler, issueKey string) string {
+	tb.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+issueKey+"/artifacts/spec.md/text", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		tb.Fatalf("read the spec's token: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var document struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+		tb.Fatalf("decode the spec's token: %v", err)
+	}
+	return document.Token
 }
 
 // uploadVersionRequest POSTs body as JSON, signed in as alice.

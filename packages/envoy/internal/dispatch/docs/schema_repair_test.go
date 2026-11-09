@@ -75,6 +75,43 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 }
 
+// A repair names no token: the live tree is outside the Proof schema, so it renders no markdown
+// and has no token for any caller to name. One that names a token has named a token the
+// document has never had, which is refused rather than taken with the guard dropped, and the
+// unreadable document is left as it was; the repair that names none, the only way to fix such a
+// document, is taken after it.
+func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First\n")
+	first := newSchemaRepairService(database)
+	seedServiceText(t, first, artifactID, "before\n")
+	writeSchemaInvalidElement(t, first, artifactID)
+	if err := first.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown first service: %v", err)
+	}
+
+	second := newSchemaRepairService(database)
+	t.Cleanup(func() {
+		if err := second.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown second service: %v", err)
+		}
+	})
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	named := &model.EditPrecondition{Document: "sha256:" + strings.Repeat("a", 64)}
+	if _, err := joinedReplaceTextNaming(second, artifactID, "repaired\n", alice, named); !errors.Is(err, ErrPreconditionUnavailable) {
+		t.Fatalf("a repair naming a token = %v, want ErrPreconditionUnavailable", err)
+	}
+	if _, err := second.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
+		t.Fatalf("read after the refused repair: %v, want the document outside the schema, as it stood", err)
+	}
+	if _, err := joinedReplaceText(second, artifactID, "repaired\n", alice); err != nil {
+		t.Fatalf("the repair naming no token: %v", err)
+	}
+	if text, err := second.Text(context.Background(), artifactID); err != nil || text != "repaired\n" {
+		t.Fatalf("read the repaired document: %q (%v), want repaired markdown", text, err)
+	}
+}
+
 // A repair has no readable previous tree to compare, so it preserves every open ask by its stored
 // block ID and refuses a replacement that drops one.
 func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {

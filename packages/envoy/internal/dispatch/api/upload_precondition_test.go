@@ -420,6 +420,48 @@ func TestRepairingUploadNeedsNoToken(t *testing.T) {
 	}
 }
 
+// A document outside the Proof schema has no token for anybody to name, so an upload naming one
+// on it has named a token the document has never had: it is refused with a sentence of its own,
+// nothing is written, and the repair that names none is taken after it.
+func TestRepairingUploadNamingABaseIsRefused(t *testing.T) {
+	for _, test := range outsideSchemaCorruptions {
+		t.Run(test.Name, func(t *testing.T) {
+			handler, database, deps := newTestServer(t, testServerOptions{})
+			issue := createArtifactIssue(t, handler)
+			artifact := createCorruptedDocument(t, handler, database, deps, issue.Key, "repair.md", test.Corrupt)
+			versionsBefore := uploadedVersionCount(t, database, artifact.ID)
+
+			refused := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts",
+				map[string]string{"name": "repair.md", "precondition": `{"document":"sha256:` + strings.Repeat("a", 64) + `"}`},
+				"repair.md", "text/markdown", []byte("repaired\n"), "alice")
+			if refused.Code != http.StatusConflict {
+				t.Fatalf("a repairing upload naming a base = %d (want 409), body=%s", refused.Code, refused.Body.String())
+			}
+			conflict := decodeBody[uploadPreconditionConflict](t, refused)
+			if conflict.Code != "PRECONDITION_FAILED" {
+				t.Fatalf("the refusal's code = %q, want PRECONDITION_FAILED: %s", conflict.Code, refused.Body.String())
+			}
+			// The document holds no token, so the refusal says so and asks for an upload
+			// naming none, rather than sending the caller to `dispatch doc-read` for a token
+			// nothing can print.
+			if !strings.Contains(conflict.Error, "send it again naming no token") {
+				t.Fatalf("the refusal reads %q, want it to say the document has no token and the repair names none", conflict.Error)
+			}
+			if strings.Contains(conflict.Error, "dispatch doc-read") {
+				t.Fatalf("the refusal reads %q, want it not to send the caller after a token no document has", conflict.Error)
+			}
+			if after := uploadedVersionCount(t, database, artifact.ID); after != versionsBefore {
+				t.Fatalf("the refused repair wrote: %d versions, want the %d standing before it", after, versionsBefore)
+			}
+			repaired := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "repair.md"},
+				"repair.md", "text/markdown", []byte("repaired\n"), "alice")
+			if repaired.Code != http.StatusCreated {
+				t.Fatalf("the repair naming no base after the refusal = %d (want 201), body=%s", repaired.Code, repaired.Body.String())
+			}
+		})
+	}
+}
+
 // Two uploads race for one new name. Once the first has committed, the second is a replacement of
 // the document the first created, which is what the race resolves to: the handler that loses sees
 // a document that exists, so it must name the token of the version it replaces. They are

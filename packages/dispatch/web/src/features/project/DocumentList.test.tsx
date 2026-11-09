@@ -189,3 +189,43 @@ test("New document refuses a name that already exists", async () => {
     uploadArtifact.mockRestore();
   }
 });
+
+// Dispatch refuses an upload under the name of a document that already exists unless it names
+// the version it replaces, and a new document replaces nothing, so it names none: a title this
+// list did not show as taken - a document created since the list was read, or one whose slug
+// the title matches - is refused `400 PRECONDITION_REQUIRED`. The server writes that refusal
+// for a caller holding the `dispatch` command; a person creating a document in the browser runs
+// no command and pastes no token, so the form says the name is taken, in its own words.
+test("a New document Dispatch refused over a name it holds says the name is taken", async () => {
+  const user = userEvent.setup();
+  const { listProjectArtifacts, view } = renderList([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    // The sentence the server sends, which it refuses every replacement naming no version with
+    // (`api/artifacts.go` in the server).
+    new ApiError(400, {
+      code: "PRECONDITION_REQUIRED",
+      error:
+        'an upload replacing document "Design notes" must name the token of the version it ' +
+        "replaces: read the document with `dispatch doc-read`, which prints " +
+        "`Document token: sha256:…`, and upload again naming that token as " +
+        '`--precondition-json \'{"document":"sha256:…"}\'`',
+    })
+  );
+
+  try {
+    await screen.findByText("No documents yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toBe("A document named Design notes already exists");
+    expect(error.textContent).not.toContain("dispatch doc-read");
+    expect(error.textContent).not.toContain("--precondition-json");
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});

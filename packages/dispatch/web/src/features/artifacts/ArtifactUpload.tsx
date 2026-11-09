@@ -37,6 +37,7 @@ import {
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
+import { retriesUnderItsKey } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -151,6 +152,24 @@ export async function uploadFile(
   );
 }
 
+/** The base a press of `file` sends again rather than reading afresh: the one the last press
+ *  sent, where this press is that press made again under its key. Dispatch had no answer for a
+ *  press the reader stopped or a reload interrupted, so a press of it again asks under the same
+ *  key (`retriesUnderItsKey`) and Dispatch answers it with what the first press did - but only
+ *  while the two send the same bytes, since the key covers the whole body, the `precondition`
+ *  field included (`bodyDigest` in the server's `api/request_keys.go`). A press of another file,
+ *  or one after an answer Dispatch decided, has no base to send again: it is a press of its own
+ *  under a key of its own, and it reads the token the document is at now. */
+function baseSentAgain(
+  refusal: Error | null,
+  last: { readonly base: UploadBase; readonly file: File } | undefined,
+  file: File
+): UploadBase | undefined {
+  return last !== undefined && last.file === file && retriesUnderItsKey(refusal ?? undefined)
+    ? last.base
+    : undefined;
+}
+
 /** What the row says when the document moved under an upload that named the version it was
  *  replacing. The server writes its own refusal for a caller holding the `dispatch` command,
  *  naming the command that reads the token and the argument that sends it; a person uploading
@@ -257,9 +276,10 @@ export interface DraftUpload {
   /** The name of the last file Dispatch stored with no answer to give for it, so its reference
    *  could not be added to the draft; null otherwise. */
   madeUnanswered: string | null;
-  /** Uploads the last refused file again, to the owner it was sent to, reading its base afresh:
-   *  a press of its own, which Dispatch takes under the first one's key while the two send the
-   *  same bytes. */
+  /** Uploads the last refused file again, to the owner it was sent to. A press Dispatch had no
+   *  answer for is made again under its key, sending the base that press sent, so Dispatch
+   *  answers it with what the first did rather than storing the file a second time; after an
+   *  answer Dispatch decided, the base is read afresh and the press goes under a key of its own. */
   retry(): void;
 }
 
@@ -336,7 +356,14 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
         return;
       }
       retryGuard.guard(() => {
-        void send([last.file], last.owner);
+        if (baseSentAgain(upload.error, last, last.file) === undefined) {
+          void send([last.file], last.owner);
+          return;
+        }
+        // The very same press, base and all: nothing is read for it, so the write counts as
+        // pending from here, as `send` counts one of its own.
+        setPending((count) => count + 1);
+        upload.mutate(last);
       });
     },
   };
@@ -380,7 +407,9 @@ export interface ArtifactUpload {
   cancel(): void;
   /** Uploads the staged file, under the base read when it was chosen. A press that follows a
    *  press Dispatch decided reads the base again: the person has read what the document says
-   *  now, so their next press names what it says now. */
+   *  now, so their next press names what it says now. A press that follows one Dispatch had no
+   *  answer for sends that press's base again, so Dispatch answers the second under the first's
+   *  key rather than writing a second version of the document. */
   confirm(): void;
   dropTarget: ArtifactDropTarget;
   error: unknown;
@@ -453,7 +482,7 @@ export function useArtifactUpload(
       }
     },
   });
-  const send = async (file: File, base: Promise<UploadBase>): Promise<void> => {
+  const send = async (file: File, base: UploadBase | Promise<UploadBase>): Promise<void> => {
     upload.mutate({ base: await base, file });
   };
   const receive = (file: File | undefined) => {
@@ -482,7 +511,10 @@ export function useArtifactUpload(
         return;
       }
       pressGuard.guard(() => {
-        const base = chosenBase.current ?? captureUploadBase(owner, file, name);
+        const base =
+          baseSentAgain(upload.error, upload.variables, file) ??
+          chosenBase.current ??
+          captureUploadBase(owner, file, name);
         chosenBase.current = undefined;
         void send(file, base);
       });

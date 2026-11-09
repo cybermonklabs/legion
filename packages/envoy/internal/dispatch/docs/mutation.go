@@ -616,17 +616,20 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		// The token the upload names is checked here, inside the write's own locks and before
 		// the replacement is parsed, so no other writer can land between the check and the
 		// write, as a conditional edit checks it (ApplyOps); a replacement that names none is
-		// refused here, since every replacement says which version it replaces. A repair is the
-		// one exception to both: the live tree is outside the Proof schema, so it renders no
-		// markdown and has no token at all, and this upload is the only way to repair the
-		// document, so no caller could name a token for it.
-		if !repairing {
-			if precondition == nil {
-				return ErrPreconditionRequired
+		// refused here, since every replacement says which version it replaces. A repair turns
+		// that around: the live tree is outside the Proof schema, so it renders no markdown and
+		// has no token at all, and this upload is the only way to repair the document, so a
+		// repair names no token, and one that names a token names a token this document has
+		// never had. That token is refused rather than dropped, since a dropped guard tells the
+		// caller its write was conditional when nothing had checked it.
+		if repairing {
+			if precondition != nil {
+				return ErrPreconditionUnavailable
 			}
-			if _, err := checkEditPrecondition(current, *precondition); err != nil {
-				return err
-			}
+		} else if precondition == nil {
+			return ErrPreconditionRequired
+		} else if _, err := checkEditPrecondition(current, *precondition); err != nil {
+			return err
 		}
 		var target *pmdoc.Node
 		target, read, err = parseWrittenReplacing(current, markdown)

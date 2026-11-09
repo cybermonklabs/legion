@@ -265,6 +265,44 @@ func queueDepth(gate *conditionalEditGate) int {
 	return gate.queued
 }
 
+// An upload's precondition names the token of the version it replaces and nothing else, so each
+// shape an upload cannot mean is refused in words true of an upload: a blocks guard names part
+// of a tree the upload rewrites whole, and an object naming nothing names no token at all.
+// Neither is answered with the doc-edit rule about selecting document or blocks, which offers a
+// choice an upload does not have.
+func TestValidateUploadPreconditionRefusesInTheWordsOfAnUpload(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		precondition model.EditPrecondition
+		want         string
+	}{
+		{
+			name:         "a blocks guard",
+			precondition: model.EditPrecondition{Blocks: []model.EditBlockPrecondition{{ID: "intro", Token: "sha256:" + strings.Repeat("a", 64)}}},
+			want:         "an upload's precondition names the document token and nothing else",
+		},
+		{
+			name:         "an object naming nothing",
+			precondition: model.EditPrecondition{},
+			want:         "an upload's precondition names the token of the version it replaces as document",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateUploadPrecondition(test.precondition)
+			var invalid *ErrInvalidPrecondition
+			if !errors.As(err, &invalid) || invalid.Reason != test.want {
+				t.Fatalf("ValidateUploadPrecondition(%#v) = %v, want ErrInvalidPrecondition saying %q", test.precondition, err, test.want)
+			}
+			if strings.Contains(err.Error(), "exactly one of document or blocks") {
+				t.Fatalf("the refusal reads %q, want no choice between document and blocks, which an upload does not have", err)
+			}
+		})
+	}
+	if err := ValidateUploadPrecondition(model.EditPrecondition{Document: "sha256:" + strings.Repeat("a", 64)}); err != nil {
+		t.Fatalf("an upload naming the document token = %v, want it kept", err)
+	}
+}
+
 func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 	pmdoc.SetBlockIDGenerator(func() string { return "generated-body" })
 	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })

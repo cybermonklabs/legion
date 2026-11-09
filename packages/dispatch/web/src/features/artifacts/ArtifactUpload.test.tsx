@@ -1,17 +1,23 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import {
   ArtifactDropZone,
   ArtifactUploadRow,
+  appendToDraft,
   captureUploadBase,
+  DraftUploadStatus,
   useArtifactUpload,
+  useDraftUpload,
 } from "./ArtifactUpload";
 
 function TestHarness(): ReactNode {
@@ -23,16 +29,36 @@ function TestHarness(): ReactNode {
   );
 }
 
-function renderHarness() {
+/** A draft's field, as a composer holds one: a file pasted into it uploads to the issue, and
+ *  its reference is added to the draft (`useDraftUpload`). */
+function DraftHarness(): ReactNode {
+  const [draft, setDraft] = useState("");
+  const upload = useDraftUpload((text) => setDraft((current) => appendToDraft(current, text)));
+  return (
+    <>
+      <div data-testid="draft" onPaste={(event) => upload.paste(event, { issue: "CORE-1" })}>
+        {draft}
+      </div>
+      <DraftUploadStatus upload={upload} />
+    </>
+  );
+}
+
+/** `ui` under a query client of its own, which the cases that stop a late write reach through
+ *  the returned `queryClient` as the shell's indicator does. */
+function renderWith(ui: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <TestHarness />
-    </QueryClientProvider>
-  );
+  return {
+    ...render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>),
+    queryClient,
+  };
+}
+
+function renderHarness() {
+  return renderWith(<TestHarness />);
 }
 
 test("choosing a file stages it behind a summary field instead of uploading immediately", async () => {
@@ -474,6 +500,104 @@ test("pressing Upload again after a refusal reads the base again, under a key of
     view.unmount();
     uploadArtifact.mockRestore();
     ownerArtifactText.mockRestore();
+  }
+});
+
+/** An upload attempt that never reached Dispatch, so the write waits and tries again. */
+const unreachable = new NetworkError(
+  "/api/v1/issues/CORE-1/artifacts",
+  new TypeError("Failed to fetch")
+);
+
+// A press the reader stopped is no verdict: it may have reached Dispatch, which answers its key
+// with what it did there. So the press made again goes under that key, and the key covers the
+// whole body, the `precondition` field included - a press that read the token afresh would read
+// what the stopped press wrote, send other bytes under a key of its own, and store a second
+// version of the document.
+test("pressing Upload again after a stopped press sends that press's base under its key", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText")
+    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
+    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:stored", version: 2 });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await tick(SEND_DEADLINE_MS + 1_000);
+    const [late] = writesOf(view.queryClient).rows();
+    expect(late?.status).toBe("late");
+    act(() => {
+      writesOf(view.queryClient).stop(late?.id ?? 0);
+    });
+    await tick(60_000);
+    expect(screen.getByRole("alert")).not.toBeNull();
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
+    expect(again?.[2].key).toBe(first?.[2].key);
+    expect(ownerArtifactText).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// The same rule under a draft's field, where Retry is the control that presses again: the upload
+// it makes again is the stopped one, base and all, so Dispatch answers it under that key rather
+// than storing the file a second time.
+test("a draft's Retry after a stopped upload sends that press's base under its key", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText")
+    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
+    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:stored", version: 2 });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderWith(<DraftHarness />);
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [file] } });
+    // The base is read before the write is made, so the write's own deadline starts here.
+    await tick(1_000);
+    await tick(SEND_DEADLINE_MS + 1_000);
+    const [late] = writesOf(view.queryClient).rows();
+    expect(late?.status).toBe("late");
+    act(() => {
+      writesOf(view.queryClient).stop(late?.id ?? 0);
+    });
+    await tick(60_000);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
+    expect(again?.[2].key).toBe(first?.[2].key);
+    expect(ownerArtifactText).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
   }
 });
 

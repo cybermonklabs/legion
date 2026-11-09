@@ -137,14 +137,25 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 				})
 			}
 		}
+		// An upload's refusal carries what only its route knows: the version the client is
+		// behind and the sentence sending it to `dispatch doc-read` for a current token
+		// (uploadPreconditionFailed). An edit's refusal carries neither, and reads as the
+		// document service wrote it.
+		message := preconditionFailed.Error()
+		var currentVersion *int
+		var upload *uploadPreconditionFailed
+		if errors.As(err, &upload) {
+			message = upload.Error()
+			currentVersion = &upload.version
+		}
 		WriteJSON(w, http.StatusConflict, editPreconditionError{
 			Code: "PRECONDITION_FAILED",
 			Current: editPreconditionCurrent{
 				Blocks:   currentBlocks,
 				Document: preconditionFailed.CurrentDocument,
-				Version:  preconditionFailed.CurrentVersion,
+				Version:  currentVersion,
 			},
-			Error:      preconditionFailed.Error(),
+			Error:      message,
 			Mismatches: preconditionFailed.Mismatches,
 		})
 		return

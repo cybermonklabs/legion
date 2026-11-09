@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -30,6 +30,7 @@ import { formatArtifactBytes, versionsNewestFirst } from "../artifacts/ArtifactH
 import {
   ArtifactDropZone,
   ArtifactUploadStatus,
+  uploadErrorMessage,
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
 import { ApprovalChip } from "../doc/ApprovalChip";
@@ -41,6 +42,26 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 function documentUpdatedAt(document: Artifact): string {
   return document.versions?.at(-1)?.created_at ?? document.created_at;
+}
+
+/** What the form says of a title the project already holds a document under. */
+function nameTaken(name: string): string {
+  return `A document named ${name} already exists`;
+}
+
+/** What the form says when Dispatch refused the document it posted under `name`. Dispatch
+ *  refuses an upload under the name of a document that already exists unless it names the
+ *  version it replaces (`400 PRECONDITION_REQUIRED`), and a new document replaces nothing, so
+ *  it names none: the name is held by a document this list did not show - one created since the
+ *  list was read, or one whose slug this title matches - which is what the duplicate check says
+ *  above in the page's own words. The server's own sentence is written for a caller holding the
+ *  `dispatch` command, which a person in a browser has no way to run, so every other refusal is
+ *  the one the upload route gives a person (`uploadErrorMessage`). */
+function createRefusal(error: Error | null, name: string | undefined): string {
+  if (name !== undefined && error instanceof ApiError && error.code === "PRECONDITION_REQUIRED") {
+    return nameTaken(name);
+  }
+  return uploadErrorMessage(error);
 }
 
 function DocumentRow({ document }: { document: Artifact }): ReactNode {
@@ -188,14 +209,12 @@ export function DocumentList({ project }: { project: string }): ReactNode {
           </label>
           {duplicateName === undefined ? null : (
             <p className={dangerText} role="alert">
-              A document named {duplicateName} already exists
+              {nameTaken(duplicateName)}
             </p>
           )}
           {create.isError ? (
             <p className={dangerText} role="alert">
-              {create.error instanceof Error
-                ? create.error.message
-                : "Could not create the document."}
+              {createRefusal(create.error, create.variables)}
             </p>
           ) : null}
           <button

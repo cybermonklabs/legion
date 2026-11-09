@@ -121,19 +121,6 @@ const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
 
-const PRECONDITION_RULE = "A precondition selects exactly one of document or blocks.";
-
-function preconditionKept(value: unknown): boolean {
-  const input = value as { readonly precondition?: unknown };
-  if (input.precondition === undefined) return true;
-  if (typeof input.precondition !== "object" || input.precondition === null) return false;
-  const precondition = input.precondition as {
-    readonly document?: unknown;
-    readonly blocks?: unknown;
-  };
-  return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
-}
-
 /** The guard dispatch_doc_edit takes: exactly one of a document token and a set of block
  *  tokens. An upload takes the document token alone and has a shape of its own
  *  (uploadPreconditionArgument). */
@@ -173,7 +160,9 @@ function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E
         .string({ min: 1 })
         .describe("Token for the exact canonical document returned by dispatch doc-read."),
     })
-    .describe("Optional optimistic-concurrency guard: the token of the document this replaces.")
+    .describe(
+      "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none."
+    )
     .optional();
 }
 
@@ -188,14 +177,14 @@ function artifactProblem(value: unknown): string | undefined {
     readonly path?: unknown;
     readonly content?: unknown;
   };
-  const partProblem = brokenParts([
+  const ownerOrSourceProblem = brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
     [
       (typeof input.path === "string") !== (typeof input.content === "string"),
       ARTIFACT_SOURCE_RULE,
     ],
   ]);
-  if (partProblem !== undefined) return partProblem;
+  if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
   if (typeof input.content !== "string" || typeof input.name !== "string") return undefined;
   const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
   if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
@@ -203,6 +192,18 @@ function artifactProblem(value: unknown): string | undefined {
 }
 
 const documentEditOwner = documentOwnerValidation(true);
+const PRECONDITION_RULE = "A precondition selects exactly one of document or blocks.";
+
+function preconditionKept(value: unknown): boolean {
+  const input = value as { readonly precondition?: unknown };
+  if (input.precondition === undefined) return true;
+  if (typeof input.precondition !== "object" || input.precondition === null) return false;
+  const precondition = input.precondition as {
+    readonly document?: unknown;
+    readonly blocks?: unknown;
+  };
+  return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
+}
 
 function documentEditProblem(value: unknown): string | undefined {
   return brokenParts([
