@@ -232,15 +232,33 @@ payload() {
     comment) jq -nc --arg body "$(body "$round")" '{body: $body}' ;;
     ask) jq -nc --arg question "$(body "$round" "$ask_bytes")" '{question: $question}' ;;
     message) jq -nc --arg body "$(body "$round")" '{body: $body}' ;;
-    upload) jq -nc --arg name "$artifact" --arg content "$(body "$round")" '{name: $name, content: $content}' ;;
+    upload)
+      jq -nc --arg name "$artifact" --arg content "$(body "$round")" --arg base "$(document_token "$artifact")" \
+        '{name: $name, content: $content, precondition: {document: $base}}'
+      ;;
     title) jq -nc --arg title "Bench round ${round} survey" '{title: $title}' ;;
     large-upload)
       printf '\nBench round %s of the survey.\n' "$round" >>"${workdir}/large.md"
-      jq -nc --arg name "$large_artifact" --rawfile content "${workdir}/large.md" \
-        '{name: $name, content: $content}'
+      jq -nc --arg name "$large_artifact" --rawfile content "${workdir}/large.md" --arg base "$(document_token "$large_slug")" \
+        '{name: $name, content: $content, precondition: {document: $base}}'
       ;;
     *) printf 'no such body: %s\n' "$kind" >&2; exit 1 ;;
   esac
+}
+
+# document_token is the token of the version the next upload over that document replaces, read
+# fresh each round because every round writes a version and moves it. Both uploads write over a
+# name the issue already carries, and Dispatch refuses a replacement that names no token, so the
+# read is part of building the body; it runs in payload, before the timed request, so no reading
+# of it is counted in a route's time.
+document_token() {
+  local document="$1" token
+  token="$(request "${url}/api/v1/issues/${issue}/artifacts/${document}/text" | jq -r '.token // empty')"
+  [[ -n "$token" ]] || {
+    printf '%s carries no document token for %s; the upload has no version to name\n' "$issue" "$document" >&2
+    exit 1
+  }
+  printf '%s' "$token"
 }
 
 printf 'route timings: %s requests each against %s, issue %s, body %s bytes, documents %s and %s (%s bytes)\n' \

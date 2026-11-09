@@ -41,10 +41,19 @@ case "$project_status" in
     ;;
 esac
 
+# A run after the first finds the project and the document its last run left, and Dispatch refuses
+# a replacement that names no token, so the upload names the token of the version it replaces where
+# the project holds that document; a first run reads none and sends none.
+base="$(
+  curl --silent --show-error "${headers[@]}" \
+    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$name/text" | jq --raw-output '.token // empty'
+)"
+readonly base
 artifact="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
-    --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' '{name: $name, content: $content}')" \
+    --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' --arg base "$base" \
+      'if $base == "" then {name: $name, content: $content} else {name: $name, content: $content, precondition: {document: $base}} end')" \
     "$DISPATCH_URL/api/v1/projects/$project/artifacts"
 )"
 readonly artifact
