@@ -1,7 +1,8 @@
 // The stranded-claim half of this package's state: the claims nothing will wake, who suspended
 // them, and the move that brings each back. It moved out of state.go when that file crossed a
-// thousand lines (INFRA-1077, review round 14); it reads none of the rest of the state and
-// nothing of it reads this, so the two are a file each.
+// thousand lines (INFRA-1077, review round 14). It reads none of the rest of the state; the
+// state carries it (`State.StrandedClaims`, which `MarshalJSON` answers as an empty list rather
+// than null), and nothing else of state.go reaches into it.
 
 package api
 

@@ -1086,8 +1086,7 @@ test("a live socket refused once the person is signed out takes the page to sign
 // bookmarked redirects there with everything it carried: the hash, so the reader lands on the
 // section, and the search, so they keep the window they asked for. The old page read only `?at=`
 // (`PipelinePage.tsx` before this change), so no bookmark of it carries `from`/`to`; what this
-// holds is the redirect's own rule, which the visual review's pipeline row depends on, since the
-// window it opens is what pins the Timeline axis (`e2e/review-routes.ts`).
+// holds is the redirect's own rule.
 test("/pipeline lands the reader on the Pipeline section, with the window the address names", async () => {
   // Dynamic on purpose: React.lazy loads the page module on its first render, and loading it
   // here keeps that cold compile out of findBy's window, as the project-routes test above does.
