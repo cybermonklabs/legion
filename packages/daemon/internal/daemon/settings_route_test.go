@@ -141,7 +141,7 @@ func TestAFileChangeAndARouteChangeTakeTheSamePath(t *testing.T) {
 
 	if status, _ := settingsRequest(t, d, testOperatorToken, api.SettingsChangeRequest{
 		By:      "ana@example.com",
-		Changes: map[string]json.RawMessage{"max_fix_attempts": json.RawMessage(`6`)},
+		Changes: map[string]json.RawMessage{"launch_failure_limit": json.RawMessage(`6`)},
 	}); status != http.StatusOK {
 		t.Fatalf("the settings route = %d", status)
 	}
@@ -151,14 +151,14 @@ func TestAFileChangeAndARouteChangeTakeTheSamePath(t *testing.T) {
 		return d.state().Settings.ReviewRoundCap == 5
 	})
 	state := d.state()
-	if state.Settings.MaxFixAttempts != 6 {
-		t.Errorf("max_fix_attempts = %d, want the route's 6: the file changed no such key", state.Settings.MaxFixAttempts)
+	if state.Settings.LaunchFailureLimit != 6 {
+		t.Errorf("launch_failure_limit = %d, want the route's 6: the file changed no such key", state.Settings.LaunchFailureLimit)
 	}
 	if got := state.SettingSources["review_round_cap"]; got.Source != config.SourceFile || got.By != "" {
 		t.Errorf("settingSources[review_round_cap] = %+v, want the file and nobody", got)
 	}
-	if got := state.SettingSources["max_fix_attempts"]; got.Source != config.SourceRoute || got.By != "ana@example.com" {
-		t.Errorf("settingSources[max_fix_attempts] = %+v, want the route and ana", got)
+	if got := state.SettingSources["launch_failure_limit"]; got.Source != config.SourceRoute || got.By != "ana@example.com" {
+		t.Errorf("settingSources[launch_failure_limit] = %+v, want the route and ana", got)
 	}
 	for _, phrase := range []string{`"path":"review_round_cap"`, `"new":"5"`, `"source":"file"`} {
 		if !strings.Contains(logs.String(), phrase) {

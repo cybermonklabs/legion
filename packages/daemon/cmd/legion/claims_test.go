@@ -196,6 +196,7 @@ type seenRequest struct {
 type operatorDaemon struct {
 	t               *testing.T
 	runtime         *fake.Runtime
+	conns           *fake.Conns
 	claimSupervisor *memoryClaims
 	url             string
 	port            int
@@ -209,12 +210,12 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	rt := fake.NewRuntime()
+	rt, conns := fake.NewRuntime(), fake.NewConns()
 	claims := &memoryClaims{ctx: ctx, machines: map[legionclaim.Token]*supervise.Machine{}, rows: map[legionclaim.Token]supervise.Claim{}}
 	tokens := api.NewBootTokens(claims)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	claims.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
+		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
 		Settings: supervise.FixedSettings(
 			supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 			supervise.Timeouts{
@@ -229,7 +230,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		}),
 	}).Handler
 
-	d := &operatorDaemon{t: t, runtime: rt, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
+	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

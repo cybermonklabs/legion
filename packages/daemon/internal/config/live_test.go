@@ -155,7 +155,7 @@ func TestTheFileArmReadsAgainAndTheRouteOverlayStillWins(t *testing.T) {
 		t.Fatalf("Apply the route change: %v", err)
 	}
 
-	rewrite(t, path, minimalFile+"admission_cap: 5\nmax_fix_attempts: 7\n")
+	rewrite(t, path, minimalFile+"admission_cap: 5\nreview_round_cap: 7\n")
 	applied, refused, err := live.Apply(SourceFile, "", nil)
 
 	if err != nil {
@@ -167,11 +167,11 @@ func TestTheFileArmReadsAgainAndTheRouteOverlayStillWins(t *testing.T) {
 	if cap := live.Snapshot().AdmissionCap; cap != 12 {
 		t.Errorf("AdmissionCap = %d, want the route's 12 over the file's 5", cap)
 	}
-	if attempts := live.Snapshot().MaxFixAttempts; attempts != 7 {
-		t.Errorf("MaxFixAttempts = %d, want the file's 7", attempts)
+	if rounds := live.Snapshot().ReviewRoundCap; rounds != 7 {
+		t.Errorf("ReviewRoundCap = %d, want the file's 7", rounds)
 	}
 	want := Change{
-		Path: "max_fix_attempts", Old: "3", New: "7", Class: ClassDecision, Outcome: OutcomeAtOnce,
+		Path: "review_round_cap", Old: "3", New: "7", Class: ClassDecision, Outcome: OutcomeAtOnce,
 		Source: SourceFile,
 	}
 	if len(applied) != 1 || applied[0] != want {

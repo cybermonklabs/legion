@@ -60,14 +60,14 @@ func TestTheWatcherSettlesAFileWrittenInPlace(t *testing.T) {
 	path := configFile(t, minimalFile)
 	keeper, settled := watcherFor(t, path)
 
-	rewrite(t, path, minimalFile+"max_fix_attempts: 9\n")
+	rewrite(t, path, minimalFile+"review_round_cap: 9\n")
 
 	applied := awaitSettled(t, settled, "a file written in place")
-	if len(applied) != 1 || applied[0].Path != "max_fix_attempts" || applied[0].New != "9" {
-		t.Fatalf("the watcher applied %+v, want max_fix_attempts 9", applied)
+	if len(applied) != 1 || applied[0].Path != "review_round_cap" || applied[0].New != "9" {
+		t.Fatalf("the watcher applied %+v, want review_round_cap 9", applied)
 	}
-	if got := keeper.Live().Snapshot().MaxFixAttempts; got != 9 {
-		t.Fatalf("max_fix_attempts = %d, want the file's new 9", got)
+	if got := keeper.Live().Snapshot().ReviewRoundCap; got != 9 {
+		t.Fatalf("review_round_cap = %d, want the file's new 9", got)
 	}
 }
 

@@ -171,7 +171,7 @@ func loaderTopLevelKeys() []string {
 		"envoy_token_file", "nats_nkey_seed_file", "nats_daemon_nkey_seed_file", "dispatch_url",
 		"dispatch_token_file", "projects", "gates", "github_apps", "linger_hours",
 		"production_check_hours", "pod_update_retask_hours", "pod_update_notice_hours",
-		"review_round_cap", "max_fix_attempts", "controller", "capabilities", "worker_backends",
+		"review_round_cap", "controller", "capabilities", "worker_backends",
 		"role_config_files", repositoryRenamesKey,
 	}
 	for _, duration := range durationKeys {

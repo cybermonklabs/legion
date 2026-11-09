@@ -386,6 +386,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
+		plan.providerErrorRunReached = workflow.providerErrorRunReached
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -678,6 +679,9 @@ type plan struct {
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
+	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
+	// in a provider error; nil without a workflow, where nobody is told.
+	providerErrorRunReached func(c supervise.Claim, reason string)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
 	tools         map[string]string
@@ -1453,20 +1457,21 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	launchSpecs := newSpecsHolder(settled, buildSpecs)
 	p.rebuild.register(newWorkerStreamHolder(listener), rt, launchSpecs)
 	sup.deps = supervise.Deps{
-		Runtime:       rt,
-		Conns:         listener,
-		Store:         pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
-		Specs:         launchSpecs,
-		Identity:      adoptIdentity(p.identity, p.repository),
-		Secrets:       p.secretsEnroller,
-		PhaseHolds:    p.phaseHolds,
-		RootHears:     p.rootHears,
-		RootTask:      p.rootTask,
-		TreeClosable:  p.treeClosable,
-		TaskConfirmed: p.taskConfirmed,
-		SessionGone:   cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
-		Clock:         p.clock,
-		Log:           log,
+		Runtime:                 rt,
+		Conns:                   listener,
+		Store:                   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		Specs:                   launchSpecs,
+		Identity:                adoptIdentity(p.identity, p.repository),
+		Secrets:                 p.secretsEnroller,
+		PhaseHolds:              p.phaseHolds,
+		RootHears:               p.rootHears,
+		RootTask:                p.rootTask,
+		TreeClosable:            p.treeClosable,
+		TaskConfirmed:           p.taskConfirmed,
+		ProviderErrorRunReached: p.providerErrorRunReached,
+		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		Clock:                   p.clock,
+		Log:                     log,
 		// Every budget and every bound a decision is held to is read as that decision is made
 		// (liveBudgets): `launch_failure_limit`, `worker_rpc_timeout_seconds`,
 		// `pod_update_retask_hours` and their neighbours take effect at once, with no machine
@@ -2096,6 +2101,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ControllerLaunched: keeping.launchedNow,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(*p.live.Snapshot(), c) },
+		// The harness a role's claims run on is read as the route asks, like every other value
+		// the live holder keeps: a `worker_backends` change reaches the compaction refusal with
+		// no server rebuilt.
+		Backend:            func(role claim.Role) runtime.Backend { return p.live.Snapshot().BackendFor(role) },
 		Stopping:           s.stopping,
 		Drained:            s.draining,
 		Decisions:          s.decided,

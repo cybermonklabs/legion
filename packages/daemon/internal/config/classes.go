@@ -194,7 +194,7 @@ func (c Caller) Admits(path string) (bool, string) {
 // admits are `admission_cap`, the supervision limits (`launch_failure_limit`,
 // `prompt_failure_limit`, `prompt_retire_limit`, `tree_stop_timeout_seconds`), the workflow's
 // own bounds (`linger_hours`, `production_check_hours`, `pod_update_retask_hours`,
-// `pod_update_notice_hours`, `review_round_cap`, `max_fix_attempts`) and `capabilities` with
+// `pod_update_notice_hours`, `review_round_cap`) and `capabilities` with
 // `capabilities.decided`.
 func (r Row) Plain() bool { return r.Class == ClassDecision && !r.Secret && r.Holder == "" }
 
@@ -266,7 +266,6 @@ var Classes = []Row{
 	{Field: "Config.WorkerWakesPerMinute", Path: "worker_wakes_per_minute", Class: ClassFixed, Why: whyWakePace},
 	{Field: "Config.WorkerWakeBurst", Path: "worker_wake_burst", Class: ClassFixed, Why: whyWakePace},
 	{Field: "Config.ReviewRoundCap", Path: "review_round_cap", Class: ClassDecision},
-	{Field: "Config.MaxFixAttempts", Path: "max_fix_attempts", Class: ClassDecision},
 	// The capability report is built at every read of the state, from the settings holder
 	// (internal/daemon's supervision.deployment), so a decision an operator records reaches the
 	// next read with nothing rebuilt.

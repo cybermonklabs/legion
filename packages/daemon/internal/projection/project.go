@@ -181,7 +181,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				ChecksVerdict:  classify.HeadVerdict(*pr),
 				ReviewDecision: reviewDecision,
 				RequiresChecks: &requiresChecks,
-				FixAttempts:    pr.FixAttempts,
 			}
 		}
 

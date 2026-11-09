@@ -65,8 +65,7 @@
         "head": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
         "state": "merged",
         "reviewDecision": "approved",
-        "requiresChecks": false,
-        "fixAttempts": 0
+        "requiresChecks": false
       },
       "gatedSteps": [
         {
@@ -205,8 +204,7 @@
         "state": "open",
         "checksVerdict": "pending",
         "reviewDecision": "changes_requested",
-        "requiresChecks": true,
-        "fixAttempts": 1
+        "requiresChecks": true
       },
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
@@ -732,7 +730,6 @@
     "pod_update_max_open_rounds": 6,
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
-    "max_fix_attempts": 5,
     "controller": "daemon",
     "capabilities": {
       "decided": {
@@ -853,10 +850,6 @@
       "at": "2026-09-22T09:15:02Z"
     },
     "linger_hours": {
-      "source": "file",
-      "at": "2026-09-22T09:15:02Z"
-    },
-    "max_fix_attempts": {
       "source": "file",
       "at": "2026-09-22T09:15:02Z"
     },

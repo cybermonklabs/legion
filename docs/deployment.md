@@ -551,7 +551,7 @@ A running daemon applies a settings change without being restarted, from either 
 One arm is `PUT /legion/v1/operator/settings`, which takes the operator bearer or a projected Kubernetes ServiceAccount token the deployment named (`settings_route`; `docs/kubernetes.md`, "The settings route").
 The two credentials may change different keys.
 The operator bearer, and the file itself, may change every key but those fixed for the process.
-A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `max_fix_attempts`, `linger_hours`, the supervision limits and the update round's two bounds — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
+A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `linger_hours`, the supervision limits and the update round's two bounds — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
 `gates` and every key under it, `gates.design` included, is refused by that last rule: the API server and the launch specs each hold the design gate, and a gate is the rule that says a person decides a tree's specification, so the token a whole service holds is not the party that may switch that rule off, and that key stays the operator bearer's and the file's.
 That is why a person changing the admission cap from Dispatch's Legion view can, while the same path cannot reach `github_apps.<app>.private_key_command`, whose value the daemon would run, or `gates.design`, which decides whether a person approves a specification at all.
 The other is the file itself changing under the daemon, which a watcher on the directory holding `legion.yaml`, and on each directory holding a file a setting names, notices within a few seconds.
@@ -611,7 +611,6 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `instructions` | launch | `launch-specs` |
 | `launch_failure_limit` | decision | — |
 | `linger_hours` | decision | — |
-| `max_fix_attempts` | decision | — |
 | `nats_daemon_nkey_seed_file` | rebuild | `nats` |
 | `nats_nkey_seed_file` | rebuild | `nats` |
 | `nats_urls` | rebuild | `nats` |

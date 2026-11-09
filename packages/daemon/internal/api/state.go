@@ -653,7 +653,6 @@ type PullRequestView struct {
 	// settingSourcesContract and above, and nil — off the wire entirely, `omitzero` — on the copy
 	// served to a caller below it (api's withoutSettingSources). Every producer of a view sets it.
 	RequiresChecks *bool `json:"requiresChecks,omitzero"`
-	FixAttempts    int   `json:"fixAttempts"`
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
