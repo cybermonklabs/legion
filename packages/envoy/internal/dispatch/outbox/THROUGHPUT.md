@@ -5,7 +5,7 @@ Treat the numbers as order-of-magnitude figures.
 
 ## Method
 
-`TestOutboxThroughputUnderRemoteLatency` (`throughput_test.go`):
+`TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency` (`throughput_test.go`):
 
 - A real Postgres (pgvector pg16) and a real JetStream server.
 - The outbox's bus client reaches NATS through a TCP proxy that holds each chunk for half the
@@ -94,10 +94,11 @@ count is unchanged and the runs below were not repeated.
 
 On #2395's chains, the two queries are two of the batch's lookup statements (`loadLookups`), the
 claimant route is `addClaimantRoute` and the primary document's sessions
-`addPrimaryDocumentAuthors`. The three loads run in `TestOutboxThroughputUnderRemoteLatency`
-beside the burst, which runs on the `messages` load alone, and their stream counts there include
-each role forward, which the stream captures on the holder's agent subject. The rows below were
-measured before #2395 and were not repeated on its chains.
+`addPrimaryDocumentAuthors`. The three loads run in
+`TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency` beside the burst, which runs on the
+`messages` load alone, and their stream counts there include each role forward, which the stream
+captures on the holder's agent subject. The rows below were measured before #2395 and were not
+repeated on its chains.
 
 Method: the test has three loads. Each has 200 events across 20 issues, so each batch of 100 has
 every kind of event in its load.
