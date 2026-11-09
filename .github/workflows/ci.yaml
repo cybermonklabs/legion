@@ -2902,10 +2902,12 @@ jobs:
     # cybermonklabs/legion#2922 (merged 2026-11-08T18:46:47Z) added the stall watchdog's suites to
     # packages/pi-legion. Merge-group runs on 2026-11-08 took 303 to 370 s without them, and
     # 536 to 602 s with them, the 602 s one being job 128896832850 of pull request 2938, which hit
-    # the limit with every step successful. The slowest finished run with them is 616 s
-    # (pull-request job 128907622960), and pull-request job 128868703882 was cut at 617 s with
-    # `Test pi-legion` 451 s in, short of the fastest 479 s that step took in eight runs with
-    # the suites, so that run needed at least 645 s. 645 x 1.15 = 742 s, so 13 minutes.
+    # the limit with every step successful. With them, on a branch that adds no pi-legion tests
+    # of its own, the slowest finished run is 616 s (pull-request job 128907622960);
+    # legion/INFRA-956, which adds its own and sets its own budget for them, is left out.
+    # Pull-request job 128868703882 was cut at 617 s with `Test pi-legion` 451 s in, and that
+    # step has taken at least 466 s in every run with the suites as merged (job 128886227337),
+    # so that run needed about 632 s. 632 x 1.15 = 727 s, so 13 minutes.
     timeout-minutes: 13
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
