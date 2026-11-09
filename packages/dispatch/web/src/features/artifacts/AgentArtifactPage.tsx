@@ -24,8 +24,8 @@ export function AgentArtifactPage(): ReactNode {
     ...agentArtifactQuery(route?.session, route?.slug),
     enabled: route !== undefined,
   });
-  // The browser's own title bar holds no markup, and an artifact's name is one line of text
-  // already - no markdown body to render or strip - so it goes in as the characters it is.
+  // The title bar holds no markup, so an artifact's name goes in as the characters it is; the
+  // reading list's `agent-artifact-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     artifact.data === undefined ? "Artifact · Dispatch" : `${artifact.data.name} · Dispatch`
   );

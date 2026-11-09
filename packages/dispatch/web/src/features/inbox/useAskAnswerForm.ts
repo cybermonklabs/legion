@@ -159,9 +159,9 @@ export function useAskAnswerForm({
   // the shell's indicator shows the answer only while it is out.
   const mutation = useKeyedWrite({
     inline: true,
-    // A write's label is one line the Writes indicator and its refusals read as text, so it
-    // holds no markup: the question goes in as the characters its author wrote. It names which
-    // write this is, so it must stay what the reader was shown, never a title drawn over it.
+    // The question goes in as the characters its author wrote: a write's label is one line the
+    // Writes indicator reads as text, and the reading list's `write-label`
+    // (`DISPATCH_READING_SURFACES`) says why.
     label: () => `Answer to “${ask.question}”`,
     write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
     onMutate: async () => {
@@ -248,7 +248,7 @@ export function useAskAnswerForm({
   }, [answerLive, ask.id]);
   const clarification = useKeyedWrite({
     inline: true,
-    // The same line of the Writes indicator: text, with no markup to draw (see above).
+    // The same line of the Writes indicator: `write-label` again (see above).
     label: () => `Question back on “${ask.question}”`,
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {

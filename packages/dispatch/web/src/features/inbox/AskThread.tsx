@@ -108,8 +108,8 @@ export function AskReplyComposer({
       return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
     },
     inline: true,
-    // A write's label is one line the Writes indicator reads as text, so it holds no markup:
-    // the question goes in as the characters its author wrote (`useAskAnswerForm`).
+    // The question goes in as the characters its author wrote: the reading list's `write-label`
+    // (`DISPATCH_READING_SURFACES`) says why.
     label: () => `Reply on “${ask.question}”`,
     mutationKey,
     onSuccess: (_comment, text) => {

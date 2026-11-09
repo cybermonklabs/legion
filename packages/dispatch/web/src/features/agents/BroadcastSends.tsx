@@ -189,9 +189,8 @@ export function BroadcastSends({
                   <SentBroadcast created={row.created} />
                 )}
               </span>
-              {/* No `source`: a broadcast send is no record of the reference graph - the graph
-                  holds the copy each recipient got, never the send, and a send still queued
-                  here has not reached the server at all - so a `#id` in it names nothing. */}
+              {/* No `source`: why a broadcast send is no record is the reading list's
+                  `broadcast-send-row` (`DISPATCH_READING_SURFACES`). */}
               <MarkdownPreview
                 className={`min-w-0 flex-1 ${textMutedOnSurface}`}
                 lines={1}

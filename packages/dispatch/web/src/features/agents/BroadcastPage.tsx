@@ -219,9 +219,8 @@ export function BroadcastPage(): ReactNode {
             {answeredCount(recipients)} of {recipients.length} answered
           </span>
         </p>
-        {/* No `source`: a broadcast is no record of the reference graph - the graph holds the
-            copy each recipient got, never the broadcast - so a `#id` in it declares nothing and
-            names nothing. */}
+        {/* No `source`: why a broadcast's own body is no record is the reading list's
+            `broadcast-sent-body` (`DISPATCH_READING_SURFACES`). */}
         <div className={`mt-2 ${textPrimaryOnCanvas}`}>
           <MarkdownBody markdown={sent.body} />
         </div>

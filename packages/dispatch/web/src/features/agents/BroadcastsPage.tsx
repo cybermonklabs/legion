@@ -86,9 +86,8 @@ export function BroadcastsPage(): ReactNode {
                       {sent.replies} of {sent.recipients} answered
                     </span>
                   </p>
-                  {/* No `source`: a broadcast is no record of the reference graph - the graph
-                      holds the copy each recipient got, never the broadcast - so a `#id` in it
-                      declares nothing and names nothing. */}
+                  {/* No `source`: why a broadcast is no record is the reading list's
+                      `broadcasts-list-body` (`DISPATCH_READING_SURFACES`). */}
                   <MarkdownPreview
                     className={`mt-1 self-stretch text-sm ${textPrimaryOnCanvas}`}
                     fullTitle

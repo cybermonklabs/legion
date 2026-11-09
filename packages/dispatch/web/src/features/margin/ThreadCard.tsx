@@ -84,6 +84,8 @@ function SuggestionDiff({
   // inner span (leaving the padding on the outer element) avoids that.
   const clampClass = clamp ? "line-clamp-2" : "";
   return (
+    // No `source` on either side: why a suggestion's two sides are no record is the reading
+    // list's `margin-suggestion-diff` (`DISPATCH_READING_SURFACES`).
     <ReferenceHostIs host="diff">
       <del
         className={`block rounded px-2 py-1 ${clampClass} ${suggestionRemovedBg} ${suggestionRemovedText}`}

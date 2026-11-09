@@ -97,6 +97,9 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   );
 }
 
+/** The one reader this change does not fold: a GitHub issue or pull-request URL, matched here
+ *  and read from GitHub's own API. Why it is drawn this way is the reading list's
+ *  `github-reference-card` (`DISPATCH_READING_SURFACES`). */
 function githubReference(value: string): string | undefined {
   try {
     const url = new URL(value);
@@ -127,8 +130,8 @@ function GitHubUnfurl({ href, path }: { href: string; path: string }): ReactNode
         {issue.data?.body === undefined ||
         issue.data.body === null ||
         issue.data.body.trim() === "" ? null : (
-          // No `source`: a GitHub issue's body is no record of Dispatch's reference graph -
-          // Dispatch holds no node for it - so a `#id` in it declares nothing and names nothing.
+          // No `source`: a GitHub issue's body is no record of Dispatch's reference graph
+          // (`DISPATCH_READING_SURFACES`, `github-reference-card`).
           <Body markdown={issue.data.body} />
         )}
       </a>

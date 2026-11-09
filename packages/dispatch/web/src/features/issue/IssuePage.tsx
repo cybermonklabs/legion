@@ -360,8 +360,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     [issue.data?.artifacts]
   );
 
-  // The browser's own title bar holds no markup, and an issue's title is one line of text
-  // already - no markdown body to render or strip - so it goes in as the characters it is.
+  // The title bar holds no markup, so an issue's key and title go in as the characters they
+  // are; the reading list's `issue-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );

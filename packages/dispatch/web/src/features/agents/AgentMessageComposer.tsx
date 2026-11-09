@@ -294,10 +294,9 @@ export function AgentMessageComposer({
                     {committedLabel}
                   </option>
                 ) : null}
-                {/* An `<option>` can hold no markup, so the issue's title stays the characters
-                    it is: a key and a title are one line of text already, with no markdown body
-                    to render or strip. The plain-text projection (`PlainText`) is for a
-                    record's own markdown; an issue's title is not that. */}
+                {/* An `<option>` can hold no markup, so the issue's key and title stay the
+                    characters they are; the reading list's `agent-message-issue-option`
+                    (`DISPATCH_READING_SURFACES`) says why. */}
                 {issues.data.map((issue) => (
                   <option key={issue.key} value={issue.key}>
                     {issue.key} · {issue.title}

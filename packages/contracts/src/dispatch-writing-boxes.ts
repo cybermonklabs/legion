@@ -12,6 +12,10 @@
  * A row is one write of one box. A box that makes two - a reply box that answers a comment
  * thread or a message thread, an ask card that answers or asks back - has a row for each,
  * because what Dispatch does with a mention is the write's doing, not the box's.
+ *
+ * A unit test walks the dashboard's own source against this list and the reading list beside it
+ * (`DISPATCH_READING_SURFACES`): a box drawn in a file no row names fails there, and so does a
+ * row whose box the dashboard no longer draws.
  */
 
 /** Where a person writes: one id per box, whatever surface draws it. The ask card's box is one
@@ -86,6 +90,11 @@ export interface DispatchWritingBoxRow {
    *  a CSS selector in brackets instead, the attribute the dashboard puts there for the purpose,
    *  and a name that holds an issue key writes that key as `<ISSUE>`. */
   readonly reach: string;
+  /** The source files that draw the box, from the repository root. One of them holds the box's
+   *  own mount - its field, its editor or its textarea - and one of them writes this row's
+   *  `box` id, which is the whole tie between the list and the place it describes. A box drawn
+   *  in two files, as the document body's editor and the picker bound to it are, names both. */
+  readonly files: readonly string[];
   /** Whether the reference picker is in the box, so a browser row can drive it: the boxes that
    *  mount the shared text field, and the two that host the same picker in an editor of their
    *  own (the document body, the agent live conversation). A box with no picker says why in
@@ -134,6 +143,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "conversation-composer",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Comment",
@@ -143,6 +153,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "conversation-composer",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Comment",
@@ -152,6 +163,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "phone-thread-composer",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Comment",
@@ -161,6 +173,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "phone-thread-composer",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Comment",
@@ -171,6 +184,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "inbox-thread-reply",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Reply",
@@ -180,6 +194,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "inbox-thread-reply",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Reply",
@@ -191,6 +206,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "margin-composer",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/margin/CommentsTab.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Comment",
@@ -200,6 +216,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "margin-composer",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/margin/CommentsTab.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Reason",
@@ -209,6 +226,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "margin-composer",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/margin/CommentsTab.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Question",
@@ -218,6 +236,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "margin-comment-edit",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/margin/ThreadCard.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Edit comment",
@@ -227,6 +246,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "margin-thread-reply",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/margin/ThreadCard.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Reply",
@@ -240,6 +260,10 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "document-body",
     covered: true,
     delivers: false,
+    files: [
+      "packages/dispatch/web/src/features/doc/DocumentRefPicker.tsx",
+      "packages/dispatch/web/src/features/doc/editor.ts",
+    ],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Document editor",
@@ -251,6 +275,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "agents-row-composer",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: false,
     reach: "Comment",
@@ -260,6 +285,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "agents-row-composer",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Comment",
@@ -271,6 +297,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "agents-row-composer",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Comment",
@@ -283,6 +310,10 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "agent-live-composer",
     covered: true,
     delivers: false,
+    files: [
+      "packages/dispatch/web/src/features/agent-view/AgentThread.tsx",
+      "packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx",
+    ],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: false,
     reach: "[data-agent-message]",
@@ -293,6 +324,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "suggestion-replacement",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Replacement",
@@ -303,6 +335,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "ask-option-label",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Option 1 label",
@@ -312,6 +345,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "ask-option-description",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Option 1 description",
@@ -323,6 +357,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "ask-answer",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/inbox/AskCard.tsx"],
     hint: DISPATCH_WRITING_HINT_ASK,
     issueRows: true,
     reach: "[data-ask-answer]",
@@ -332,6 +367,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "ask-answer",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/inbox/AskCard.tsx"],
     hint: DISPATCH_WRITING_HINT_ASK,
     issueRows: true,
     reach: "[data-ask-answer]",
@@ -341,6 +377,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "ask-thread-reply",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/inbox/AskThread.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Reply",
@@ -351,6 +388,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "decisions-change",
     covered: true,
     delivers: true,
+    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
     hint: DISPATCH_WRITING_HINT_DELIVERED,
     issueRows: true,
     reach: "Your change",
@@ -362,6 +400,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "create-issue-spec",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: false,
     reach: "Spec (optional)",
@@ -371,6 +410,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "approval-reason",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/doc/ApprovalChip.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Reason",
@@ -382,6 +422,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "broadcast",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/agents/AgentsPage.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: false,
     reach: "Broadcast message",
@@ -391,6 +432,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "architecture-reason",
     covered: true,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/architecture/AttachmentLists.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Why <ISSUE> is not architectural",
@@ -401,6 +443,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "delivery-production-jobs",
     covered: false,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
     hint: "",
     issueRows: false,
     reach: "Production jobs",
@@ -411,6 +454,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "delivery-population-authors",
     covered: false,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
     hint: "",
     issueRows: false,
     reach: "Population authors",
@@ -421,6 +465,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "delivery-excluded-repos",
     covered: false,
     delivers: false,
+    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
     hint: "",
     issueRows: false,
     reach: "Excluded repositories",

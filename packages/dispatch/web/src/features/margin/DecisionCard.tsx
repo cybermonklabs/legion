@@ -73,10 +73,8 @@ export function DecisionCard({
           </Link>
         )}
       </h3>
-      {/* No `source`: this is a passage of the issue's `decisions.md`, and the decisions view
-          names that document by its address alone (`IssueDecisions.document`) - never by the
-          artifact id a `TextSource` is - so no record reaches this surface. The Decisions page
-          draws the same passages with theirs (`DecisionsPanel`). */}
+      {/* No `source`: why no record reaches a margin decision card is the reading list's
+          `margin-decision-passage` (`DISPATCH_READING_SURFACES`). */}
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
