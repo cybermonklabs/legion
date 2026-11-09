@@ -15,6 +15,12 @@
 // than a reason to fall back to Docker. The reset holds the server for one test of one test binary
 // at a time, and waits for every client connection to it to end, so the server is the tests' alone
 // and the packages using it run one after another (go test -p 1).
+//
+// A host with neither — no server named and no Docker answering — has nothing to run these tests
+// against, and they are skipped naming both remedies, as internal/testpg's are without a Postgres
+// (testdb.SkipMessage). The skip is what the check below buys: testcontainers panics rather than
+// answering an error when it resolves no Docker host, and a panic in a helper ends the whole test
+// binary, losing every other test of the package.
 package testnats
 
 import (
@@ -51,6 +57,23 @@ const (
 	externalURLEnv     = "LEGION_TEST_NATS_URL"
 	externalMonitorEnv = "LEGION_TEST_NATS_MONITOR_URL"
 )
+
+// skipMessage is what a test asking for the package's shared server is skipped with when there is
+// neither a server named nor a Docker to start a container on, so nothing to test against. The
+// error of the Docker check is appended to it, as the reason that half is missing.
+const skipMessage = "no NATS server to test against: " + externalURLEnv + " and " + externalMonitorEnv + " are unset and Docker does not answer here." +
+	" Run a nats-server of your own, with JetStream and its monitoring endpoint, and name it:\n" +
+	"  nats-server -js -m 8222 &\n" +
+	"  " + externalURLEnv + "=nats://127.0.0.1:4222 " + externalMonitorEnv + "=http://127.0.0.1:8222 go test ./...\n" +
+	"or run the tests where Docker answers, and they start a container of their own."
+
+// nkeySkipMessage is what a test asking for a server of its own, admitting that test's nkey users
+// (StartNkeyAuthorizedUsers), is skipped with when Docker does not answer. Naming a running server
+// in externalURLEnv and externalMonitorEnv is no remedy for this one: that server is shared, and
+// admits everyone, so it cannot enforce the users the test asks for.
+const nkeySkipMessage = "no Docker here to run a NATS server admitting this test's nkey users, and the server " + externalURLEnv +
+	" and " + externalMonitorEnv + " name cannot stand in for it, as it enforces no users of the test's own." +
+	" Run this test where Docker answers."
 
 var (
 	// held is locked by the test using the server, from URL until the test's cleanups have run, so
@@ -102,11 +125,22 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset deletes every stream, so a test creates its own there with CreateStream.
+// The reset deletes every stream, so a test creates its own there with CreateStream. Where
+// neither server is to be had — none named and no Docker answering — t is skipped naming both
+// remedies (skipMessage).
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
 		t.Fatal("testnats: the package's TestMain must return testnats.Main(m), which removes the shared NATS container")
+	}
+	// The skip is decided before the start, not inside it: a run with no Docker and no server
+	// named skips every test that asks for one, while a Docker that answers and then fails to
+	// start the container fails them (startErr below). dockerAnswers is asked once per test
+	// binary, so the second test to be skipped is skipped at once.
+	if server, _, err := external(); err == nil && server == "" {
+		if err := dockerAnswers(); err != nil {
+			t.Skipf("%s (%v)", skipMessage, err)
+		}
 	}
 	take(t)
 	startOnce.Do(func() {
@@ -326,6 +360,44 @@ func retryStreamStoreFailure(create func() error) error {
 	}
 }
 
+// dockerAnswers reports, as the error there is none, whether this host has the Docker these
+// helpers start their containers on: whether testcontainers resolves a Docker host at all, and
+// whether the daemon there answers. It is asked once per test binary, so the tests after the
+// first one skipped are skipped at once rather than waiting on the check each.
+//
+// testcontainers panics instead of answering an error when it resolves no host ("rootless Docker
+// not found", core.MustExtractDockerHost, which every route into the library goes through), and a
+// panic in a helper ends the whole test binary, losing every other test of the package; so the
+// panic is recovered here and answered as the error it is. A Docker that answers and then fails
+// to start a container is no business of this check: that is the test's own failure.
+var dockerAnswers = sync.OnceValue(dockerHealth)
+
+// dockerHealth is the one call dockerAnswers caches, with the host resolution's panic recovered.
+func dockerHealth() (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("find a Docker host: %v", recovered)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), readinessTimeout)
+	defer cancel()
+	if err := dockerProviderHealth(ctx); err != nil {
+		return fmt.Errorf("ask Docker for its info: %w", err)
+	}
+	return nil
+}
+
+// dockerProviderHealth asks testcontainers' own Docker provider for the daemon's info, so the
+// Docker these helpers would use is the one checked; the provider closes its client itself
+// (DockerProvider.Health). A test replaces it to stand in for a host whose resolution panics.
+var dockerProviderHealth = func(ctx context.Context) error {
+	provider, err := testcontainers.NewDockerProvider()
+	if err != nil {
+		return err
+	}
+	return provider.Health(ctx)
+}
+
 // limits caps a NATS test container at one CPU and 512 MiB, as every container the repository's
 // tests and proofs start is capped on a shared host: a test server holds a few small streams.
 var limits = testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
@@ -347,7 +419,8 @@ func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats
 
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
 // authenticating as the nkey user whose public key is user, removed when t ends, and returns its
-// client URL once the server answers there (answering).
+// client URL once the server answers there (answering). It skips t where Docker does not answer
+// (StartNkeyAuthorizedUsers).
 func StartNkeyAuthorized(t testing.TB, user string) string {
 	t.Helper()
 	_, url := StartNkeyAuthorizedUsers(t, Image, NkeyUser{Public: user})
@@ -363,8 +436,13 @@ type NkeyUser struct {
 
 // StartNkeyAuthorizedUsers is StartNkeyAuthorized for a server of image admitting users alone,
 // each with its permissions. It returns the container, for a test that reads the server's log.
+// Such a server is this test's own, so a host with no Docker skips the test rather than standing
+// a shared server in for it (nkeySkipMessage).
 func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*tcnats.NATSContainer, string) {
 	t.Helper()
+	if err := dockerAnswers(); err != nil {
+		t.Skipf("%s (%v)", nkeySkipMessage, err)
+	}
 	entries := make([]string, 0, len(users))
 	for _, user := range users {
 		entry := fmt.Sprintf("{ nkey: %q", user.Public)

@@ -1,7 +1,9 @@
 package testnats
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -20,10 +22,14 @@ import (
 // succeed, as a start timing out under load does — leaves no container behind once it returns: the
 // container is shared by the package, so no test's end would remove it. The container is asked for
 // by its label on the same Docker daemon testcontainers created it on. A run on an external server
-// starts no container, and is how a host with no Docker runs these tests, so it skips this one.
+// starts no container, and is how a host with no Docker runs these tests, so it skips this one, as
+// does a run where Docker does not answer and there is no start to check at all.
 func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	if err := dockerAnswers(); err != nil {
+		t.Skipf("Docker does not answer here, so no start of a container can be checked (%v)", err)
 	}
 	label := "legion-testnats-" + rand.Text()
 	created, err := start(Image,
@@ -220,5 +226,76 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 	}
 	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.message, want)
+	}
+}
+
+// skipRecorder is t with Skipf recorded and the goroutine ended, as t.Skipf does.
+type skipRecorder struct {
+	testing.TB
+	message string
+}
+
+func (s *skipRecorder) Skipf(format string, args ...any) {
+	s.message = fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+// testcontainers panics where it resolves no Docker host at all, and a panic in a helper ends the
+// whole test binary, losing every other test of the package. The check answers that panic as the
+// error it is, which is what lets the helpers skip instead.
+func TestTheDockerCheckAnswersAHostResolutionPanicWithAnError(t *testing.T) {
+	health := dockerProviderHealth
+	t.Cleanup(func() { dockerProviderHealth = health })
+	dockerProviderHealth = func(context.Context) error { panic(errors.New("rootless Docker not found")) }
+	err := dockerHealth()
+	if err == nil || !strings.Contains(err.Error(), "rootless Docker not found") {
+		t.Fatalf("dockerHealth() = %v, want an error naming the panic", err)
+	}
+}
+
+// A host with no server named and no Docker answering has nothing to run these tests against, and
+// the helpers skip the test rather than failing it: the shared server's helper naming both
+// remedies, and the nkey helper, whose server is the test's own, naming Docker and why a named
+// server cannot stand in for it.
+func TestWithNoServerAndNoDockerTheHelpersSkipNamingTheRemedy(t *testing.T) {
+	t.Setenv(externalURLEnv, "")
+	t.Setenv(externalMonitorEnv, "")
+	answers := dockerAnswers
+	t.Cleanup(func() { dockerAnswers = answers })
+	dockerAnswers = func() error { return errors.New("find a Docker host: rootless Docker not found") }
+	for _, tc := range []struct {
+		name string
+		take func(testing.TB)
+		want []string
+	}{
+		{
+			name: "the shared server",
+			take: func(t testing.TB) { URL(t) },
+			want: []string{externalURLEnv, externalMonitorEnv, "nats-server -js", "Docker answers", "rootless Docker not found"},
+		},
+		{
+			name: "a server of the test's own",
+			take: func(t testing.TB) { StartNkeyAuthorized(t, "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") },
+			want: []string{externalURLEnv, externalMonitorEnv, "where Docker answers", "rootless Docker not found"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			skipped := &skipRecorder{TB: t}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				tc.take(skipped)
+			}()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the helper neither skipped nor returned: it is reaching for a Docker that does not answer")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(skipped.message, want) {
+					t.Errorf("the skip message %q does not name %q", skipped.message, want)
+				}
+			}
+		})
 	}
 }
