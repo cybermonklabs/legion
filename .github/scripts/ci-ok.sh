@@ -161,3 +161,5 @@ always_run_text=$(jq -r 'if length > 1 then (.[:-1] | join(", ")) + " and " + .[
 echo "$always_run_text succeeded, every job changes selected succeeded, and every other job succeeded or was skipped"
 
 # INFRA-1413 selection probe, never merged.
+
+# second probe commit, to start this branch's run
