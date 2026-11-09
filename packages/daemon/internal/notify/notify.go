@@ -270,11 +270,14 @@ type SessionDeleted struct {
 }
 
 // SessionRegistration is what the listener's registry holds for one session id at the moment it
-// was read (GET /v1/registry/<session_id>, sessionInfo in packages/envoy/cmd/listener/api.go).
-// Registered is false only for a registry that holds no record of the session at all, which the
-// route answers 404; ClientInstanceID names the client process whose registration it is, empty
-// for an entry a client predating that field wrote, and LastSeen is that registration's own
-// write in unix milliseconds.
+// was read (GET /v1/registry/<session_id>?view=registration, sessionRegistration in
+// packages/envoy/cmd/listener/api.go). Registered is false for the 404 that route answers: a
+// listener carrying that selector writes it only where the session bucket holds no record at
+// all, and one predating it writes it for a record past the gone horizon as well, since the
+// full answer it falls back to still judges the record's state. ClientInstanceID names the
+// client process whose registration it is, empty for an entry a client predating that field
+// wrote and for every answer a listener predating the field gives, and LastSeen is that
+// registration's own write in unix milliseconds.
 type SessionRegistration struct {
 	Registered       bool
 	ClientInstanceID string
@@ -303,15 +306,16 @@ const registrationReadBodyLimit = 1 << 20
 // record is in, while include=unresponsive is what a listener predating the selector needs in
 // order to answer a record past its live window at all — it ignores the unknown selector and
 // answers the full row, which carries no client_instance_id, so against that listener the stop
-// rests on the moment alone. The stop matters exactly when the session's last registration is
-// already past the live window, its process being gone, so without include=unresponsive such a
-// listener would answer 404 for a record it still holds and the stop that is owed would never be
-// sent.
+// rests on the moment alone. Which probe judged the death decides whether that matters: the one
+// the shim's closing stream starts reads the record milliseconds after the last heartbeat, with
+// the record still live, while the resync tick's can be a probe interval later, past the live
+// window, and it is for the second that include=unresponsive is sent at all.
 //
-// A 404 is no failure and no error: the registry holds no registration to stop, which is the
+// A 404 is no failure and no error: there is no registration for the stop to name, which is the
 // outcome the stop wanted, and Registered is false. Every other status is an error naming what
-// the listener said, as a refused delete is, since a stop sent on a registration this daemon
-// could not read would rest on the moment alone.
+// the listener said, as a refused delete is, and the caller then sends nothing: the conditions
+// the delete holds under come from this answer (DeleteConditions), so a delete sent on a
+// registration this daemon could not read would be one sent blind.
 func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -351,11 +355,38 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		session, response.Status, strings.TrimSpace(string(body)))
 }
 
-// DeleteConditions is what one clean stop holds under: the registration it means to remove, named
-// by the client instance that wrote it, and the moment the stop belongs to. Both are sent
-// together and the listener judges both (deleteSessionHandler,
-// packages/envoy/cmd/listener/api.go); ClientInstanceID is left empty only for an entry that
-// carries none, which leaves the moment to judge the delete alone.
+// DeleteConditions is what one clean stop of a dead role's session holds under, and the one
+// place this rule is written out: every other comment that needs it points here.
+//
+// The delete must take the dead process's registration and never the registration a relaunch of
+// the same claim writes under the same session id, so it carries both conditions at once. The
+// listener keeps the entry when either refuses it (session.DeleteConditions.keeps,
+// packages/envoy/internal/session/delete.go), so neither widens what the other admits; each is
+// there to make the other's weakness bearable.
+//
+// NotRegisteredAfter is the moment the daemon's probe judged the process gone, and rides as
+// if_not_registered_after with nothing subtracted from it. The probe runs after the dead
+// process's last heartbeat, so the listener stamped that heartbeat at or before this moment and
+// the registration goes. A moment dated earlier than the probe's, to cover a clock, puts that
+// heartbeat after it and refuses the stop that is owed, because UpdatedAt is the listener's own
+// stamp at every write (packages/envoy/internal/session/registry.go) and tells a dead process's
+// heartbeat from a successor's registration not at all.
+//
+// ClientInstanceID is the id the entry itself carried when the stop read it
+// (ReadSessionRegistration), and names that one client process, which no comparison of moments
+// can. It is what makes carrying the probe's moment undated safe: where the read answered the
+// dead process's own entry, a relaunch's registration is refused by its own identity, whatever
+// the daemon's clock and the listener's say about the moment. Where the read was answered after
+// the relaunch had registered, the id handed back is the successor's and only the moment keeps
+// that registration — the listener judges both at the revision it deletes, under its own
+// compare-and-swap (session.SessionRegistry.DeleteIf), so what is stored when the delete lands
+// decides it, whatever this daemon knew when it sent it. Against a listener that answers no
+// client_instance_id at all the id is empty and the moment judges alone, which is the whole of
+// the condition until that listener is upgraded.
+//
+// An empty ClientInstanceID is left out of the request rather than sent empty: the listener
+// compares no instance for an empty value as for an absent one (session.InstanceMatches), so the
+// two are the same delete and the shorter query states only what the stop really holds.
 type DeleteConditions struct {
 	ClientInstanceID   string
 	NotRegisteredAfter time.Time
@@ -369,32 +400,7 @@ type DeleteConditions struct {
 // for the session answers 404: it is already gone, which is the outcome asked for, so that is no
 // failure.
 //
-// That delete must take the dead process's registration and never the registration a relaunch
-// of the same claim writes under the same session id, so it carries both of its conditions at
-// once. The listener keeps the entry on either of them (session.DeleteConditions.keeps), so
-// neither widens what the other admits; each is there to make the other's weakness bearable:
-//
-//   - NotRegisteredAfter, the moment the daemon's probe judged the process gone, rides as
-//     if_not_registered_after, undated. The probe runs after the dead process's last heartbeat,
-//     so that heartbeat is stamped at or before this moment and the registration goes. Dating
-//     this moment earlier to cover a clock — which the clean stop did by a second until
-//     dispatch://INFRA-2064 — put the dead pane's own last heartbeat after it and refused the
-//     stop that was owed, because UpdatedAt is the listener's own stamp at every write and tells
-//     that heartbeat from a successor's registration not at all.
-//   - ClientInstanceID, read from the entry itself a moment earlier (ReadSessionRegistration),
-//     names that one client process, which no comparison of moments can. It is what makes
-//     carrying the probe's moment undated safe: a relaunch's registration is kept by its own
-//     identity whatever the two clocks say, which is what the earlier dating bought.
-//
-// The listener judges both at the revision it deletes, under its own compare-and-swap
-// (session.SessionRegistry.DeleteIf), so what is stored when the delete lands decides it,
-// whatever this daemon knew when it sent it. That is also what covers a read answered so late
-// that the entry it handed back was already the successor's, whose id this delete would then
-// name: the moment keeps that registration all the same. An entry carrying no instance id
-// leaves the moment to judge alone, and the parameter is then left out rather than sent empty —
-// the listener compares no instance for an empty value as for an absent one
-// (session.InstanceMatches), so the two are the same delete and the shorter query is the one
-// that states only what the stop really holds.
+// The two conditions it carries, and why neither alone would do, are on DeleteConditions.
 func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
 	target := fmt.Sprintf("%s/v1/sessions/%s?if_not_registered_after=%d",
 		p.baseURL, url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())

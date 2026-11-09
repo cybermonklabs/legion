@@ -140,6 +140,19 @@ func (l *listenerRecorder) answerDelete(w http.ResponseWriter, r *http.Request) 
 	_, _ = io.WriteString(w, `{"deleted":true}`)
 }
 
+// deleteConditions is what the stop's delete named, read out of the query the fake recorded, so
+// a test here asserts the conditions the delete holds under and leaves the query's own spelling
+// — the parameter order and the escaping — to the one package that writes it
+// (packages/daemon/internal/notify's session_test.go).
+func (l *listenerRecorder) deleteConditions(t *testing.T) url.Values {
+	t.Helper()
+	conditions, err := url.ParseQuery(l.delete.query)
+	if err != nil {
+		t.Fatalf("parse the delete's query %q: %v", l.delete.query, err)
+	}
+	return conditions
+}
+
 func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, nil))
 }
@@ -147,13 +160,9 @@ func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 // The registration of the process the probe judged gone is the one the stop must remove, and the
 // listener stamps that registration's last write with its own clock: a dead pane's last
 // heartbeat lands moments before the probe says the process is gone. Here it lands 500 ms
-// before, and the stop deletes it.
-//
-// This is the test that is red at main, and the reason it is kept. Main dated the stop a whole
-// second before the moment its probe judged, a margin for a clock skew the listener's own
-// stamping makes no difference to, so this registration read as written after the stop and the
-// listener kept it — the dead process's own heartbeat refusing the stop that was owed
-// (dispatch://INFRA-2064).
+// before, and the stop deletes it. A stop that dated its moment before the probe's by any
+// margin wider than that gap would read this heartbeat as a registration written since and
+// leave it standing, which is the whole of the defect (dispatch://INFRA-2064).
 func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *testing.T) {
 	listener := &listenerRecorder{
 		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-500 * time.Millisecond)},
@@ -196,9 +205,12 @@ func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) 
 		t.Fatalf("the listener was asked %s %s with %q %d times, want one DELETE of the session's key with the bearer",
 			listener.delete.method, listener.delete.path, listener.delete.bearer, listener.delete.requests)
 	}
-	want := fmt.Sprintf("if_not_registered_after=%d&client_instance_id=inst_dead", goneAt.UnixMilli())
-	if listener.delete.query != want {
-		t.Fatalf("the listener was asked %q, want the entry's own instance and the probe's moment, %q", listener.delete.query, want)
+	conditions := listener.deleteConditions(t)
+	if got := conditions.Get("client_instance_id"); got != "inst_dead" {
+		t.Fatalf("the delete named client instance %q, want the one the registry answered, inst_dead", got)
+	}
+	if got := conditions.Get("if_not_registered_after"); got != strconv.FormatInt(goneAt.UnixMilli(), 10) {
+		t.Fatalf("the delete named the moment %q, want the probe's own, %d", got, goneAt.UnixMilli())
 	}
 	if !strings.Contains(logged.String(), "the Envoy session of a role whose process is gone was stopped") {
 		t.Fatalf("logged %q, want the stop reported done", logged.String())
@@ -235,11 +247,11 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 	}
 }
 
-// The listener keeps a registration for three separate reasons, and only it knows which: the
-// daemon says that the registration was kept and hands on the listener's own words for why, in
-// the reason field, instead of asserting one of the three. Here it is kept because the entry
-// belongs to another client instance, which the old line — "it was written after the stop" —
-// stated falsely.
+// The listener keeps a registration for three separate reasons — another client instance owns
+// it, it was written after the moment, or the delete lost its compare-and-swap — and only the
+// listener knows which. So the daemon says that the registration was kept and hands on the
+// listener's own words for why, in the reason field, rather than asserting one of the three.
+// Here it is kept because the entry belongs to another client instance.
 func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 	listener := &listenerRecorder{
 		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
@@ -254,8 +266,8 @@ func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 	if !strings.Contains(logged.String(), "the registration belongs to another client instance") {
 		t.Fatalf("logged %q, want the listener's own reason for keeping the registration", logged.String())
 	}
-	if strings.Contains(logged.String(), "it was written after the stop") {
-		t.Fatalf("logged %q, want no verdict on why the listener kept the registration", logged.String())
+	if !strings.Contains(logged.String(), "the Envoy listener kept the registration of a dead role's session") {
+		t.Fatalf("logged %q, want the kept registration reported as kept", logged.String())
 	}
 }
 
@@ -273,8 +285,13 @@ func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *t
 
 	stop.send(context.Background(), "ses_old_client", goneAt)
 
-	if want := fmt.Sprintf("if_not_registered_after=%d", goneAt.UnixMilli()); listener.delete.query != want {
-		t.Fatalf("the listener was asked %q, want the moment alone, %q", listener.delete.query, want)
+	conditions := listener.deleteConditions(t)
+	if _, named := conditions["client_instance_id"]; named {
+		t.Fatalf("the delete named client instance %q, want no instance parameter at all for an entry that carries none",
+			conditions.Get("client_instance_id"))
+	}
+	if got := conditions.Get("if_not_registered_after"); got != strconv.FormatInt(goneAt.UnixMilli(), 10) {
+		t.Fatalf("the delete named the moment %q, want the probe's own, %d", got, goneAt.UnixMilli())
 	}
 	if !listener.entryRemoved {
 		t.Fatal("the registration of a process that named no instance was kept, want it deleted on the moment alone")
@@ -297,15 +314,15 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 	if listener.delete.requests != 0 {
 		t.Fatalf("the listener was asked %d deletes, want none for a session it holds no registration of", listener.delete.requests)
 	}
-	if !strings.Contains(logged.String(), "the Envoy listener holds no registration of a dead role's session, so none was stopped") {
+	if !strings.Contains(logged.String(), "the Envoy listener answered no registration of a dead role's session, so none was stopped") {
 		t.Fatalf("logged %q, want the absent registration reported", logged.String())
 	}
 }
 
-// A read the listener refuses names no registration, and a delete sent on it would rest on the
-// moment alone — the very judgement that refused a dead pane's own last heartbeat. So nothing is
-// deleted and nothing is tried again: the registration lapses at the gone horizon, which is the
-// wait the session already had.
+// A read the listener refuses names no registration, and the conditions the delete holds under
+// are what that read returns: a delete sent without it is sent blind and can take a live
+// registration. So nothing is deleted and nothing is tried again, and the registration lapses
+// at the gone horizon, which is the wait the session already had.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)

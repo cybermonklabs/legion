@@ -1363,27 +1363,13 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // very decision that asks for the stop goes on to relaunch the claim under the same session id
 // (Machine.died), and the relaunch registers that id again. So the stop names the dead
 // process's own registration — its client instance id, read from the listener first (send) —
-// and carries goneAt beside it, and the listener deletes only under both.
+// and carries goneAt beside it, and the listener deletes only under both. What each condition
+// is for, and why neither alone would do, is on notify.DeleteConditions.
 //
-// Neither condition alone would do. The moment alone cannot: UpdatedAt is stamped by the
-// listener's own clock on every write (packages/envoy/internal/session/registry.go), not by the
-// registering process, so a stop dated before the moment it was asked at — the second this
-// change removes — read the dead pane's own last heartbeat as a registration written since and
-// refused the stop that was owed (dispatch://INFRA-2064). Carrying the probe's own moment
-// undated is what removes that refusal, since the probe runs after that heartbeat, and the
-// instance id is what guards the relaunch in the dating's place. The instance id alone cannot:
-// it is read a moment before the delete, so a read answered after the relaunch had registered
-// hands back the successor's id, and a delete naming it would take the live registration; the
-// moment keeps that registration all the same.
-//
-// The listener keeps the entry on either condition (session.DeleteConditions.keeps), so the id
-// rescues no registration the moment refuses: a heartbeat whose write lands after the probe, or
-// a listener clock ahead of this daemon's, is still kept even where the id names the dead
-// process, and that session waits the gone horizon out as it did before this path existed.
-//
-// The judgement is the listener's, at the revision it deletes, as the session registry's own
-// compare-and-swap is (session.SessionRegistry.DeleteIf): what is stored when the delete lands
-// decides it, whatever this daemon knew when it sent it.
+// The listener keeps the entry when either condition refuses it, so the id rescues no
+// registration the moment refuses: a heartbeat whose write lands after the probe, or a listener
+// clock ahead of this daemon's, is kept even where the id names the dead process, and that
+// session waits the gone horizon out as it did before this path existed.
 //
 // The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
 // answers does not leave the stop in flight for as long as it likes, and supervision's own end
@@ -1414,11 +1400,11 @@ type sessionStop struct {
 // process gone. It reads what the listener holds for the session and then deletes that
 // registration by name: one read, one delete, one answer, and nothing is sent twice.
 //
-// A read the listener does not answer sends no delete at all. A stop that named no instance id
-// would rest on the moment alone, and the moment alone is what refused the dead process's own
-// last heartbeat (cleanSessionStop); a registration left standing lapses at the gone horizon,
-// which is the wait the session already had, where a delete sent blind can take a live one.
-// A registry that holds no registration has already reached the outcome the stop asked for.
+// A read the listener does not answer sends no delete at all: the conditions the delete holds
+// under are what that read returns (notify.DeleteConditions), so a delete sent without it is
+// sent blind and can take a live registration, where a registration left standing lapses at the
+// gone horizon, which is the wait the session already had. An answer of no registration is the
+// outcome the stop asked for, already reached.
 //
 // It reports the stop refused, kept or done, one line either way, since nothing waits on its
 // answer. The listener keeps a registration for three separate reasons — another client
@@ -1438,7 +1424,7 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 		return
 	}
 	if !registration.Registered {
-		s.log.Info("the Envoy listener holds no registration of a dead role's session, so none was stopped", "session", session)
+		s.log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped", "session", session)
 		return
 	}
 	stopped, err := s.sessions.DeleteSession(ctx, session, notify.DeleteConditions{

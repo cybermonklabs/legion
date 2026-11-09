@@ -54,7 +54,8 @@
 #   holds the run's transcript, every service's log, the daemon's log and each check's answers.
 # - CLEAN_SESSION_STOP_HEARTBEAT_MS (default 5000) is how often every session of the run
 #   heartbeats its registration, the panes' ENVOY_HEARTBEAT_MS and the control's. The window
-#   section below says what it is for; the default leaves every run as it is today.
+#   section below says what it is for; 5000 is the value the rig used before this input existed,
+#   so a caller that names none runs what it always ran.
 #
 # Everything the run installs — the Go binaries, Claude Code and the two plugin builds — goes under
 # $TMPDIR, never /tmp and never the home directory: a pod's own disk is small, and filling it
@@ -88,11 +89,12 @@
 # moment the shim's stream closes, and the delete is one HTTP call after it.
 #
 # The heartbeat is an input because it decides how often a kill lands just after a registration,
-# which is the window a clean stop that compares moments alone can refuse a stop that is owed in
-# (dispatch://INFRA-2064). A small value makes that window certain, so the defect's reproduction
-# is a command rather than an edit; the default leaves every run as it is today. It moves nothing
-# else: the live window, the gone horizon, the reap interval and the ten-second acceptance are the
-# numbers above whatever it is.
+# which is the window a clean stop dated before the moment its probe judged refuses a stop that
+# is owed in (dispatch://INFRA-2064). A small value makes that window near-certain — measured at
+# 3 of 4 runs at main with 500 — so the defect's reproduction is a command rather than an edit,
+# and 5000, the value before this input existed, leaves every run as it was. It moves nothing
+# else: the live window, the gone horizon, the reap interval and the ten-second acceptance are
+# the numbers above whatever it is.
 #
 # ---- the named checks ---------------------------------------------------------------------------
 # Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
@@ -524,20 +526,23 @@ daemon_said_at_least() { [ "$(daemon_said "$1")" -ge "$2" ]; }
 # the two lines that mean the registration is gone because the daemon acted, and leaves the one it
 # found in stop_record.
 #
-# The first is the stop it made. The second is the registry answering that it holds no
-# registration of the session at all, which the daemon reports rather than sending a delete: on
-# the Claude arm claude-envoy's own deregistration can land first, and a record already gone is
-# the outcome the stop asked for.
+# The first is the stop it made. The second is the listener answering that it holds no
+# registration of the session, which the daemon reports rather than sending a delete: on the
+# Claude arm claude-envoy's own deregistration can land first, and a record already gone is the
+# outcome the stop asked for.
 #
-# The line this does NOT accept is the stop the listener kept. Until dispatch://INFRA-2064 it did:
-# the stop dated itself a second before the moment its probe judged, so the dead pane's own last
-# heartbeat refused it, and the comment here said the session's own plugin would deregister it
-# instead — which is false for a SIGKILL of the process that plugin runs in
-# (packages/pi-envoy/src/registration-state.ts, unregisterSession is an explicit call). The stop
-# now names the dead process's own client instance id as well as the moment, so a kept answer for
-# a SIGKILLed role means the registry held a registration some other client instance wrote, which
-# cannot have happened inside the relaunch's first backoff and a process boot. Accepting it would
-# hide this defect's return.
+# The line this does NOT accept is the stop the listener kept. Until dispatch://INFRA-2064 it
+# did, on the ground that the session's own plugin would deregister it instead — which is false
+# for a SIGKILL of the process that plugin runs in (packages/pi-envoy/src/registration-state.ts,
+# unregisterSession is an explicit call). The listener keeps a registration for three reasons
+# (packages/envoy/internal/session/delete.go): another client instance wrote it, it was written
+# after the moment the delete belongs to, or the delete lost its compare-and-swap twice. For a
+# role this run SIGKILLed, each of the three is a defect worth failing on. The first cannot
+# happen inside the relaunch's first backoff and a process boot. The second is the stop dated
+# before the probe's own moment, which is the defect this issue fixed, or a heartbeat whose
+# write landed after the probe. The third is a registration that changed under a delete nothing
+# should have been writing. So the check fails on a kept answer whichever reason it carries, and
+# the daemon's line names that reason for whoever reads the failure.
 #
 # What the clause claims is that the session is gone well inside the horizon, and gone_within
 # above is what measures that; this asks that the daemon's own stop is why, which is what keeps
@@ -546,7 +551,7 @@ stop_record=
 clean_stop_recorded() {
   local session=$1 line
   for line in "the Envoy session of a role whose process is gone was stopped" \
-    "the Envoy listener holds no registration of a dead role's session, so none was stopped"; do
+    "the Envoy listener answered no registration of a dead role's session, so none was stopped"; do
     if grep -F -- "$line" "$evidence/logs/daemon.log" 2>/dev/null | grep -qF -- "$session"; then
       stop_record=$line
       return 0
