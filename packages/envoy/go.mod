@@ -222,4 +222,14 @@ require (
 // sender can no longer write under a root it may not name by parking behind a clock it never
 // sends, which needed nothing here. Breaking: ApplyBudget's zero value for Split allows no
 // split, so a budget literal that leaves it unset refuses every delete that cuts an item.
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.8
+// v1.55.1-sami.9 takes one charge of sami.8's back out, because this package's own drive showed
+// it was never a cost: a deleted range was charged its claimed clock span as content bytes, in
+// the tombstone's integration and again where a merge grows a parked one, so a 17-byte frame
+// claiming 2^40 clocks of a client the room has never seen read as a terabyte of content and
+// every bound refused it, where it deletes nothing and costs the room two integers
+// (TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes). A delete now costs no Bytes at all and is
+// bounded as it was before sami.8: its ranges by Decoded, the splits its edges make by Split,
+// its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
+// about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
+// of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
+replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.9
