@@ -3,8 +3,7 @@
 // helpers a case reads it with. The cases are in `extensions/legion-stall-watchdog-omp.test.ts`,
 // and what was measured to build them is in that file's own header; nothing here is a case, so
 // this module runs nothing on import but the constants below.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Block,
@@ -131,14 +130,6 @@ export async function gone(pane: StallPane, pid: number): Promise<void> {
   await pane.until(`process ${pid} to be gone after the step ended it`, async () =>
     (await runs(pid)) ? undefined : true
   );
-}
-
-/** A directory of this case's own: the claim's state directory, or where a cell writes the pid of
- * the child it started. */
-export async function scratchDir(name: string): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), `legion-watch-${name}-`));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  return directory;
 }
 
 /** The counter file one claim counts its own stall exits in, under `stateDir`. */

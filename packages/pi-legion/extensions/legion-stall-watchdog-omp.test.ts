@@ -3,6 +3,7 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
 import { call } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
@@ -23,7 +24,6 @@ import {
   STEER_TEXT,
   STEP_MS,
   type StallPane,
-  scratchDir,
   skip,
   startPane,
   stepOf,
@@ -103,11 +103,17 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 }, CLEANUP_MS);
 
+/** A directory of one case's own: the claim's state directory, or where a cell writes the pid of
+ * the child it started. The maker is made here rather than in `stall-watchdog-pane.ts`, because
+ * it registers its own `afterEach` where it is called and Bun evaluates an imported module once
+ * per process (`packages/test-fixtures/src/temporary-directories.ts`). */
+const scratchDir = temporaryDirectories("legion-watch");
+
 test.skipIf(skip)(
   "a cell that ends when its child dies: the call is judged from its execution start, the evidence names the child, the owner is told, and the first step ends the child with no abort sent",
   async () => {
-    const state = await scratchDir("child-state");
-    const pidFile = path.join(await scratchDir("child-pid"), "child.pid");
+    const state = scratchDir("child-state");
+    const pidFile = path.join(scratchDir("child-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-child",
       stateDir: state,
@@ -185,8 +191,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a cell that goes on after its child dies: the abort ends the turn, the session lives, and the worker takes a turn again on the message it sent itself",
   async () => {
-    const state = await scratchDir("abort-state");
-    const pidFile = path.join(await scratchDir("abort-pid"), "child.pid");
+    const state = scratchDir("abort-state");
+    const pidFile = path.join(scratchDir("abort-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-abort",
       stateDir: state,
@@ -252,10 +258,10 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a call the abort does not end: the worker ends its own process, the count survives in the state directory, and the launch that reaches the cap ends nothing and tells its owner",
   async () => {
-    const state = await scratchDir("exit-state");
+    const state = scratchDir("exit-state");
     /** One launch of the same claim on that state directory, whose host has no `abort()`. */
     const launch = async (name: string): Promise<StallPane> => {
-      const pidFile = path.join(await scratchDir(`${name}-pid`), "child.pid");
+      const pidFile = path.join(scratchDir(`${name}-pid`), "child.pid");
       const pane = await startPane({
         name,
         stateDir: state,
@@ -329,7 +335,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a counter file the worker cannot read ends no process: the ladder stops at its last step and tells its owner instead",
   async () => {
-    const state = await scratchDir("unreadable-state");
+    const state = scratchDir("unreadable-state");
     // A counter file this worker may not read: a count it cannot trust is one it will not end its
     // own process on.
     const file = exitsFile(state);
@@ -338,7 +344,7 @@ test.skipIf(skip)(
       `${JSON.stringify({ exits: 0, at: "2026-11-07T00:00:00Z", who: "x" })}\n`
     );
     await chmod(file, 0o000);
-    const pidFile = path.join(await scratchDir("unreadable-pid"), "child.pid");
+    const pidFile = path.join(scratchDir("unreadable-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-unreadable",
       stateDir: state,
@@ -367,8 +373,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a cell that finishes inside its bound is left alone: no record, no notice, no process ended, and its result comes back as usual",
   async () => {
-    const state = await scratchDir("control-state");
-    const pidFile = path.join(await scratchDir("control-pid"), "child.pid");
+    const state = scratchDir("control-state");
+    const pidFile = path.join(scratchDir("control-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-control",
       stateDir: state,
@@ -415,7 +421,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a cell with no child, on a kernel older than its call: the first step ends this session's own `eval` runner, which is the rule that needs the runner's real command",
   async () => {
-    const state = await scratchDir("runner-state");
+    const state = scratchDir("runner-state");
     const pane = await startPane({
       name: "stall-runner",
       stateDir: state,
@@ -472,8 +478,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a steering delivery into the turn a wedged cell holds open takes nothing out of the watch's book, and the entry closes the run's calls at an end an extension could have told apart",
   async () => {
-    const state = await scratchDir("steer-state");
-    const pidFile = path.join(await scratchDir("steer-pid"), "child.pid");
+    const state = scratchDir("steer-state");
+    const pidFile = path.join(scratchDir("steer-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-steer",
       stateDir: state,
@@ -534,8 +540,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a shell call the host backgrounds leaves the watch's book with the host's own end, past the moment its own deadline would have had it judged, while the process it started runs on",
   async () => {
-    const state = await scratchDir("background-state");
-    const pidFile = path.join(await scratchDir("background-pid"), "child.pid");
+    const state = scratchDir("background-state");
+    const pidFile = path.join(scratchDir("background-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-background",
       stateDir: state,

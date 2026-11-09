@@ -1,21 +1,15 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { expect, test } from "bun:test";
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cardLines, readCardLines } from "./card-entries";
 
-/** Every directory this file made, removed when it has run. */
-const scratch: string[] = [];
-
-afterAll(async () => {
-  for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true });
-});
+/** A directory of this file's own, removed after the test that made it. */
+const scratchDir = temporaryDirectories("card-entries");
 
 /** A session file of this file's own, holding `text`. */
 async function sessionFile(text: string): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "card-entries-"));
-  scratch.push(dir);
-  const file = path.join(dir, "session.jsonl");
+  const file = path.join(scratchDir(), "session.jsonl");
   await writeFile(file, text);
   return file;
 }

@@ -1,33 +1,21 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { expect, test } from "bun:test";
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { awaitSettled, transcriptEntries, transcriptSettled } from "./transcript-entries";
 
 const KIND = "legion.stall-watch";
 
-/** Every directory this file made, removed when it has run: a pod's `$TMPDIR` is the issue's own
- * volume, shared by every role of the issue. */
-const scratch: string[] = [];
-
-afterAll(async () => {
-  for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true });
-});
+/** A directory of this file's own, removed after the test that made it. */
+const scratchDir = temporaryDirectories("transcript-entries");
 
 /** A transcript entry as a pane writes one. */
 const entry = (customType: string, n: number): string =>
   JSON.stringify({ customType, data: { n, openMs: 7_004 } });
 
-/** A directory of this file's own. */
-async function scratchDir(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "transcript-entries-"));
-  scratch.push(dir);
-  return dir;
-}
-
 /** A sessions directory holding one `.jsonl` whose text is `text`. */
 async function sessions(text: string): Promise<string> {
-  const dir = await scratchDir();
+  const dir = scratchDir();
   await writeFile(path.join(dir, "session.jsonl"), text);
   return dir;
 }
@@ -63,7 +51,7 @@ test("a complete line that is malformed throws whatever the writer is doing", as
 });
 
 test("a directory that does not hold exactly one transcript reads as empty", async () => {
-  const none = await scratchDir();
+  const none = scratchDir();
   expect(await transcriptEntries(none, KIND, "alive")).toEqual([]);
   const two = await sessions(`${entry(KIND, 1)}\n`);
   await writeFile(path.join(two, "second.jsonl"), `${entry(KIND, 2)}\n`);
@@ -74,7 +62,7 @@ test("a transcript is settled unless it ends mid-line; an empty or absent one is
   expect(await transcriptSettled(await sessions(`${entry(KIND, 1)}\n`))).toBe(true);
   expect(await transcriptSettled(await sessions(""))).toBe(true);
   expect(await transcriptSettled(await sessions(`${entry(KIND, 1)}\n{"cus`))).toBe(false);
-  expect(await transcriptSettled(await scratchDir())).toBe(true);
+  expect(await transcriptSettled(scratchDir())).toBe(true);
 });
 
 test("the wait for a settled transcript returns at once, and throws naming it at its bound", async () => {
