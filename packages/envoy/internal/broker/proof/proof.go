@@ -29,10 +29,9 @@ type Subject struct {
 	// Thumbprint is the key this proof was signed with, which is the key the row it names was
 	// pinned to when Verify read that row: the two Verify compared and found equal, and the
 	// whole of what the proof proved. A caller that reads the row again reads it by this
-	// thumbprint beside the id (enroll.Service.CredentialForKey), because the row's key can
-	// move between the two reads — the pods of one ServiceAccount share a credential row on
-	// this schema — and a second read by the id alone would answer whatever key holds the row
-	// by then.
+	// thumbprint beside the id, never by the id alone, because the row's key can move between
+	// the two reads; enroll.Service.CredentialForKey is that read, and its own doc says what
+	// moves a key.
 	Thumbprint string
 }
 

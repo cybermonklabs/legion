@@ -25,8 +25,7 @@ import (
 // (IssueTokenLoginTx's subject-only conflict target).
 func (ts *testServer) podLogin(t *testing.T, key *ecdsa.PrivateKey, podUID string) string {
 	t.Helper()
-	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, podUID, time.Hour),
-		signMachineLoginRequest(t, key, ts.URL, "", "cluster.example", "legion-daemon"))
+	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, podUID, time.Hour), ts.daemonRequest(t, key))
 	if status != http.StatusOK {
 		t.Fatalf("token login of pod %s = %d %s, want 200", podUID, status, body)
 	}
@@ -90,7 +89,7 @@ func TestALauncherProofEndsNothingUnderAKeyTheRowNoLongerHolds(t *testing.T) {
 	// built here, outside the handler's goroutine, so the hook only sends the request.
 	login, err := json.Marshal(map[string]any{
 		"token":   ts.accountToken(t, daemonAccount, siblingUID, time.Hour),
-		"request": signMachineLoginRequest(t, siblingKey, ts.URL, "", "cluster.example", "legion-daemon"),
+		"request": ts.daemonRequest(t, siblingKey),
 	})
 	if err != nil {
 		t.Fatalf("marshal the sibling's login: %v", err)

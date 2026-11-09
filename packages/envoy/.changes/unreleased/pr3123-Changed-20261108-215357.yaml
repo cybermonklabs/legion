@@ -6,7 +6,11 @@ body: |-
   (`agent-secrets enroll --pod`). `BROKER_SERVICE_LOGINS` refused such an account before,
   because every pod of it holds a token for it. What holds the narrowing is the enrolment rule
   rather than the setting: such a login enrols the one pod whose token made it, any other pod
-  UID is `403 POD_SELF_ENROLL_ONLY`. Ending an enrollment reads the same pair, so a pod of the
+  UID is `403 POD_SELF_ENROLL_ONLY`, and that enrolment states no session name, `403
+  POD_SELF_ENROLL_NO_SESSION`, since the pods of one account enrol under one principal, so a
+  name such a pod picked would be a sibling pod's and the enrolment would take that sibling's
+  grants and pending requests off it while it runs. `agent-secrets enroll --pod` sends none.
+  Ending an enrollment reads the same pair, so a pod of the
   account ends its own enrollment and no other pod's of that account, including on the schema
   this release ships, where the two pods share one credential row and the enrolling-credential
   test alone would have let the pod that took it over end the other's. A launcher that enrols

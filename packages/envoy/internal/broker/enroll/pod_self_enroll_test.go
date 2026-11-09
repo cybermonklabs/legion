@@ -123,9 +123,9 @@ func (r podRig) loginWithKey(t *testing.T, account, podUID string, key loginKey)
 	if err != nil {
 		t.Fatalf("IssueTokenLogin(%s, pod %q): %v", account, podUID, err)
 	}
-	cred, err := r.svc.Credential(ctx, id.String())
+	cred, err := r.svc.CredentialForKey(ctx, id.String(), key.thumbprint)
 	if err != nil {
-		t.Fatalf("Credential(%s): %v", id, err)
+		t.Fatalf("CredentialForKey(%s): %v", id, err)
 	}
 	return cred
 }
@@ -136,6 +136,17 @@ func (r podRig) enroll(t *testing.T, cred Credential, account, podUID string) (E
 	return r.svc.Create(context.Background(), cred, Enrollment{
 		Kind: "pod", RuntimeID: podUID, Thumbprint: "tp-" + podUID + "-" + cred.ID.String(),
 		PodToken: r.token(t, account, podUID),
+	})
+}
+
+// enrollSession is enroll stating session as the agent session the enrollment belongs to: what
+// the daemon sends for each worker pod it starts, and what a pod picking a name for itself would
+// send.
+func (r podRig) enrollSession(t *testing.T, cred Credential, account, podUID, session string) (Enrollment, error) {
+	t.Helper()
+	return r.svc.Create(context.Background(), cred, Enrollment{
+		Kind: "pod", RuntimeID: podUID, Thumbprint: "tp-" + podUID + "-" + cred.ID.String(),
+		PodToken: r.token(t, account, podUID), SessionID: str(session),
 	})
 }
 
@@ -190,6 +201,69 @@ func TestAnAccountInBothListsEnrolsItsOwnPodAlone(t *testing.T) {
 	}
 }
 
+// TestAPodEnrollingItselfStatesNoSessionNameAndTakesNoSiblingsGrant: the account these pods run
+// as is in both settings — BROKER_SERVICE_LOGINS lists it, so each of its pods logs the service
+// in and enrols itself, and BROKER_SERVICES binds it, so the daemon enrols pods of that account
+// and states each one's session name. Every pod of the account therefore enrols under one carry
+// principal, so a session name a pod picked for itself is a name a sibling pod holds, and the
+// enrolment would take that sibling's live grant off it (adopt) and leave the sibling running
+// with nothing. Create refuses the name instead (ErrPodSelfEnrollNoSession) before it writes
+// anything: the sibling keeps its grant and its enrollment, and the pod enrols itself with no
+// name, as `agent-secrets enroll --pod` has always sent it. The launcher's own enrolment is left
+// alone — it states a session name for each pod it starts, and the next pod of that session
+// takes the grant as before.
+//
+// Both schemas run it. The rule is in Create and reads neither, but the two differ in how many
+// credential rows the pods of one account hold (newPerPodRig), which is what a pod logging
+// itself in meets.
+func TestAPodEnrollingItselfStatesNoSessionNameAndTakesNoSiblingsGrant(t *testing.T) {
+	for _, schema := range []struct {
+		name string
+		rig  func(t *testing.T) podRig
+	}{
+		{"the schema this release ships", newPodRig},
+		{"the per-pod login schema", newPerPodRig},
+	} {
+		t.Run(schema.name, func(t *testing.T) {
+			r := schema.rig(t)
+			r.svc.ServicesByAccount[selfAccount] = podLoginService
+			launcher := r.login(t, launcherAccount, "pod-uid-launcher")
+
+			victim, err := r.enrollSession(t, launcher, selfAccount, "pod-uid-victim", "role-g1")
+			if err != nil {
+				t.Fatalf("the launcher enrols the session's pod: %v", err)
+			}
+			grant := insertLiveGrant(t, r.svc, victim.ID)
+
+			attacker := r.login(t, selfAccount, "pod-uid-attacker")
+			enr, err := r.enrollSession(t, attacker, selfAccount, "pod-uid-attacker", "role-g1")
+			if !errors.Is(err, ErrPodSelfEnrollNoSession) {
+				t.Errorf("a pod enrolling itself under a sibling's session name = enrollment %s, %v; want ErrPodSelfEnrollNoSession", enr.ID, err)
+			}
+			if holder := grantHolder(t, r.svc, grant); holder != victim.ID {
+				t.Errorf("the grant hangs off %s, want the pod it was granted to, %s", holder, victim.ID)
+			}
+			if r.revoked(t, victim.ID.String()) {
+				t.Errorf("the refused enrolment ended the sibling's enrollment %s", victim.ID)
+			}
+			if got := r.rows(t, "pod-uid-attacker"); got != 0 {
+				t.Errorf("enrollments naming pod-uid-attacker = %d, want none: the name is refused before anything is written", got)
+			}
+			if _, err := r.enroll(t, attacker, selfAccount, "pod-uid-attacker"); err != nil {
+				t.Fatalf("the pod enrols itself with no session name: %v", err)
+			}
+
+			next, err := r.enrollSession(t, launcher, selfAccount, "pod-uid-next", "role-g1")
+			if err != nil {
+				t.Fatalf("the launcher enrols the session's next pod: %v", err)
+			}
+			if holder := grantHolder(t, r.svc, grant); holder != next.ID {
+				t.Errorf("the launcher enrolled the session's next pod and the grant hangs off %s, want %s", holder, next.ID)
+			}
+		})
+	}
+}
+
 // TestEveryPodOfAnAccountHoldsItsOwnLoginAtOnce: several pods run as one self-enrolling account at
 // the same time, so each holds a machine login of its own, with its own key and its own pod, and
 // one pod's login never takes another's over. Each enrols its own pod and is refused the other's.
@@ -197,7 +271,8 @@ func TestAnAccountInBothListsEnrolsItsOwnPodAlone(t *testing.T) {
 // (newPerPodRig).
 func TestEveryPodOfAnAccountHoldsItsOwnLoginAtOnce(t *testing.T) {
 	r := newPerPodRig(t)
-	first := r.login(t, selfAccount, "pod-uid-one")
+	firstKey := newLoginKey(t)
+	first := r.loginWithKey(t, selfAccount, "pod-uid-one", firstKey)
 	second := r.login(t, selfAccount, "pod-uid-two")
 	if first.ID == second.ID {
 		t.Fatalf("the second pod's login took the first's credential %s, want one credential per pod", first.ID)
@@ -206,7 +281,7 @@ func TestEveryPodOfAnAccountHoldsItsOwnLoginAtOnce(t *testing.T) {
 		t.Fatalf("live credentials of %s = %d, want one per pod", selfAccount, live)
 	}
 	// The first pod's credential still reads back as its own, key and pod unmoved.
-	again, err := r.svc.Credential(context.Background(), first.ID.String())
+	again, err := r.svc.CredentialForKey(context.Background(), first.ID.String(), firstKey.thumbprint)
 	if err != nil || again.PodUID != "pod-uid-one" {
 		t.Fatalf("the first pod's credential after the second logged in = %+v, %v; want it still pod-uid-one's", again, err)
 	}

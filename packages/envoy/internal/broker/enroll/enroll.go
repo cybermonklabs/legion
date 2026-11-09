@@ -53,8 +53,18 @@ var (
 	// ErrPodSelfEnrollOnly refuses a pod enrollment under the enrolling pod's own token login —
 	// one whose subject is the very ServiceAccount the presented pod token proves — whose runtime
 	// id names another pod. Such a credential belongs to one pod, the pod whose token logged in
-	// (launcher_credentials.pod_uid), so it enrols that pod and nothing else.
+	// (launcher_credentials.pod_uid), so it enrols that pod and nothing else, and under no session
+	// name (ErrPodSelfEnrollNoSession).
 	ErrPodSelfEnrollOnly = errors.New("a pod's own machine login enrols that pod alone")
+	// ErrPodSelfEnrollNoSession refuses a session name on the enrolment ErrPodSelfEnrollOnly holds
+	// to one pod: a pod enrolling itself under its own token login. Every pod of one account
+	// enrols under one principal (carryPrincipal), so a name such a pod picked for itself is a
+	// name a sibling pod of the account holds, and this enrollment would take that sibling's
+	// grants and pending requests off it while the sibling is still running (adopt). A pod
+	// enrolling itself registers no agent session and needs no name: `agent-secrets enroll --pod`
+	// refuses --session-id by name. A launcher's enrolment of a pod it launches is another case
+	// and states a session name as before.
+	ErrPodSelfEnrollNoSession = errors.New("a pod enrolling itself states no session name")
 	// ErrPodNotLaunched refuses a pod enrollment under a token login that neither belongs to that
 	// pod nor launches the pods of the account its token proves: BROKER_SERVICES does not bind
 	// that account to the login's service. Nothing but the deployment's own settings says a
@@ -511,21 +521,8 @@ func (s *Service) tokenLoginListed(subject, service string) bool {
 	return found && listed == service
 }
 
-// Credential loads a launcher credential's own identity (operator, service, host, and a token
-// login's subject) by its id alone, which answers whatever row holds that id at this read. A
-// request a launcher proof authenticated is read by CredentialForKey instead, which holds the
-// row to the key that proof proved. err is a genuine dependency failure; an id no row holds is
-// pgx.ErrNoRows (never silently swallowed into an empty Credential).
-func (s *Service) Credential(ctx context.Context, id string) (Credential, error) {
-	var cred Credential
-	if err := s.Store.Pool.QueryRow(ctx, `select id, operator, service, host, subject, coalesce(pod_uid,'') from launcher_credentials where id=$1`, id).
-		Scan(&cred.ID, &cred.Operator, &cred.Service, &cred.Host, &cred.Subject, &cred.PodUID); err != nil {
-		return Credential{}, err
-	}
-	return cred, nil
-}
-
-// CredentialForKey is Credential for a caller a launcher proof authenticated: it reads the row by
+// CredentialForKey loads a launcher credential's own identity (operator, service, host, and a
+// token login's subject) for a caller a launcher proof authenticated: it reads the row by
 // its id and the key the proof proved together (proof.Subject's LauncherID and Thumbprint, the
 // pair Verify compared), and answers ErrNoCredential when no row holds both — the error every
 // other read of a launcher credential by something that does not name one answers
@@ -564,7 +561,11 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // deployment's settings, the pod must be one of two (podUnderTokenLogin): the login's own pod,
 // when the token proves the login's own account (ErrPodSelfEnrollOnly for any other pod of it),
 // or a pod of an account BROKER_SERVICES binds to the login's service, which is the deployment
-// saying that service launches those pods (ErrPodNotLaunched for anything else). A machine whose
+// saying that service launches those pods (ErrPodNotLaunched for anything else). A pod enrolling
+// its own pod states no session name (ErrPodSelfEnrollNoSession), because the pods of one
+// account enrol under one principal and the name it picked would be a sibling pod's, whose
+// grants this enrollment would then take (adopt); a launcher's enrolment of a pod it launches
+// states one as before. A machine whose
 // Google identity token the exchange
 // accepted enrolls a session under the credential that exchange minted it, which is why it
 // needs no kind and no token of its own here: the credential is the proof. Such a session
@@ -618,6 +619,11 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		}
 		if err := s.podUnderTokenLogin(cred, claims, in.RuntimeID); err != nil {
 			return Enrollment{}, err
+		}
+		// A pod enrolling itself takes no session name. The reading is podUnderTokenLogin's own
+		// pod branch: a token login (no operator) whose subject the presented token proves.
+		if cred.Operator == nil && ownPod(cred, claims.Subject) && in.SessionID != nil && *in.SessionID != "" {
+			return Enrollment{}, ErrPodSelfEnrollNoSession
 		}
 		in.Subject = &claims.Subject
 	}
@@ -1644,7 +1650,7 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 	// machine login — is held to neither: the operator test above is its whole ownership rule.
 	if cred.Operator == nil {
 		if kind == "pod" && enrolledSubject != nil && ownPod(cred, *enrolledSubject) {
-			if cred.PodUID == "" || cred.PodUID != enrolledRuntimeID || enrolledBy != cred.ID {
+			if cred.PodUID != enrolledRuntimeID || enrolledBy != cred.ID {
 				return ErrNotEnrollingCredential
 			}
 		} else if enrolledBy != cred.ID &&

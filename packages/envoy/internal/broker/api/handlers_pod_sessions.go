@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -62,7 +63,7 @@ type podSessionResponse struct {
 // SESSION_FIXED, since such a pod needs no registration and registering one would say something
 // the configuration already says), and a session name no request could name back (400
 // SESSION_INVALID). Each refusal names the account or the name it refused and repeats no token.
-func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, service, callerAccount, callerPodUID string) {
+func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
@@ -76,7 +77,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, serv
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_INVALID", "the pod's ServiceAccount token does not verify")
 		return
 	}
-	if claims.Subject == callerAccount && callerPodUID != "" && claims.PodUID == callerPodUID {
+	if claims.Subject == registrar.Subject && registrar.PodUID != "" && claims.PodUID == registrar.PodUID {
 		writeError(w, http.StatusForbidden, "POD_CALLER_IS_THE_POD",
 			fmt.Sprintf("this is the caller's own pod, %s of %s, and a registrar registers a pod other than the one it runs in", claims.PodUID, claims.Subject))
 		return
@@ -97,7 +98,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, serv
 		// The one record of who may now write under this name: the registrar is the authority
 		// here, so a write it made and a write it stopped making are both read from this line.
 		slog.Info("broker: registered a pod to write under a session name",
-			"service", service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
+			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
 		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, ExpiresAt: expires})
 	}
 }

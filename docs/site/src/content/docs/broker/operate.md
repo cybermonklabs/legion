@@ -194,6 +194,9 @@ An account `BROKER_SERVICES` binds for a service's pods may be listed here as we
 of that account logging the service in to enrol itself (`agent-secrets enroll --pod`).
 Every pod of such an account holds a token for it and so logs the service in, and each login
 enrols the one pod whose token made it: any other pod UID is refused `403 POD_SELF_ENROLL_ONLY`.
+A pod enrolling itself states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`: the pods
+of one account enrol under one principal, so a name such a pod picked would be a sibling pod's,
+and the enrolment would take that sibling's grants. `agent-secrets enroll --pod` sends none.
 The broker verifies the token as it verifies a pod's, against
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE`, so the setting needs both, and refuses a
 token that lives longer than an hour from its issue (`exp` minus `iat`, beside a minute of skew) as
@@ -213,9 +216,13 @@ stops authenticating at its next call, and its next login is refused.
 An account on that list also registers which pod may write under which session name
 (`POST /v1/oauth/exchange/pod-sessions`), which is how a deployment's daemon tells the broker that
 a pod it has just started owns an issue's session. That is a second authority the list carries, so
-a ServiceAccount is on it because the deployment runs that daemon, never because something needs a
-credential: a listed account can register any pod of any account the token exchange serves, and a
-daemon that stops registering costs its pods their writes within the registration's own retention
+weigh it before listing an account: a listed account can register any pod of any account the token
+exchange serves, except the pod the caller itself runs in, which is refused
+`403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row would pick the session name it writes
+under, including a name a sibling pod holds. So listing a session account, which the paragraph
+above describes, gives every pod of it that second authority over every other pod the exchange
+serves, and a deployment that does not want it lists no such account.
+A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
 

@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -10,10 +9,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
-	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 )
 
 // registerPodSession posts a registration to POST /v1/oauth/exchange/pod-sessions with bearer as
@@ -144,11 +141,11 @@ func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 	}
 }
 
-// withExchangeAccounts wires the broker's OAuth provider on the test server's own database with a
-// token exchange that lists accounts, none of them fixing a session — as withOAuth wires one for
-// the machine-login routes. The rig's own entry fixes a session (brokertest.ExchangeSession), and
-// a registration is written only for an entry that fixes none, so a test that registers anything
-// lists the accounts it registers here.
+// withExchangeAccounts is withProvider with a token exchange that lists accounts, none of them
+// fixing a session, as withOAuth is withProvider with the machine-login routes' device login.
+// The rig's own entry fixes a session (brokertest.ExchangeSession), and a registration is
+// written only for an entry that fixes none, so a test that registers anything lists the
+// accounts it registers here.
 func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	t.Helper()
 	entries := make([]exchange.AccountEntry, 0, len(accounts))
@@ -159,23 +156,9 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
-	return func(d *api.Deps) {
-		store := oauthstore.New(d.MachineLogin.Store.Pool)
-		store.Reused = enroll.RevokeReusedCredential
-		secret, err := store.Secret(context.Background())
-		if err != nil {
-			t.Fatalf("Secret: %v", err)
-		}
-		provider, err := oauth.New(oauth.Config{
-			Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute, RefreshLifetime: time.Hour,
-			VerificationURL: brokertest.MachineLoginURL, ProofSkew: time.Minute,
-			Exchange: oauth.ExchangeConfig{Policy: policy},
-		}, store)
-		if err != nil {
-			t.Fatalf("oauth.New: %v", err)
-		}
-		d.OAuth = provider
-	}
+	return withProvider(t, func(config *oauth.Config) {
+		config.Exchange = oauth.ExchangeConfig{Policy: policy}
+	})
 }
 
 // wirePodSession is POST /v1/oauth/exchange/pod-sessions's answer as a registrar reads it.
