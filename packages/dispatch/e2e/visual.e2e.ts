@@ -163,9 +163,9 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // The one thing on these pages that is not the same twice and cannot be waited for:
         // the moment the page answered. A `<time>` carries the relative labels of the Inbox
         // and the Agents page, and the page's own clock is pinned above so each reads the
-        // same; the Delivery and Pipeline pages write that moment as plain text instead
+        // same; the Delivery page writes that moment as plain text instead
         // ("Generated 11/8/2026, 2:27:03 AM · window 11/1/2026-11/8/2026",
-        // DeliveryPage.tsx and PipelinePage.tsx), and a measures card dates its claim the
+        // DeliveryPage.tsx and its Pipeline section), and a measures card dates its claim the
         // same way, in a 2-digit hour and minute whose width does not move.
         //
         // That stamp is masked by the `header` that HOLDS it rather than by its own box,
@@ -179,6 +179,13 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // baseline. Every other page's heading is compared as before. Neither phone page
         // draws that stamp, so on those two rows the header mask matches nothing.
         //
+        // EVERY such header is masked, not the last of them, and that is what INFRA-1077
+        // changed: the Pipeline page became the Delivery page's Pipeline section, so one page
+        // now draws two of these stamps — the page's own header and the section's — and
+        // `/pipeline` redirects onto it. A `.last()` here masked the section's and left the
+        // page's open, which is a band of 121 pixels at x 473-513, y 63-70 that no retake of
+        // the baseline could ever settle: each run writes the time of its own run there.
+        //
         // Nothing else is masked, and the Decisions panel is why that matters. It prints the
         // id of the spec block a decision shaped until the reference graph answers, and a
         // mask over that id did NOT settle it: a uuid is a fixed count of characters and not
@@ -191,10 +198,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // before it, not by widening the bound until the rows passed.
         mask: [
           page.locator("time"),
-          page
-            .locator("header")
-            .filter({ has: page.getByText(/^Generated /) })
-            .last(),
+          page.locator("header").filter({ has: page.getByText(/^Generated /) }),
           page.getByText(/, as of /),
         ],
         // MEASURED, both numbers, by starting at zero.
