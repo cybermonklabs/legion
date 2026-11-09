@@ -754,6 +754,19 @@ BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_MP_BUILD = "Build the Dispatch server"
+# The shard and alone jobs' own build of the same binaries, before the browser step, so that
+# step's budget holds the suite rather than a `go build` (.github/workflows/dispatch-browser.yaml).
+# One name per job, since an exact entry names one run: step of the jobs its gate's job owns.
+BROWSER_SHARD_BUILD = "Build the harness's Go binaries (shard ${{ matrix.shard }} of 4)"
+BROWSER_ALONE_BUILD = "Build the harness's Go binaries (${{ matrix.project }})"
+BROWSER_HARNESS_SERVER = "go build -o ./dispatch-e2e ./cmd/dispatch"
+BROWSER_HARNESS_BROKER = (
+    "go build -o out/dispatch-e2e-broker/ ./cmd/broker ./cmd/dev-oidc-issuer "
+    "./internal/broker/brokertest/requestseed"
+)
+BROWSER_HARNESS_SCRIPT = (
+    f"{BROWSER_HARNESS_SERVER}\nmkdir -p out/dispatch-e2e-broker\n{BROWSER_HARNESS_BROKER}\n"
+)
 BROWSER_INSTALL = "Install the lane's Playwright browsers"
 BROWSER_APT_KEY = "Compute the apt archive cache key"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
@@ -1073,6 +1086,20 @@ GATES = [
         # checks as well.
         pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+        # The shard and alone jobs build the same binaries once, before the browser step, for the
+        # same reason and with the same consequence: each lane's run-server.sh and run-broker.sh
+        # then find theirs current. Both lines have an `-o`, so each entry pins the step's whole
+        # script and names the packages it compiles - the closures the two Runs above check as
+        # well. One entry each, under a name of that job's own: an exact entry must name one
+        # run: step of the jobs its gate's job owns, and these two jobs own one list between them.
+        pinned_step(BROWSER_SHARD, BROWSER_SHARD_BUILD, ENVOY, BROWSER_HARNESS_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], BROWSER_HARNESS_SERVER, {"mode": "build"}),
+            (ENVOY, BROKER_PKGS, BROWSER_HARNESS_BROKER, {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+        pinned_step(BROWSER_ALONE, BROWSER_ALONE_BUILD, ENVOY, BROWSER_HARNESS_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], BROWSER_HARNESS_SERVER, {"mode": "build"}),
+            (ENVOY, BROKER_PKGS, BROWSER_HARNESS_BROKER, {"mode": "build"}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "

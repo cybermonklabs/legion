@@ -123,18 +123,27 @@ jobs:
     # The three cache steps are measured rather than allowed for: they are in the "every other
     # step summed" row of the table above.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 600 s and 85 s of
-    # every other step: 2005 s -> 34 min. That 85 s is the largest sum of the unbudgeted steps
+    # The harness build step below carries 3 minutes: the one reading of that build is the 140 s
+    # it took inside the alone job's browser step in job 129055096326 of run 42585736615 - 53 s
+    # of Dispatch server and 73 s of broker, on a go-envoy entry that held neither binary's
+    # packages - and 140 x 1.15 = 161 s -> 3 min. The go-envoy-test entry this job now restores
+    # holds them, so a run on it is far inside that; the budget is written for the run that
+    # misses, the first after a Go bump, which compiles them from the module cache alone.
+    #
+    # So the job budget is the install step's 1320 s, the browser step's 600 s, the harness
+    # build step's 180 s and 85 s of
+    # every other step: 2185 s -> 37 min. That 85 s is the largest sum of the unbudgeted steps
     # on any one leg, which is the reading of this file's head ("the measured maximum of every
     # step without one") that this job takes. Taking each such step's own maximum across the
-    # eight legs instead gives 104 s and 2024 s, the same 34 min, so the two readings do not
-    # part here.
+    # eight legs instead gives 104 s and 2204 s, the same 37 min, so the two readings do not
+    # part here. The browser step keeps the 600 s measured with that build inside it, which is
+    # now a backstop above the suite alone until a run of this head measures it again.
     #
     # The 114 MB cold draw is still a tail rather than a cost of the lane: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the 627 s install named above. It is accounted in this pull request's
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going
-    # to fail its install holds a runner for up to 34 min before it says so.
+    # to fail its install holds a runner for up to 37 min before it says so.
     #
     # That 627 s install sets none of that, and is named here as the tail it is: it stalled on
     # the apt download where every other install of those runs took 19 to 49 s, and that stall
@@ -148,7 +157,7 @@ jobs:
     # eight projects the full lane's four shards run, of which 1,058 are in the two the
     # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
     # job runs.
-    timeout-minutes: 34
+    timeout-minutes: 37
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -165,19 +174,42 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: each lane's run-server.sh builds the Dispatch server, not the
-      # listener and natsd the family's saving jobs build, so it saves none. Without it that build
-      # is a cold `go build` in every lane.
+      # go-envoy-test, restored only: each lane builds the Dispatch server (e2e/run-server.sh)
+      # and the real broker, its dev OIDC issuer and the request seeder (e2e/run-broker.sh), and
+      # that family's entry is the one that holds them. go-envoy is filled by a build of the
+      # listener and natsd alone (.github/workflows/ci-caches.yaml), so under it every lane
+      # downloaded the modules those two binaries do not use and compiled their packages again;
+      # go-envoy-test is filled by `go test -c -o /dev/null ./...` over the whole envoy module,
+      # so it carries every package these binaries need. Measured: job 129026829144 of run
+      # 42576964054 restored it in 13 s (646 MB) and downloaded 4 modules, where job
+      # 129055096326 of run 42585736615 restored go-envoy in 9 s (153 MB) and then downloaded
+      # 115. This job saves no entry: ci-caches.yaml fills the family on a push to main.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - name: Build the harness's Go binaries (shard ${{ matrix.shard }} of 4)
+        # e2e/run-server.sh and e2e/run-broker.sh build these inside the browser step, under the
+        # harness's boot wait, so a build that grew put the step's own budget at risk rather than
+        # the suite's: in job 129055096326 of run 42585736615 the harness took 140 s of the alone
+        # job's 3 minutes, 73 s of it the broker's build, and that leg timed out. Built here into
+        # the paths those two scripts build into, so each finds its binary current and starts its
+        # servers in seconds, as the multiprocess job's own build step does. Both paths are
+        # ignored (packages/envoy/.gitignore, and `out` in the root one), so the checkout stays
+        # clean.
+        # The 3 minutes this job's head derives.
+        timeout-minutes: 3
+        run: |
+          go build -o ./dispatch-e2e ./cmd/dispatch
+          mkdir -p out/dispatch-e2e-broker
+          go build -o out/dispatch-e2e-broker/ ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -481,20 +513,26 @@ jobs:
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 180 s and 89 s of every
-    # other step summed: 1589 s -> 27 min.
+    # The harness build step carries the 3 minutes the shard job's head derives, from the 140 s
+    # that build took inside this job's own browser step in job 129055096326 of run 42585736615.
+    #
+    # So the job budget is the install step's 1320 s, the browser step's 180 s, the harness
+    # build step's 180 s and 89 s of every
+    # other step summed: 1769 s -> 30 min. The browser step keeps the 180 s measured with that
+    # build inside it, a backstop above the suite alone until a run of this head measures it
+    # again.
     #
     # The 114 MB cold draw is still a tail rather than a cost of this job: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the shard job's 627 s apt stall. It is accounted in this pull request's
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going to
-    # fail its install holds a runner for up to 27 min before it says so.
+    # fail its install holds a runner for up to 30 min before it says so.
     #
     # Three legs of one run is a thin reading, and these are the projects whose rows are read
     # from the wall clock, so a slower machine moves them further than it moves a parallel row.
     # The 15 per cent the rule adds is what carries that, and a leg that outran it fails the
     # browser step by name, which is a reading of its own.
-    timeout-minutes: 27
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -508,19 +546,32 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: each lane's run-server.sh builds the Dispatch server, not the
-      # listener and natsd the family's saving jobs build, so it saves none. Without it that build
-      # is a cold `go build` in every lane.
+      # go-envoy-test, restored only, for the reason and with the measurements the shard job's
+      # step of this name gives: this leg builds the Dispatch server (e2e/run-server.sh) and the
+      # real broker, its dev OIDC issuer and the request seeder (e2e/run-broker.sh), and only
+      # that family's entry holds their packages. This job saves no entry either.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - name: Build the harness's Go binaries (${{ matrix.project }})
+        # The shard job's step of this kind holds why this build is here and not in the browser
+        # step; the two carry a name each because .github/scripts/ci_job_reads.py pins one run:
+        # step per name across this file's jobs. This leg is where that cost timed a step out
+        # (job 129055096326 of run 42585736615, 140 s of harness boot inside a 3-minute budget).
+        # The 3 minutes the shard job's head derives.
+        timeout-minutes: 3
+        run: |
+          go build -o ./dispatch-e2e ./cmd/dispatch
+          mkdir -p out/dispatch-e2e-broker
+          go build -o out/dispatch-e2e-broker/ ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -755,17 +806,18 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: its modules are the envoy module's, but this job builds the
-      # Dispatch server and the dev OIDC issuer, not the listener and natsd the family's saving
-      # jobs build, so it saves none.
+      # go-envoy-test, restored only, for the reason the shard job's step of this name gives:
+      # this job builds the Dispatch server and the dev OIDC issuer, which only that family's
+      # entry holds; go-envoy is filled by a build of the listener and natsd alone. It saves
+      # none.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build the Dispatch server
@@ -899,16 +951,17 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: this job's run-server.sh builds the Dispatch server, not the
-      # listener and natsd the family's saving jobs build, so it saves none.
+      # go-envoy-test, restored only, for the reason the shard job's step of this name gives:
+      # this job's run-server.sh builds the Dispatch server, which only that family's entry
+      # holds. It saves none.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
