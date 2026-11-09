@@ -105,7 +105,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
-			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), query.ID)
+			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}}
 			answer.Node.shape(reader)
 			reader.resolve()
@@ -153,7 +153,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), query.ID)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges}
 	answer.Node.shape(reader)
 	reader.resolve()

@@ -791,11 +791,7 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
 		return nil, err
 	}
-	var subject string
-	if len(rootIDs) > 0 {
-		subject = rootIDs[0]
-	}
-	reader := s.readDisplayTrees(ctx, trees, subject)
+	reader := s.readDisplayTrees(ctx, trees)
 	reads := make([]messageRead, len(roots))
 	for index, root := range roots {
 		root.Deliveries = deliveries[root.ID]

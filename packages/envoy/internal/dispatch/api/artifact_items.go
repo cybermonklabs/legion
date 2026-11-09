@@ -29,7 +29,7 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("id"))
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := shapedAsks(asks, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
@@ -89,7 +89,7 @@ func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("id"))
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	attachEventTrees(events, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, events)

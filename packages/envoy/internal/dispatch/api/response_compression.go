@@ -17,7 +17,8 @@ import (
 // (display_trees.go), which makes the same answer several times larger, so the bytes a browser
 // waits for grow with the trees it asked for. compressAnswers gzips those answers for the callers
 // that say they take gzip, and changes nothing else about them: same status, same JSON, same
-// headers but Content-Encoding and Vary.
+// headers but Content-Encoding, Vary, and the nosniff every answer that goes through this layer
+// is given (pass).
 //
 // gzip alone: every browser and every Go client takes it, and brotli would cost a dependency and
 // a second encoder for an answer nothing holds in a cache.
@@ -42,10 +43,15 @@ const (
 // Every answer carries `Vary: Accept-Encoding` whether or not it was compressed, beside the
 // `Vary: Dispatch-Trees` the same loop adds (varyOnDisplayTrees), so no cache between a browser
 // and Dispatch hands a caller that takes neither gzip nor trees an answer written for one that
-// takes both.
+// takes both. Every answer carries `X-Content-Type-Options: nosniff` the same way, compressed or
+// not: these answers are JSON holding text people wrote, and a browser that reads one of them as
+// something other than the type it was given runs that text as a page of Dispatch's own origin.
+// The routes that serve an upload's own bytes set the same header for the same reason
+// (serveFileVersion, artifact_files.go).
 func compressAnswers(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Accept-Encoding")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
 			// A caller that sends no Accept-Encoding, or none that names gzip, is written the
 			// bytes it was written before this existed, through its own writer.
@@ -170,41 +176,61 @@ type compressingWriter struct {
 	err error
 }
 
-// settle makes the choice, writes the status and the headers under it, and passes on whatever is
-// held. Compressing drops the Content-Length the handler may have set, since the length it names
-// is the length of bytes that are no longer what goes out, and chunks the answer instead.
-func (w *compressingWriter) settle(compress bool) {
-	w.settled = true
-	if compress {
-		w.Header().Del("Content-Length")
-		w.Header().Set("Content-Encoding", compressedEncoding)
-		w.gzip = acquireGzip(w.ResponseWriter)
+// pass settles the answer when the choice is still open - the status and the headers under it go
+// out then, and whatever was held goes out ahead of body - and passes body on to the compressor
+// or to the connection, whichever the answer settled on. compress is read only while the choice
+// is open. Compressing drops the Content-Length the handler may have set, since the length it
+// names is the length of bytes that are no longer what goes out, and chunks the answer instead.
+//
+// The headers and the bytes they describe are written by the one method because the answer's
+// media type is part of what makes its body safe to send: once this layer holds the body, it is
+// this layer that would otherwise hand net/http a typeless body to sniff, and bytes someone
+// else wrote that are sniffed into text/html run as a page of Dispatch's own origin. So an
+// answer that reaches here naming no type goes out as bytes; the nosniff that holds a browser
+// to the type it was given is on every answer of this layer already (compressAnswers).
+func (w *compressingWriter) pass(body []byte, compress bool) (int, error) {
+	held := 0
+	if !w.settled {
+		w.settled = true
+		if compress {
+			w.Header().Del("Content-Length")
+			w.Header().Set("Content-Encoding", compressedEncoding)
+			w.gzip = acquireGzip(w.ResponseWriter)
+		}
+		status := w.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		// A 204 and a 304 carry no body for a type to describe; every other answer names its
+		// media type here if its handler named none.
+		if status != http.StatusNoContent && status != http.StatusNotModified &&
+			w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
+		w.ResponseWriter.WriteHeader(status)
+		if len(w.held) > 0 {
+			held = len(w.held)
+			body = append(w.held, body...)
+			w.held = nil
+		}
 	}
-	status := w.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	w.ResponseWriter.WriteHeader(status)
-	if len(w.held) > 0 {
-		held := w.held
-		w.held = nil
-		w.write(held)
-	}
-}
-
-// write passes bytes on to the compressor or to the connection, whichever the answer settled on.
-func (w *compressingWriter) write(body []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
 	}
+	if len(body) == 0 {
+		return 0, nil
+	}
+	// The count answers for body alone: what was held went out under an earlier Write, which
+	// counted it then.
 	if w.gzip == nil {
-		return w.ResponseWriter.Write(body)
+		written, err := w.ResponseWriter.Write(body)
+		return max(written-held, 0), err
 	}
 	written, err := w.gzip.Write(body)
 	if err != nil {
 		w.err = err
 	}
-	return written, err
+	return max(written-held, 0), err
 }
 
 func (w *compressingWriter) WriteHeader(status int) {
@@ -219,7 +245,7 @@ func (w *compressingWriter) WriteHeader(status int) {
 		w.status = status
 	}
 	if !compressibleAnswer(w.Header()) {
-		w.settle(false)
+		_, _ = w.pass(nil, false)
 	}
 }
 
@@ -227,20 +253,13 @@ func (w *compressingWriter) WriteHeader(status int) {
 // one piece, as json.Encoder writes it, is never copied into the held buffer at all.
 func (w *compressingWriter) Write(body []byte) (int, error) {
 	if w.settled {
-		return w.write(body)
+		return w.pass(body, false)
 	}
 	if !compressibleAnswer(w.Header()) {
-		w.settle(false)
-		return w.write(body)
+		return w.pass(body, false)
 	}
 	if len(w.held)+len(body) >= compressibleMinimum {
-		if len(w.held) == 0 {
-			w.settle(true)
-			return w.write(body)
-		}
-		w.held = append(w.held, body...)
-		w.settle(true)
-		return len(body), w.err
+		return w.pass(body, true)
 	}
 	if w.held == nil {
 		w.held = make([]byte, 0, compressibleMinimum)
@@ -259,7 +278,7 @@ func (w *compressingWriter) ReadFrom(body io.Reader) (int64, error) {
 		return io.Copy(writeOnly{w}, body)
 	}
 	if !w.settled {
-		w.settle(false)
+		_, _ = w.pass(nil, false)
 	}
 	if w.gzip != nil {
 		return io.Copy(writeOnly{w.gzip}, body)
@@ -277,7 +296,7 @@ type writeOnly struct{ io.Writer }
 // that flushes has bytes it wants on the wire now, and below the threshold they go as they are.
 func (w *compressingWriter) Flush() {
 	if !w.settled {
-		w.settle(compressibleAnswer(w.Header()) && len(w.held) >= compressibleMinimum)
+		_, _ = w.pass(nil, compressibleAnswer(w.Header()) && len(w.held) >= compressibleMinimum)
 	}
 	if w.gzip != nil && w.err == nil {
 		if err := w.gzip.Flush(); err != nil {
@@ -296,7 +315,7 @@ func (w *compressingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, http.ErrNotSupported
 	}
 	if !w.settled && (w.status != 0 || len(w.held) > 0) {
-		w.settle(false)
+		_, _ = w.pass(nil, false)
 	}
 	// Past the upgrade the connection's bytes are the handler's frames, not an answer's body.
 	w.settled = true
@@ -319,6 +338,6 @@ func (w *compressingWriter) finish() {
 		return
 	}
 	if !w.settled {
-		w.settle(false)
+		_, _ = w.pass(nil, false)
 	}
 }

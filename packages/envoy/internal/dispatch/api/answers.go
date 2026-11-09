@@ -76,7 +76,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), model.CanonicalLogin(caller.ID))
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	response := model.MyAnswersResponse{Rows: []model.MyAnswerRow{}, Limit: limit, Offset: offset}
 	for rows.Next() {
 		var row model.MyAnswerRow

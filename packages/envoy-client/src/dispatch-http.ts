@@ -759,6 +759,18 @@ function excerpt(text: string, token: string): string {
 }
 
 /**
+ * `base` without the trailing slashes a caller wrote, so one join of a path to it never doubles a
+ * separator. It counts the slashes off the end and slices once, where `/\/+$/` would be a regular
+ * expression run over a string this library's caller chose (CodeQL's `js/polynomial-redos`); a
+ * base of nothing but slashes is left empty, as that pattern left it.
+ */
+function withoutTrailingSlashes(base: string): string {
+  let end = base.length;
+  while (end > 0 && base[end - 1] === "/") end -= 1;
+  return end === base.length ? base : base.slice(0, end);
+}
+
+/**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
  * `writeRetry` paces it.
@@ -788,7 +800,7 @@ export class DispatchClient {
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
   }

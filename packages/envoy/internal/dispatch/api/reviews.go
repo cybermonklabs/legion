@@ -299,7 +299,7 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReviewReads(reviews, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)

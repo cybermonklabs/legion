@@ -45,7 +45,7 @@ func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ..
 // the table had them and from a reading of the markdown where it did not - and starts the store
 // of what was read:
 //
-//	reader := s.readDisplayTrees(r.Context(), trees, issueKey)
+//	reader := s.readDisplayTrees(r.Context(), trees)
 //	rows := shapedComments(comments, reader)
 //	reader.resolve()
 //	WriteJSON(w, http.StatusOK, rows)
@@ -68,10 +68,9 @@ type displayTreeReader struct {
 	// server is the server whose table the trees are read from and stored to, and nil for a
 	// reader that reads every text for display itself: a write's own response, which answers the
 	// text it has just stored the tree of, and a live frame, which has no request behind it.
-	server  *server
-	ctx     context.Context
-	mode    pmdoc.DisplayMode
-	subject string
+	server *server
+	ctx    context.Context
+	mode   pmdoc.DisplayMode
 	// texts and at are the request's registrations. A request registers its texts on one
 	// goroutine - the one that shapes its answer, which is also the one that resolves them -
 	// so a shaper that fans out gathers its parts before it registers them or calls resolve.
@@ -92,11 +91,10 @@ type readDisplayText struct {
 
 // readDisplayTrees is the reader of a request that answers stored texts in the latest mode,
 // which is everything a write stores: a comment, a message, an ask, a broadcast, a document's
-// head. subject is what a failed store is logged under - the issue, or the id of the row the
-// texts belong to - and trees is what the caller asked for (wantsDisplayTrees), a false answering
-// no reader at all.
-func (s *server) readDisplayTrees(ctx context.Context, trees bool, subject string) *displayTreeReader {
-	return s.readDisplayTreesIn(ctx, pmdoc.DisplayLatest, trees, subject)
+// head. trees is what the caller asked for (wantsDisplayTrees), a false answering no reader at
+// all.
+func (s *server) readDisplayTrees(ctx context.Context, trees bool) *displayTreeReader {
+	return s.readDisplayTreesIn(ctx, pmdoc.DisplayLatest, trees)
 }
 
 // readVersionDisplayTrees is readDisplayTrees for a past version's text, which is read in the
@@ -104,15 +102,15 @@ func (s *server) readDisplayTrees(ctx context.Context, trees bool, subject strin
 // version said. No write stores that mode, so the first read of a version stores its tree and
 // every later read of it copies those bytes - the one place a read, rather than a write, is
 // where a tree first reaches the table.
-func (s *server) readVersionDisplayTrees(ctx context.Context, trees bool, subject string) *displayTreeReader {
-	return s.readDisplayTreesIn(ctx, pmdoc.DisplayVersion, trees, subject)
+func (s *server) readVersionDisplayTrees(ctx context.Context, trees bool) *displayTreeReader {
+	return s.readDisplayTreesIn(ctx, pmdoc.DisplayVersion, trees)
 }
 
-func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode, trees bool, subject string) *displayTreeReader {
+func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode, trees bool) *displayTreeReader {
 	if !trees {
 		return nil
 	}
-	return &displayTreeReader{server: s, ctx: ctx, mode: mode, subject: subject}
+	return &displayTreeReader{server: s, ctx: ctx, mode: mode}
 }
 
 // builtDisplayTrees is the reader of an answer whose texts are read where they stand: a write's
@@ -300,8 +298,12 @@ func (r *displayTreeReader) storeOf(missing []int) {
 		ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
 		defer cancel()
 		if err := texttrees.For(r.server.deps.Store).StoreTrees(ctx, r.mode, built); err != nil {
+			// Nothing the request carried is named here. The subject a route had at hand was
+			// the caller's own address on one of them (listMyAnswers), and a person's address
+			// is not something a server log should hold; the mode, the count of texts and the
+			// error say which store failed and why.
 			slog.Warn("dispatch: store display trees failed",
-				"subject", r.subject, "mode", int(r.mode), "error", err)
+				"mode", int(r.mode), "texts", len(built), "error", err)
 		}
 	})
 }

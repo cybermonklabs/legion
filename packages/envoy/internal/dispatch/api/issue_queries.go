@@ -616,7 +616,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
 	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
 	// of its own, beside the rest of the request.
-	reader := s.readDisplayTrees(ctx, trees, key)
+	reader := s.readDisplayTrees(ctx, trees)
 	read.Artifacts = artifactReads(artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
 	reader.resolve()

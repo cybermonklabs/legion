@@ -47,7 +47,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	// Each component's prose is registered with the request's reader as the component is shaped
 	// into the answer below: the trees are the table's rows where it holds them, and the read
 	// stores what it did not.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), project)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	issues, err := loadTreeIssues(r.Context(), pool, project)
 	if err != nil {
 		s.writeHandlerError(w, err)

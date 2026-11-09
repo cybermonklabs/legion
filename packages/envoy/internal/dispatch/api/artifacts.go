@@ -62,7 +62,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("key"))
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
@@ -736,7 +736,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	// The artifact detail is the artifact. Its inbound edges are the graph's to read
 	// (`GET /api/v1/references?to=`, and `GET /api/v1/artifacts/{id}/references` for agents),
 	// so this read does not pay for them.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	read := artifactRead{Artifact: artifact}
 	read.shape(reader)
 	reader.resolve()
@@ -791,7 +791,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser opening a document
 	// this process has not served since it started copies those bytes.
 	if wantsDisplayTrees(r) {
-		reader := s.readDisplayTrees(r.Context(), true, artifact.ID)
+		reader := s.readDisplayTrees(r.Context(), true)
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
 	}
@@ -948,7 +948,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		// goroutine of its own, beside the rest of the request. A version is read again far
 		// more often than it is written, which is what makes the first read's store worth its
 		// one statement.
-		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
+		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r))
 		answer := artifactVersionText{Markdown: markdown, Version: version}
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()

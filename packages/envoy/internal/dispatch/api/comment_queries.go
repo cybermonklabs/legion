@@ -74,7 +74,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), trees, name)
+	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedComments(comments, reader)
 	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
@@ -202,7 +202,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), comment.ID)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	read := commentRead{Replies: shapedComments(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)

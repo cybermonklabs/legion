@@ -104,7 +104,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	// One pass over the page: the reader takes each payload's texts as the shaping registers
 	// them, reads their stored trees in one query and fills what the table did not hold.
-	reader := s.readDisplayTrees(r.Context(), trees, r.PathValue("key"))
+	reader := s.readDisplayTrees(r.Context(), trees)
 	attachEventTrees(events, reader)
 	reader.resolve()
 	encoded, err := encodeListAnswer(events)

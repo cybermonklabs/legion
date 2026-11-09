@@ -245,7 +245,7 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the read-only transaction: %v", err)
 	}
-	reader := served.readDisplayTrees(held, true, "a read-only transaction")
+	reader := served.readDisplayTrees(held, true)
 	read := shapedComment{Comment: model.Comment{Body: body}}
 	read.shape(reader)
 	reader.resolve()
