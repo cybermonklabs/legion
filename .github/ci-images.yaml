@@ -1,33 +1,49 @@
-# The container images this repository's CI jobs fetch, each copied into one package this
-# repository publishes: ghcr.io/cybermonklabs/legion/ci. Every job fetches its copy by digest, so no
-# CI job depends on a third-party registry (sjawhar/legion#2512).
+# The container images this repository's CI jobs fetch, each in one package this repository
+# publishes: ghcr.io/cybermonklabs/legion/ci. Every job fetches by digest, so no CI job depends
+# on a third-party registry (sjawhar/legion#2512).
 #
-# One row per distinct upstream image. Each row holds:
+# One row per image, and a row is one of two kinds: a copy of a third-party image, which
+# carries `upstream:`, or an image this repository builds itself, which carries `built:`. A row
+# holds exactly one of those two keys, because each of them says where the row's bytes came
+# from, and it holds `tag:` and `digest:` besides:
 #
 #   upstream  where the image comes from: the image's own reference at its own registry. Every
-#             row but the playwright one below names Docker Hub, which is why the rest of this
-#             file says Docker Hub where it means the upstream registry.
+#             row that carries one but the playwright row below names Docker Hub, which is why
+#             the rest of this file says Docker Hub where it means the upstream registry.
 #             .github/scripts/mirror-ci-images.sh copies the repository of this reference at the
 #             row's digest, and never the tag it names, so the bytes it lands are this row's
 #             bytes whatever upstream did since. That script copies only a row the package does
 #             not hold, so this repository reads an upstream registry a few times a year.
-#   tag       the copy's tag in the package. A tag keeps the manifest from being a package
-#             version nothing names, which a retention policy may remove. The rule is the
-#             upstream repository's last path element, then the upstream tag when the row names
-#             one, then the first eight hex characters of the digest. The row for
+#   built     the Dockerfile this repository builds the image from, where a copied row names an
+#             upstream: .github/docker/browser.Dockerfile is one.
+#             .github/workflows/browser-image.yaml builds that file and pushes the image into
+#             the package, so mirror-ci-images.sh copies nothing for such a row. Whether the
+#             package holds it is read by the gate's package mode, as it is for every row.
+#   tag       the image's tag in the package. A tag keeps the manifest from being a package
+#             version nothing names, which a retention policy may remove. For a copied row the
+#             rule is the upstream repository's last path element, then the upstream tag when
+#             the row names one, then the first eight hex characters of the digest. The row for
 #             docker.io/library/debian:trixie-slim carries debian-trixie-slim-f6b08b09, and the
-#             pgvector row, whose upstream names a digest alone, carries pgvector-2358fcba. The
-#             digest in the tag gives each digest a tag of its own: a row that moves to a new
-#             digest takes a new tag with it, and the digest it leaves keeps the tag it had.
+#             pgvector row, whose upstream names a digest alone, carries pgvector-2358fcba. For
+#             a built row the rule is the Dockerfile's name without the .Dockerfile suffix,
+#             then those same eight characters, so a row built from
+#             .github/docker/browser.Dockerfile carries browser- and the eight. The digest in
+#             the tag gives each digest a tag of its own: a row that moves to a new digest takes
+#             a new tag with it, and the digest it leaves keeps the tag it had.
 #             .github/scripts/check-ci-images.sh refuses a tag that is not that whole string.
-#   digest    the manifest digest. `crane copy` keeps it, so the copy's digest and the upstream's
-#             are one string, and every consumer names this digest.
+#   digest    the manifest digest. `crane copy` keeps it, so a copied row's digest and its
+#             upstream's are one string, and a built row's digest is the one its build pushed.
+#             Every consumer names this digest.
 #
 # To add an image: add its row and push. ci.yaml's ci-images job copies the rows the package
 # does not hold yet, and then reads the package, which is the half of the gate that answers for
 # it. That job is the one copy path, and it runs on every event ci.yaml runs on: a pull request,
 # a merge group and a dispatch. The gate refuses a consumer that names anything but a digest this
 # file holds.
+#
+# To add an image this repository builds rather than copies, push the Dockerfile first: that
+# push is what builds the image and lands it in the package, and the row carrying the digest
+# that build pushed lands in a later push, for the reason the two commits below are two.
 #
 # To move an image to a new version, push two commits. The first adds the new version's row and
 # leaves every consumer on the row it has, so the ci-images job of that run copies the new
@@ -72,22 +88,13 @@ images:
     tag: nats-2.15.1-alpine-2ae57dfb
     digest: sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6
 
-  # The S3-compatible server the dispatch and envoy-go jobs start: tests3.Image.
+  # The S3-compatible server the envoy-go job starts: tests3.Image. No dispatch job starts it:
+  # a job inside a container cannot start a container it could reach, so
+  # .github/docker/browser.Dockerfile's `weed` stage copies /usr/bin/weed out of this image and
+  # the shard job of .github/workflows/dispatch-browser.yaml starts that baked binary instead.
   - upstream: docker.io/chrislusf/seaweedfs:3.97
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e
-
-  # The Playwright container the Dispatch browser suite's visual job compares its snapshots in
-  # (.github/workflows/dispatch-browser.yaml's visual job, packages/dispatch/e2e/visual-run.sh).
-  # A baseline is a rendering, so the fonts, the freetype and the browser build that made it
-  # decide every pixel of it: the container is what makes one taken by a person and one taken by
-  # CI the same image. Microsoft publishes it and nobody else does, so this is this repository's
-  # one row whose upstream is not Docker Hub. Its tag names Playwright v1.64.1, the release
-  # bun.lock resolves, and the gate that holds the two together is
-  # .github/scripts/check-playwright-version.sh, which pull request #2938 brings.
-  - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
-    tag: playwright-v1.64.1-noble-2f05f8a7
-    digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
 
   # The judge container of pi-legion's skill scenarios: rig.sh's judge_image.
   - upstream: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
@@ -135,3 +142,25 @@ images:
   - upstream: docker.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
     tag: postgres-979bccfd
     digest: sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+
+  # Playwright's own published browser image, with two readers. It is the base of
+  # .github/docker/browser.Dockerfile, which the row below builds, and it is the container the
+  # Dispatch browser suite's visual job compares its snapshots in
+  # (.github/workflows/dispatch-browser.yaml's visual job, packages/dispatch/e2e/visual-run.sh).
+  # A baseline is a rendering, so the fonts, the freetype and the browser build that made it
+  # decide every pixel of it: the container is what makes one taken by a person and one taken by
+  # CI the same image. Its upstream tag carries the Playwright release bun.lock resolves, and
+  # .github/scripts/check-playwright-version.sh refuses a head where the two disagree. It is the
+  # one row whose upstream is not Docker Hub: Microsoft publishes this image on its own registry
+  # alone, and the copy below is what every build and every CI job reads.
+  - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
+    tag: playwright-v1.64.1-noble-2f05f8a7
+    digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+
+  # The browser image this repository builds from the row above, and the one row of this file
+  # with `built:` where every other has `upstream:`: .github/workflows/browser-image.yaml builds
+  # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
+  # it, pinned at this digest by a `container:` of .github/workflows/dispatch-browser.yaml.
+  - built: .github/docker/browser.Dockerfile
+    tag: browser-69c3a316
+    digest: sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5

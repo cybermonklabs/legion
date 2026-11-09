@@ -115,18 +115,24 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **jj (Jujutsu)** for version control, native **Dispatch** for issue tracking
 
-- **Container images** a CI job fetches are copies in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
-  Every workflow, Dockerfile and test names its copy by digest.
-  `.github/ci-images.yaml` holds one row per image (`upstream`, `tag`, `digest`), and `.github/scripts/mirror-ci-images.sh` copies the rows the package does not hold yet with `crane copy`, which keeps the digest.
-  That copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
-  For every `library/golang` row whose upstream names a tag, that script also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
+- **Container images** a CI job fetches all live in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
+  Every workflow, Dockerfile and test names the image it runs by digest.
+  `.github/ci-images.yaml` holds one row per image, each row carrying `tag` and `digest` beside exactly one of two keys that say where its bytes came from:
+  `upstream:` is a copy of a third-party image, which `.github/scripts/mirror-ci-images.sh` makes for the rows the package does not hold yet with `crane copy`, which keeps the digest;
+  `built:` is an image this repository builds itself, from the Dockerfile of this tree that key names, which `.github/workflows/browser-image.yaml` builds and pushes and no script copies.
+  A copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
+  For every `library/golang` row whose upstream names a tag, `mirror-ci-images.sh` also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
   No read of a floating upstream tag can do that work, because it cannot tell a row labelled wrongly now from one labelled rightly long ago.
   An `oven/bun` image declares its version nowhere, so the two builds that run those bytes refuse any Bun but the one `.bun-version` pins.
-  Each row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight characters.
   `ci.yaml`'s `ci-images` job runs that copy and then the package half of the gate, in that order, and it is the one copy path:
   it runs on every event `ci.yaml` runs on — a pull request, a merge group and a dispatch — and a failed copy is re-run with `gh run rerun` where the run is a pull request's, since every job of a re-run attempt of a merge-group run skips.
-  Adding an image is one edit of that file.
-  Moving one to a new version is two commits:
+  Adding a copy is one edit of that file.
+  Adding or changing an image this repository builds is two pushes instead:
+  the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
+  The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
+  Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
   `.github/scripts/check-ci-images.sh` is the gate, and it takes one mode:
@@ -134,17 +140,47 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
 
+- **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
+  Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
+  on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
+  A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
+
 - **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
-  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own.
+  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own;
+  under a second key, `no_second_source:`, it holds one entry per URL CI fetches that is published in one place and nowhere else.
   `.github/scripts/ci-tools.sh` is the one fetch helper every install goes through: it tries the primary, then the second source, and leaves only bytes of the row's digest behind.
   A transport failure of the primary sends it to the second source and a digest mismatch does not, because a checksum mismatch is a supply-chain signal rather than an outage, and every exit names the source that served the bytes.
   Bun's second source is the npm package upstream publishes the same binary in, which needs no copy; crane, changie, mise and jj take a copy in the same package the images live in, addressed by the digest the install checks.
   `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
   A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
-  `.github/scripts/check-ci-tools.sh` is the gate, a step of `lint`: it holds each row to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile), refuses a release-asset URL under `.github/actions` or `.github/workflows` of a repository a row already covers, or of `oven-sh/bun`, and an npm URL under a scope a row names, unless the URL is exactly a row's own, and refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob.
-  It does not see a release asset of a repository no row covers, so a new tool installed from a GitHub release with no row and no second source passes it (dispatch://INFRA-1974).
   `ci.yaml`'s `tool-fallback` job is the live proof: it faults GitHub's release hosts for a whole job, runs the merge base's four installs as the negative control and the head's four beside them, and drives eight corrupted payloads to read every refusal.
   Raising a tool is one commit, unlike an image: a call site names a row rather than a digest, so a second row of the same tool has no name a call site can use, and a row that disagrees with its pin installs one version and verifies another, which is what the gate refuses; Bun is the exception that takes two, and its three `bun-*` rows move in the second commit, with `.bun-version`; `tool-fallback` needs `ci-images`, so the copy is filled before `tool-fallback` reads it, and the one window left is a raise merged while the asset is down and the copy is still cold, where the tool has the single source it has today
+
+- **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
+  It holds each row to its shape — every field present and not empty, one name per row, a `second_source` of `ghcr-mirror` or `npm`, a bare 64-hex lower-case `digest`, and a `primary` and a `mirror_from` that hold the row's own `version` — and to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile).
+  It reads every file under `.github/` as text, bar the manifest itself, which declares addresses and fetches nothing, and refuses a release-asset URL it finds there whatever repository that URL names, at three addresses and no others — on `github.com` the tag's own path and the `latest` permalink, and on `api.github.com` the endpoint `/repos/<owner>/<repo>/releases/assets/<id>`, each over `http` as well as `https` —
+  unless the URL names this repository itself, whose own address `.github/scripts/repo-paths.sh` derives (read with `GITHUB_REPOSITORY` out of its environment, so the name compared against is the one the tree carries and not the one a runner was handed),
+  or the file's own name holds `.test.`,
+  or the URL text is exactly a row's `primary`, a row's `mirror_from`, the npm tarball URL a row derives, or the `url` of a `no_second_source` entry.
+  It reads a host without regard to case, since a host is not case-sensitive, and takes a trailing dot (`github.com.`), an explicit `:80` or `:443`, a `user@` before the host, a missing scheme and an upper-case one as the same address; it compares a path as text, and whether github.com reads a path element without regard to case varies by element — measured against github.com, each reading between two readings of the canonical address that answered `302`: the owner, the repository and the asset's own name each answer `302` in any case, while `/RELEASES/download/`, `/releases/DOWNLOAD/` and an upper-case tag each answer `404`.
+  So a URL differing from a row's only in the case of its owner or repository is READ and then refused, since nothing allows it but a row's exact text; where the gate compares two repositories rather than two URLs — an entry against the rows that cover it, and a URL against this repository's own name — it compares them without regard to case.
+  A URL none of those allows and whose text holds a `$` is refused as an address the job builds rather than as an unnamed one, which is how an entry can decline such a URL: by writing that text verbatim.
+  It refuses an npm URL under a scope a row's `npm_package` names, unless the URL is exactly the tarball a row derives, in a reach of its own which it claims and no more: every `*.yml` and `*.yaml` under `.github/actions` and `.github/workflows`, and nothing else, so an npm fetch written in a shell script under `.github/scripts/` is invisible to it.
+  That reach is deliberate: the class this rule closes is GitHub release assets, and this repository writes the npm registry's address outside those two directories for reasons that fetch nothing (`.github/scripts/check-bun-version.sh:137` lists `registry.npmjs.org/@oven/bun` as a string to detect).
+  It refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob anywhere under `.github/` but `.github/ci-images.yaml`, whose own rows are images.
+  It stops with no verdict at all, naming the file, when the manifest is missing, is not YAML, is not a mapping, names no `registry:`, holds no `tools:`, or holds a `no_second_source:` that is not a list, and when `.github/scripts/repo-paths.sh` does not answer with a release-asset address it can read this repository's name out of.
+
+- **What the tool gate cannot see**, which a reader of a green `lint` needs as much as what it can.
+  The gate compares text, and it guards against an install someone forgets to name, not against one written to slip past it: the change that does that could edit the gate in the same diff, so a reviewer reads both.
+  What it cannot see, then, is every spelling its patterns do not match, and the list that follows gives the ones measured, not all of them.
+  An address assembled at run time out of something the tree never writes, such as a URL read from a file a script downloads first; an install inside a file whose name holds `.test.`; spellings of those three paths that github.com or curl accepts and the patterns do not match — an extra slash before the owner, after the owner or after `releases`, a `/.` segment, `%64ownload` for `download`, `https:/` or `https:///` for `https://`, and a `user@` before a host written with no scheme; and those same bytes reached at any other host, the `release-assets.githubusercontent.com` address each redirect lands on among them, a mirror, a proxy, a copy, and `github.com` written as a path element of some other host, which the gate declines to read for the same reason.
+  A file under `.github/` that is not valid UTF-8 is read by neither rule; a passing run's summary line names each one, and a failing run prints its problems alone.
+
+- **A decline** is how the manifest records a URL whose bytes are published in one place and nowhere else.
+  A `no_second_source` entry carries `url`, `digest`, `pinned_in` and `why`, and the gate refuses one whose shape it cannot read (a missing field, a `url` that is not a release-asset address, two entries for one URL),
+  one whose `url` no file under `.github/` writes, one whose `digest` is not bare 64-hex, one whose `pinned_in` names a file that is missing, is not readable as text, is the manifest itself or is a `.test.` file — a file that fetches nothing and checks nothing cannot be what pins those bytes, and the manifest would satisfy the rule with the entry's own `digest:` line — one whose `digest` does not occur in that file, one whose repository a row already covers, and one whose `why` is a placeholder or is shorter than the minimum the refusal names.
+  Those comparisons are text too: `pinned_in` is compared as the path the entry writes, so `..` or a symlink that reaches the manifest is not recognised as the manifest, and a repository is compared without regard to case but is not percent-decoded.
+  Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where the entries are: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://INFRA-1974).
 
 ## Commands
 
@@ -661,7 +697,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `listener-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
-  The browser suite (`dispatch-browser`) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
+  The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its lanes run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
