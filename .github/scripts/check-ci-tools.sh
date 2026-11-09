@@ -156,6 +156,7 @@ import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -319,6 +320,23 @@ REASON_PLACEHOLDERS = {"todo", "tbd", "n/a", "na", "none", "-", "--", "unknown",
 REASON_MINIMUM = 40
 # A file whose name holds this feeds URLs to a gate as fixtures; rule 3 reads none of them.
 TEST_FILE = ".test."
+
+
+class Found(NamedTuple):
+    """One address rule 3 read in a file: where it starts, the URL as written, what it names,
+    the repository it names where it names one, and the three fragments its refusal is built
+    from — the reason the rule gives, the remedy where no row names the address, and the remedy
+    where the job builds it. The offset comes first because the refusals are sorted back into
+    the order a reader meets them in the file."""
+
+    offset: int
+    url: str
+    what: str
+    repository: str | None
+    reason: str
+    remedy: str
+    built_remedy: str
+
 
 ARG_MISE_VERSION = re.compile(r"^ARG\s+MISE_VERSION=(\S+)\s*$")
 ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
@@ -879,12 +897,14 @@ for row in readable:
 # One pattern over every download host a row names, built here because the set is the rows'.
 # It is read under the same start guard the release-asset patterns are, so a host whose text
 # merely ends in one of these, and one of these laid under another host's path, are no match.
+# The host is a group of its own, the trailing dot a URL may write inside it, so the match
+# names the host and no reader of it parses the address a second time to find out which.
 DOWNLOAD_URL = (
     re.compile(
         URL_START
-        + r"(?i:"
+        + r"(?P<host>(?i:"
         + "|".join(re.escape(host) for host in sorted(download_hosts))
-        + r")\.?(?::(?:80|443))?/[^\s\"'`]*"
+        + r")\.?)(?::(?:80|443))?/[^\s\"'`]*"
     )
     if download_hosts
     else None
@@ -949,21 +969,19 @@ for file in sorted(GITHUB.rglob("*")):
     if file in pinned_paths:
         pin_texts[file] = text
 
-    # offset, the URL as written, what it names, the repository it names, the reason the rule
-    # gives, the remedy where nothing names it, the remedy where the job builds it
-    found: list[tuple[int, str, str, str | None, str, str, str]] = []
+    found: list[Found] = []
     for pattern in ASSET_PATTERNS:
         for match in pattern.finditer(text):
             repository = match.group("repository")
             found.append(
-                (
-                    match.start(),
-                    match.group(0).rstrip(",);"),
-                    f"a release asset of {repository}",
-                    repository,
-                    ASSET_REASON,
-                    ASSET_REMEDY,
-                    ASSET_BUILT_REMEDY,
+                Found(
+                    offset=match.start(),
+                    url=match.group(0).rstrip(",);"),
+                    what=f"a release asset of {repository}",
+                    repository=repository,
+                    reason=ASSET_REASON,
+                    remedy=ASSET_REMEDY,
+                    built_remedy=ASSET_BUILT_REMEDY,
                 )
             )
     # Rule 3's npm half and its download-host half claim every *.yml and *.yaml under
@@ -976,30 +994,30 @@ for file in sorted(GITHUB.rglob("*")):
             if scope not in covered_scopes:
                 continue
             found.append(
-                (
-                    match.start(),
-                    match.group(0).rstrip(",);"),
-                    f"an npm package under {scope}",
-                    None,
-                    ASSET_REASON,
-                    NPM_REMEDY,
-                    NPM_BUILT_REMEDY,
+                Found(
+                    offset=match.start(),
+                    url=match.group(0).rstrip(",);"),
+                    what=f"an npm package under {scope}",
+                    repository=None,
+                    reason=ASSET_REASON,
+                    remedy=NPM_REMEDY,
+                    built_remedy=NPM_BUILT_REMEDY,
                 )
             )
         for match in DOWNLOAD_URL.finditer(text) if DOWNLOAD_URL else ():
-            host = urllib.parse.urlsplit(
-                match.group(0) if "//" in match.group(0) else f"//{match.group(0)}"
-            ).hostname
-            named_by = download_hosts.get((host or "").lower().rstrip("."), "")
+            # The pattern is built from the keys of download_hosts, so what it matched is one
+            # of them, read lower-case as a host is and without the trailing dot a URL may
+            # write.
+            host = match.group("host").lower()
             found.append(
-                (
-                    match.start(),
-                    match.group(0).rstrip(",);"),
-                    f"a download from {host}",
-                    None,
-                    DOWNLOAD_REASON.format(named_by=named_by),
-                    DOWNLOAD_REMEDY,
-                    DOWNLOAD_BUILT_REMEDY,
+                Found(
+                    offset=match.start(),
+                    url=match.group(0).rstrip(",);"),
+                    what=f"a download from {host}",
+                    repository=None,
+                    reason=DOWNLOAD_REASON.format(named_by=download_hosts[host.rstrip(".")]),
+                    remedy=DOWNLOAD_REMEDY,
+                    built_remedy=DOWNLOAD_BUILT_REMEDY,
                 )
             )
 

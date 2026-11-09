@@ -30,10 +30,10 @@
 #       Fetches the correct bytes of every row a case serves, through
 #       .github/scripts/ci-tools.sh itself, into $RUNNER_TEMP/ci-tools-proof/payload/, under
 #       every name the origin serves that row under: a row's own bytes reach one name as they
-#       are, an npm tarball and a PyPI wheel are packed around them, and the name a row's
-#       primary URL serves is fetched again with ci_tools_fetch_primary, because for a row whose
-#       own `digest` is of a member — uv's is — the primary serves the archive and not that
-#       member.
+#       are, an npm tarball and a PyPI wheel are packed around them, and for a row whose own
+#       `digest` is of a member — uv's is — the name the row's primary URL serves is staged
+#       with ci_tools_fetch_primary and the member is taken out of that one staged archive,
+#       because the primary serves the archive and not that member.
 #       It runs before the fault starts, while the network is whole, because these are the bytes
 #       the origin stands in with once no real source answers.
 #       It prints each file with its size and its sha256, and refuses the job naming the row
@@ -485,24 +485,28 @@ origin_start() {
 # The second source's word is read here and the primary's is not, because a row's `primary` is
 # one URL whichever of the words it is written in, and the name is the end of it either way.
 payload_names() {
-  local row=$1 primary second mirror_from package version second_url
+  local row=$1 primary second route mirror_from package version second_url
   primary=$(ci_tools_field "$row" primary)
-  second=$(ci_tools_field "$row" second_source)
-  # The refusal is made here rather than inside the pipeline below, where an exit would end a
-  # subshell and leave the caller reading a row with one name missing.
-  case $second in
-    ghcr-mirror | npm | github-release | pypi | pulumi-releases) ;;
-    *) die "$row: '$second' is no second source this rig serves (github-release, ghcr-mirror, npm, pypi or pulumi-releases)" ;;
-  esac
+  # The word and the refusal of one no fetch of that side answers to are both the helper's:
+  # ci_tools_source_name reads the row's `second_source` through the same list the fetch reads
+  # it through and refuses it in its own `::error::ci-tools:` line, which names the five. The
+  # refusal is made here rather than inside the pipeline below, where an exit would end a
+  # subshell alone, and `stage` reads these names into a variable for the same reason.
+  second=$(ci_tools_source_name "$row" second) ||
+    die "$row: the helper reads no second source for this row, so the origin cannot serve one"
+  # Which fields the names come from is a property of the route and not of the word, and
+  # route_of is this rig's one list of the five: /github/ and /url/ alike mean the address the
+  # row writes out in `second_url`.
+  route=$(route_of "$second" "payload_names")
   {
     [ -z "$primary" ] || printf '%s\n' "${primary##*/}"
-    case $second in
-      ghcr-mirror)
+    case $route in
+      /ghcr/)
         mirror_from=$(ci_tools_field "$row" mirror_from)
         [ -z "$mirror_from" ] || printf '%s\n' "${mirror_from##*/}"
         printf 'sha256:%s\n' "$(ci_tools_digest "$row")"
         ;;
-      npm)
+      /npm/)
         package=$(ci_tools_field "$row" npm_package)
         version=$(ci_tools_field "$row" version)
         printf '%s-%s.tgz\n' "${package##*/}" "$version"
@@ -581,10 +585,28 @@ with zipfile.ZipFile(archive) as held, held.open(member) as source:
 ' "$1" "$2"
 }
 
+# stage_member <row> <archive> <member> <file>: the row's own pinned bytes out of the archive
+# its primary served, which ci_tools_fetch_primary has already staged and held to the row's
+# `primary_digest`.
+# The member is taken out with the helper's own ci_tools_extract, so this rig reads an archive
+# the one way an install does, and it is held to the row's `digest` with ci_tools_verify, which
+# is the check ci_tools_fetch makes of the member it fetches.
+# Prints what happened and returns non-zero where either refuses, so `stage` appends the row to
+# its failures and goes on.
+stage_member() {
+  local row=$1 archive=$2 member=$3 file=$4 report status=0
+  report=$(ci_tools_extract "$archive" "$member" "$file" "$(ci_tools_field "$row" primary)") || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "::error::ci-tools-proof: $row: $report" >&2
+    return 1
+  fi
+  ci_tools_verify "$row" "$file" "$(ci_tools_source_name "$row" primary)"
+}
+
 stage() {
   [ "$#" -eq 0 ] || die "stage takes no argument, and this call gave $#"
   mkdir -p "$payload"
-  local row digest file name read_back member primary_name failures=""
+  local row digest file name names read_back member primary_name failures=""
   for row in $STAGED_ROWS; do
     note "staging $row"
     digest=$(ci_tools_digest "$row")
@@ -594,21 +616,42 @@ stage() {
     primary_name=$(ci_tools_field "$row" primary)
     primary_name=${primary_name##*/}
     member=$(ci_tools_field "$row" primary_member)
+    # Every name the origin serves this row under, read before the loop below rather than from
+    # a process substitution feeding it: a `die` inside that subshell ends the subshell alone,
+    # and this script would stage nothing for the row and walk on. Read into a variable, the
+    # refusal is this script's own exit under its `set -euo pipefail`.
+    names=$(payload_names "$row")
     file="$work/staged-$row"
     rm -f "$file"
-    # The row's own path, which the helper decides: a row with a primary is tried there first,
-    # and a row whose primary bytes a third party fetches falls straight through to the second
-    # source. What it leaves is the bytes the row's `digest` pins, which for a row that names a
-    # `primary_member` is that member and not the archive the primary served.
-    ci_tools_fetch "$row" "$file" || { failures="$failures $row"; continue; }
+    if [ -n "$member" ]; then
+      # The bytes the PRIMARY URL serves, staged under the name that URL ends in and held to
+      # the row's `primary_digest`, and the row's own pinned bytes taken out of that staged
+      # archive: one download for the two files, and a case whose primary meets the origin
+      # reads exactly these bytes. Fetching the row's bytes with ci_tools_fetch and then the
+      # archive with ci_tools_fetch_primary downloaded uv's 16682639-byte archive twice, and
+      # uv is the one row that names a `primary_member`.
+      # Both digests are still read: ci_tools_fetch_primary holds the archive to
+      # `primary_digest` before it places it, and stage_member holds the member to the row's
+      # own `digest`.
+      ci_tools_fetch_primary "$row" "$payload/$primary_name" &&
+        stage_member "$row" "$payload/$primary_name" "$member" "$file" ||
+        {
+          failures="$failures $row"
+          continue
+        }
+    else
+      # The row's own path, which the helper decides: a row with a primary is tried there
+      # first, and a row whose primary bytes a third party fetches falls straight through to
+      # the second source. What it leaves is the bytes the row's `digest` pins.
+      ci_tools_fetch "$row" "$file" || {
+        failures="$failures $row"
+        continue
+      }
+    fi
     while read -r name; do
-      if [ -n "$member" ] && [ "$name" = "$primary_name" ]; then
-        # The bytes the PRIMARY URL serves, held to the row's `primary_digest`: the archive the
-        # member above came out of, which no destination of ci_tools_fetch ever holds. That is
-        # the whole reason ci_tools_fetch_primary exists, and a case whose primary meets the
-        # origin reads exactly these bytes.
-        ci_tools_fetch_primary "$row" "$payload/$name" || { failures="$failures $row"; continue; }
-      else
+      # The primary's own name is the archive staged above, which no destination of
+      # ci_tools_fetch ever holds and which this loop therefore neither fetches nor packs.
+      if [ -z "$member" ] || [ "$name" != "$primary_name" ]; then
         case $name in
           *.tgz)
             pack_npm "$row" "$file" "$payload/$name"
@@ -627,11 +670,15 @@ stage() {
             [ "${read_back%% *}" = "$digest" ] ||
               die "$row: the wheel this rig packed holds ${read_back%% *}, not the pinned $digest"
             ;;
-          *) cp -- "$file" "$payload/$name" ;;
+          # A hard link and not a copy, for pack_npm's reason: both files are under this rig's
+          # own directory and no payload file is ever written to, so the staged file and every
+          # name the origin serves it under are one set of bytes — the CLI's 119816773 and the
+          # plugin's 24184600 among them — rather than a copy each.
+          *) cp -fl -- "$file" "$payload/$name" ;;
         esac
       fi
       describe "$payload/$name"
-    done < <(payload_names "$row")
+    done <<<"$names"
     rm -f "$file"
   done
   [ -z "$failures" ] ||
@@ -1139,16 +1186,19 @@ origin_served() {
   grep -qE "^GET $1[^ ]* row=$2 corrupt=(yes|no) status=200" <<<"$lines"
 }
 
-# route_of <source>: the origin route one source serves, read from the one word that source has
-# — the name a refusal of .github/scripts/ci-tools.sh carries, which is also the manifest's own
-# `second_source` word.
+# route_of <source> <the caller a refusal names>: the origin route one source serves, read from
+# the one word that source has — the name a refusal of .github/scripts/ci-tools.sh carries,
+# which is also the manifest's own `second_source` word.
+# It is this rig's one list of those five words: `payload_names` above decides which fields a
+# row's second-source names come from by the route this answers, so the rig holds no second
+# list of the words and cannot read one here it refuses there.
 route_of() {
   case $1 in
     github-release) printf '/github/\n' ;;
     ghcr-mirror) printf '/ghcr/\n' ;;
     npm) printf '/npm/\n' ;;
     pypi | pulumi-releases) printf '/url/\n' ;;
-    *) die "report: '$1' is no source this rig serves (github-release, ghcr-mirror, npm, pypi or pulumi-releases)" ;;
+    *) die "$2: '$1' is no source this rig serves (github-release, ghcr-mirror, npm, pypi or pulumi-releases)" ;;
   esac
 }
 
@@ -1209,7 +1259,7 @@ report() {
   fi
   if [ -n "$expect_source" ]; then
     local route
-    route=$(route_of "$expect_source")
+    route=$(route_of "$expect_source" report)
     if [ "$route" = /github/ ]; then
       # The primary of this case is the faulted real host or a binary a third party installed, so
       # the origin's github route serves nothing for it. What says the bytes came from the
@@ -1228,7 +1278,7 @@ report() {
   fi
   if [ -n "$expect_untried" ]; then
     local untried
-    untried=$(route_of "$expect_untried")
+    untried=$(route_of "$expect_untried" report)
     if origin_served "$untried" "$row"; then
       echo "::error::ci-tools-proof: case $name: the origin served $row on its $untried route, and this case is the rule that it must not: a digest mismatch is a supply-chain signal and never a reason to read another source." >&2
       problems=$((problems + 1))

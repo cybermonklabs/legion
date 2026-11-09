@@ -2277,10 +2277,12 @@ jobs:
     # The budget, added up from the slowest run this job can have, the way the tool-fallback-arm
     # job below adds up its own, and not derived any more from the four installs this job began
     # with: the two checkouts and the runner's download of the actions (2), the two steps that
-    # read the package and the manifest (1), `stage`, which now fetches about 200 MB more than
-    # it did — the CLI's 119816773-byte archive, the plugin's 24184600, uv's 16682639-byte
-    # archive and the 37597160-byte binary inside it, and elan's 4996571 — and packs a 37 MB zip
-    # beside the 107 MB Bun tarball (6), the jj-primary case before the fault (1), the fault and
+    # read the package and the manifest (1), `stage`, which now moves about 165 MB more over
+    # the network than it did — the CLI's 119816773-byte archive, the plugin's 24184600, uv's
+    # 16682639-byte archive, fetched once, with the 37597160-byte binary taken out of that
+    # staged archive rather than fetched, and elan's 4996571 — and packs a 37 MB zip beside
+    # the 107 MB Bun tarball (6), a count neither that 16 MB nor the second fetch of it this
+    # rig once made ever decided, the jj-primary case before the fault (1), the fault and
     # its probe, whose two requests are bounded at 15 s each (1), the 21 steps whose primary is
     # the faulted host — seven of the eight installs with nowhere to go, seven of the head's
     # installs, and the seven second-source cases — each costing about 126 s before its second
@@ -2658,6 +2660,10 @@ jobs:
           # therefore the two things that decide what that tarball is — the `-v<version>-` in
           # its base name, which is the shape pulumitest.newHome refuses a tarball without, and
           # the row's own digest, read by the one digest reader of this repository.
+          # Neither of the two is a version, so this keeps its own word as the bunx reading
+          # does rather than joining the list below, whose sentence is about versions and which
+          # would otherwise name this one row twice where both readings fail.
+          plugin=read
           tarball="${{ steps.docker-plugin.outputs.tarball }}"
           version=$(ci_tools_field pulumi-docker version)
           echo "pulumi-docker is the tarball $tarball, and its row pins $version"
@@ -2665,11 +2671,11 @@ jobs:
             *-v"$version"-*) ;;
             *)
               echo "::error::the docker provider plugin tarball ${tarball##*/} holds no -v$version-, so pulumitest.newHome refuses it whatever its bytes are" >&2
-              wrong="$wrong pulumi-docker"
+              plugin=refused
               ;;
           esac
           ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball this job installed" ||
-            wrong="$wrong pulumi-docker"
+            plugin=refused
           # The name that Bun install must have left beside the bun one of those lines read. It
           # is a reading of its own and not one more version-answers line because what can be
           # missing here is the name rather than the version: npm serves the binary alone, so a
@@ -2688,7 +2694,7 @@ jobs:
           if [ -n "$wrong" ]; then
             echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
           fi
-          if [ -n "$wrong" ] || [ "$bunx" = refused ] || [ "$refusals" = refused ]; then
+          if [ -n "$wrong" ] || [ "$plugin" = refused ] || [ "$bunx" = refused ] || [ "$refusals" = refused ]; then
             exit 1
           fi
 

@@ -1521,20 +1521,17 @@ check "names the file neither rule read" \
   "$(contains "$out" '; 1 file(s) under .github are not valid UTF-8, so neither rule read them: .github/actions/install-tool/binary.dat$')"
 
 echo "case: this repository's own tree"
-# The one case that reads the tree this gate runs over in CI, and it is RED today by exactly
-# two problems and no other. The elan, uv, pulumi-docker and pulumi-cli rows landed with this
-# change and the three no_second_source entries that allowed their installs went with them, so
-# the two call sites that still build a release-asset address of their own — the uv action and
-# the plugin step of .github/workflows/ci.yaml — are refused as built addresses until they
-# read their row with the helper, which is the change that follows this one. The day both
-# move, this case turns red and its assertions become a green tree's again.
+# The one case that reads the tree this gate runs over in CI. It passes, and the summary says
+# what the tree holds: eleven rows, each agreeing with its pin, and no no_second_source entry,
+# since the three this change made false went with the rows that replaced them.
+# The middle clause counts the tool URLs the files under .github fetch and name a row for. It
+# is zero today, and that is the shape this change left: every install reads its address out of
+# its row through the helper, so no file under .github writes one at all.
 run_gate "$repository"
-check "fails" "$(is "$status" 1)"
-check "names the uv action's built address" \
-  "$(contains "$out" "^.github/actions/install-uv/action.yml:[0-9]*: this file builds the address of a release asset of astral-sh/uv ")"
-check "names the plugin step's built address" \
-  "$(contains "$out" "^.github/workflows/ci.yaml:[0-9]*: this file builds the address of a release asset of pulumi/pulumi-docker ")"
-check "and counts those two alone" \
-  "$(contains "$out" '^::error::2 problem(s) between .github/ci-tools.yaml and the tools CI installs$')"
+check "exits 0" "$(is "$status" 0)"
+check "reads every row and finds no decline left" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 11 row(s), each agreeing with the pin that installs it, and 0 no_second_source entries;')"
+check "and no file under .github writes a tool address of its own" \
+  "$(contains "$out" '; 0 tool URL(s) fetched by the [0-9]* file(s) under .github that rule 3 reads, this manifest not among them, name one of those;')"
 
 summary "check-ci-tools.sh"

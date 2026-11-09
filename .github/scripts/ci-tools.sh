@@ -86,6 +86,18 @@
 #                                         read with. .github/scripts/mirror-ci-tools.sh fetches
 #                                         the asset it pushes with it, so the copy is filled
 #                                         with the same ladder an install reads it under.
+#   ci_tools_extract <archive> <member>
+#                    <destination> <url>  that member of that archive at <destination>, read by
+#                                         the suffix of the address it came from rather than by
+#                                         its own path: a `.whl` or a `.zip` with python3's
+#                                         zipfile and anything else with `tar -xzO`. It is the
+#                                         one place this repository takes a member out of an
+#                                         archive: the npm fetch and both member fields below
+#                                         read theirs with it, and
+#                                         .github/scripts/ci-tools-proof.sh takes the row's
+#                                         pinned member out of the archive it staged with
+#                                         ci_tools_fetch_primary rather than fetching that
+#                                         archive a second time.
 #   ci_tools_blob_url <row>               that row's blob in the package `registry:` names: the
 #                                         address a ghcr-mirror row's second source is read
 #                                         from, and the one .github/scripts/mirror-ci-tools.sh
@@ -394,7 +406,7 @@ PY
 # ci_tools__hold <row> <file> <source> <digest> <what that digest is of>: holds <file> to that
 # digest, saying nothing where it holds and refusing where it does not. It is the one digest
 # comparison this file makes: ci_tools__verify_as below answers a row's own `digest` with it and
-# ci_tools__primary_check answers a row's `primary_digest` with it, so no two checks of this
+# ci_tools__primary_open answers a row's `primary_digest` with it, so no two checks of this
 # repository can disagree about what a match is or about what a mismatch says.
 # The fifth argument is the prose saying what the digest is of, which the refusal names. It is
 # empty where the digest is of the bytes themselves, which is every row's own `digest`, and the
@@ -683,11 +695,14 @@ ci_tools__fetch_ghcr() {
 # reaches, and it holds the same binary upstream puts in the GitHub zip.
 # The side goes unread here for the reason it goes unread above: `npm` is a second source and
 # no row's primary.
+# The member is taken out with ci_tools_extract below, which the tarball's own `.tgz` address
+# sends to `tar -xzO`: one extractor for every archive this file reads, so a package that holds
+# no such member is refused in the sentence that names the member and the address it came from.
 # Prints what happened, and returns non-zero, where the service did not serve the bytes.
 ci_tools__fetch_npm() {
   local row=$1 max_time=$3 file=$4
   local base=${CI_TOOLS_NPM_BASE:-https://registry.npmjs.org}
-  local package version member tarball status=0
+  local package version member tarball url report status=0
   ci_tools__read package "$row" npm_package || return 1
   ci_tools__read version "$row" version || return 1
   ci_tools__read member "$row" npm_member || return 1
@@ -696,30 +711,34 @@ ci_tools__fetch_npm() {
     return 1
   }
   # npm serves a scoped package's tarball under the package name without its scope.
-  ci_tools_curl "$tarball" "$max_time" "$base/$package/-/${package##*/}-$version.tgz" || status=$?
+  url="$base/$package/-/${package##*/}-$version.tgz"
+  ci_tools_curl "$tarball" "$max_time" "$url" || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$tarball"
     printf 'the package tarball request failed (curl exit %s)\n' "$status"
     return 1
   fi
-  status=0
-  tar -xzOf "$tarball" "$member" > "$file" || status=$?
+  report=$(ci_tools_extract "$tarball" "$member" "$file" "$url") || status=$?
   rm -f -- "$tarball"
   if [ "$status" -ne 0 ]; then
-    printf 'the package tarball holds no %s (tar exit %s)\n' "$member" "$status"
+    printf '%s\n' "$report"
     return 1
   fi
   return 0
 }
 
-# ci_tools__extract <archive> <member> <destination> <url>: that member of that archive at
+# ci_tools_extract <archive> <member> <destination> <url>: that member of that archive at
 # <destination>. The address the archive came from decides how it is read, and not the archive's
 # own path, which is a temporary file of this run and carries no suffix: a `.whl` or a `.zip`
 # with python3's zipfile, which this file already reads every row of the manifest with, and
-# anything else with `tar -xzO`, as the npm fetch above reads its tarball.
+# anything else with `tar -xzO`, which is how the npm fetch above reads its tarball.
 # Prints what happened, and returns non-zero, where the archive holds no such member, so the
 # caller refuses by the member and the archive rather than by the digest of an empty file.
-ci_tools__extract() {
+# It is public because .github/scripts/ci-tools-proof.sh takes a row's pinned member out of the
+# archive ci_tools_fetch_primary staged for it, rather than fetching that archive a second time
+# through ci_tools_fetch, and a second extractor there would be a second rule for how an
+# archive is read.
+ci_tools_extract() {
   local archive=$1 member=$2 destination=$3 url=$4 name status=0
   # The suffix is read off the address with no query and no fragment, which PyPI writes.
   name=${url%%\?*}
@@ -760,13 +779,13 @@ with zipfile.ZipFile(archive) as held, held.open(member) as source, open(destina
 # The side decides which fields are read. `second` reads `second_url` and takes `second_member`
 # out of what arrived, because the bytes the row's own `digest` answers for are that member.
 # `primary` reads `primary` and takes nothing out: the archive is held to the row's
-# `primary_digest` first, and ci_tools__primary_check does that and then takes `primary_member`
+# `primary_digest` first, and ci_tools__primary_open does that and then takes `primary_member`
 # out, so one place takes the primary's member out whatever word the primary is written in.
 #
 # Prints what happened, and returns non-zero, where the service did not serve the bytes.
 ci_tools__fetch_address() {
   local row=$1 side=$2 max_time=$3 file=$4 seam=$5
-  local url member='' archive='' target=$4 report status=0
+  local url member='' archive='' target=$file report status=0
   if [ "$side" = primary ]; then
     ci_tools__read url "$row" primary || return 1
   else
@@ -790,7 +809,7 @@ ci_tools__fetch_address() {
     return 1
   fi
   [ -n "$member" ] || return 0
-  report=$(ci_tools__extract "$archive" "$member" "$file" "$url") || status=$?
+  report=$(ci_tools_extract "$archive" "$member" "$file" "$url") || status=$?
   rm -f -- "$archive"
   if [ "$status" -ne 0 ]; then
     printf '%s\n' "$report"
@@ -880,9 +899,11 @@ ci_tools__second_source() {
 # PyPI's wheel each hold, so the bytes GitHub serves have a digest of their own and that field
 # is it. A row that leaves it empty is served exactly the bytes it pins, so the digest of what
 # the primary serves is the row's own `digest` and the prose is empty.
-# It is the one statement of that rule: ci_tools__primary_check below holds the archive to it
-# before the member is taken out, and ci_tools_fetch_primary holds to it the archive it leaves
-# at the destination, so the two cannot disagree about what the primary's bytes are.
+# It is the one statement of that rule, and ci_tools_fetch_primary is its one caller: that is
+# the fetch whose destination holds the archive itself, so it is the one place the fallback to
+# the row's own `digest` is needed. ci_tools__primary_open below holds the archive to the
+# `primary_digest` a row names and to nothing where a row names none, since a row that names
+# none has nothing to take out either.
 ci_tools__primary_digest() {
   local __row=$1 __digest=$2 __of=$3 __named
   ci_tools__read_optional __named "$__row" primary_digest || return 1
@@ -895,7 +916,7 @@ ci_tools__primary_digest() {
   ci_tools__read "$__digest" "$__row" digest
 }
 
-# ci_tools__primary_check <row> <file> <url> <the primary's word>: what stands between the bytes
+# ci_tools__primary_open <row> <file> <url> <the primary's word>: what stands between the bytes
 # the primary served and the digest check of the row, for a row that names one or both of two
 # fields. <url> is the address those bytes came from: it decides how an archive is read, and it
 # is what a refusal names, together with the word that source is written in. A row that names
@@ -908,13 +929,14 @@ ci_tools__primary_digest() {
 #
 # `primary_member` is the member of that archive the row's own `digest` is of, and it replaces
 # the archive at <file>, so what ci_tools__place then verifies and moves is the member and the
-# archive reaches no destination.
-ci_tools__primary_check() {
+# archive reaches no destination. That replacement is what the name says: this opens the
+# archive the primary served and leaves the member in its place.
+ci_tools__primary_open() {
   local row=$1 file=$2 url=$3 word=$4
-  local named digest of member extracted report status=0
-  ci_tools__read_optional named "$row" primary_digest || return 1
-  if [ -n "$named" ]; then
-    ci_tools__primary_digest "$row" digest of || return 1
+  local digest of='' member extracted report status=0
+  ci_tools__read_optional digest "$row" primary_digest || return 1
+  if [ -n "$digest" ]; then
+    ci_tools__read_optional of "$row" primary_digest_of || return 1
     ci_tools__hold "$row" "$file" "$word" "$digest" "$of" || return 1
   fi
   ci_tools__read_optional member "$row" primary_member || return 1
@@ -923,7 +945,7 @@ ci_tools__primary_check() {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1
   }
-  report=$(ci_tools__extract "$file" "$member" "$extracted" "$url") || status=$?
+  report=$(ci_tools_extract "$file" "$member" "$extracted" "$url") || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$extracted"
     ci_tools__error "$row: $word served the bytes, and $report — refusing"
@@ -966,7 +988,7 @@ ci_tools_fetch() {
     # The bytes arrived. Whatever they are, this call answers for them: a mismatch here is a
     # supply-chain signal, and the second source is never read after one, which holds for the
     # row's `primary_digest` as much as for its own `digest`.
-    if ! ci_tools__primary_check "$row" "$file" "$primary" "$word"; then
+    if ! ci_tools__primary_open "$row" "$file" "$primary" "$word"; then
       rm -f -- "$file"
       return 1
     fi
