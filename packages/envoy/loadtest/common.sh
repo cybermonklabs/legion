@@ -11,10 +11,11 @@
 #
 # resolve_paths sets SRC to LOADTEST_SRC (default: the checkout holding this file) and ROOT to
 # LOADTEST_ROOT (default ${TMPDIR:-/tmp}/dispatch-loadtest, created), both as physical paths, and
-# exports them as LOADTEST_SRC and LOADTEST_ROOT.
+# exports them as LOADTEST_SRC and LOADTEST_ROOT. It sets DISPATCH_SRC, the checkout envoy-dispatch
+# is built from, to LOADTEST_DISPATCH_SRC (default SRC).
 #
 # stack_ports ROOT: the stack's ports for ROOT, "KEY PORT" a line. The defaults follow the root's
-# physical path (port_block, default_port): a root always gets the same block of 9 ports, and two
+# physical path (port_block, default_port): a root always gets the same block of 10 ports, and two
 # roots get two blocks out of 200, so they share every port about 1 pair of roots in 200 (the block
 # is a hash modulo 200, not a per-root reservation). Each LOADTEST_*_PORT (PORT_VAR) overrides its
 # own port. So two Legion roles of one pod, each with its own LOADTEST_ROOT, almost always run a
@@ -49,11 +50,12 @@
 # namespace is this one. stack.sh closes descriptor 9 in every stack process that it starts, so no
 # stack process keeps the lock.
 #
-# prepare_stack runs stack.sh setup (an incremental build of SRC), start and seed, each of which
-# does nothing when its work is already done, and the migration check: a build that lacks a
-# migration the seed holds is refused with exit 1, and one that holds migrations the seed lacks is
-# noted. Then it sets BUILD to `stack.sh build-info` ("<commit> <dirty>"). run-step.sh calls it
-# before a step that is not part of a series; run-series.sh calls it once, before its first step.
+# prepare_stack runs stack.sh setup (an incremental build of SRC, and of DISPATCH_SRC's
+# envoy-dispatch), start and seed, each of which does nothing when its work is already done, and the
+# migration check: a Dispatch build that lacks a migration the seed holds is refused with exit 1,
+# and one that holds migrations the seed lacks is noted. Then it sets BUILD to `stack.sh build-info`
+# ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;
+# run-series.sh calls it once, before its first step.
 #
 # The replay's inputs (README.md, The replay): stack.sh replay-get and cluster.sh replay-prepare
 # both download and verify the manifest's parts with replay_fetch_parts and replay_get_bundle
@@ -90,6 +92,7 @@ resolve_paths() {
   mkdir -p -- "$ROOT"
   ROOT=$(cd -- "$ROOT" && pwd -P)
   export LOADTEST_SRC=$SRC LOADTEST_ROOT=$ROOT
+  DISPATCH_SRC=${LOADTEST_DISPATCH_SRC:-$SRC}
 }
 
 # ---- the stack's ports ---------------------------------------------------------------------------
@@ -101,16 +104,17 @@ resolve_paths() {
 # the second stack; the remedy is the LOADTEST_*_PORT variables). PORT_KEYS names stack.json's
 # ports, PORT_VAR each one's environment variable and PORT_OFFSET its place in a root's block of
 # ports.
-PORT_KEYS=(postgres proxy proxy_stats nats nats_monitor listener dispatch pprof metrics)
+PORT_KEYS=(postgres proxy proxy_stats nats nats_monitor listener dispatch pprof metrics envoy_proxy)
 declare -A PORT_VAR=(
   [postgres]=LOADTEST_PG_PORT [proxy]=LOADTEST_PROXY_PORT [proxy_stats]=LOADTEST_PROXY_STATS_PORT
   [nats]=LOADTEST_NATS_PORT [nats_monitor]=LOADTEST_NATS_MONITOR_PORT
   [listener]=LOADTEST_LISTENER_PORT [dispatch]=LOADTEST_DISPATCH_PORT
   [pprof]=LOADTEST_PPROF_PORT [metrics]=LOADTEST_METRICS_PORT
+  [envoy_proxy]=LOADTEST_ENVOY_PROXY_PORT
 )
 declare -A PORT_OFFSET=(
   [postgres]=0 [proxy]=1 [nats]=2 [nats_monitor]=3 [listener]=4 [dispatch]=5 [pprof]=6 [metrics]=7
-  [proxy_stats]=8
+  [proxy_stats]=8 [envoy_proxy]=9
 )
 PORT_BASE=10000
 PORT_STRIDE=10
@@ -126,11 +130,11 @@ port_block() {
 
 # default_port KEY BLOCK: the default port of KEY in block BLOCK:
 #
-#   PORT_BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = 10000 + 10k + 0..8
+#   PORT_BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = 10000 + 10k + 0..9
 #
-# The 9 offsets differ and all are below the stride, so no two ports of a block and no two ports of
-# two different blocks ever meet (two roots in one block hold the same 9 ports);
-# every port is between 10000 and 11998, inside 1024-65535 and below every ephemeral range a
+# The 10 offsets differ and all are below the stride, so no two ports of a block and no two ports
+# of two different blocks ever meet (two roots in one block hold the same 10 ports);
+# every port is between 10000 and 11999, inside 1024-65535 and below every ephemeral range a
 # machine is likely to have. The base was 15000, whose blocks reached 16997: on a pod whose
 # ephemeral range starts at 16000 an outbound connection of the load test took a stack port
 # between steps and the next bind failed with "address already in use", which is what
@@ -383,8 +387,8 @@ prepare_stack() {
   "$stack" seed
   # A build cannot start on a seed that a newer build migrated: compare the migrations of the
   # Dispatch that setup built (bin/envoy-dispatch.json, which names LOADTEST_DISPATCH_COMMIT's tree
-  # when that is set, and the checkout's otherwise) with the set the seed records. Without that
-  # record, the checkout's migration files stand for it.
+  # when that is set, and the Dispatch checkout's otherwise) with the set the seed records. Without
+  # that record, the Dispatch checkout's migration files stand for it.
   # A record written before setup recorded the build's versions holds only its highest one.
   local build_json=$ROOT/bin/envoy-dispatch.json build_versions build_what only_highest=""
   if [ -f "$build_json" ]; then
@@ -396,8 +400,8 @@ prepare_stack() {
       only_highest=1
     fi
   else
-    build_versions=$(build_migration_versions "$SRC/packages/envoy/internal/dispatch/store/migrations")
-    build_what="the checkout's migrations"
+    build_versions=$(build_migration_versions "$DISPATCH_SRC/packages/envoy/internal/dispatch/store/migrations")
+    build_what="the Dispatch checkout's migrations"
   fi
   seed_migration_check "$ROOT/seed.meta.json" "$build_versions" "$build_what" "$only_highest"
   BUILD=$("$stack" build-info)

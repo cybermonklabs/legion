@@ -30,6 +30,7 @@ const (
 	TypePrompt                 = "prompt"
 	TypeResponse               = "response"
 	TypeGetState               = "get_state"
+	TypeCompact                = "compact"
 	TypeAgentStart             = "agent_start"
 	TypeAgentEnd               = "agent_end"
 	TypeToolExecutionStart     = "tool_execution_start"
@@ -277,6 +278,22 @@ type StateData struct {
 // GetState asks the worker whether a turn is running.
 type GetState struct {
 	ID string `json:"id"`
+}
+
+// Compact asks Oh My Pi to compact the session's context: `{id?, type: "compact",
+// customInstructions?: string}` (omp://rpc.md, "Compaction"). The shim answers none of it — it
+// forwards it to Oh My Pi as it forwards a prompt — and Oh My Pi answers a `response` of the
+// same command, carrying its CompactionResult on success and `success: false` with the reason
+// when the compaction was refused or skipped.
+//
+// CustomInstructions is what the summary is written to, and the daemon always sends one: Oh My
+// Pi runs the image-based snapcompact method only for a compaction with no instructions and no
+// internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts at
+// the pinned tag), so instructions are what make the summary text the resumed session can read
+// back without a vision model. A frame with none is refused here rather than sent.
+type Compact struct {
+	ID                 string `json:"id"`
+	CustomInstructions string `json:"customInstructions"`
 }
 
 // AgentStart is OMP beginning a turn. DeliveryID is set only on the shim's own synthetic replay
@@ -540,6 +557,7 @@ func (NegotiateProtocol) FrameType() string            { return TypeNegotiatePro
 func (Prompt) FrameType() string                       { return TypePrompt }
 func (Response) FrameType() string                     { return TypeResponse }
 func (GetState) FrameType() string                     { return TypeGetState }
+func (Compact) FrameType() string                      { return TypeCompact }
 func (AgentStart) FrameType() string                   { return TypeAgentStart }
 func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
 func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
@@ -595,6 +613,11 @@ func (f Response) MarshalJSON() ([]byte, error) {
 func (f GetState) MarshalJSON() ([]byte, error) {
 	type plain GetState
 	return marshalFrame(TypeGetState, plain(f))
+}
+
+func (f Compact) MarshalJSON() ([]byte, error) {
+	type plain Compact
+	return marshalFrame(TypeCompact, plain(f))
 }
 
 func (f AgentStart) MarshalJSON() ([]byte, error) {
@@ -751,6 +774,20 @@ func (f AdoptWorkingCopy) Validate() error {
 		return fmt.Errorf("%w: adopt-working-copy carries no jj identity", ErrMalformedFrame)
 	case f.TimeoutMs <= 0:
 		return fmt.Errorf("%w: adopt-working-copy timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	return nil
+}
+
+// Validate refuses a compaction request Oh My Pi could not answer for this daemon: one with no
+// request id to correlate its response by, and one with no instructions, which is the frame that
+// would let Oh My Pi archive the history onto snapcompact's images instead of writing a text
+// summary (Compact).
+func (f Compact) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: compact carries no id", ErrMalformedFrame)
+	case f.CustomInstructions == "":
+		return fmt.Errorf("%w: compact carries no customInstructions", ErrMalformedFrame)
 	}
 	return nil
 }
@@ -1059,6 +1096,8 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[Response](trimmed)
 	case TypeGetState:
 		return decodeInto[GetState](trimmed)
+	case TypeCompact:
+		return decodeInto[Compact](trimmed)
 	case TypeAgentStart:
 		return decodeInto[AgentStart](trimmed)
 	case TypeAgentEnd:

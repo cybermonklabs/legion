@@ -1083,6 +1083,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/events/log": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). */
+    get: operations["getApiV1EventsLog"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/github/app-installation/{owner}/{repo}": {
     parameters: {
       query?: never;
@@ -9775,6 +9792,62 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DeliveryTimelineWithMeasures"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      503: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1EventsLog: {
+    parameters: {
+      query?: {
+        after?: number;
+        limit?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Event"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
