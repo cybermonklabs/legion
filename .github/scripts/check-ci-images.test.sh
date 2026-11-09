@@ -11,14 +11,16 @@
 # A fixture holds every file CI's reach names, because the check fails on a reach file that is
 # gone.
 #
-# NO CASE REACHES THE NETWORK. The check reads which rows the package holds through
-# CI_IMAGES_MANIFEST_HEAD: when that variable is set, it runs the command it names once per row
-# and reads the HTTP status code the command prints. Every case here sets it to `head.sh` below,
-# which answers 200 for every digest but the ones MISSING names, and 404 for those. So the check
-# that reads ghcr.io is driven by a case, and nothing is pulled.
+# NO CASE REACHES THE NETWORK. The check reads the package through CI_IMAGES_MANIFEST_HEAD:
+# when that variable is set, it runs the command it names once per row and reads what the
+# command prints — the HTTP status code of the manifest HEAD, and after it the
+# legion.browser-image.source-sha256 label of the image at that digest, where the stand-in
+# answers for one. Every case here sets it to `head.sh` below, which answers 200 for every
+# digest but the ones MISSING names, 404 for those, and the label LABELS pairs with a digest.
+# So the two checks that read ghcr.io are driven by a case, and nothing is pulled.
 #
 # EVERY CASE NAMES ITS MODE. The check takes one mode: `tree` runs the checks that read the
-# files of the tree, and `package` runs the one that reads ghcr.io. Each case runs under the
+# files of the tree, and `package` runs the two that read ghcr.io. Each case runs under the
 # mode that owns its refusal, and one case holds each mode to its own half — the tree mode runs
 # the stand-in for the network never, and the package mode passes a tree the tree mode refuses.
 #
@@ -46,16 +48,30 @@ BUN_SLIM=sha256:2c3d4e5f607182932c3d4e5f607182932c3d4e5f607182932c3d4e5f60718293
 GOLANG=sha256:3d4e5f60718293a43d4e5f60718293a43d4e5f60718293a43d4e5f60718293a4
 GOLANG_NEXT=sha256:5f60718293a4b5c65f60718293a4b5c65f60718293a4b5c65f60718293a4b5c6
 UNKNOWN=sha256:9f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a3021
+BROWSER=sha256:60718293a4b5c6d760718293a4b5c6d760718293a4b5c6d760718293a4b5c6d7
 REGISTRY=ghcr.io/cybermonklabs/legion/ci
 
-# The stand-in for the manifest HEAD: the package holds every digest but the ones MISSING names.
+# The stand-in for the package's reads: the package holds every digest but the ones MISSING
+# names, and the image at a digest LABELS pairs a sha256 with carries that sha256 in its
+# legion.browser-image.source-sha256 label, which is what rule 10 holds a built row's build
+# recipe to. LABELS is `<digest>=<sha256>`, space separated; a digest it does not name is
+# answered with the status alone, which is an answer for the manifest and not for a label, and
+# which rule 10 refuses for a `built` row rather than passing it over — so every case below
+# whose package holds a built row names that row's label.
 head_script="$work/head.sh"
 cat > "$head_script" <<'SH'
 #!/usr/bin/env bash
+status=200
 case " ${MISSING:-} " in
-  *" $1 "*) echo 404 ;;
-  *) echo 200 ;;
+  *" $1 "*) status=404 ;;
 esac
+label=
+for pair in ${LABELS:-}; do
+  case "$pair" in
+    "$1="*) label=" ${pair#*=}" ;;
+  esac
+done
+echo "$status$label"
 SH
 chmod +x "$head_script"
 
@@ -80,7 +96,7 @@ fixture() {
     echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
     return 1
   fi
-  mkdir -p "$root/.github/scripts" "$root/.github/workflows" \
+  mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/docker" \
     "$root/.github/actions/pull-test-images" \
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
@@ -122,24 +138,9 @@ jobs:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
 YAML
-  # The three shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
-  # command each, as the check demands. Two of them are outside ci.yaml: one in the browser
-  # suite's own workflow, whose shard job starts the file store from the digest a Go constant
-  # names - which is why the fixture below writes that job and no other, and that step was
-  # ci.yaml's dispatch job's until the suite moved out of it - and one in a called file of a
+  # The second shape IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
+  # command each, as the check demands. It is outside ci.yaml: it lives in a called file of a
   # job, where ci.yaml's job of that id holds the gate and the file the steps.
-  cat > "$root/.github/workflows/dispatch-browser.yaml" <<YAML
-name: Dispatch browser suite
-on:
-  workflow_call:
-jobs:
-  shard:
-    runs-on: ubuntu-24.04
-    steps:
-      - run: |
-          image=\$(sed -n 's/^const Image = "\\(.*\\)"\$/\\1/p' packages/envoy/internal/tests3/seaweedfs.go)
-          docker run -d --name dispatch-e2e-files "\$image" server -s3
-YAML
   cat > "$root/.github/workflows/ci-job-envoy-smoke.yaml" <<YAML
 name: CI job envoy-smoke
 on: [workflow_call]
@@ -159,6 +160,25 @@ runs:
       run: |
         image=$(sed -n "s/^const Image = \"\(.*\)\"$/\1/p" "$file")
         docker pull "$image"
+YAML
+  # The Dockerfile a `built:` row names. Every fixture holds it, because CI's reach names it
+  # and the check fails on a reach file that is gone; the row itself is the business of the
+  # cases that call browser_row below.
+  cat > "$root/.github/docker/browser.Dockerfile" <<YAML
+FROM $REGISTRY@$NATS
+RUN echo the browser host image
+YAML
+  # The workflow that builds that Dockerfile. Every fixture holds it too: its own text is half
+  # of the build recipe rule 10 holds a `built:` row's published image to, so a tree without it
+  # is a tree that rule cannot hash a row against.
+  cat > "$root/.github/workflows/browser-image.yaml" <<'YAML'
+name: Browser Image
+on: [workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo the build no fixture runs
 YAML
   cat > "$root/packages/envoy/docker/Dockerfile" <<YAML
 FROM $REGISTRY@$GOLANG AS build
@@ -211,11 +231,12 @@ YAML
 
 # run_check <mode> <root>: runs the script under test against that tree, in that mode, setting
 # `out` to its combined output and `status` to its exit code. Not a subshell, so both survive the
-# call. MISSING, which the caller may set, names the digests the stand-in package does not hold.
+# call. MISSING, which the caller may set, names the digests the stand-in package does not hold,
+# and LABELS the sha256 the image at a digest carries in its source label.
 run_check() {
   local mode=$1 root=$2
   set +e
-  out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" MISSING="${MISSING:-}" \
+  out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" MISSING="${MISSING:-}" LABELS="${LABELS:-}" \
     "$root/.github/scripts/check-ci-images.sh" "$mode" 2>&1)
   status=$?
   set -e
@@ -229,6 +250,51 @@ golang_next_row() {
     tag: golang-1.26.3-alpine-5f607182
     digest: $GOLANG_NEXT
 YAML
+}
+
+# browser_row <root>: appends the row for the image this repository builds rather than copies,
+# the one .github/workflows/browser-image.yaml pushes. Its tag is the rule a built row's tag
+# follows: the Dockerfile's name without the .Dockerfile suffix, then the first eight hex
+# characters of the digest.
+browser_row() {
+  cat >> "$1/.github/ci-images.yaml" <<YAML
+  - built: .github/docker/browser.Dockerfile
+    tag: browser-60718293
+    digest: $BROWSER
+YAML
+}
+
+# browser_job <root> <digest>: appends a job that runs in a container at that digest, the shape
+# every job that can launch WebKit or Firefox takes.
+browser_job() {
+  cat >> "$1/.github/workflows/ci.yaml" <<YAML
+  browser:
+    runs-on: ubuntu-24.04
+    container:
+      image: $REGISTRY@$2
+    steps:
+      - run: bun test
+YAML
+}
+
+# recipe <root> [dockerfile]: the sha256 of that tree's build recipe — the Dockerfile's own
+# path, every file of .github/docker and .github/workflows/browser-image.yaml — which is what
+# the build stamps into the image it pushes and what rule 10 holds that label to. The rule is
+# .github/scripts/ci_images.py's recipe_sha256, the one the check under test reads it with,
+# because a second copy of the rule here would be a hash this test demands and no build ever
+# writes; what the cases below prove is that the hash MOVES when any part of the recipe does,
+# which is the whole of rule 10. The second argument is the row's Dockerfile,
+# .github/docker/browser.Dockerfile where a case gives none: a case naming another file of
+# that directory is what proves the hash tells two Dockerfiles of one context apart.
+recipe() {
+  (cd "$1" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts \
+    DOCKERFILE="${2:-.github/docker/browser.Dockerfile}" python3 -c '
+import os
+
+from ci_images import recipe_sha256
+
+print(recipe_sha256(os.environ["DOCKERFILE"], ".github/workflows/browser-image.yaml"))
+')
 }
 
 echo "case: a tree whose every image is a row of .github/ci-images.yaml"
@@ -340,6 +406,223 @@ run_check tree "$root"
 check "a row whose upstream names no tag fails the same way" "$(is "$status" 1)"
 check "and is named the digest alone" "$(contains "$out" 'Name this row ubuntu-9f8e7d6c')"
 
+echo "case: a row this repository builds, and the job that runs in it"
+# A built row carries the Dockerfile it is built from where a copied row carries its upstream.
+# Nothing copies it — .github/workflows/browser-image.yaml pushes it — but the package holds it
+# like any other row, so the package mode reads it like any other row.
+root=$(fixture built-row)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+run_check tree "$root"
+check "the tree mode exits 0" "$(is "$status" 0)"
+check "counts the built row with the rest" "$(contains "$out" 'holds 5 row(s);')"
+LABELS="$BROWSER=$(recipe "$root")" run_check package "$root"
+check "the package mode exits 0" "$(is "$status" 0)"
+check "and reports it held like the others" \
+  "$(contains "$out" 'holds 5 row(s), 5 of them in the package')"
+
+echo "case: rule 8 — a built row naming a Dockerfile the build workflow does not build"
+# .github/workflows/browser-image.yaml builds one Dockerfile. A row built from another file is
+# a row nothing pushes, so no image of the package was pushed from it and rule 10 below refuses
+# it over the network — the case after this one is that refusal — while the tree alone says the
+# same, so the tree mode is where it is said on every change.
+root=$(fixture built-other-dockerfile)
+cp "$root/.github/docker/browser.Dockerfile" "$root/.github/docker/other.Dockerfile"
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - built: .github/docker/other.Dockerfile
+    tag: other-60718293
+    digest: $BROWSER
+YAML
+browser_job "$root" "$BROWSER"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file the row gives and the one that workflow builds" \
+  "$(contains "$out" 'this row is built from .github/docker/other.Dockerfile, and .github/workflows/browser-image.yaml builds .github/docker/browser.Dockerfile and no other file')"
+check "and says nothing builds the row" "$(contains "$out" 'so nothing builds this row')"
+
+echo "case: rule 10 — two Dockerfiles of one directory are two recipes"
+# What rule 8 says rule 10 does, done. The two files share a context directory, so the files
+# hashed are the same files and the workflow is the same workflow: the Dockerfile's own path is
+# what tells the two recipes apart, folded into the hash by .github/scripts/ci_images.py's
+# recipe_sha256. Without it this row would carry the very sha256 the published browser image's
+# label holds, and this mode would pass a row no build ever pushed an image from.
+root=$(fixture built-two-dockerfiles)
+cp "$root/.github/docker/browser.Dockerfile" "$root/.github/docker/other.Dockerfile"
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - built: .github/docker/other.Dockerfile
+    tag: other-60718293
+    digest: $BROWSER
+YAML
+browser_job "$root" "$BROWSER"
+published=$(recipe "$root")
+other=$(recipe "$root" .github/docker/other.Dockerfile)
+check "the two Dockerfiles of one directory hash to two recipes" \
+  "$(is "$(is "$published" "$other")" false)"
+LABELS="$BROWSER=$published" run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the recipe the row's own Dockerfile gives" \
+  "$(contains "$out" "hash to sha256 $other as this tree holds them")"
+check "and the sha256 the published image carries" \
+  "$(contains "$out" "the image at that digest carries sha256 $published in its legion.browser-image.source-sha256 label")"
+
+echo "case: rule 10 — a built row whose image was built from the recipe this tree holds"
+# The build writes the recipe's own sha256 into the image it pushes — every file of the build
+# context directory and the workflow that builds it — as the label this mode reads back out of
+# the image the row's digest names. Here the two agree, which is what a merged bump leaves
+# behind: the build pushed the edited recipe's image, and a later push moved the row onto that
+# digest.
+root=$(fixture built-label-matches)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+published=$(recipe "$root")
+LABELS="$BROWSER=$published" run_check package "$root"
+check "the package mode exits 0" "$(is "$status" 0)"
+check "and counts the built row it compared" "$(contains "$out" '1 built row(s) at the build recipe this tree holds')"
+
+echo "case: rule 10 — a built row whose image was built from another Dockerfile"
+# The hole this rule closes: a one-line edit to the Dockerfile that no build pushed. The row
+# still names a digest the package holds, so rule 9 passes and the tag rule passes, and every
+# job pinning the row would keep running the image built before the edit.
+root=$(fixture built-label-stale)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+# The label the build wrote when it pushed: the recipe's hash before the edit below.
+published=$(recipe "$root")
+echo 'RUN echo a layer the published image does not carry' \
+  >> "$root/.github/docker/browser.Dockerfile"
+edited=$(recipe "$root")
+check "the edit moved the recipe's hash" "$(is "$(is "$published" "$edited")" false)"
+LABELS="$BROWSER=$published" run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "names the recipe and the sha256 this tree holds" \
+  "$(contains "$out" "is not the image this tree's build recipe makes: the name .github/docker/browser.Dockerfile, every file of .github/docker and .github/workflows/browser-image.yaml hash to sha256 $edited")"
+check "and the sha256 the published image carries" \
+  "$(contains "$out" "the image at that digest carries sha256 $published in its legion.browser-image.source-sha256 label")"
+check "and the remedy" \
+  "$(contains "$out" "move this row's digest onto what it pushed")"
+# The tree mode reads the same edited Dockerfile and passes: the label is on the published
+# image, so no read of this tree can tell the two apart, which is why rule 10 is the package
+# mode's.
+run_check tree "$root"
+check "and the tree mode passes the same tree" "$(is "$status" 0)"
+
+echo "case: rule 10 — a built row whose image was built by another build workflow"
+# The half a hash of the Dockerfile alone left uncovered, and the reason this rule hashes the
+# recipe: the workflow's own `labels:`, `outputs:`, `platforms:`, `provenance:`, build-args and
+# action pin decide the bytes that get pushed, so a change to the build step with the
+# Dockerfile untouched is a change the published image does not carry. ci.yaml's
+# `browser_image` filter selects the build for it, and before this the build read the one
+# file's hash, found it unchanged and pushed nothing.
+root=$(fixture built-label-workflow-moved)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+published=$(recipe "$root")
+echo '      - run: echo a build input the published image was not built with' \
+  >> "$root/.github/workflows/browser-image.yaml"
+edited=$(recipe "$root")
+check "the workflow edit moved the recipe's hash" "$(is "$(is "$published" "$edited")" false)"
+LABELS="$BROWSER=$published" run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "names the recipe and the sha256 this tree holds" \
+  "$(contains "$out" "is not the image this tree's build recipe makes: the name .github/docker/browser.Dockerfile, every file of .github/docker and .github/workflows/browser-image.yaml hash to sha256 $edited")"
+check "and says a file of the recipe changed with no build behind it" \
+  "$(contains "$out" "the two differ when a file of the recipe changed and no build pushed the change")"
+
+echo "case: rule 10 — a built row whose context directory grew a file"
+# The other half: the build context is the directory, not the Dockerfile, so a file added
+# beside it is a file the next `COPY` can take into the image. Nothing in this tree reads it
+# yet, and the hash moves all the same, because what the build receives has changed.
+root=$(fixture built-label-context-grew)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+published=$(recipe "$root")
+echo 'the entrypoint a later COPY takes' > "$root/.github/docker/entrypoint.sh"
+check "the new context file moved the recipe's hash" \
+  "$(is "$(is "$published" "$(recipe "$root")")" false)"
+LABELS="$BROWSER=$published" run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the recipe this tree holds" \
+  "$(contains "$out" "is not the image this tree's build recipe makes: the name .github/docker/browser.Dockerfile, every file of .github/docker and .github/workflows/browser-image.yaml hash to sha256 $(recipe "$root")")"
+
+echo "case: rule 10 — a tree holding no build workflow"
+# Half the recipe is that workflow's own text, so a tree without it is a tree this rule cannot
+# hash a row against. It says so, rather than leaving a traceback where a refusal belongs.
+root=$(fixture built-workflow-missing)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+published=$(recipe "$root")
+rm "$root/.github/workflows/browser-image.yaml"
+LABELS="$BROWSER=$published" run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "names the workflow that is gone" \
+  "$(contains "$out" "this tree holds no .github/workflows/browser-image.yaml, and that workflow's own text is half of the build recipe")"
+check "without a traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: rule 10 — a stand-in that answers for the manifest and not for the label"
+# CI_IMAGES_MANIFEST_HEAD stands in for the whole of the package read, so a stand-in that
+# prints a status and no label has answered half of it. Rule 10 refuses the row rather than
+# passing it over: a rule a seam can turn off, with nothing but a count to say it went quiet,
+# is a rule nothing holds. LABELS names no digest here, which is that stand-in.
+root=$(fixture built-label-unanswered)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "names the stand-in and what it left out" \
+  "$(contains "$out" "the CI_IMAGES_MANIFEST_HEAD stand-in .* printed a status and no legion.browser-image.source-sha256 label after it")"
+check "and says how to answer for the label" \
+  "$(contains "$out" "Have it print that label after the status, or unset CI_IMAGES_MANIFEST_HEAD")"
+check "and holds the row to the recipe this tree holds" \
+  "$(contains "$out" "is not the image this tree's build recipe makes: the name .github/docker/browser.Dockerfile, every file of .github/docker and .github/workflows/browser-image.yaml hash to sha256 $(recipe "$root")")"
+
+echo "case: a row carrying both upstream: and built:"
+root=$(fixture row-both-kinds)
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - upstream: docker.io/library/ubuntu@$UNKNOWN
+    built: .github/docker/browser.Dockerfile
+    tag: browser-60718293
+    digest: $BROWSER
+YAML
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "says a row is one kind or the other" \
+  "$(contains "$out" 'this row carries both .upstream:. and .built:., and a row is one or the other')"
+check "and why both cannot stand" \
+  "$(contains "$out" 'two different things about where its bytes came from')"
+
+echo "case: a row carrying neither upstream: nor built:"
+root=$(fixture row-neither-kind)
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - tag: browser-60718293
+    digest: $BROWSER
+YAML
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names both keys" "$(contains "$out" 'this row carries neither .upstream:. nor .built:.')"
+check "and says what each of them is" \
+  "$(contains "$out" 'the Dockerfile this repository builds the image from')"
+
+echo "case: a built row whose tag is not its Dockerfile's name and the digest"
+root=$(fixture built-tag-wrong)
+browser_row "$root"
+sed -i 's/tag: browser-60718293/tag: browser-image/' "$root/.github/ci-images.yaml"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the tag the rule gives it" \
+  "$(contains "$out" "tag browser-image is not browser-60718293, the tag this row's Dockerfile and digest give it")"
+check "and what to name the row" "$(contains "$out" 'Name this row browser-60718293')"
+
+echo "case: a built row whose Dockerfile this tree does not hold"
+root=$(fixture built-file-missing)
+browser_row "$root"
+sed -i 's|built: .github/docker/browser.Dockerfile|built: .github/docker/gone.Dockerfile|' \
+  "$root/.github/ci-images.yaml"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the path it looked for" \
+  "$(contains "$out" 'this row is built from .github/docker/gone.Dockerfile')"
+check "and says nothing builds the row" "$(contains "$out" 'so nothing builds the row')"
+
 echo "case: rule 3 — a version pinned elsewhere that no row carries"
 root=$(fixture bun-drift)
 sed -i 's|upstream: docker.io/oven/bun:1.3.14|upstream: docker.io/oven/bun:1.4.2|' \
@@ -398,6 +681,15 @@ check "a digest outside the file fails" "$(is "$status" 1)"
 check "names the file to add it to" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"
 check "and the line to edit" "$(contains "$out" 'nats-server.ts:1:')"
 
+# A job's container is read from the parsed YAML, like a service's image, and rule 6 reads its
+# digest against the rows whatever kind of row holds it.
+root=$(fixture container-digest-unknown)
+browser_job "$root" "$UNKNOWN"
+run_check tree "$root"
+check "a container on a digest outside the file fails" "$(is "$status" 1)"
+check "names the container it read" \
+  "$(contains "$out" "this job's container image names a digest no row of .github/ci-images.yaml holds")"
+
 echo "case: rule 7 — a reference on a golang row at another version than ARG GO_VERSION"
 # A bump's first commit lands the next Go's row beside the pinned one, and rule 3 admits it. A
 # FROM moved onto that row before the ARG would build its stage with a Go the worker's toolchain
@@ -442,7 +734,7 @@ check "names that row and the Go it copies" \
 check "and rule 3 reads the pinned row under its short spelling" \
   "$(is "$(contains "$out" 'no row copies library/golang')" false)"
 
-echo "case: rule 8 — a row the package does not hold"
+echo "case: rule 9 — a row the package does not hold"
 root=$(fixture not-published)
 MISSING=$GOLANG run_check package "$root"
 check "a row ghcr.io answers 404 for fails" "$(is "$status" 1)"
@@ -596,11 +888,27 @@ check "naming them" "$(contains "$out" 'this check takes one mode')"
 # check a second time in the same CI run; no job of a pull request's run runs the package mode,
 # which reads ghcr.io, so that one is this suite's.
 echo "case: the repository's own tree, in the package mode"
+
+# This tree's own `built` row carries the digest of an image this repository published, and
+# rule 10 holds that image's label to the recipe this tree holds. The row is read out of
+# .github/ci-images.yaml rather than written here, so a row that moves takes this case with
+# it, and the label the stand-in answers with is the hash the build stamps into what it
+# pushes: the row passes here for the reason it passes in CI.
+repository=$(cd "$script_dir/../.." && pwd)
+built_digest=$(cd "$repository" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import yaml
+
+rows = yaml.safe_load(open(".github/ci-images.yaml"))["images"]
+print(next(row["digest"] for row in rows if "built" in row))
+')
 set +e
-out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" "$check_script" package 2>&1)
+out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" LABELS="$built_digest=$(recipe "$repository")" \
+  "$check_script" package 2>&1)
 status=$?
 set -e
 check "the real tree passes the package mode, with every row held" "$(is "$status" 0)"
 check "says so" "$(contains "$out" "holds .* row(s), .* of them in the package")"
+check "and compared its built row" \
+  "$(contains "$out" '1 built row(s) at the build recipe this tree holds')"
 
 summary "check-ci-images.sh"

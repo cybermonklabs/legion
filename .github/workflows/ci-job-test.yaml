@@ -63,6 +63,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_bun_version_test: check-bun-version.test.sh and what it tests."
         type: string
         required: true
+      check_playwright_version_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_playwright_version_test:
+          check-playwright-version.test.sh and what it tests.
+        type: string
+        required: true
       check_bun_workspace_manifests_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_bun_workspace_manifests_test:
@@ -141,12 +147,6 @@ on:
         description: "ci.yaml's needs.changes.outputs.repo_paths_test: repo-paths.test.sh and what it tests."
         type: string
         required: true
-      playwright_deps_current_test:
-        description: >-
-          ci.yaml's needs.changes.outputs.playwright_deps_current_test:
-          playwright-deps-current.test.sh and what it tests.
-        type: string
-        required: true
       select_e2e_proofs_test:
         description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
         type: string
@@ -195,10 +195,6 @@ on:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_samples_test:
           dispatch-browser-samples.test.sh and what it tests.
-        type: string
-        required: true
-      apt_archive_cache_key_test:
-        description: "ci.yaml's needs.changes.outputs.apt_archive_cache_key_test: apt-archive-cache-key.test.sh and what it tests."
         type: string
         required: true
       race_memory_test:
@@ -318,6 +314,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
         run: .github/scripts/check-bun-version.test.sh
 
+      - name: Test the Playwright version check
+        if: inputs.changes-result != 'success' || inputs.check_playwright_version_test == 'true'
+        run: .github/scripts/check-playwright-version.test.sh
+
       - name: Test the frozen Bun workspace manifest check
         if: inputs.changes-result != 'success' || inputs.check_bun_workspace_manifests_test == 'true'
         run: .github/scripts/check-bun-workspace-manifests.test.sh
@@ -389,10 +389,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.repo_paths_test == 'true'
         run: .github/scripts/repo-paths.test.sh
 
-      - name: Test the Playwright dependency list check
-        if: inputs.changes-result != 'success' || inputs.playwright_deps_current_test == 'true'
-        run: .github/scripts/playwright-deps-current.test.sh
-
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
       - name: Test the e2e proof selector
@@ -450,14 +446,6 @@ jobs:
       - name: Test the browser lane's memory and CPU sampler
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_samples_test == 'true'
         run: .github/scripts/dispatch-browser-samples.test.sh
-
-      # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
-      # ci-caches.yaml's apt-debs job fills under, over fixture checkouts: a key that changes
-      # misses every entry saved under the old one, so the whole string and the refusals that
-      # keep it from naming nothing are held here.
-      - name: Test the apt archive cache key
-        if: inputs.changes-result != 'success' || inputs.apt_archive_cache_key_test == 'true'
-        run: .github/scripts/apt-archive-cache-key.test.sh
 
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
