@@ -360,10 +360,18 @@ ci_tools__tempfile() {
 # What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
 # ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s,
 # 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
-# .github/workflows/ci.yaml carry `timeout-minutes: 10`. With it, that same host costs the two
-# minutes the ladder is allowed plus the one attempt still running when they are over, which
-# `--max-time` ends: 120 + 60 = 180 s at the `max_time` of 60 every row of .github/ci-tools.yaml
-# carries, and then the second source is read.
+# .github/workflows/ci.yaml carry `timeout-minutes: 10`.
+#
+# WHAT ONE LADDER COSTS UNDER IT, derived once here and cited rather than re-derived elsewhere.
+# Against a host that stalls, every attempt spends the whole `max_time: 60` every row of
+# .github/ci-tools.yaml carries, so the timer passes two minutes inside the third attempt and
+# curl starts none after the fourth: at most 4 x 60 s of attempts and the 1, 2 and 4 s waits
+# between them, 247 s. Measured on this issue's pod with one such ladder faulted: four attempts
+# reaching the proxy 61 s apart and the call ending at 244 s. Against a host that answers at
+# once the attempts take no time, so all eight are made and the whole of the ladder is its
+# waits, 127 s. A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull
+# token, the blob — which is the figure .github/scripts/check-download-retry.sh's DECLARED_LOOPS
+# entry for this file writes out, and which ci.yaml's Budgets note cites rather than restates.
 # Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it costs
 # nothing at all: the timer stands at 63 s when the last retry is decided, which is inside two
 # minutes, so the ladder is the eight attempts it would make with no such bound, where at 60 it

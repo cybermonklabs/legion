@@ -15,9 +15,9 @@ name: CI caches
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the Go version the
 # family's own module installs: go-notices (lint's notices step), go-daemon (typecheck, test and
 # pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers,
-# listener-server-change, envoy-e2e-local, envoy-session-stall, and the shard, alone and
-# multiprocess jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser
-# job calls), go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One job per
+# listener-server-change, envoy-e2e-local, envoy-session-stall and the binaries and multiprocess
+# jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls),
+# go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One
 # Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
 # go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
 # go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is first looked up
@@ -28,26 +28,24 @@ name: CI caches
 # families it fills the smaller one first, so the entry that carries the other's objects too is
 # the one that was large already.
 #
-# Two entries are no Go family, both of the browser suite - dispatch-browser.yaml's shard and
-# alone jobs - and both looked up, filled on a miss and saved as the Go families are. The
-# Playwright browsers, which the browsers job below fills: its key is bun.lock's hash, since the
-# lockfile pins the Playwright version that decides the browsers' revisions, so that entry is
-# refreshed when the pin moves rather than when Go is bumped. The .deb archives of the apt list
-# their Playwright install needs, which the apt-debs job below fills: its key names that same
-# Playwright version and the runner image, so that entry is refreshed by a Playwright bump or an
-# image roll, and those two jobs and this one compute it with one script,
-# .github/scripts/apt-archive-cache-key.sh, so the save's key cannot drift from the restores'.
+# One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
+# content of the Lean toolchain the model names rather than a Go version. Two others that were
+# no Go family went with the jobs that read them - the Playwright browsers and the .deb files of
+# the apt list the browser suite installed - because dispatch-browser.yaml's shard and alone
+# jobs run in the image this repository builds, which carries the browsers and their host
+# packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
+# restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
+# with them.
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
-# with ci.yaml's docs job. The bun family is no job of this workflow either, though this push
-# fills it too: .github/actions/setup-bun restores ~/.bun/bin on every ref and saves it on a
-# push to main, and the browsers job below calls that action on every run of it, hit or miss,
-# so the one entry worth keeping is written here without a job of its own.
+# with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
+# writes it on main, and five workflows that run there call it. No job of this workflow calls
+# that action any more: the browsers job did, and it went with the two entries above.
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
-# by hand, after a Go bump, a Playwright bump, an image roll or an eviction. No `paths:`: a key
-# holds a Go version, bun.lock's hash, or a Playwright version and a runner image, not a file
-# list, so what the push touched decides nothing, and a run whose keys are all there is seconds.
+# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
+# a Go version or that toolchain file's hash, not a file list, so what the push touched decides
+# nothing, and a run whose keys are all there is seconds.
 on:
   push:
     branches: [main]
@@ -441,183 +439,3 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
-
-  # The Playwright browsers dispatch-browser.yaml's shard and alone jobs restore, the one entry
-  # here that is no Go family: no setup-go, and the key is bun.lock's hash rather than a Go
-  # version, since that lockfile pins the Playwright version whose browsers the install
-  # downloads.
-  browsers:
-    runs-on: ubuntu-24.04
-    # Budget: 1800 s, the 30 minutes this job was written with — three browser downloads on a
-    # miss, and a run that finds the key costs the checkout and the Bun setup alone — plus its
-    # slowest retried step alone, as ci.yaml's Budgets note derives one: the browsers' five
-    # bounded attempts, 5 x 900 + 150 = 4650 s, above the workspace install's 1050 s.
-    # 1800 + 4650 = 6450 s -> 108 min.
-    timeout-minutes: 108
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - id: playwright
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          lookup-only: true
-
-      # On every run of this job, hit or miss, which is what fills the bun family: the action
-      # restores ~/.bun/bin and saves it on this push where the restore missed
-      # (.github/actions/setup-bun). A setup held back by the lookup above would leave that
-      # entry unwritten on every push whose browser key was already there, and every other
-      # workflow's restore would miss and download the release asset again.
-      - uses: ./.github/actions/setup-bun
-      # The install reads the Playwright the lockfile pins out of node_modules, as the browser
-      # jobs' does: `bunx playwright` without it would fetch the newest release instead, whose
-      # browser revisions are other than the ones those jobs will look for.
-      # Retried like every install of this repository's CI (ci.yaml's Retries note); 180 s per
-      # attempt, against 20.70 s measured cold on a pod and at most 11 s in CI.
-      - name: bun install --frozen-lockfile
-        if: steps.playwright.outputs.cache-hit != 'true'
-        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
-        timeout-minutes: 18
-        run: |
-          . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
-
-      # The three browsers the browser suite runs. No `--with-deps`: the apt packages it
-      # installs land outside ~/.cache/ms-playwright, so no entry could carry them, and those
-      # jobs install them themselves on every run.
-      #
-      # 900 s per attempt, the bound .github/scripts/playwright-install.sh derives for this
-      # same download: three cold browser downloads measured 634 s together, so the bound is
-      # over 40 per cent above that maximum. The helper is reached through $GITHUB_WORKSPACE
-      # because this step's working-directory is packages/dispatch.
-      - name: Download the browsers the browser suite runs
-        if: steps.playwright.outputs.cache-hit != 'true'
-        # Its own retry arithmetic: 5 x 900 + 150 = 4650 s -> 78 min.
-        timeout-minutes: 78
-        run: |
-          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's three browsers" 900 -- bunx playwright install chromium webkit firefox
-        working-directory: packages/dispatch
-
-      - if: steps.playwright.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-
-  # The .deb files of the apt list dispatch-browser.yaml's shard and alone jobs install before
-  # the browser suite, .github/playwright-apt-packages.txt: with their dependencies, 182 packages
-  # and 114 MB of archives, measured in job 128209099649 of cybermonklabs/legion#2888 at
-  # 5ff42456. Those jobs seed apt's archive directory from the entry and install out of it, so a
-  # hit costs them no download at all; the family exists because that download is the one
-  # unbounded cost of their install step, the step whose whole retry budget is written for the
-  # case where the mirror is slow. The fill is here and not there because the save has to write
-  # the default branch's cache scope: a save on a pull request or in a merge group lands in that
-  # run's own scope, which the next pull request cannot read.
-  #
-  # ubuntu-24.04 because the key names ImageOS and ImageVersion: the entry holds the package
-  # versions that image's indexes resolve, so a fill from another image writes a key no browser
-  # run ever reads. No setup-bun and no setup-go either - the key script reads bun.lock as text,
-  # and apt needs neither - so the checkout is all this job sets up.
-  apt-debs:
-    runs-on: ubuntu-24.04
-    # The arithmetic, from the two readings the install step is bounded by: at 186 kB/s,
-    # the slowest package download a green dispatch job of its window met (job 127238648049),
-    # the list's 114 MB need 613 s, and at 233 kB/s, the slowest `apt-get update` of that window
-    # (job 127357441704), the 13.0 MB of indexes need 56 s. Copying the archives out of apt's
-    # directory took 1.1 s in job 128209099649. Uploading the 114 MB entry has no reading yet
-    # and is estimated at 120 s. 613 + 56 + 1.1 + 120 = 790 s, rounded up to 20 min. Both apt
-    # calls below now retry, through the helper every download of this repository's CI goes
-    # through, so the budget carries that too, as ci.yaml's Budgets note has every job carry
-    # its slowest retried step alone: the package download's 5 x 305 + 150 = 1675 s, above the
-    # index read's 625 s. 1200 + 1675 = 2875 s -> 48 min. The calls still reach for no second
-    # origin, unlike the install step's: a fill that meets a mirror slower than its bound ends
-    # here, and the next push to main fills the family again.
-    timeout-minutes: 48
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # The very script dispatch-browser.yaml's shard and alone jobs compute the key with, so
-      # the save below writes the key their restores read: a key that drifted would make every
-      # restore there miss and nothing would fail, those jobs just fetching the whole 114 MB set
-      # again on every run.
-      - id: apt-debs-key
-        name: Compute the apt archive cache key
-        run: |
-          key=$(.github/scripts/apt-archive-cache-key.sh)
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-
-      - id: apt-debs
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-debs-key.outputs.key }}
-          lookup-only: true
-
-      # The same file the browser jobs' install reads, with the same expression: its `#` header
-      # and its blank lines dropped, and $packages left unquoted on purpose, to split into words.
-      # `-d` downloads and unpacks nothing, which is all this job wants: it fills the directory
-      # those jobs seed apt from, and installs none of it. gstreamer1.0-tools is asked for beside
-      # the list, because their install asks for both - the list is Playwright's own, which
-      # playwright-deps-current.sh holds it to, and the tool carries the gst-inspect-1.0 their
-      # decoder guard runs - and an entry holding the list alone would leave that package and
-      # whatever it pulls in to be fetched on every run that hit. Measured on the probe run
-      # 42362119894 of this branch: the list alone is 181 .deb files, and the install step's
-      # whole set is the 182 of job 128209099649.
-      - name: Download the .deb files the browser jobs' install needs
-        if: steps.apt-debs.outputs.cache-hit != 'true'
-        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
-        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
-        # download's 5 x 305 + 150 = 1675 s, 2300 s -> 39 min.
-        timeout-minutes: 39
-        run: |
-          . .github/scripts/ci-retry.sh
-          # The runner image preconfigures Google's chrome-stable apt source, whose index
-          # intermittently fails `apt-get update` with a hash-sum mismatch; the browser jobs'
-          # install drops it for that reason, and an update that fails here leaves the family
-          # empty until the next push.
-          grep -rl dl.google.com /etc/apt/sources.list.d | xargs -r sudo rm -f
-          packages=$(grep -vE '^[[:space:]]*(#|$)' .github/playwright-apt-packages.txt)
-          # Both phases retry through .github/scripts/ci-retry.sh (ci.yaml's Retries note), at
-          # the bounds .github/scripts/playwright-install.sh derives for these same two fetches,
-          # which is the install the browser jobs run: 90 s for the
-          # 13.0 MB of indexes and 300 s for the list's 114 MB, each as an inner `sudo timeout`,
-          # not `timeout sudo`, so the signal reaches apt-get itself rather than a sudo holding
-          # it, with retry_fetch's own bound five seconds above it to backstop the sudo alone.
-          # `-o APT::Update::Error-Mode=any` makes a failed index read fail the command instead
-          # of warning and exiting 0, which is what leaves retry_fetch something to retry
-          # (.github/scripts/check-download-retry.sh's rule 5).
-          retry_fetch "apt's package lists" 95 -- \
-            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
-          retry_fetch "the .deb files of the pinned list" 305 -- \
-            sudo timeout 300 apt-get install -y --no-install-recommends -d $packages gstreamer1.0-tools
-          # apt fetches into its own directory as root, and the cache action that saves the entry
-          # runs as the runner user, which can read neither root's directory nor root's files, so
-          # the .deb files are copied out and handed over below.
-          shopt -s nullglob
-          fetched=(/var/cache/apt/archives/*.deb)
-          shopt -u nullglob
-          # An entry is written once and never replaced, so an empty one would hold this key for
-          # as long as the Playwright pin and the image stand, and every browser run under it
-          # would restore nothing and fetch the whole set. A download that left no .deb file is
-          # therefore this job's failure, not an entry to save.
-          [ "${#fetched[@]}" -gt 0 ] || {
-            echo "::error::apt fetched no .deb file for the pinned list, so there is nothing to" \
-              "keep under this key; the entry is not written"
-            exit 1
-          }
-          mkdir -p "$HOME/apt-archives"
-          sudo cp "${fetched[@]}" "$HOME/apt-archives/"
-          sudo chown "$(id -u):$(id -g)" "$HOME"/apt-archives/*.deb
-          echo "apt archives: keeping ${#fetched[@]} .deb files"
-
-      - if: steps.apt-debs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-debs-key.outputs.key }}

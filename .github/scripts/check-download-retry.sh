@@ -310,7 +310,7 @@
 #      of that script is refused rather than dropped. .github/scripts/ci-tools.sh's
 #      ci_tools_curl is the one such site in this tree — the helper every tool install of
 #      .github/ci-tools.yaml fetches through — and rule 8 priced it, and so those installs, at
-#      nothing until the declaration below priced it (dispatch://INFRA-1545, R9).
+#      nothing until the declaration below priced it (review round 9 of dispatch://INFRA-1545).
 #
 #      WHAT IT COUNTS ONCE OR MISCOUNTS, which is the other half of this rule and the half a
 #      reader is owed plainly. A shape this check reads as neither a loop nor a call of a
@@ -437,7 +437,8 @@
 #      sentence is appended to that site's own refusal, so a reader counts one refused site
 #      rather than two annotations on one line of one file.
 #
-# THE EXCEPTIONS, which are R2's four and no others. Each is a site this repository refuses to
+# THE EXCEPTIONS, which are R2's four, one of them gone with the site it named, and no others.
+# Each is a site this repository refuses to
 # retry on purpose. Each one written out as an entry of EXEMPTIONS below must match something: an
 # entry that matches nothing fails this check, so an exception cannot outlive the site it was
 # written for. (b) and (d) are read from the tree rather than listed, for the reasons they give.
@@ -451,18 +452,18 @@
 #      step's `run:` is read, and no third-party action's source is in this tree. A composite
 #      action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun runtime with a
 #      restored cache rather than with a retry.
-#   c. The apt phase of .github/scripts/playwright-install.sh, which dispatch://INFRA-1443 owns:
-#      its own `attempts()` loop, which switches origin after two attempts where the shared
-#      helper cannot, and the four calls that hand it `apt-get`, are exempt from rules 1 and 2
-#      together, and from rule 5 with them, an exemption taking the whole verdict. That phase was
-#      the Playwright step of ci.yaml's `dispatch` job until cybermonklabs/legion#2891 moved the
-#      Dispatch browser suite into .github/workflows/dispatch-browser.yaml and wrote its install
-#      as that script, which both of that workflow's install steps call; the exception moved with
-#      it. Those calls carry `-o APT::Update::Error-Mode=any` all the same: rule 5's hole is a
-#      hole in that loop too, and one option is the whole fix. `playwright install-deps` is that
-#      same apt phase written as Playwright writes it, and is outside the verb list above for the
-#      same reason; the browser download beside it, `playwright install`, is a site like any
-#      other.
+#   c. Gone with its site, and the letter is kept so that R2's own lettering still reads. It was
+#      the apt phase of .github/scripts/playwright-install.sh, which dispatch://INFRA-1443
+#      owned: that phase had an `attempts()` loop of its own, which switched origin after two
+#      attempts where the shared helper cannot, and the four calls that handed it `apt-get`
+#      were exempt from rules 1, 2 and 5 together. cybermonklabs/legion#2938 moved the Dispatch
+#      browser suite into an image this repository builds, which carries every host package
+#      that phase installed, and deleted the script with the steps that ran it. No apt call of
+#      that shape is left in the tree, so the entry that named them is gone as well: an
+#      exception matching nothing is one this check refuses, which is the rule above read
+#      against its own author. `playwright install-deps` stays outside the verb list, for the
+#      reason that phase gave; the browser download, `playwright install`, is a site like any
+#      other, and the one left in this tree is the multiprocess job's Chromium.
 #   d. The credentialed publish jobs of release.yaml, release-envoy-listener.yaml and
 #      release-envoy-infra.yaml, and every *.sh under .github/scripts/ such a job runs.
 #      .github/scripts/check-release-credentials.sh pins the command set such a job may run, and
@@ -505,8 +506,9 @@
 #     exactly the rows the copy after it then writes. The copy itself, and the digest read that
 #     confirms it, do retry.
 #
-# One more scoping the tree states twice, at .github/scripts/playwright-install.sh and at
-# e2e.yaml's package step: an `apt-get install` with no `-d` that follows an `apt-get install -d`
+# One more scoping, which the tree states where it uses it: e2e.yaml's package step and
+# ci.yaml's `Install tmux` step. An `apt-get install` with no `-d` that follows an
+# `apt-get install -d`
 # in the same `run:` unpacks an archive already on disk and takes no network, so the download
 # before it is the half that retries. An `apt-get` carrying a simulate flag (`-s`, `--simulate`,
 # `--dry-run`, `--just-print`, `--no-act`, `--recon`) reads the lists on disk and fetches nothing
@@ -1509,7 +1511,7 @@ class Uncounted:
     question was wrong, because None is an answer about a figure and not about a kind: a site
     whose bound is a variable has no figure either, so it read as a script call, and the
     filter that drops a script waiting for nothing dropped it instead of refusing it
-    (dispatch://INFRA-1545, R8)."""
+    (review round 8 of dispatch://INFRA-1545)."""
 
     def __init__(self, path: str, line: int, what: str, loop: int | None,
                  one: int | None, kind: str) -> None:
@@ -1540,7 +1542,7 @@ def one_call(site: Site) -> int | None:
     0: the body holding it waits for something of unread length rather than for nothing. Two
     readers need the pair apart.
     retries_nothing, through script_waits, asks whether a script holds any call at all, and
-    reading both as 0 is the hole round 6 of dispatch://INFRA-1545 found there: a `curl -fsSL
+    reading both as 0 is the hole review round 6 of dispatch://INFRA-1545 found there: a `curl -fsSL
     --retry 7 --retry-all-errors --max-time "$T"` inside a script made that script read as one
     that retries nothing, and a loop whose passes this check cannot read around a call of it
     was dropped rather than refused. uncounted_of below asks the same of a site written in the
@@ -1808,7 +1810,7 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
     that is a wait of unread length and not an absent one. Inside a loop it has no pass count
     either, so both halves of the step's wait are unreadable; with the passes read it is still
     one wait nobody can price, and pricing it at 0 is what let every tool install of
-    .github/scripts/ci-tools.sh sit under a budget of one minute (dispatch://INFRA-1545, R8
+    .github/scripts/ci-tools.sh sit under a budget of one minute (review round 8 of dispatch://INFRA-1545
     and R9). Dropping it inside a loop priced the step's whole wait at 0 and refused nobody
     for it (R8). A site rule 4 refuses for writing no bound at all is left to rule 4, which
     is the bound_written question above: what rule 8 would ask its author for is the figure
@@ -1839,8 +1841,7 @@ def unpacks_dropped(found: list[Site]) -> list[Site]:
     """The sites with the apt unpack phases taken out. An `apt-get install` with no `-d` that
     follows an `apt-get install -d` in the same body installs an archive already on disk and
     takes no network: the download before it is the half that retries, which is what
-    .github/scripts/playwright-install.sh and e2e.yaml's package step each say where they do
-    it."""
+    e2e.yaml's package step and ci.yaml's `Install tmux` step each say where they do it."""
     downloaded = False
     kept = []
     for site in found:
@@ -1963,12 +1964,11 @@ EXEMPTIONS = [
               "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
-    # A script site is read with no job and no step, so this entry names neither: the call at the
-    # `for path in scripts:` loop below passes job=None and step=None.
-    Exemption(".github/scripts/playwright-install.sh", None, None,
-              ("apt-get update", "apt-get install"),
-              "the apt phase of this script is dispatch://INFRA-1443's: its own attempts() loop "
-              "switches origin after two attempts, which the shared helper cannot do"),
+    # Exception (c)'s entry stood here, for the apt phase of
+    # .github/scripts/playwright-install.sh, and went with that file
+    # (cybermonklabs/legion#2938). A script site is read with no job and no step, which is
+    # what an entry for one has to say of itself: the call at the `for path in scripts:` loop
+    # below passes job=None and step=None.
 ]
 
 
@@ -2104,7 +2104,7 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "twice what a row costs: 2 x (5 x 60 + 150) = 900 s"),
     # Not a loop. ci_tools_curl writes `--max-time "$max_time"`, the row's own field, so one
     # call of this one curl has no figure and rule 8 priced every tool install of this tree at
-    # nothing without this entry (dispatch://INFRA-1545, R9).
+    # nothing without this entry (review round 9 of dispatch://INFRA-1545).
     DeclaredArithmetic(".github/scripts/ci-tools.sh", None, "curl", 741,
                        "the three fetches one failing `ci_tools_fetch` of a ghcr-mirror row "
                        "with a release asset of its own makes: the asset, then the anonymous "
@@ -2687,7 +2687,7 @@ def waits_for_nothing(item: Uncounted) -> bool:
     it, and the first is a wait this check cannot price while the second is a wait that is not
     there. Reading the pair as one answer dropped the item for a step whose loop ran a script
     holding a `curl -fsSL --retry 7 --retry-all-errors --max-time "$T"`, which is a fetch the
-    step really waits for (dispatch://INFRA-1545, R6).
+    step really waits for (review round 6 of dispatch://INFRA-1545).
 
     It is asked of every script the item's script reaches, too, and not of that one body: a
     loop around a script that loops, uncounted, over a costless script holds no attempt
@@ -2703,7 +2703,7 @@ def waits_for_nothing(item: Uncounted) -> bool:
     whose bound is written as a variable as one of blocked_calls's script calls, and then
     asked retries_nothing for a path that is a verb, which answers True for anything no script
     is named by: the site was dropped, and the step waiting for it was refused by nobody
-    (dispatch://INFRA-1545, R8). uncounted_of's sites are never this filter's business: a site
+    (review round 8 of dispatch://INFRA-1545). uncounted_of's sites are never this filter's business: a site
     that waits for nothing is already dropped where it is found."""
     return item.kind == UNCOUNTED_SCRIPT_CALL and retries_nothing(item.what, set())
 
@@ -2749,7 +2749,7 @@ for budget in budgets:
     # whose per-attempt bound is written as a variable is refused in the bound's place, and
     # such a call needs no loop around it to be unpriceable, so a sentence naming one would
     # name nothing. Round 8 refused the first and priced the second at 0 wherever its passes
-    # could be read, which is every tool install of this tree (dispatch://INFRA-1545, R9).
+    # could be read, which is every tool install of this tree (review round 9 of dispatch://INFRA-1545).
     unpriced = [item for item in blocking if item.kind == UNCOUNTED_UNREAD_BOUND]
     blocking = [item for item in blocking if item.kind != UNCOUNTED_UNREAD_BOUND]
     carries = (f"carries `timeout-minutes: {budget.minutes}`" if budget.minutes is not None
@@ -2764,7 +2764,7 @@ for budget in budgets:
         # script calls. Which of the two an item is is read off its kind. `one` is a figure,
         # and it answers None for reasons of its own, so inferring the kind from it read a
         # site whose bound is a variable as a call of a script and sent it to the filter above
-        # (dispatch://INFRA-1545, R8). The two take different advice, because a declaration
+        # (review round 8 of dispatch://INFRA-1545). The two take different advice, because a declaration
         # names a site by the verb it retries and a call of a script writes a path where that
         # verb would be.
         #
@@ -2785,7 +2785,7 @@ for budget in budgets:
         # and the sum leaves it out. What comes back is a plain 0 where that call is the only
         # one the script makes and an undercount where it is not, and neither is a figure to
         # print, so the sentence names the unread bound instead. That is the item this filter
-        # dropped before round 6 of dispatch://INFRA-1545.
+        # dropped before review round 6 of dispatch://INFRA-1545.
         #
         # A site is unreadable in that one way only, and it is the same way: `--max-time "$T"`
         # bounds the attempt where this check cannot read the bound. Then both halves of what
@@ -2807,7 +2807,7 @@ for budget in budgets:
             # uncounted loop does, and the two read the same from here. The unread bound is
             # the one this sentence can name a cure for, so it is asked first; a script with
             # both faults is told about the bound and told about the loop the next time
-            # (dispatch://INFRA-1545, R9).
+            # (review round 9 of dispatch://INFRA-1545).
             cost_read = (f"One run of `{blocking[0].what}` makes attempts whose bound is "
                          "written as a variable rather than as a number, there or in a script "
                          "it calls, so what one run of it takes is a figure this check cannot "

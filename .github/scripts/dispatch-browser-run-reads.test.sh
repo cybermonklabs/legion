@@ -14,7 +14,10 @@
 # records the seconds each call asked for, so a case still reads which waits the ladder made
 # without waiting them. Two checks are what catch a stand-in lost from this PATH: with the real
 # `sleep` running, nothing is written under `$work/sleeps`, so `waited` answers an empty line
-# where :326 holds it to `10 20 40 80` and :594 holds it to `10`. Both fail the moment a case
+# where the case `every attempt refused with HTTP 502` holds it to `10 20 40 80` and the case
+# `refused once, answered on the second attempt` holds it to `10` - named by their own
+# `echo "case: …"` labels, since a line number moves with the next edit of this file and these
+# two moved with the lines this paragraph itself added. Both fail the moment a case
 # drives the ladder, whatever else the machine is busy with, and they name the ladder rather
 # than the 150 s the suite would have spent on it. `sleeps` is no such guard: the only check of
 # it holds the negative control to 0, which a lost stand-in also gives. The exhausting-timeout
@@ -200,7 +203,8 @@ page() {
 # the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, the second of
 # which the name filter keeps out only by the hyphen before `multiprocess`.
 happy_page() {
-  page "11|dispatch-browser / shard (1)|success" \
+  page "10|dispatch-browser / binaries|success" \
+    "11|dispatch-browser / shard (1)|success" \
     "12|dispatch-browser / shard (2)|failure" \
     "13|dispatch-browser / alone (webkit-alone)|success" \
     "14|dispatch-browser / multiprocess|skipped" \
@@ -265,7 +269,7 @@ echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "writes this workflow's six jobs and none of the caller's" "$(is "$(entries)" 6)"
+check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 7)"
 check "each entry holds the four fields and no other" \
   "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,leg,name")"
 check "a shard job's id, name and conclusion travel unchanged" \
@@ -283,6 +287,9 @@ check "and its conclusion, which is null while it runs" "$(is "$(field 15 .concl
 check "the visual job is kept, with a null leg" "$(is "$(field 18 .leg)" null)"
 check "and keeps its conclusion, so reading three can name it when it is red" \
   "$(is "$(field 18 .conclusion)" failure)"
+check "the binaries job is kept, with a null leg" "$(is "$(field 10 .leg)" null)"
+check "and keeps its conclusion, so reading three can name a build that failed" \
+  "$(is "$(field 10 .conclusion)" success)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
@@ -589,7 +596,7 @@ fixture 1
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 6)"
+check "writes the attempt that answered" "$(is "$(entries)" 7)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first 10 s before the attempt that answered" \

@@ -1285,6 +1285,32 @@ func TestAServiceGrantStopsWhenItsServiceAccountChanges(t *testing.T) {
 	}
 }
 
+// TestAPodBoundToOneServiceAndLoggedInAsAnotherGetsNoServiceSecrets pins what the pair
+// config.Load now accepts reaches when the two settings name different services:
+// BROKER_SERVICES binds the pod's account to one service and BROKER_SERVICE_LOGINS logs that
+// same account in as another. The account proves the service or nothing, and here it proves
+// another one, so the enrollment has no service at all and is denied its login's service's
+// secret, which the same pair with one service name is granted. The old refusal of an account
+// in both lists rejected this combination too; nothing of either service is reachable through
+// it, which is why no refusal replaces it.
+func TestAPodBoundToOneServiceAndLoggedInAsAnotherGetsNoServiceSecrets(t *testing.T) {
+	m, _, _, _ := newFixture(t)
+	ctx := context.Background()
+	m.ServicesByAccount = map[string]string{fixtureSubject: "other-service"}
+	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-cross-"+t.Name())
+	crossed, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "")
+	if err != nil || crossed.State != "denied" || crossed.GrantID != nil {
+		t.Fatalf("Create(a pod whose account is bound to another service) = %+v, %v; want denied with no grant", crossed, err)
+	}
+
+	m.ServicesByAccount = map[string]string{fixtureSubject: fixtureService}
+	same, sameKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-same-"+t.Name())
+	granted, err := m.Create(ctx, same, signRequest(t, m, sameKey, "need it", "SERVICE_KEY"), "")
+	if err != nil || granted.State != "granted" || granted.GrantID == nil {
+		t.Fatalf("Create(a pod of the account bound to the service it logs in as) = %+v, %v; want granted", granted, err)
+	}
+}
+
 // TestAGrantFrozenOnAnotherSourceIsNotLive pins that a grant whose frozen source is not the one the
 // policy now serves the name from - the broker moved between stores, or the secret was replaced -
 // is not live, so its release and its reuse both refuse it and the session asks again, rather than

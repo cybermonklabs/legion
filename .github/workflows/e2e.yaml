@@ -175,7 +175,10 @@ jobs:
 
       # dispatch-claimant-delivery.sh runs its driver and the fake Envoy listener with bun, and
       # both import this repository's packages.
+      # Its own retry arithmetic, which is the action's: two `ci_tools_curl` ladders,
+      # 2 x 741 = 1482 s (the Budgets note in .github/workflows/ci.yaml's header) -> 25 min.
       - if: matrix.bun
+        timeout-minutes: 25
         uses: ./.github/actions/setup-bun
       # The install retries, as every dependency install in this repository's CI does
       # (.github/scripts/ci-retry.sh): five bounded attempts, the last starting 150 s after the
@@ -194,9 +197,10 @@ jobs:
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the
       # worker image ships, which is the one the daemon is written for.
       - if: matrix.jj
-        # install-jj's own retry arithmetic: the mise archive's curl, 8 x 60 + 127 = 607 s, and
-        # its `mise install` of the jj release, 5 x 60 + 150 = 450 s, 1057 s -> 18 min.
-        timeout-minutes: 18
+        # install-jj's own retry arithmetic: two `ci_tools_curl` ladders and its `mise install`
+        # of the jj release, 1482 + 450 = 1932 s (the Budgets note in
+        # .github/workflows/ci.yaml's header) -> 33 min.
+        timeout-minutes: 33
         uses: ./.github/actions/install-jj
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

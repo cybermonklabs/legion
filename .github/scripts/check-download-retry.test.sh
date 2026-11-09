@@ -5,12 +5,13 @@
 # something to retry, a `mise x` carries no retry at all because it exits 0 when it cannot
 # resolve the tool, a fetch left of a `|` in a step whose shell leaves pipefail off is refused
 # because the pipeline's status is its last command's, a step's budget holds every pass of a
-# loop around a retried call, one rule holds that retry, and the four exceptions R2 lists are
+# loop around a retried call, one rule holds that retry, and the exceptions R2 lists are
 # the only sites left bare (dispatch://INFRA-1545, R2).
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs. Every fixture starts from the
-# same baseline: the four exceptions, each at the file, job and step name the check's exception
+# same baseline: every exception that still has a site, each at the file, job and step name the
+# check's exception
 # list holds, the loops its DECLARED_LOOPS list declares the arithmetic of, each at the file,
 # step and verb that list holds, and the three Dockerfiles it reads. Both lists fail the check
 # when an entry matches nothing, which is why the baseline carries one site for each. A case
@@ -44,7 +45,8 @@ TEXT
 
 # fixture <name>: a tree holding the baseline below, with the script linked in. Echoes its root.
 #
-# The baseline is the four exceptions of R2, which every fixture carries for two reasons: the
+# The baseline is R2's exceptions that still have a site, which every fixture carries for two
+# reasons: the
 # check refuses an exception that matches no fetch, so a tree without them fails for a reason no
 # case is about; and a case that then adds one bad site proves that site alone.
 fixture() {
@@ -82,9 +84,9 @@ runs:
         done
 YAML
 
-  # Exceptions (a) again and (b), and the step that runs exception (c)'s script: its apt phase
-  # is .github/scripts/playwright-install.sh below, and the browser download beside it retries
-  # like any other site.
+  # Exceptions (a) again and (b), and a browser download, which is a site like any other and
+  # retries like one: exception (c)'s script held the apt phase beside it and went with that
+  # script (cybermonklabs/legion#2938).
   cat > "$root/.github/workflows/ci.yaml" <<YAML
 name: CI
 on: [push]
@@ -104,13 +106,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@$PIN
-      - name: Install Playwright Chromium, WebKit and Firefox
+      - name: Install Playwright Chromium
         # The browser download's 5 x 300 + 150 = 1650 s. Rule 8 asks every step holding a
         # retried call for a budget above its arithmetic, so the baseline's own steps carry
         # one: a fixture without them fails for a reason no case is about.
         timeout-minutes: 28
         run: |
-          .github/scripts/playwright-install.sh
           . .github/scripts/ci-retry.sh
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
 YAML
@@ -129,29 +130,6 @@ jobs:
       - name: Pull the pinned Playwright copy
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
 YAML
-
-  # Exception (c): the apt phase of that step, which is a script of its own since
-  # cybermonklabs/legion#2891 — its attempts() loop and the apt-get calls the loop runs. The
-  # update here carries no `-o APT::Update::Error-Mode=any`, so a fixture that passes is a
-  # fixture whose exemption took rule 5 along with rules 1 and 2.
-  cat > "$root/.github/scripts/playwright-install.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-attempts() {
-  local left=$1 what=$2 status
-  shift 2
-  while :; do
-    "$@" && return 0
-    status=$?
-    left=$((left - 1))
-    [ "$left" -gt 0 ] || return 1
-  done
-}
-attempts 2 "apt-get update" sudo timeout 90 apt-get update
-attempts 2 "the package download" sudo timeout 300 apt-get install -y -d $packages
-sudo apt-get install -y $packages
-SH
-  chmod +x "$root/.github/scripts/playwright-install.sh"
 
   # Exception (d): a credentialed publish job, whose pinned command set no wrapper may change.
   cat > "$root/.github/workflows/release.yaml" <<'YAML'
@@ -323,12 +301,15 @@ list_check() {
   set -e
 }
 
-echo "case: a tree holding each of R2's four exceptions passes"
+echo "case: a tree holding each exception R2 still has a site for passes"
 root=$(fixture exceptions)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
-check "counts the sites the exceptions name" "$(contains "$out" '7 site(s) the exceptions name')"
+# Five sites, not the seven this case counted while exception (c) had a script: that script
+# went with the browser suite's move into an image this repository builds
+# (cybermonklabs/legion#2938), and its two exempted apt sites went with it.
+check "counts the sites the exceptions name" "$(contains "$out" '5 site(s) the exceptions name')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a workflow with a bare curl of a release asset"
@@ -991,7 +972,7 @@ check "a workflow site carries its step name" \
 check "a script site carries a dash for the step" \
   "$(contains "$out" '^.github/scripts/report.sh	4	gh api	-$')"
 check "the baseline's own retried site is on it" \
-  "$(contains "$out" 'playwright install	Install Playwright Chromium, WebKit and Firefox$')"
+  "$(contains "$out" 'playwright install	Install Playwright Chromium$')"
 check "an excepted site is not on it" "$(is "$(contains "$out" 'docker pull')" false)"
 check "the count goes to standard error, not into the rows" \
   "$(is "$(contains "$out" 'site\(s\)')" false)"
@@ -1352,7 +1333,7 @@ check "asks the step for no pass count" \
 # the flag is there, so each attempt is bounded, and the seconds are not, so one_call reads no
 # figure off the call. Answering 0 for that made the script read as one holding no retry at
 # all, and the filter above dropped the loop around it, where the fetch is real and the step
-# waits for the whole of it once per pass (dispatch://INFRA-1545, R6).
+# waits for the whole of it once per pass (review round 6 of dispatch://INFRA-1545).
 echo "case: a loop around a script whose curl writes its bound as a variable is refused"
 root=$(fixture script-unread-bound-in-loop)
 cat > "$root/.github/scripts/zz-i.sh" <<'SH'
@@ -1391,7 +1372,7 @@ check "prices no run of that script at nothing" \
 # the step waits for are unread. uncounted_of dropped it with the sites that cost nothing,
 # because `one is None` was read as "this item is a script call" and a site with no figure had
 # no sentence of its own to be refused with, so rule 8 priced the step's whole wait at 0 and
-# refused nobody for it (dispatch://INFRA-1545, R8).
+# refused nobody for it (review round 8 of dispatch://INFRA-1545).
 #
 # The fetch is written in a function the loop calls, because rule 2 refuses any fetch that is
 # not a `retry_fetch` call written in a loop's own body, and a fetch in a function the loop
@@ -1452,7 +1433,7 @@ check "does not tell the author to take a call out of a loop" \
 # the caller's, so one_call answers None: the passes here are plainly one, and one times a
 # figure nobody can read is still no figure. Round 8 answered 0 for the site and the step
 # passed under any budget at all, which is how every tool install fetching through
-# .github/scripts/ci-tools.sh read green at a minute (dispatch://INFRA-1545, R9).
+# .github/scripts/ci-tools.sh read green at a minute (review round 9 of dispatch://INFRA-1545).
 echo "case: a step whose curl writes its bound as a variable, in no loop, is refused"
 root=$(fixture site-unread-bound-no-loop)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -1593,7 +1574,7 @@ check "prices no call of that loop at nothing" \
 # either loop, so neither is a loop rule 8 has a pass count to ask the step's author for.
 # Reading the question as "the script holds no uncounted item of its own" refused this with
 # the `0 s` sentence, because the inner call is an item of the script the step runs
-# (dispatch://INFRA-1545, R6).
+# (review round 6 of dispatch://INFRA-1545).
 echo "case: a loop around a script that loops over a script that fetches nothing passes"
 root=$(fixture script-no-fetch-in-loop-two-deep)
 cat > "$root/.github/scripts/zz-j.sh" <<'SH'
@@ -1633,7 +1614,7 @@ check "prices no run of either script at nothing" \
 # off it, so the budget is held to the 450 s. carried()'s answer of 0 for a call of a script
 # that costs nothing is what keeps that figure readable: without it the costless call answers
 # None, the whole script's arithmetic answers None with it, and the step is compared with
-# nothing and passes in silence (dispatch://INFRA-1545, R6).
+# nothing and passes in silence (review round 6 of dispatch://INFRA-1545).
 echo "case: a priced script that also loops, uncounted, over a costless one keeps its figure"
 root=$(fixture script-priced-beside-costless-loop)
 cat > "$root/.github/scripts/zz-l.sh" <<'SH'
