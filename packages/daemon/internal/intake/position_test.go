@@ -17,17 +17,21 @@ import (
 
 // A Dispatch consumer recreated after messages already landed on the stream — deleted and
 // reopened, or a first boot against a stream that already carries history — starts at
-// DeliverNewPolicy: it will never receive those older messages. DispatchPosition's idle is what
-// tells Reconcile nothing more is ever coming for a record those messages already advanced past,
-// and this test asserts it directly.
+// DeliverNewPolicy: it will never receive those older messages, so its ack floor can never reach
+// a target the listing read against them. DispatchPosition's idle, not the ack floor alone, is
+// what tells Reconcile nothing more is ever coming for a record those messages already advanced
+// past.
 //
-// It once also asserted that the ack floor stayed short of the target, so that idle alone closed
-// the gap. That was a property of the nats-server the fixture's container ran, not of this code:
-// against a stream whose last sequence is 2, 2.10.22 creates a DeliverNew consumer with
-// AckFloor.Stream 0, while 2.15.1 — the server this module links in and the one the deployment
-// talks to — creates it at the stream's last sequence (measured: AckFloor.Stream 2, LastSeq 2).
-// No construction of a fresh consumer can put the floor behind the target there, so the guard
-// asserted the old server's internals and is gone.
+// The gap between the floor and the target is built here rather than assumed. Against the server
+// this module links in (2.15.1), a fresh DeliverNew consumer is created AT the stream's last
+// sequence — measured, AckFloor.Stream 2 against LastSeq 2 — where the server the fixture's
+// container used to run (2.10.22) created it at 0, so the original construction, two messages
+// and nothing else, no longer separates them. What still does is the production shape: the
+// target is the STREAM's last sequence (consume.go, DispatchTarget reading info.State.LastSeq)
+// while the Dispatch consumer filters two subjects (consume.go, FilterSubjects), so a message on
+// any other subject of the stream advances the target and reaches the consumer never. One such
+// message, published after the consumer exists, is the whole of the difference: floor 2 against
+// target 3, and idle alone closes it.
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
 	js, _ := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -39,12 +43,15 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
+	// The one the Dispatch consumer's filter never matches: it moves the stream's last sequence,
+	// which is the target, and the floor stays where the creation put it.
+	publish(t, js, legionWakeSubject, envelopeJSON(t, "wake-position", "envoy", `{"issue":"CAPTURE-3"}`))
 	target, err := consumers.DispatchTarget(context.Background())
 	if err != nil {
 		t.Fatalf("DispatchTarget: %v", err)
 	}
-	if target < 2 {
-		t.Fatalf("target = %d, want at least 2 (the two messages already published)", target)
+	if target < 3 {
+		t.Fatalf("target = %d, want at least 3 (the two messages already published and the one the filter never matches)", target)
 	}
 	position, err := consumers.DispatchPosition(context.Background())
 	if err != nil {
@@ -52,6 +59,42 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	}
 	if !position.Idle {
 		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true")
+	}
+	if position.AckFloorStream >= target {
+		t.Fatalf("ack_floor = %d, target = %d; want ack_floor short of target so idle is what closes the gap, not the floor", position.AckFloorStream, target)
+	}
+	if !position.Reached(target) {
+		t.Fatalf("Reached(%d) = false at ack_floor %d with idle %v, want true: idle is what answers a target the floor can never reach", target, position.AckFloorStream, position.Idle)
+	}
+}
+
+// Reached is the whole of that judgement as a function of its two fields, which the test above
+// reaches through a real stream and a real consumer: a floor at or past the target answers it
+// whatever idle says, and an idle consumer answers it whatever the floor says, because a target
+// its filter never matches is one no delivery will ever move the floor to.
+func TestADispatchConsumerPositionIsReachedByItsFloorOrByBeingIdle(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		position DispatchConsumerPosition
+		target   int64
+		want     bool
+	}{
+		{name: "the floor is past the target", position: DispatchConsumerPosition{AckFloorStream: 9}, target: 8, want: true},
+		{name: "the floor is the target", position: DispatchConsumerPosition{AckFloorStream: 8}, target: 8, want: true},
+		{name: "the floor is short of the target and the consumer is working", position: DispatchConsumerPosition{AckFloorStream: 7}, target: 8},
+		{name: "the floor is short of the target and the consumer is idle", position: DispatchConsumerPosition{AckFloorStream: 7, Idle: true}, target: 8, want: true},
+		{name: "nothing has been acked and the consumer is idle", position: DispatchConsumerPosition{Idle: true}, target: 8, want: true},
+		{name: "nothing has been acked and the consumer is working", position: DispatchConsumerPosition{}, target: 8},
+		{name: "a target of nothing is reached from a standing start", position: DispatchConsumerPosition{}, target: 0, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.position.Reached(tc.target); got != tc.want {
+				t.Fatalf("DispatchConsumerPosition{AckFloorStream: %d, Idle: %v}.Reached(%d) = %v, want %v",
+					tc.position.AckFloorStream, tc.position.Idle, tc.target, got, tc.want)
+			}
+		})
 	}
 }
 
