@@ -2667,7 +2667,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   are excluded from that count and from `?to=<ask>` (`refs.AskBacklinkExclusions`, the default of a read naming no `?kind=`); `?kind=replies_to` or `?kind=part_of` still returns them.
 
 - A write that moves the reference graph names what it moved.
-  A plan a write makes in its read phase and queues in its write phase - a `refs.Replacement` whose moved targets it resolves with `refs.CountedChanges`, beside a `refs.ItemIndexing` for an item (`docs.planReplaceCounted` and `docs.replaceVersionRefs`, `api.planReferences`, `api.planFoundReferences` and `api.planItemWrite`) - or `refs.ReplaceCountedItem`, which writes at once (a comment's or an issue message's write, which indexes the item's blocks with it), is how a body is indexed:
+  A plan a write makes in its read phase and queues in its write phase - a `refs.Replacement` whose moved targets it resolves with `refs.CountedChanges`, beside a `refs.ItemIndexing` for an item (`docs.planReplaceCounted` and `docs.replaceVersionRefs`, `api.planFoundReferences` and `api.planItemWrite`) - or `refs.ReplaceCountedItem`, which writes at once (a comment's or an issue message's write, which indexes the item's blocks with it), is how a body is indexed:
   each reconciles that source's edges and keeps the targets a reader refreshes by name (`refs.CountedChanges`)
   — an issue and an ask, whose readers carry a batched count, a document or file, whose Referenced by panel lists its edges, and a block of a document, whose own panel and every link to it read one graph read and whose document's panel lists the edges at its blocks
   — which the event carries as `references_changed` (`[{kind, id, issue_key?, artifact_id?, ref?}]`:

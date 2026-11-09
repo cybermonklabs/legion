@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -84,6 +85,16 @@ func TestACreateWithNoQuestionCandidateReadsNoScope(t *testing.T) {
 		settle: time.Hour,
 	})
 	issue := createInteractionIssue(t, handler, "SCOPE", "Count the scope read", "A spec")
+	// The thread the reply rows answer in. Its own create is not measured: the count starts
+	// again below for each row, and what a reply costs is the question here - its queued row
+	// names this comment in reply_to, which is where its scope is read from
+	// (refs.PendingSource.ReplyTo).
+	seeded := countedCreate(t, handler, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": "The thread the replies answer in.", "actor": sessionActor()})
+	if seeded.Code != http.StatusCreated {
+		t.Fatalf("seed the thread the replies answer in: status=%d body=%s", seeded.Code, seeded.Body.String())
+	}
+	parent := decodeBody[model.Comment](t, seeded)
 
 	for _, create := range []struct {
 		what  string
@@ -95,10 +106,18 @@ func TestACreateWithNoQuestionCandidateReadsNoScope(t *testing.T) {
 			map[string]any{"body": "Nothing in this body names a block.", "actor": sessionActor()}, 0},
 		{"a comment writing `#q1`", "/api/v1/issues/" + issue.Key + "/comments",
 			map[string]any{"body": "Answered by #q1.", "actor": sessionActor()}, 1},
+		{"a reply naming no question block", "/api/v1/issues/" + issue.Key + "/comments",
+			map[string]any{"body": "Nothing in this reply names a block.", "reply_to": parent.ID, "actor": sessionActor()}, 0},
+		{"a reply writing `#q1`", "/api/v1/issues/" + issue.Key + "/comments",
+			map[string]any{"body": "Answered by #q1.", "reply_to": parent.ID, "actor": sessionActor()}, 1},
 		{"an ask naming no question block", "/api/v1/issues/" + issue.Key + "/asks",
 			map[string]any{"question": "Which way?", "actor": sessionActor()}, 0},
 		{"an ask writing `#q1`", "/api/v1/issues/" + issue.Key + "/asks",
 			map[string]any{"question": "Does #q1 settle this?", "actor": sessionActor()}, 1},
+		{"an issue message naming no question block", "/api/v1/issues/" + issue.Key + "/messages",
+			map[string]any{"body": "Nothing in this message names a block.", "actor": sessionActor()}, 0},
+		{"an issue message writing `#q1`", "/api/v1/issues/" + issue.Key + "/messages",
+			map[string]any{"body": "Does #q1 settle this?", "actor": sessionActor()}, 1},
 	} {
 		counter.take()
 		response := countedCreate(t, handler, create.path, create.body)

@@ -53,8 +53,10 @@ type issueDuplicateError struct {
 // createIssueInput is the body of POST /api/v1/issues.
 type createIssueInput struct {
 	// Project and Title are not required of a caller: a create that names an external
-	// owner/repo#n takes the project from that repository's mapping and the title from the
-	// external issue (:98-133, :175-176), and only a create that names neither is refused.
+	// owner/repo#n takes the project from that repository's mapping (s.repoProject, or
+	// DefaultProject when the repository is mapped nowhere) and, when the body names no title,
+	// takes the ref itself for one; only a create that names neither is refused
+	// (projectKeyPattern, "title is required").
 	Project    string          `json:"project"`
 	Title      string          `json:"title"`
 	Parent     *string         `json:"parent"`
