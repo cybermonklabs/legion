@@ -3562,10 +3562,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_legion == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # This branch raised the old 10 to 15 when the merge of main's controller-start and
-    # phase-reminder suites made the job run 10 m 12 s with every row passing. Main then added
-    # it up properly, below, and 28 supersedes that 15: the accounting there already covers the
-    # rows this branch's own suites contribute.
     # The budget, added up part by part from the slowest run this job can have rather than
     # copied from another job: the job's set-up with the NATS service started and the checkout
     # (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache
