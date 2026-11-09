@@ -1,11 +1,13 @@
 name: Dispatch browser nightly
 
-# The full browser lane, once a night and on request. ci.yaml's dispatch-browser job runs the
-# pull-request lane on a pull request that carries no `full-ci` label, the two projects a pull
-# request is held to, and the full lane - all eight parallel projects, the three `-alone` ones
-# and the two-process job - on every other run, so the merge group runs it on the tree a change
-# lands as. This run covers a day with no such event, and is what runs the full lane on main's
-# tip (.github/workflows/dispatch-browser.yaml, which holds every step).
+# Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
+# recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
+# carries no `full-ci` label, the rows a pull request is held to, and the full lane - all eight
+# parallel projects, the three `-alone` ones, the two stub ones and the two-process job - on
+# every other run, so the merge group runs it on the tree a change lands as. This run covers a
+# day with no such event, and is what runs the full lane on main's tip
+# (.github/workflows/dispatch-browser.yaml, which holds every step). The re-record job's own
+# head, below, says what it guards and why it is here rather than in a file of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
@@ -27,6 +29,13 @@ on:
     # four shard machines, three alone machines and a two-process machine at once, and two
     # nightlies starting together would queue behind each other for the account's runners.
     - cron: "17 2 * * *"
+    # The re-record job below, at an hour of its own and away from the full lane's: the two
+    # share this workflow's concurrency group, so a second cron at 02:17 would queue behind a
+    # full lane that can take half an hour, and the recordings would be read against a server
+    # the night had already moved on from. 13:41 is the far side of the day from both schedules
+    # of this repository (02:17 here and e2e.yaml's 04:41), and it needs one runner rather than
+    # eight, so it never competes with a nightly for the account's capacity.
+    - cron: "41 13 * * *"
   workflow_dispatch:
 
 # One nightly at a time. A run that overran into the next night would otherwise run beside the
@@ -49,3 +58,102 @@ jobs:
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
+  # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
+  # snapshot of a server that keeps moving: this re-records every stubbed row against the real
+  # harness and fails when a recording no longer says what the server says. The contract test
+  # that runs on every pull request
+  # (packages/dispatch/e2e/__tests__/stub-recordings.test.ts) catches a shape that leaves the
+  # generated contract; this catches what a schema cannot see - a changed value, an order, a
+  # route a page stopped asking for.
+  #
+  # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
+  # and a `workflow_dispatch` from the default branch alone, so a workflow that exists only on a
+  # branch can be dispatched by nobody and proved before its merge by nothing
+  # (dispatch://INFRA-1621/comment/36392fee-60e8-4dbd-9068-bd8524088d08 records that refusal).
+  # This file already stands on main with both triggers, so `gh workflow run
+  # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
+  #
+  # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
+  # run also runs the full lane. That is a second full lane a day on a repository whose nightly
+  # is one, which is the price of keeping this job dispatchable before its own merge; it is the
+  # same eight runners for the same ten minutes, and `concurrency` keeps it from overlapping the
+  # 02:17 run.
+  #
+  # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
+  # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,
+  # and a job's is the sum of its steps' budgets plus the measured maximum of every step with
+  # none. The recording step runs every stubbed row once on one harness lane, measured at 5 m 42 s
+  # for 114 rows in this issue's pod (a replay; a recording pays the harness beside it), so
+  # 342 x 1.15 = 393 s -> 7 min, doubled to 15 for the four shards' worth of rows this suite will
+  # hold and for a runner slower than that pod. The install keeps the 22 minutes
+  # .github/scripts/playwright-install.sh's retry arithmetic gives it, as the shard job's does.
+  # 22 + 15 = 37, and 100 s of unbudgeted steps round it to 39.
+  re-record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 39
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # Restored only, as the shard job's is: the harness builds the Dispatch server, which this
+      # job needs and no job of this family saves a cache for.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build dispatch dashboard
+        run: bun run build:web
+        working-directory: packages/dispatch
+      - id: playwright-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - id: apt-debs-key
+        name: Compute the apt archive cache key
+        run: |
+          key=$(.github/scripts/apt-archive-cache-key.sh)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - id: apt-debs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-debs-key.outputs.key }}
+      # Chromium alone: both stub projects launch it (`stub-phone` is an iPhone 13 on Chromium).
+      - name: Install Chromium
+        timeout-minutes: 22
+        run: .github/scripts/playwright-install.sh chromium
+      # The committed set, kept before the re-recording writes over it in place.
+      - name: Keep the committed recordings
+        run: cp -r e2e/__recordings__ "$RUNNER_TEMP/committed"
+        working-directory: packages/dispatch
+      - name: Re-record every stubbed row against the real harness
+        timeout-minutes: 15
+        run: |
+          # The lane's Postgres, the copy in ghcr.io/cybermonklabs/legion/ci the shard job uses.
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          DISPATCH_E2E_STUB_RECORD=1 bun e2e/run.ts -- bunx playwright test \
+            --config e2e/playwright.config.ts --project=stub --project=stub-phone
+        working-directory: packages/dispatch
+      # Uploaded whether or not it matches, so whoever reads a red run applies the new set with
+      # one copy rather than standing a harness up themselves.
+      - name: Upload the re-recorded set
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-browser-recordings-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/__recordings__
+          if-no-files-found: error
+      - name: Fail where a recording no longer matches
+        run: bun e2e/tools/compare-recordings.ts "$RUNNER_TEMP/committed"
+        working-directory: packages/dispatch

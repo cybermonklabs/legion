@@ -334,12 +334,35 @@ jobs:
           # these projects launch, and says why that reading is a second `case` and not this one.
           # An unknown lane ends the step here rather than running the default set under a name
           # nobody meant; the install step has already refused it.
+          #
+          # `stub` and `stub-phone` are in both lanes: a stubbed row is a row of this suite like
+          # any other, and it runs here rather than in a leg of its own so that neither the leg
+          # capture of the merge job's readings nor its row accounting has to learn a new name.
+          # They start no harness of their own either - this job starts one per lane already, for
+          # the real-stack rows beside them - and the config starts their static file server
+          # itself (e2e/playwright.config.ts's `webServer`).
+          #
+          # `--grep '@pr'` on the pull-request lane alone is what holds that lane to the rows a
+          # pull request is answered by: every stubbed row carries the tag, and so do the
+          # real-stack rows of the journeys that must be seen on a pull request. Playwright
+          # applies a command-line grep **on top of** a project's own, never in place of it -
+          # measured at this branch's base, where `--grep '@pr'` left `iphone` all 99 of its
+          # `@phone` rows and `webkit` 1 of its 40 - so the two tagged projects keep their own
+          # axis. Every row without the tag runs on the full lane, which `ci.yaml` runs for every
+          # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
+          # a displaced row loses is feedback on the pull request itself
+          # (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
+          # the lane to its budget by listing the config with this same grep.
           case "${{ inputs.lane }}" in
-            pull-request) projects="--project=chromium --project=iphone" ;;
+            pull-request)
+              projects="--project=chromium --project=iphone --project=stub --project=stub-phone"
+              lane_grep="--grep=@pr"
+              ;;
             full)
               projects="--project=chromium --project=iphone --project=webkit --project=webkit-iphone
               --project=firefox --project=firefox-download-navigation --project=chromium-plain-http
-              --project=chromium-plain-http-sign-out"
+              --project=chromium-plain-http-sign-out --project=stub --project=stub-phone"
+              lane_grep=""
               ;;
             *)
               echo "::error::lane must be pull-request or full, not '${{ inputs.lane }}'"
@@ -364,7 +387,7 @@ jobs:
           # leave this step green. `shell: bash` would set `pipefail` and is not used here: it
           # takes the step out of check-ci-filters.sh's reduction of the go commands
           # e2e/run-server.sh starts.
-          bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects --shard=${{ matrix.shard }}/4 --reporter=list,blob 2>&1 | tee "$RUNNER_TEMP/playwright-log.txt"
+          bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --reporter=list,blob 2>&1 | tee "$RUNNER_TEMP/playwright-log.txt"
           status=${PIPESTATUS[0]}
           kill "$sampler" 2>/dev/null || true
           # The row count this leg printed, for the merge job's first reading. It travels beside
@@ -1366,6 +1389,55 @@ jobs:
             echo "- $text" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice title=dispatch-browser leg exits::$text"
           done < "$unhappy"
+      # Reading four. What a row of each layer costs, which nothing published before: the merge
+      # job printed rows and the flake rate and no duration statistic at all, so
+      # dispatch://INFRA-1407's k1 and dispatch://INFRA-983's R13 had no repeatable command to
+      # read. The two classes are the `stub` and `stub-phone` projects' rows and every other
+      # row, which is what "the project or tag the configuration gives them" names after that
+      # change.
+      #
+      # Read from the merged report's passing results alone, as the per-test budget in
+      # e2e/playwright.config.ts is: a failed row's duration is the time it took to fail or to
+      # reach its timeout, which says nothing about what the row costs, and a skipped row's is
+      # not a run at all. A retried row contributes each attempt it passed, which is one.
+      - name: Reading four, the row durations
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/report.json"
+          if [ ! -f "$report" ]; then
+            echo "::warning::no merged report, so no durations; reading one above says why"
+            exit 0
+          fi
+          # One line per passing result: the class it belongs to and its duration in
+          # milliseconds. `stub` and `stub-phone` are the stubbed layer; every other project is
+          # a row against the real stack.
+          jq -r '[.. | objects | select(has("specs")) | .specs[] | .tests[]] | .[]
+            | (if (.projectName | startswith("stub")) then "stubbed" else "real-stack" end) as $class
+            | .results[] | select(.status == "passed") | "\($class) \(.duration)"' "$report" \
+            > "$RUNNER_TEMP/durations.txt"
+          {
+            echo "### The row durations"
+            echo
+            echo "| class | rows | median ms | 95th percentile ms |"
+            echo "| --- | ---: | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for class in stubbed real-stack; do
+            # The nearest-rank percentile of the sorted durations, which is the reading the
+            # per-test budget's own jq takes, and three zeroes where the lane ran no row of
+            # that class - the pull-request lane before a row moved, or a shard that drew none.
+            stats=$(awk -v want="$class" '$1 == want { print $2 }' "$RUNNER_TEMP/durations.txt" |
+              sort -n |
+              awk '{ d[NR] = $1 } END { if (NR == 0) { print 0, 0, 0 } else {
+                print NR, d[int((NR + 1) / 2)], d[NR < 2 ? 1 : int((NR * 95 + 99) / 100)] } }')
+            # Word splitting is what reads the three figures, so `$stats` is deliberately
+            # unquoted; `set --` is the one way to do that without an array, which this step's
+            # `bash -e {0}` would take but `sh` would not.
+            # shellcheck disable=SC2086
+            set -- $stats
+            echo "| $class | $1 | $2 | $3 |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=dispatch-browser row durations::$class: $1 rows," \
+              "median $2 ms, 95th percentile $3 ms"
+          done
       # The verdict, which the three readings above do not give: they report, and this fails. Two
       # of the job's three failures are here - an upstream job that neither succeeded nor was
       # skipped, and a failed row in the merged report - and the third, a missing blob, is in

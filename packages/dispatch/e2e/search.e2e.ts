@@ -1,9 +1,8 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 import {
   answerAsk,
   createAsk,
-  createComment,
   createIssue,
   createMessage,
   createProject,
@@ -11,48 +10,17 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
+import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-const searchTerm = "astrolabe";
-const searchSpec = "# Instruments\n\nThe astrolabe measures altitude. Every astrolabe is brass.\n";
-const searchSession = {
-  actor: { kind: "session" as const, id: "e2e-search" },
-  as: "agent" as const,
-};
-
-interface SearchFixture {
-  readonly commentID: string;
-  readonly commentIssueKey: string;
-  readonly firstIssueKey: string;
-}
-
-async function seedSearchFixture(): Promise<SearchFixture> {
-  await createProject({ key: "CORE", name: "Core" });
-  const firstIssue = await createIssue({
-    project: "CORE",
-    spec: searchSpec,
-    title: "Navigation instruments",
-  });
-  const secondIssue = await createIssue({ project: "CORE", title: "Other work" });
-  const comment = await createComment(secondIssue.key, { body: "Move the astrolabe diagram." });
-  const thirdIssue = await createIssue({ project: "CORE", title: "Unrelated" });
-  await createMessage(thirdIssue.key, { body: "No instruments here." }, searchSession);
-
-  return {
-    commentID: comment.id,
-    commentIssueKey: secondIssue.key,
-    firstIssueKey: firstIssue.key,
-  };
-}
-
-async function openSearchFromRail(page: Page, isPhone: boolean): Promise<void> {
-  await page.goto("/");
-  if (isPhone) {
-    await page.getByRole("button", { name: "Open navigation" }).click();
-  }
-  await page.getByRole("button", { name: /^search/i }).click();
-}
+/**
+ * The search palette, in the rows whose claim is what the index found: the grouped hits and
+ * their marks, an ask hit's own answer, and the two routes a hit opens. The keyboard-hints row
+ * is here too: it is read in the desktop and the phone configurations at once, and a stubbed
+ * row runs in one of them. What the palette draws over one fixed answer is in
+ * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
+ */
 
 test.beforeEach(async () => {
   await resetDatabase();
@@ -298,124 +266,6 @@ test("a project-document hit is grouped under the document and opens it; a messa
   }
 });
 
-test("the rail Search control opens the palette and Escape returns focus to it", async ({
-  browser,
-}, testInfo) => {
-  await seedSearchFixture();
-  const context = await asUser(browser, "alice");
-
-  try {
-    const page = await context.newPage();
-    await openSearchFromRail(page, false);
-
-    const dialog = page.getByRole("dialog", { name: "Search" });
-    const search = page.getByRole("combobox", { name: "Search" });
-    await expect(dialog).toBeVisible();
-    await expect(search).toBeFocused();
-    await search.fill(searchTerm);
-    await expect(dialog.getByRole("option")).toHaveCount(2);
-    await page.screenshot({
-      fullPage: true,
-      path: testInfo.outputPath(`search-palette-${testInfo.project.name}.png`),
-    });
-
-    await page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^search/i })).toBeFocused();
-  } finally {
-    await context.close();
-  }
-});
-
-test("phone search rows are at least 44px, do not overflow, and a comment result opens Conversation @phone", async ({
-  browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "phone row geometry is covered by the iphone project"
-  );
-  const fixture = await seedSearchFixture();
-  // An answered ask whose answer runs past its three-line clamp, so the overflow check covers
-  // the ask hit's status line and answer text as well.
-  const ask = await createAsk(
-    fixture.firstIssueKey,
-    {
-      options: [{ label: "On the chart table" }, { label: "In the captain's cabin" }],
-      question: "Where does the astrolabe live between voyages?",
-    },
-    searchSession
-  );
-  await answerAsk(ask.id, {
-    expected_edited_at: null,
-    selected: ["On the chart table"],
-    text: "Keep the astrolabe on the chart table during every crossing, and recalibrate its rete against the meridian at local noon whenever the sky is clear enough to take a clean sighting. Log each reading beside the dead-reckoning position in the ship's book, note the observer and the instrument's serial number, and send any drift larger than half a degree to the instrument maker before the next voyage leaves port.",
-  });
-  const context = await asUser(browser, "alice");
-
-  try {
-    const page = await context.newPage();
-    await openSearchFromRail(page, true);
-    await page.getByRole("combobox", { name: "Search" }).fill(searchTerm);
-
-    // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
-    const dialog = page.getByRole("dialog", { name: "Search" });
-    const options = dialog.getByRole("option");
-    await expect(options).toHaveCount(3);
-    await expect(dialog.getByRole("option", { name: /^ask / })).toContainText(
-      "Chose On the chart table"
-    );
-    for (let index = 0; index < (await options.count()); index += 1) {
-      const box = await options.nth(index).boundingBox();
-      expect(box, `result option ${index} has a layout box`).not.toBeNull();
-      expect(box?.height ?? 0, `result option ${index} is a touch target`).toBeGreaterThanOrEqual(
-        44
-      );
-    }
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true);
-
-    await dialog.getByRole("option", { name: /^comment / }).click();
-    await expect(page).toHaveURL(
-      new RegExp(`/issues/${fixture.commentIssueKey}/comments/${fixture.commentID}$`)
-    );
-    // The deep link loads the Conversation, then pages events until the comment is found; start
-    // the text assertion's clock once the region is mounted so a loaded runner does not fail it.
-    const conversation = page.getByRole("region", { name: "Conversation" });
-    await expect(conversation).toBeVisible();
-    // The comment link opens its thread full-screen over the Conversation; Back leaves it on the
-    // focused turn.
-    const thread = page.getByRole("dialog", { name: "Thread" });
-    await expect(thread.getByText("Move the astrolabe diagram.")).toBeVisible();
-    await thread.getByRole("button", { name: "Back" }).click();
-    await expect(thread).toHaveCount(0);
-    await expect(
-      conversation.locator(`li[data-turn="comment:${fixture.commentID}"][aria-current="true"]`)
-    ).toContainText("Move the astrolabe diagram.");
-    await expect(page.getByTestId("margin-sheet")).not.toContainText("Move the astrolabe diagram.");
-  } finally {
-    await context.close();
-  }
-});
-
-test("no results and short queries are stated, not silent", async ({ browser }) => {
-  await seedSearchFixture();
-  const context = await asUser(browser, "alice");
-
-  try {
-    const page = await context.newPage();
-    await openSearchFromRail(page, false);
-    const search = page.getByRole("combobox", { name: "Search" });
-
-    await search.fill("a");
-    await expect(page.getByText("Type at least 2 characters")).toBeVisible();
-    await search.fill("zzqqxx");
-    await expect(page.getByText('No results for "zzqqxx"')).toBeVisible();
-  } finally {
-    await context.close();
-  }
-});
-
 // The hint names keys a touch reader does not have, and 33px of palette is 33px of hits, so it
 // shows only where a pointer that can hover exists.
 test("the palette's keyboard hints show for a pointer and not for a touch reader @phone", async ({
@@ -447,36 +297,6 @@ test("the palette's keyboard hints show for a pointer and not for a touch reader
     } else {
       await expect(hints).toBeHidden();
     }
-  } finally {
-    await alice.close();
-  }
-});
-
-// The hits of one owner are a group named by the row above them, so a reader who cannot see
-// that row still hears which issue a hit belongs to.
-test("each palette group is named by its owner row", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Conversation view" });
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
-    await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
-    await page.getByRole("combobox", { name: "Search" }).fill("conversation");
-    const group = page.getByRole("group", { name: new RegExp(`^${issue.key}: `) });
-    await expect(group).toBeVisible();
-    // The options are inside it, and the listbox still owns them.
-    await expect(group.getByRole("option").first()).toBeVisible();
-    // The owner row names the group and is not a second node in the accessibility tree, so a
-    // reader hears the owner once rather than twice. `aria-labelledby` computes a name from a
-    // hidden element, which is why the group above still has one.
-    const row = page.locator(`[id="search-group-issue:${issue.key}"]`);
-    await expect(row).toHaveAttribute("aria-hidden", "true");
-    // Exactly one node carries the owner's accessible name: the group.
-    await expect(page.getByRole("group", { name: new RegExp(`^${issue.key}: `) })).toHaveCount(1);
   } finally {
     await alice.close();
   }

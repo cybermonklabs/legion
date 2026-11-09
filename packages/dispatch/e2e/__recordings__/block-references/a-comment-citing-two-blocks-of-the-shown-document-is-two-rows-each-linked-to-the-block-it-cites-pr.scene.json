@@ -1,0 +1,5 @@
+{
+  "hold": "#b-hold%5Fline",
+  "issue": "CORE-1",
+  "ship": "#b-ship%5Fit"
+}
