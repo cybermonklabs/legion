@@ -1273,6 +1273,12 @@ type Ask struct {
 	// a reply newer than the one it answered decides it. Set on ask reads only (inbox rows, ask lists,
 	// the ask detail), never on the ask.* event payloads; empty for answered and resolved asks.
 	WaitingOn string `json:"waiting_on,omitempty"`
+	// WaitingOnPerson is the person an ask waits on: AskedOf once somebody has handed the ask on,
+	// and the assignee of its issue until then (api.askedOfPersonExpression). Set on ask reads
+	// only (inbox rows, ask lists, the ask detail), never on the ask.* event payloads; empty when
+	// nobody waits on it, which is an ask on a project document or an unassigned issue that
+	// nobody was handed.
+	WaitingOnPerson string `json:"waiting_on_person,omitempty"`
 }
 
 // AskAnchorArtifact is the document containing an ask's quoted anchor.
