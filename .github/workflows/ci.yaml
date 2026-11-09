@@ -6312,7 +6312,10 @@ jobs:
           .github/scripts/download-retry-proof.sh probe recover-changie
       - id: recover-changie
         continue-on-error: true
-        # install-changie's own retry arithmetic: 8 x 60 + 127 = 607 s -> 11 min.
+        # install-changie's own retry arithmetic, which is the worst case rule 8 prices and
+        # not what this fault costs: 8 x 60 + 127 = 607 s -> 11 min. The ladder's own
+        # `--retry-max-time 120` ends it earlier against a host that stalls, as the report
+        # below derives.
         timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
@@ -6517,11 +6520,24 @@ jobs:
         env:
           http_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
           https_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
+      # Four of the eight, and the bound is why. install-changie fetches through
+      # .github/scripts/ci-tools.sh's `ci_tools_curl`, which writes `--retry-max-time 120`
+      # beside `--retry 7`: curl starts no new attempt once the timer reset at the first has
+      # passed two minutes. Against the recovering fault an attempt ends the instant the proxy
+      # answers 504, so the timer advances by the waits alone and all eight are made, which is
+      # what the recovering arm above reads. Against this one every attempt spends its whole
+      # 60 s bound, so the timer passes two minutes inside the third attempt and the ladder
+      # ends there or one attempt later: this run reached the proxy four times, at +15s, +76s,
+      # +137s and +198s, and ended 258 s after the proxy started. The count asserted is three,
+      # the number the option guarantees however curl rounds the comparison it makes at the
+      # 122 s decision, and the floor is 123 s, the two attempts that must end at their bound
+      # before the third starts plus the 1 s and 2 s waits between them. A retry that vanished
+      # would read one attempt and about 60 s, which is what this pair is here to catch.
       - name: What install-changie's curl did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-changie
-          --what "changie's release asset (curl, 8 attempts of 60 s)"
-          --outcome ${{ steps.stall-changie.outcome }} --attempts 8 --floor 127 --budget 690
+          --what "changie's release asset (curl, a ladder of up to 8 attempts of 60 s bounded at 120 s)"
+          --outcome ${{ steps.stall-changie.outcome }} --attempts 3 --floor 123 --budget 690
 
       - name: Start the stalling fault for install-omp
         id: stall-omp-proxy
