@@ -34,15 +34,17 @@ body: |-
   neither a trailing `| head -n 1` nor `2>&1 | tail -n 1` — the stages AskGate's own grammar
   blesses — can take the only record of it. The ledger line carries `askgate.chose`, the mode the
   session set, beside `askgate.mode`, which says what became of the write.
-  A verdict lookup reads the identity of the previous version as well as the current one, so an
-  upgrade does not silently free every write a session had refused: a marker that stops being
-  recognised reads as stale and refuses where the session chose block, but a verdict that stops
-  being recognised would read as none and post. A marker of the previous encoding is honoured
-  rather than refused: refusing it was fail-closed, but it told the agent its arguments differed
-  from the ones AskGate reviewed, which was untrue — only the encoding moved — and since a
-  refusal consumes nothing the untruth repeated until the sweep. A verdict's filename now
-  carries the scheme that produced it, so the next change to the encoding is a prefix and an
-  appended fallback rather than a second round of this.
+  This change moves the encoding arguments are digested under, and a released version's gate can
+  meet a new CLI within one session, since the extension loads at session start while the CLI is
+  resolved per call. A marker minted under the released encoding — a raw JSON.stringify of the
+  arguments — is honoured rather than refused: refusing it was fail-closed, but it told the agent
+  its arguments differed from the ones AskGate reviewed, which was untrue since only the encoding
+  moved, and a refusal consumes nothing, so in block mode it refused every reviewed literal write
+  for the session's life. A verdict's filename now carries the scheme that produced it and the
+  lookup reads the earlier name too; no released version writes verdicts, so that covers no
+  deployed version and exists for the next change to the encoding.
+  A verdict lookup reads every identity before concluding, and a refusal outranks a file it
+  cannot read, so a damaged name no longer hides a readable verdict filed under another.
   The order-sensitivity fixed here is over argument keys, top level and nested; reordered
   command-line flags still change the marker's argv key and find no marker, as before.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to

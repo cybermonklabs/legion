@@ -783,7 +783,12 @@ export function consumeMarker(
 ): Consumed {
   const key = argvDigest(argv);
   const reviewed = argsDigest(args);
-  const priorReviewed = digest(priorCanonical(args));
+  // The encoding markers were actually minted under before `canonicalText`: a raw
+  // `JSON.stringify` in the parser's insertion order, which is what every released version
+  // wrote. Not `priorCanonical`, which is the verdict encoding and no version ever minted a
+  // marker with: hashing that widened the accept set by a region nothing could reach while
+  // leaving the real mixed-version marker refused.
+  const priorReviewed = digest(args);
   let changed: FileOperand | undefined;
   let mismatched = false;
   let expired = false;
@@ -1076,8 +1081,10 @@ function canWrite(write: (name: string) => string, now: number): boolean {
     return false;
   } finally {
     // The probe leaves nothing behind, and a removal that fails is not itself a reason to stop:
-    // a leftover `.probe-` is no identity (identities are hexadecimal) and the next sweep of the
-    // directory takes it.
+    // a leftover `.probe-` is the name of no verdict, since a verdict's name is its scheme and
+    // its identity (`2-<hex>`) and an earlier scheme's was bare hex. Nothing sweeps this
+    // directory — a verdict is never swept — so such a file stays until the session's own
+    // directory goes, read by nothing.
     try {
       if (file !== undefined) rmSync(file, { force: true });
     } catch {
@@ -1151,10 +1158,17 @@ function readVerdictFile(file: string): Record<string, unknown> | "gone" | "unre
  * refused nothing writes none.
  */
 export function readVerdict(session: string, identities: readonly string[]): VerdictRead {
+  // Every identity is read before anything is concluded, and a verdict outranks a damaged file:
+  // returning on the first answer let a corrupt `2-<identity>` hide a readable refusal filed
+  // under the earlier name, and `unknown` posts in warn mode where the refusal would not. This
+  // is the precedence the model states, applied within the lookup as well as around it.
+  let damaged: VerdictRead | undefined;
   for (const identity of identities) {
     const found = readOneVerdict(session, identity);
-    if (found !== undefined) return found;
+    if (found?.kind === "refused") return found;
+    if (found !== undefined) damaged ??= found;
   }
+  if (damaged !== undefined) return damaged;
   const lost = join(session, VERDICTS_LOST);
   const mark = readVerdictFile(lost);
   if (mark === "gone") return { kind: "none" };

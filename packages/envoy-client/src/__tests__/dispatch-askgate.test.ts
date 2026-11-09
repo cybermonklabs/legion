@@ -1113,6 +1113,52 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(readdirSync(session).filter((name) => name.startsWith(".probe-"))).toEqual([]);
   });
 
+  // The mixed-version case that is actually reachable: released main mints markers under a raw
+  // JSON.stringify of the arguments, and the new CLI reads them. Refusing one told the agent
+  // its arguments differed from the reviewed ones, which was untrue, and repeated until the
+  // sweep — in block mode, for every reviewed literal write of the session.
+  test("a marker of the encoding released versions mint is honoured, not refused", async () => {
+    writeRecord();
+    const args = await dryArgs(MESSAGE);
+    const shipped = sha(args);
+    expect(shipped).not.toBe(argsDigest(args));
+    const file = join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        v: 2,
+        argv: argvDigest(MESSAGE),
+        args: shipped,
+        files: [],
+        toolCallId: "call-1",
+        outcome: "verdict",
+        createdAt: Date.now(),
+      }),
+      { mode: 0o600 }
+    );
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(0);
+    expect(stdout).not.toContain("arguments differ");
+    expect(stdout).not.toContain("AskGate");
+    expect(messagePosts()).toHaveLength(1);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  // A damaged file under one identity must not hide a readable verdict under another: returning
+  // on the first answer made `unknown` win, and warn mode posts an unknown.
+  test("a corrupt name does not hide a readable verdict filed under another", async () => {
+    writeRecord("ses-1", undefined, "warn");
+    const session = join(stateDir, "sessions", "ses-1");
+    const names = writeIdentities("dispatch_message", await dryArgs(MESSAGE));
+    writeVerdict(session, names[1] ?? "", "failure 7: say what changed", Date.now());
+    mkdirSync(join(session, "askgate-verdicts"), { recursive: true });
+    writeFileSync(join(session, "askgate-verdicts", names[0] ?? ""), "{broken");
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(messagePosts()).toHaveLength(0);
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();

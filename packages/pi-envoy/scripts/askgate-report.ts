@@ -331,9 +331,10 @@ export function isReview(record: GateRecord): boolean {
 
 /**
  * The gate did not pass the write as sent: a revise (a charter revise or a rules refusal), a
- * literal call whose file was missing or not a regular file when the gate read it, or a gated
- * write the CLI found no matching marker for (each of which warn mode lets post, so its decision
- * is `allow`), or a gate that did not load.
+ * literal call whose file was missing or not a regular file when the gate read it (which warn
+ * mode lets post, so its decision is `allow`), a gated write the CLI held back, or a gate that
+ * did not load. A gated write the CLI posted is an `unmarked` entry whose decision is `allow`,
+ * in either mode, so it is not sent back.
  */
 export function isSentBack(record: GateRecord): boolean {
   return (

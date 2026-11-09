@@ -1796,7 +1796,7 @@ export function nonLiteralCause(
   return { cause: "other", detail: snippet(unread?.raw ?? command.slice(own[0]?.start ?? 0)) };
 }
 
-/** What the CLI prints when it refuses, or in warn mode posts, a gated write that has no marker. */
+/** What the CLI prints when it posts a gated write that has no marker, which it does in either mode. */
 const UNMARKED_WRITE =
   /AskGate is on for this session(?: in warn mode)?, and this call carries no AskGate marker/;
 
@@ -2368,10 +2368,10 @@ function renderUnreadable({ file }: UnreadableCommand, mode: Mode): string {
  * verdict. Only `askgate.enabled: false` turns AskGate off, so none is an off switch: each literal
  * write of the main agent the gate would review (`scopedCommand`, `scopedDevice`) is refused in
  * both modes, naming the error and the switch, and recorded as `load-failed`. It mints no marker
- * and records no mode, so every other gated write of a process that acts as the session, a
- * subagent's included, meets the CLI's marker check: refused where the session chose block
- * (`OMP_ASKGATE=block`, which `bindDispatchSession` writes beside the record), and at the warn
- * default posted with a warning and an `unmarked` entry. Every other call runs.
+ * and records no mode, and it writes down no verdicts either, so every other gated write of a
+ * process that acts as the session, a subagent's included, meets the CLI's check with nothing
+ * recorded against it and posts with a warning and an `unmarked` entry, whatever mode the
+ * session chose. Every other call runs.
  */
 export function loadFailureGate(
   error: unknown,

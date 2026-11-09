@@ -4769,7 +4769,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
   };
   const textOf = (result: Result) =>
     (result?.content ?? []).map((block) => (typeof block.text === "string" ? block.text : ""));
-  test("the CLI's refusal of a call outside the grammar gets a note that names the cause, in both modes and in a subagent", async () => {
+  test("the CLI's warning on a call outside the grammar gets a note that names the cause, in both modes and in a subagent", async () => {
     for (const [mode, kind] of [
       ["block", "main"],
       ["warn", "main"],

@@ -424,8 +424,10 @@ provider, a review that failed) checks no file, so its file posts as the CLI rea
 
 **Everything else runs, and the `dispatch` command enforces the review.** The gate reads no other
 form and refuses none: a call outside the literal grammar runs as written. What holds it back is
-the CLI. For each literal call it lets run, the gate mints a single-use marker; the CLI posts a
-gated write only when it consumes one, so a write sent any other way is refused in `block` mode:
+the CLI. For each literal call it lets run, the gate mints a single-use marker, and for each
+write its review refuses it records a verdict. A write sent any other way carries neither: the
+CLI posts it with a warning that no review saw it, and holds it only where this session's own
+review refused that very write (dispatch://INFRA-2079, row 3.5):
 
 - **The record.** While the gate is bound, pi-envoy keeps one owner-only file for its process in
   the `askgate/` directory of the CLI's state directory of each session id it binds
@@ -506,6 +508,15 @@ gated write only when it consumes one, so a write sent any other way is refused 
   those bytes and warn mode's whole meaning is that a revise does not hold the write. A verdict
   is not spent by being read and is never swept: it goes when a later review of the same write
   allows it, or with the session.
+- **Where the verdicts are, by name.** `<state>/sessions/<id>/askgate-verdicts/` holds one file
+  per refused write, named `<scheme>-<identity>` (`2-…` for the current encoding, bare hex for
+  the first), whose body is the reason the review gave and when. `<state>/sessions/<id>/askgate-verdicts-lost`
+  is the mark: its presence makes the session read a write it has nothing recorded against as
+  unknown rather than unreviewed, for the rest of that session's life, and it never clears. An
+  operator whose session refuses every unreviewed write should look for that file first — the
+  session is strict because a verdict was lost, and removing the file resumes the default while
+  giving up the knowledge that one is missing. Both go with the session directory at the daily
+  prune and are never swept by age.
 - **The cause note.** When a `bash` call outside the literal form holds a `dispatch` word and a
   gated subcommand, and its result holds the CLI's refusal (or warn-mode warning) of a write with
   no marker, the gate appends an `AskGate note:` to that result. It names the first cause it found
