@@ -247,22 +247,28 @@ ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # holds a `$` and is refused as an address the job builds, which is the refusal that sends its
 # writer to the row; what the expression stands for cannot be known here.
 #
-# THE PATH IS COMPARED LITERALLY, because github.com's path IS case-sensitive:
-# `/RELEASES/download/` and `/releases/DOWNLOAD/` each answered 404, so a rule that read the
-# whole address without regard to case would refuse an address GitHub does not answer. Two paths
-# are read: the tag's own, and the `latest` permalink GitHub documents.
+# THE PATH IS COMPARED AS TEXT. github.com reads `releases`, `download` and the tag with case:
+# `/RELEASES/download/`, `/releases/DOWNLOAD/` and an upper-case tag each answered 404, so a rule
+# that read the whole address without regard to case would refuse an address GitHub does not
+# answer. The owner and the repository are the exception, which github.com reads in any case;
+# they are compared casefolded wherever two repositories are compared, below. Two paths are
+# read: the tag's own, and the `latest` permalink GitHub documents.
 #
 # AND THE API SERVES THE SAME BYTES at /repos/<owner>/<repo>/releases/assets/<id>, which answered
 # 302 to the asset under `Accept: application/octet-stream`, so that address is read as well.
 # Its host carries the owner one path element later than github.com's does, so it is a pattern
 # of its own rather than another branch of the first.
 #
-# WHAT IS NOT READ, and why each one is out rather than in. Four spellings of the same path are
-# invisible to these patterns, and the reason is the patterns' own shape rather than anything a
-# server does: an extra slash before the owner or after it leaves a path element empty, which
-# PATH_ELEMENT cannot match; an extra slash after `releases` puts `/download` where `download`
-# must stand; and a `/.` segment takes the owner's place, so `/releases/download/` then falls in
-# the wrong element. Driven at this head, the gate exits 0 on all four.
+# WHAT IS NOT READ, and why each one is out rather than in. The list is of the spellings that
+# were measured, not of every spelling: a text comparison cannot hold every way a server or a
+# client normalises an address, and this gate guards against an install somebody forgot to name,
+# not one written to slip past it. Four spellings of the same path are invisible to these
+# patterns because of the patterns' own shape: an extra slash before the owner or after it
+# leaves a path element empty, which PATH_ELEMENT cannot match; an extra slash after `releases`
+# puts `/download` where `download` must stand; and a `/.` segment takes the owner's place, so
+# `/releases/download/` then falls in the wrong element. `%64ownload` for `download`,
+# `https:/` or `https:///` for `https://`, and a `user@` before a host written with no scheme
+# are out for the same reason, and each fetches the asset. The suite drives the four.
 # An extra slash after `download` is NOT one of them: the trailing `[^\s"'`]*` swallows it, so
 # the rule reads that URL and refuses it, and the suite drives it.
 # github.com answered 302 with the asset to each of the four, read between two readings of the
@@ -674,8 +680,8 @@ short_references = {f"{registry}@sha256:{str(row['digest']).strip()}": str(row["
 # a row's own URL is not an install.
 written: set[str] = set()
 # The files the entries name as their pin. The pass keeps the text of any of them it reads, so
-# an entry's digest rule does not open .github/workflows/ci.yaml a second time; a path the pass
-# never reaches — the manifest, a .test. file, a file outside .github/ — is read where it is used.
+# an entry's digest rule does not open .github/workflows/ci.yaml a second time; a file outside
+# .github/ is read where it is used.
 pinned_paths = {Path(str(entry["pinned_in"]).strip()) for entry, _ in declines}
 pin_texts: dict[Path, str] = {}
 named = 0
