@@ -154,11 +154,15 @@ and you tell it which; from `accepting` you send an issue back only to `implemen
 
 ## A conflicting head
 
-What returns the tree to review is a changed diff: a commit above the approved head that touches
-anything outside `docs/solutions/`, other than a change whose every path is under `.legion/`, or
-a conflict-resolution merge whose fingerprint (the unchanged-diff check,
-`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not.
+What returns the tree to review is no longer a path test: READY compares no head with another,
+and the daemon keeps no check of its own above the approved head. A passing result carries across
+one push above the head the reviewer approved when that push's own diff changes no code that runs
+and the reviewer's approval of the new head states that reading — the diff it read, that it
+changes no code that runs, the head each result ran at and the head it approves. Anything else
+above the approved head goes back through the tester, by your `request_backward_move`; a
+conflict-resolution merge whose fingerprint (the unchanged-diff check,
+`skill://legion-worker/references/conflicts-and-rewrites.md`) is unchanged needs no round of its
+own, and one whose fingerprint differs is a changed head like any other.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). Outside `awaiting_merge` the daemon records

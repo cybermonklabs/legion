@@ -67,6 +67,10 @@ function run(name: string, files: Record<string, string | null>, transcript: obj
   stagings.push(() => {
     const dir = path.join(runs, name);
     mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    // The agent's own working directory, where a path it writes and then reads back resolves
+    // (rig.sh's worker_boot), so a fixture naming `cwd/<file>` puts the file where the agent
+    // would have left it.
+    mkdirSync(path.join(dir, "cwd"), { recursive: true });
     const own = dispatchRecord(`run_${name.replaceAll("-", "_")}`);
     for (const [file, text] of Object.entries({ "dispatch.json": own, ...files }))
       if (text !== null) writeFileSync(path.join(dir, file), text);
@@ -3165,8 +3169,9 @@ const reviewRecord = {
  * as the run's transcript records the tool call. */
 /** A publish the agent made from `eval`, the tool that runs code in its own session: the call
  * the transcript records is the `eval` one, and the publish is inside its code. */
-const evalCall = (code: string) => ({
+const evalCall = (code: string, at = "2026-09-30T17:42:00.000Z") => ({
   type: "message",
+  timestamp: at,
   message: {
     role: "assistant",
     content: [
@@ -3174,8 +3179,9 @@ const evalCall = (code: string) => ({
     ],
   },
 });
-const publishTo = (role: string, text: string) => ({
+const publishTo = (role: string, text: string, at = "2026-09-30T17:42:00.000Z") => ({
   type: "message",
+  timestamp: at,
   message: {
     role: "assistant",
     content: [
@@ -3197,8 +3203,24 @@ const publishTo = (role: string, text: string) => ({
 /** The reviewer's wake of the implementer, which an approval that leaves text threads open owns:
  * the daemon starts no phase for the fix, so the implementer learns its turn began from this
  * message naming the head the fix lands above, and from nothing else. */
-const toldImplementer = (commit: string) =>
-  publishTo("implementer", `Approved ${commit}: the two text threads are yours to close above it.`);
+const toldImplementer = (commit: string, at?: string) =>
+  publishTo(
+    "implementer",
+    `Approved ${commit}: the two text threads are yours to close above it.`,
+    at
+  );
+/** The daemon lines a clean round leaves: the completion the stand-in accepted, and the
+ * reviewer's own read of the record after it, which is when `read_record` first answers
+ * `accepting`. The publish of a passing run is stamped after both (publishTo's default). */
+const reviewDaemon = [
+  {
+    at: "2026-09-30T17:40:00.000Z",
+    path: "/legion/v1/handoff/complete",
+    status: 200,
+    grantId: "g-1",
+  },
+  { at: "2026-09-30T17:41:00.000Z", path: "/legion/v1/state", status: 200 },
+];
 function reviewRun(
   name: string,
   files: Record<string, string | null>,
@@ -3211,6 +3233,7 @@ function reviewRun(
       "world.json": world,
       "pushes.log": "",
       "handoffs.json": handoffs(reviewRecord),
+      "daemon.log": calls(reviewDaemon),
       ...files,
     },
     transcript
@@ -3218,6 +3241,19 @@ function reviewRun(
 }
 // The submission, and after it the read of the reviews already on the pull request, which a round
 // often makes and which submits nothing.
+// Catches: a scorer that reads only whether the wake was sent and not when. The rule sends it
+// once `read_record` shows the issue in `accepting` (review-threads.md step 1), because the round
+// ends on both halves and a push in the gap between an accepted completion and the review's
+// webhook voids the approval. head-30 publishes the right message to the right topic with its
+// review, before the completion the stand-in accepted, and fails.
+reviewRun(
+  "reviewer-text-findings-text-only-head-30",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [...header, ...turn, toldImplementer(head, "2026-09-30T17:39:00.000Z")]
+);
 reviewRun("reviewer-text-findings-text-only-head-1", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -3581,6 +3617,9 @@ const fixNames = [
   "threads-closed-text-fixes-head-27",
   "threads-closed-text-fixes-head-28",
   "threads-closed-text-fixes-head-29",
+  "threads-closed-text-fixes-head-31",
+  "threads-closed-text-fixes-head-32",
+  "threads-closed-text-fixes-head-33",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3903,7 +3942,7 @@ fixRun(
   {
     "calls.jsonl": calls(closedBoth),
     "pushes.log": pushed(fix.fixed),
-    "arch-msg.txt": `Reviewer to architect: I approved the head the fix landed on, ${fix.fixed}.\n`,
+    "cwd/arch-msg.txt": `Reviewer to architect: I approved the head the fix landed on, ${fix.fixed}.\n`,
   },
   {
     reviewer: [
@@ -3969,6 +4008,58 @@ fixRun(
           'const topic = "notifications.role.legion-skills1-lweval-1-architect";',
           `const body = \`I approved the head the fix landed on, \${head}.\`;`,
           "await tool.envoy_publish({ topic, message: body });",
+        ].join("\n")
+      ),
+    ],
+  }
+);
+// Catches: a scorer blind to "and to that topic alone" (review-threads.md step 2). head-31's
+// implementer does the whole loop and copies the architect on its push, telling it of a head no
+// second approval has reached yet; the architect hears of that head from the reviewer or from
+// nobody. Catches too the two defects of the publish reader the reviewer found on 2026-11-09:
+// head-32's cell assigns the message twice and publishes the second (a reader that took the
+// first would report a message the topic never received), and head-33's cell carries a
+// commented-out publish beside the real one, which ran nothing.
+fixRun(
+  "threads-closed-text-fixes-head-31",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    implementer: [
+      ...header,
+      ...turn,
+      toldReviewerOfPush(fix.fixed),
+      publishTo("architect", `For your acceptance: the text fixes are at ${fix.fixed}.`),
+    ],
+  }
+);
+fixRun(
+  "threads-closed-text-fixes-head-32",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        [
+          'body = "a draft I thought better of"',
+          `body = "I approved the head the fix landed on, ${fix.fixed}."`,
+          'await tool.envoy_publish({ topic: "notifications.role.legion-skills1-lweval-1-architect", message: body })',
+        ].join("\n")
+      ),
+    ],
+  }
+);
+fixRun(
+  "threads-closed-text-fixes-head-33",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        [
+          `# await tool.envoy_publish({ topic: "notifications.role.legion-skills1-lweval-1-architect", message: "${fix.fixed} — not sent" })`,
+          `await tool.envoy_publish({ topic: "notifications.role.legion-skills1-lweval-1-architect", message: "I approved the head the fix landed on, ${fix.fixed}." })`,
         ].join("\n")
       ),
     ],
@@ -4261,7 +4352,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/10\t0/10\t0\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/11\t0/11\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4282,7 +4373,7 @@ test("reviewer-text-findings: a case.txt that disagrees with the directory, and 
 // run left; and one that scores one half of the loop and not the other.
 test("threads-closed, text-fixes: the fix and its push, then the resolutions and the second approval, pass", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-1\tpass=true\tref=false\tcase=text-fixes threads=2 replied=2 replyCalls=2 repliedCommit=2 fixResolves=0 pushes=1 fixed=true threadsLine=true toldReviewer=true listed=true resolved=2 resolveCalls=2 bulk=false approved=true toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none completions=1/
+    /threads-closed-text-fixes-head-1\tpass=true\tref=false\tcase=text-fixes threads=2 replied=2 replyCalls=2 repliedCommit=2 fixResolves=0 pushes=1 fixed=true threadsLine=true toldReviewer=true aloneToReviewer=true listed=true resolved=2 resolveCalls=2 bulk=false approved=true toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none completions=1/
   );
   expect(out).toContain('changed=[".github/workflows/greet.yml","docs/cli.md"]');
 });
@@ -4417,7 +4508,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t11/25\t0/25\t3\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t13/28\t0/28\t3\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
 });
@@ -4480,6 +4571,51 @@ test("threads-closed, text-fixes: a wake published from eval counts, from its co
     /threads-closed-text-fixes-head-25\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true /
   );
   expect(out).toMatch(/threads-closed-text-fixes-head-26\tpass=true\t.*toldArchitectOfHead=true /);
+});
+// Catches: the harness and the score reading a publish by different rules. `rig.sh`'s
+// reviewer_wake calls exactly this command to build the reviewer's prompt, so a shape the score
+// counts and the harness misses would score a wake that reached nobody — measured on 2026-11-09,
+// where an `eval` publish scored `toldReviewer` with the reviewer half booted on an empty prompt.
+// The run it reads is head-25, whose implementer publishes from a cell — the first agent's
+// transcript, which is the one the harness hands the next agent.
+test("published: the harness reads an eval publish, the same call the score counts", () => {
+  const read = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "published",
+    path.join(runs, "threads-closed-text-fixes-head-25"),
+    "reviewer",
+  ]);
+  expect(read.exitCode).toBe(0);
+  const sent = JSON.parse(read.stdout.toString());
+  expect(sent.topic).toEndWith("-reviewer");
+  expect(sent.message).toContain(fix.fixed);
+  const none = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "published",
+    path.join(runs, "threads-closed-text-fixes-head-25"),
+    "implementer",
+  ]);
+  expect(none.stdout.toString().trim()).toBe("null");
+}, 60_000);
+// Catches: a scorer that reads only whether the wake was sent, so a reviewer that published it
+// with its review — before the completion and before `read_record` could answer `accepting` —
+// scores the same as one that waited, which is the ordering `workflow/review.go` makes
+// load-bearing and the reviewer's own round-1 finding.
+test("reviewer-text-findings, text-only: a wake published before the issue reached accepting fails", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-30\tpass=false\t.*event=APPROVE .*toldImplementer=false /
+  );
+});
+// Catches: a scorer blind to "to that topic alone", and the two reader defects of 2026-11-09 —
+// a name assigned twice read as its first value, and a commented-out call counted as sent.
+test("threads-closed, text-fixes: a wake copied to the architect fails, and the reader takes the last assignment and no commented-out call", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-31\tpass=false\t.*toldReviewer=true aloneToReviewer=false /
+  );
+  expect(out).toMatch(/threads-closed-text-fixes-head-32\tpass=true\t.*toldArchitectOfHead=true /);
+  expect(out).toMatch(/threads-closed-text-fixes-head-33\tpass=true\t.*toldArchitectOfHead=true /);
 });
 // Catches: a scorer that counts a call the tool refused — one naming the message something
 // `envoy_publish` does not take — as a publish it could not read, which would throw the run away

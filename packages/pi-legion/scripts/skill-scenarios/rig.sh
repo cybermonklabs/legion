@@ -2069,26 +2069,15 @@ run_reviewer_text_findings() {
 }
 
 # reviewer_wake prints the message the implementer published to the reviewer's role topic, as one
-# JSON object of its topic and its text, or `null` when it published none: the call score.ts's
-# publishedTo reads (`toldReviewer`), which is either the `envoy_publish` tool's own arguments or
-# the JSON `content` of a `write` to `xd://envoy_publish`, in the first agent's transcript
-# (<run>/sessions, worker_boot). Of several it takes the last, the message the reviewer would
-# have read last.
+# JSON object of its topic and its text, or `null` when it published none. It asks score.ts, which
+# is the one reader of a publish this rig has: the harness and the score read the same code, so a
+# shape one of them reads and the other does not cannot score a wake that reached nobody. Two
+# readers disagreed until 2026-11-09 — this function read the `envoy_publish` tool's own arguments
+# and a write to `xd://envoy_publish`, while the score also read a publish made from `eval`, so a
+# run whose implementer published from a cell scored `toldReviewer` with its reviewer booted on an
+# empty prompt. Of several publishes it takes the last, the message the reviewer would have read.
 reviewer_wake() {
-  local transcript
-  transcript=$(find "$R/sessions" -maxdepth 1 -name '*.jsonl' | sort | sed -n 1p)
-  if [ -z "$transcript" ]; then
-    echo null
-    return
-  fi
-  jq -s '[.[] | select(.message.role? == "assistant") | (.message.content // [])[]
-    | select(.type == "toolCall")
-    | (if .name == "envoy_publish" then (.arguments? // {})
-       elif .name == "write" and (.arguments.path? == "xd://envoy_publish")
-       then ((.arguments.content? | strings | fromjson?) // {})
-       else {} end)
-    | select((.topic? | strings | endswith("-reviewer")) // false)
-    | {topic, message: (.message? // "")}] | last // null' "$transcript"
+  bun "$here/score.ts" published "$R" reviewer
 }
 
 # The loop after an approval that left text threads open, on the world worker_fixture's <case>

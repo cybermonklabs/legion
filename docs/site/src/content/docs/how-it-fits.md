@@ -142,8 +142,9 @@ business.
 5. The planner, implementer, tester and reviewer take the change in turn. A review that requests
    changes sends it back to the implementer, and through the tester again.
 6. Once the reviewer approves, the architect reads the evidence and accepts the change (or sends
-   it back), and the retrospective runs. The merger then sends `READY`, which the daemon accepts
-   on the approved head plus retro's notes, and posts on the issue.
+   it back), and the retrospective runs. The merger then sends `READY` for the current head,
+   which the daemon accepts once the round recorded an approval — it compares that approval's
+   head with READY's nowhere — and posts on the issue.
 7. The daemon submits the pull request for merge, and it lands under the repository's own rules.
    The merge closes the issue: it is Done.
 8. After the close, the role `projects.<KEY>.production_check` names — the tester, by default —

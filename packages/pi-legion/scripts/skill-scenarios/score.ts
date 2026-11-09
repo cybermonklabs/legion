@@ -181,6 +181,7 @@ function toolCalls(entries: SessionEntry[]) {
               typeof args === "object" && args !== null ? { ...args } : {};
             return {
               id: part.id ?? "",
+              at: entry.timestamp ?? "",
               tool: part.name ?? "",
               path: typeof fields.path === "string" ? fields.path : "",
               command: typeof fields.command === "string" ? fields.command : "",
@@ -999,7 +1000,27 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // message and from nothing else (review-threads.md step 1). The round is clean only when that
   // message was sent, naming the head the fix must land above (`toldImplementer`). A
   // `REQUEST_CHANGES` round opens no such loop and sends none.
-  const toldImplementer = publishedTo(session(runDir), "implementer", [world.head], runDir);
+  // And the rule is not only that the message was sent: it is sent once the issue stands in
+  // `accepting`, which the reviewer reads with `read_record` (review-threads.md step 1). The
+  // round ends on both halves, so an accepted completion can land before the review's webhook,
+  // and a push in that gap voids the approval — the reviewer's own round-1 finding, which
+  // `workflow/review.go` makes load-bearing. The stand-in serves `accepting` from the accepted
+  // completion, so the ordering the run must show is: the completion is accepted, the reviewer
+  // reads the record after it, and the publish follows that read. Scoring the send alone, as
+  // this did until 2026-11-09, passed a reviewer that published with its review.
+  const daemonLines = parsed(path.join(runDir, "daemon.log"), DaemonLine);
+  const acceptedAt = daemonLines.find(
+    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
+  )?.at;
+  const readAfter =
+    acceptedAt === undefined
+      ? undefined
+      : daemonLines.find(
+          (line) => line.path === "/legion/v1/state" && line.status === 200 && line.at > acceptedAt
+        )?.at;
+  const toldImplementer =
+    readAfter !== undefined &&
+    publishedTo(session(runDir), "implementer", [world.head], runDir, readAfter);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1197,26 +1218,43 @@ function readString(
   expression: string,
   code: string,
   runDir: string,
-  seen: Set<string> = new Set()
+  seen: Set<string> = new Set(),
+  before = code.length
 ): string | undefined {
   // The name is added to `seen` by the lookup below, not here: adding it before the call would
   // make that lookup's own guard refuse the name it was asked for.
   const resolve = (name: string) =>
-    seen.has(name) ? undefined : readString(name, code, runDir, seen);
+    seen.has(name) ? undefined : readString(name, code, runDir, seen, before);
   const literal = stringLiteral(expression, resolve);
   if (literal !== undefined) return literal;
   const file = /open\(\s*(['"])(.*?)\1\s*\)\s*\.\s*read\(\)/.exec(expression)?.[2];
   if (file !== undefined) {
-    const resolved = path.resolve(runDir, file);
+    // A relative path is the agent's, so it is resolved against the agent's own working
+    // directory (`<run>/cwd`, rig.sh's worker_boot) and not against the run directory, which is
+    // nowhere the agent stands; an absolute path under the run directory is read as given. The
+    // run directory bounds both, so a publish that reads a file outside the run stays unread.
+    const resolved = path.resolve(path.join(runDir, "cwd"), file);
     return resolved.startsWith(`${path.resolve(runDir)}/`) && existsSync(resolved)
       ? readFileSync(resolved, "utf8")
       : undefined;
   }
   const name = /^\s*([A-Za-z_$][\w$]*)\s*(?:[,}]|$)/.exec(expression)?.[1];
   if (name === undefined || seen.has(name)) return undefined;
-  const at = new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*`).exec(code);
-  if (at === null) return undefined;
-  return readString(code.slice(at.index + at[0].length), code, runDir, new Set([...seen, name]));
+  // The value is the **last** assignment the code makes before `before`, not the first one it
+  // holds: a cell that writes a draft and then rewrites it publishes the second, and a reader
+  // that took the first would report a message the topic never received.
+  const assignments = [
+    ...code.matchAll(new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*`, "g")),
+  ].filter((match) => match.index < before);
+  const at = assignments.at(-1);
+  if (at === undefined) return undefined;
+  return readString(
+    code.slice(at.index + at[0].length),
+    code,
+    runDir,
+    new Set([...seen, name]),
+    code.length
+  );
 }
 /** The value of `key` in the object literal `object`, read through `readString`: `undefined` when
  * the object has no such key — `envoy_publish` takes both `topic` and `message`, so a call that
@@ -1227,12 +1265,16 @@ function fieldIn(
   object: string,
   key: string,
   code: string,
-  runDir: string
+  runDir: string,
+  before: number
 ): string | null | undefined {
   const at = object.search(new RegExp(`['"]?${key}['"]?\\s*:`));
-  if (at >= 0) return readString(object.slice(object.indexOf(":", at) + 1), code, runDir) ?? null;
+  if (at >= 0)
+    return (
+      readString(object.slice(object.indexOf(":", at) + 1), code, runDir, new Set(), before) ?? null
+    );
   return new RegExp(`[{,]\\s*${key}\\s*[,}]`).test(object)
-    ? (readString(key, code, runDir) ?? null)
+    ? (readString(key, code, runDir, new Set(), before) ?? null)
     : undefined;
 }
 /** What a tool call published on Envoy — each topic it sent to with the message it carried, and
@@ -1276,10 +1318,17 @@ function publishesIn(
   const sent: { topic: string; message: string }[] = [];
   let unreadable = 0;
   for (const match of code.matchAll(/envoy_publish\s*\(/g)) {
+    // A call inside a comment ran nothing: a cell that shows the reader what it would send, or
+    // leaves a line out while keeping it, publishes no message and must not score one.
+    const lineStart = code.lastIndexOf("\n", match.index) + 1;
+    const beforeIt = code.slice(lineStart, match.index);
+    if (/(^|[^:])(#|\/\/)/.test(beforeIt)) continue;
     const open = code.indexOf("{", match.index + match[0].length - 1);
     const object = open < 0 ? undefined : braced(code, open);
-    const topic = object === undefined ? undefined : fieldIn(object, "topic", code, runDir);
-    const message = object === undefined ? undefined : fieldIn(object, "message", code, runDir);
+    const topic =
+      object === undefined ? undefined : fieldIn(object, "topic", code, runDir, match.index);
+    const message =
+      object === undefined ? undefined : fieldIn(object, "message", code, runDir, match.index);
     // A call missing either field is no publish: the tool takes both and refuses what it is
     // given otherwise, as a reviewer of 2026-11-08T16:44Z found when it wrote `body:` and then
     // sent the same message again with `message:`.
@@ -1306,17 +1355,49 @@ function publishedTo(
   entries: SessionEntry[],
   role: Role,
   names: string[],
-  runDir: string
+  runDir: string,
+  after = ""
 ): boolean {
-  return toolCalls(entries).some((call) =>
-    publishesIn(call, runDir).sent.some(
-      (sent) =>
-        sent.topic.endsWith(`-${role}`) &&
-        names.some(
-          (name) => name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
-        )
-    )
+  return toolCalls(entries).some(
+    (call) =>
+      call.at > after &&
+      publishesIn(call, runDir).sent.some(
+        (sent) =>
+          sent.topic.endsWith(`-${role}`) &&
+          names.some(
+            (name) =>
+              name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
+          )
+      )
   );
+}
+/** Every role this session published to, in the order it sent them: what *else* a wake went to.
+ * The rule sends the implementer's message to the reviewer's topic **and to that topic alone**
+ * (review-threads.md step 2), so a run that copies the architect in has not done the step the
+ * loop is measured on — the architect's own wake belongs to the reviewer, after its second
+ * approval, and a copy before it is the architect being told a thing that has not happened. */
+function publishedRoles(entries: SessionEntry[], runDir: string): string[] {
+  return toolCalls(entries).flatMap((call) =>
+    publishesIn(call, runDir)
+      .sent.map((sent) => /-(implementer|reviewer|architect)$/.exec(sent.topic)?.[1] ?? "")
+      .filter((role) => role !== "")
+  );
+}
+/** The last publish this session made to `role`'s topic, as the rig's own reader wants it: the
+ * message the next agent would have read, or undefined when it published none. One reader for
+ * the scorer and for the harness both (`rig.sh`'s reviewer_wake calls `score.ts published`), so
+ * a publish shape one of them reads and the other does not cannot score a wake that reached
+ * nobody: measured on 2026-11-09, where an `eval` publish scored `toldReviewer` while the
+ * reviewer half booted with an empty prompt. */
+function lastPublishTo(
+  entries: SessionEntry[],
+  role: string,
+  runDir: string
+): { topic: string; message: string } | undefined {
+  return toolCalls(entries)
+    .flatMap((call) => publishesIn(call, runDir).sent)
+    .filter((sent) => sent.topic.endsWith(`-${role}`))
+    .at(-1);
 }
 /** Whether the agent sent the architect the message a thread no text fix can close takes: one
  * route, and the architect is the only role that can move the issue for it
@@ -1506,6 +1587,10 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
   const toldReviewer = publishedTo(fixSession, "reviewer", tip === undefined ? [] : [tip], runDir);
+  // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
+  // role prompt): the architect hears of this head from the reviewer's second approval, so an
+  // implementer that copies it in has told the architect of a head nobody has approved yet.
+  const toReviewerAlone = publishedRoles(fixSession, runDir).every((role) => role === "reviewer");
   const toldArchitectOfHead = publishedTo(
     reviewSession,
     "architect",
@@ -1541,6 +1626,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
         fixed &&
         threadsLine &&
         toldReviewer &&
+        toReviewerAlone &&
         listed &&
         resolvedEach &&
         approved &&
@@ -1552,7 +1638,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     )
   );
   const notes = [
-    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} completions=${completions}`,
+    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} completions=${completions}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -4349,9 +4435,18 @@ if (import.meta.main) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
     scoreRuns(rest[0] ?? "", rest[1]);
+  } else if (command === "published" && rest.length === 2) {
+    // The harness's own reader of a publish, so the rig and the score read one: rig.sh's
+    // reviewer_wake asks for the last message the run's first agent published to a role's topic
+    // and gives it to the next agent, and the score asks the same code whether it was sent.
+    // Two readers of one fact disagreed before this (2026-11-09): a publish made from `eval`
+    // scored `toldReviewer` while the reviewer half booted with an empty prompt.
+    const runDir = rest[0] ?? "";
+    const sent = lastPublishTo(session(runDir), rest[1] ?? "", runDir);
+    console.log(JSON.stringify(sent ?? null));
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>]"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | published <run dir> <role>"
     );
     process.exit(2);
   }

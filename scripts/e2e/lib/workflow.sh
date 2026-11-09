@@ -1107,16 +1107,20 @@ bot_thread_node_id() {
         reviewThreads(first: 100) { nodes { id comments(first: 1) { nodes { id } } } } } } }' \
     --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].id == \"$1\") | .id" | grep .
 }
-# bot_thread_resolved COMMENT ROLE: the bot's thread is resolved and carries a reply by ROLE's App
-# (role_app_slug: the implementer's, which answered it; the reviewer's, which adjudicated it and
-# resolved it). The review App resolves its own threads, probed on sjawhar/legion#2827 at
-# 2026-11-08T03:13:33Z, where GitHub answered isResolved true; the resolver is not read back, and
-# no word of the reply is read either: nothing resolves a thread on a magic form.
-bot_thread_resolved() {
+# bot_thread_answered COMMENT ROLE RESOLVED: the bot's thread carries a reply by ROLE's App
+# (role_app_slug) and reads isResolved RESOLVED (`true` or `false`). One helper for both readings
+# the proofs take of that thread: the implementer answers it and resolves nothing, so its round
+# is `bot_thread_answered <c> implementer false`, and the reviewer adjudicates it and resolves it,
+# so the round after is `bot_thread_answered <c> reviewer true`. The review App resolves its own
+# threads, probed on sjawhar/legion#2827 at 2026-11-08T03:13:33Z, where GitHub answered
+# isResolved true; the resolver is not read back, and no word of the reply is read either:
+# nothing resolves a thread on a magic form. Both readings are polled rather than read once,
+# since the reviewer may resolve after it approves.
+bot_thread_answered() {
   local replies author
   author=$(role_app_slug "$2") || return 1
   replies=$(bot_thread_replies "$1") || return 1
-  [ "$(head -1 <<<"$replies")" = true ] && grep -q "^$author"$'\t' <<<"$replies"
+  [ "$(head -1 <<<"$replies")" = "$3" ] && grep -q "^$author"$'\t' <<<"$replies"
 }
 # review_threads prints every review thread on the proof's pull request as one JSON array: each
 # thread's node id, its isResolved, and each comment's author (GraphQL names an App by its bare
@@ -1150,14 +1154,30 @@ reviewer_thread() {
 }
 # review_thread ID prints that thread, as review_threads prints each.
 review_thread() { review_threads | jq -ce --arg id "$1" '.[] | select(.id == $id)'; }
-# thread_resolved_by FILE ROLE: the thread FILE holds (review_thread's output) is resolved and its
-# newest submitted comment is ROLE's App's (role_app_slug): the implementer's `Fixed in <commit>`
-# reply before its own resolution, or the reviewer's answer on a re-review that left the resolution
-# standing.
-thread_resolved_by() {
+# thread_newest_by_live ID ROLE RESOLVED: the same reading taken from GitHub now rather than from
+# a file, for an until_true that waits on a reviewer's own resolution — which may land after its
+# approval, since a thread is resolved once the reviewer has read the fix.
+thread_newest_by_live() {
+  local now
+  now=$(mktemp) || return 1
+  review_thread "$1" >"$now" || {
+    rm -f "$now"
+    return 1
+  }
+  thread_newest_by "$now" "$2" "$3"
+  local read=$?
+  rm -f "$now"
+  return "$read"
+}
+# thread_newest_by FILE ROLE RESOLVED: the thread FILE holds (review_thread's output) reads
+# isResolved RESOLVED (`true` or `false`) and its newest submitted comment is ROLE's App's
+# (role_app_slug). One helper for both readings the proofs take: the implementer's
+# `Fixed in <commit>` reply, which closes nothing (`false`), and the reviewer's answer on a
+# re-review beside its own resolution (`true`).
+thread_newest_by() {
   local author
   author=$(role_app_slug "$2") || return 1
-  jq -e --arg author "$author" '.isResolved == true
+  jq -e --arg author "$author" --argjson resolved "$3" '.isResolved == $resolved
     and ([.comments[] | select(.state == "SUBMITTED")] | last | .author == $author)' "$1" >/dev/null
 }
 # thread_resolved_with_reply FILE ROLE: the thread FILE holds is resolved and carries a submitted

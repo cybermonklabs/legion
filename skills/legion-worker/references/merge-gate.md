@@ -9,10 +9,11 @@ architect's acceptance, in `accepting` → retro → the merger's READY → the 
 issue → the production check after the close, which the project's `production_check` setting
 gives to a role or takes away. Every handoff is a record on the
 Dispatch issue, never a commit, so the head that merges carries none. Retro commits nothing
-(*Retro*, below), so the approved head is the head that merges. READY still lets a commit that
-changes only `docs/solutions/` stand, and a change whose every path is under `.legion/`, where
-handoffs lived before they moved to the Dispatch issue and which nothing writes or reads now, so
-nobody reviews a path there, whatever GitHub's compare says the change did to it.
+(*Retro*, below), so the approved head is the head that merges. READY compares no head with
+another: the daemon reads the round's recorded approval and nothing above it, and the repository's
+branch rules decide the merge (the owner's ruling, dispatch://INFRA-714/ask/beea7685). What holds
+a head the implementer pushed above the one the reviewer approved is this reference's own carry
+rule and the architect's acceptance, not a path test.
 A conflict-forced merge goes back to the reviewer for a
 confirmation or a new round, as the fingerprint decides (*The reviewer*, below, and
 `skill://legion-worker/references/conflicts-and-rewrites.md`), unless READY refused it, and any
@@ -88,8 +89,10 @@ other change to the head voids it.
   `packages/daemon/internal/workflow/review.go`, and the cases "the approval, then a push" and "a
   push, then the approval of the head before it" in
   `packages/daemon/internal/workflow/review_test.go`). That is why the message starting the
-  text-fix loop goes after your completion and not with the review: the implementer's push then
-  lands in `accepting`, where it voids nothing. Carry every inline comment in that single
+  text-fix loop goes only once your `read_record` shows the issue in `accepting`, and never with
+  the review: an accepted completion can land before the review's webhook, and the implementer's
+  push in that gap would move the head out from under the approval. The same sentence, with the
+  call to make, is in *After an approval that leaves text threads open* below. Carry every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
   Legion footer), and a `comments[]` array of `{path, line, side, body}`, one entry per
@@ -105,8 +108,9 @@ other change to the head voids it.
   one review. A return whose task's `Reason:` names a READY refusal is never a confirmation, even
   after a forward merge, and a no-fix `REQUEST_CHANGES` that answered one is never continued: the round
   after it reviews the refused change in full from the last `APPROVE` (*Retro*, below). That
-  round's approval needs the tester's results current
-  at the head it approves, or at an ancestor with only files under `.legion/` removed since.
+  round's approval needs the tester's results current at the head it approves, or carried to it
+  by the rule above: a result that passed one push below, where the reviewer's approval states
+  that it read that push's diff and that the diff changes no code that runs.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.

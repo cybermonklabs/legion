@@ -627,24 +627,6 @@ spec_block_ask() {
 # approval_requests_in counts the approval requests ever opened on an issue in the event log it
 # reads on stdin: the ask.opened events whose ask is an approval, not a question.
 approval_requests_in() { jq '[.[] | select(.type == "ask.opened" and .payload.kind == "approval")] | length'; }
-# bot_thread_answered COMMENT ROLE: the bot's thread carries a reply by ROLE's App, whatever its
-# resolution — the implementer answers a bot's thread and resolves none, so its round is read by
-# this and by bot_thread_open, and the reviewer, which resolves the threads it has judged, by
-# bot_thread_resolved (lib/workflow.sh). No word of the reply is read: nothing resolves or
-# answers a thread on a magic form.
-bot_thread_answered() {
-  local author replies
-  author=$(role_app_slug "$2") || return 1
-  replies=$(bot_thread_replies "$1") || return 1
-  grep -q "^$author"$'\t' <<<"$replies"
-}
-# bot_thread_open COMMENT: the bot's thread is unresolved, which is how the implementer's round
-# leaves every thread it answers.
-bot_thread_open() {
-  local replies
-  replies=$(bot_thread_replies "$1") || return 1
-  [ "$(head -1 <<<"$replies")" = false ]
-}
 
 begin prerequisites
 refuse_leftovers legion-e2e3
@@ -965,13 +947,11 @@ primary_issue() {
     wait_for_phase "$root_issue" testing 1200
     until_true 120 "round $round's correction on pull request #$pr_number" round_correction_pushed "$round"
     if [ "$round" = 1 ]; then
-      until_true 120 "the implementer's answer on the bot's review thread, which it leaves open" bot_thread_answered "$bot_thread" implementer
-      bot_thread_open "$bot_thread" ||
-        fail "the bot's review thread $bot_thread reads resolved after round $round's correction: the implementer resolves none, and the reviewer resolves it when it adjudicates the finding in round 2"
+      until_true 120 "the implementer's answer on the bot's review thread, which it leaves open" bot_thread_answered "$bot_thread" implementer false
       note "the implementer answered the bot's review thread $bot_thread and left it open for the reviewer"
     fi
     if [ "$round" = 2 ]; then
-      until_true 120 "the Legion reviewer's reply on the bot's review thread, the thread resolved" bot_thread_resolved "$bot_thread" reviewer
+      until_true 120 "the Legion reviewer's reply on the bot's review thread, the thread resolved" bot_thread_answered "$bot_thread" reviewer true
       note "the bot's review thread $bot_thread carries the Legion reviewer's reply and is resolved: the reviewer adjudicated the finding and resolved its own thread"
     fi
     assert_round_handoff "$root_issue" "$round"

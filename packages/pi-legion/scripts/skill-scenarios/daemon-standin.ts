@@ -32,12 +32,11 @@
  * the daemon; a completion's line carries the record it named, and a backward move's the phase it
  * asked for and why (score.ts threadsClosed).
  *
- * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>
- * [<phase>]`
- * The state document holds that one issue, in `<phase>`, or in the first phase its role works
- * when there is none: the implementer works implementing and retro, and the daemon starts it in
- * either. Prints `phase <phase>` and then
- * `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's pick).
+ * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>`
+ * The state document holds that one issue, in the first phase its role works (daemon-pane.go's
+ * `phase <role>`): the implementer works implementing and retro, and the daemon starts it in
+ * either. Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the
+ * kernel's pick).
  */
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
@@ -130,7 +129,14 @@ const stateIn = (phase: string) =>
  * the step unreachable: a reviewer that obeyed the rule would score as one that never sent.
  * Measured on the batch of 2026-11-08T13:08Z, where all five head runs approved correctly and
  * every one read `toldImplementer=false` for this reason. Only `reviewing` moves: the rig's run
- * ends with any other phase's completion, and no scenario reads the record after it. */
+ * ends with any other phase's completion, and no scenario reads the record after it. It moves on
+ * any accepted completion of that phase, a round that submitted `REQUEST_CHANGES` included,
+ * because this stand-in sees no review: the gh stand-in records those, and the two share nothing.
+ * That is wider than the daemon, which moves an issue to `accepting` only on an approval, and it
+ * is safe for these scenarios because the only one that completes a reviewing phase is
+ * `reviewer-text-findings`, whose `defect` case the score reads by the submission rather than by
+ * the record. A scenario that read the record after a `REQUEST_CHANGES` would need the review
+ * recorded here first. */
 let servedPhase = PHASE;
 
 interface LogLine {
