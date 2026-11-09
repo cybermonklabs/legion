@@ -504,11 +504,12 @@ test("a comment whose @-mention's send is slow is answered before the send, with
     // The send finishes after the answer, once.
     await expect
       .poll(
-        async () =>
-          (await listComments(issueKey))
-            .find((listed) => listed.id === comment.id)
-            ?.deliveries.filter((delivery) => delivery.session_id === plannerSession.session_id)
-            .map((delivery) => ({ attempt: delivery.attempt, state: delivery.state })),
+        async () => {
+          const listed = (await listComments(issueKey)).find((row) => row.id === comment.id);
+          return (listed?.deliveries ?? [])
+            .filter((delivery) => delivery.session_id === plannerSession.session_id)
+            .map((delivery) => ({ attempt: delivery.attempt, state: delivery.state }));
+        },
         { timeout: 20_000 }
       )
       .toEqual([{ attempt: 1, state: "sent" }]);

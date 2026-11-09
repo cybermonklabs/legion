@@ -96,7 +96,10 @@ test("an architecture import names the repository it came from; a retained event
   ).toEqual(["failed to sync the architecture model: duplicate component id api"]);
 });
 
-function commentDelivery(receipt: { state: "sent" | "failed"; duplicate?: boolean }): Event {
+function commentDelivery(receipt: {
+  state: "sent" | "failed";
+  duplicate?: boolean;
+}): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-10-25T00:00:00Z",
