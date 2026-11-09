@@ -947,6 +947,41 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(messagePosts()).toHaveLength(0);
   });
 
+  // An upload is the bytes it sends, however the command named them. The second review's three
+  // spellings: `--path` met the no, `--content` and `--content-file` each posted, because the
+  // digest stood in for the content only where a path operand carried it.
+  test("an upload's verdict is read by its bytes, whichever flag carried them", async () => {
+    const brief = join(stateDir, "brief.md");
+    const text = "# Brief\n";
+    writeFileSync(brief, text);
+    const upload = (flag: string, value: string) => [
+      "artifact",
+      "--issue",
+      "DSP-1",
+      "--name",
+      "brief.md",
+      flag,
+      value,
+    ];
+    writeRecord();
+    writeVerdict(
+      join(stateDir, "sessions", "ses-1"),
+      writeIdentity("dispatch_artifact", await dryArgs(upload("--path", brief)), Buffer.from(text)),
+      "failure 10: the brief says nothing the issue does not",
+      Date.now()
+    );
+    for (const [flag, value] of [
+      ["--path", brief],
+      ["--content", text],
+      ["--content-file", brief],
+    ]) {
+      const { code, stdout } = await run(upload(flag, value));
+      expect({ flag, code }).toEqual({ flag, code: 1 });
+      expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    }
+    expect(postsTo(ARTIFACTS)).toHaveLength(0);
+  });
+
   test("a standing refusal reaches no other issue and no other text", async () => {
     writeRecord();
     await refused();

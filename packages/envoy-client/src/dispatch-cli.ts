@@ -91,7 +91,7 @@ const REFUSAL_STANDS =
   "This call carries no marker, so no gate read the command that ran it, and AskGate's refusal of these arguments stands for this session. Send the corrected write, or send this one again as one bash call of literal words so AskGate reviews it afresh; a review that allows it replaces the refusal.";
 
 /**
- * What the agent reads when a marker of this very call, or AskGate's record of its refusals,
+ * What the agent reads when a marker of this very call, or this session's verdict store,
  * exists and will not say what it holds. A marker is written whole under a temporary name and
  * renamed, owner-only, so no crash, no full disk and no concurrent sweep leaves one unreadable:
  * a file in that state was changed by something else, and one thing it can hold is a refusal.
@@ -414,7 +414,7 @@ export async function runDispatchCli(
   // (askgate-core's `mints`), so a missing marker is three statements at once: never reviewed,
   // reviewed and rejected, or reviewed and rejected with the evidence unreadable. Reading the
   // gap as "nobody looked" let a rejected write post by being sent again through any form the
-  // gate does not read. So a rejection now writes itself down (`readRefusal`), an expired marker
+  // gate does not read. So a rejection now writes itself down (`readVerdict`), an expired marker
   // is no longer consumed by the refusal it causes, and evidence that exists and cannot be read
   // is its own answer.
   let uploadBytes: Uint8Array | undefined;

@@ -491,13 +491,21 @@ gated write only when it consumes one, so a write sent any other way is refused 
   the ledger took the line, pi-envoy records an entry with outcome `unmarked`. A
   session no live record names needs no marker: a terminal, CI, Claude Code, a pod without
   pi-envoy, a session with no Dispatch and one with `askgate.enabled: false`.
-- **The refusal the gate writes down.** A review that rejects mints no marker, so the CLI could
+- **The verdict the gate writes down.** A review that rejects mints no marker, so the CLI could
   not tell a rejected write from one no review ever saw, and the rejected write posted when it
-  was sent again in any form the gate does not read. The gate now writes each refusal into the
-  store beside the markers, keyed by the Dispatch tool and the arguments its review judged
-  rather than by the words of the command, so another spelling of the same write meets the same
-  no. A refusal is not spent by being read and is never swept: it goes when a later review of
-  the same write allows it, or with the store at session end.
+  was sent again in any form the gate does not read. The gate now writes each verdict of no into
+  the **session's own state directory**, beside its record and its ledger, under the identity of
+  the write the model judged: the tool and every argument, keys sorted at every depth, trailing
+  whitespace dropped, and an upload reduced to the digest of its bytes whether `--path`,
+  `--content` or `--content-file` carried them. So any spelling of the same write meets the same
+  no, while a corrected one has another identity and is free, and one session's no is nothing to
+  another. What may write there is decided by whether a review stands behind the outcome
+  (`reviewStandsBehind`, the question the mint already asks): a review's verdict that refused the
+  call records, one that passed it clears, a rebuttal or a breaker trip clears, and every other
+  outcome leaves the store alone — a warn-mode revise included, since the reviewer did not pass
+  those bytes and warn mode's whole meaning is that a revise does not hold the write. A verdict
+  is not spent by being read and is never swept: it goes when a later review of the same write
+  allows it, or with the session.
 - **The cause note.** When a `bash` call outside the literal form holds a `dispatch` word and a
   gated subcommand, and its result holds the CLI's refusal (or warn-mode warning) of a write with
   no marker, the gate appends an `AskGate note:` to that result. It names the first cause it found

@@ -46,7 +46,7 @@ import { hasErrnoCode, messageFor } from "./errors";
  * and consumes one matching marker by unlinking it: exactly one process wins an unlink, so a
  * marker is spent by one write alone. What it does when no marker is consumed rests on one
  * question, since AskGate mints nothing for a call its review rejects: did a verdict exist? A
- * refusal AskGate wrote down (`readRefusal`) holds the write in either mode; a marker of this
+ * verdict AskGate wrote down (`readVerdict`) holds the write in either mode; a marker of this
  * argv that the verdict does not cover — other arguments, a file whose bytes changed, one past
  * its age — holds it where the session chose block; evidence that exists and cannot be read does
  * the same, since a refusal may be what it holds. Only a store read whole and holding neither
@@ -714,7 +714,7 @@ function readMarker(file: string): Marker | "gone" | "unreadable" {
  * - `unknown`: evidence exists for this call and cannot be read. Absence of a marker is not a
  *   statement here, since the thing that cannot be read may be a refusal.
  * - `none`: the stores were read whole and hold no marker for this argv. Only this is a positive
- *   showing that no marker was minted; a stored refusal is looked for separately (`readRefusal`),
+ *   showing that no marker was minted; a stored verdict is looked for separately (`readVerdict`),
  *   since AskGate mints nothing when it rejects.
  */
 export type Consumed =
@@ -843,8 +843,16 @@ export function consumeMarker(
  * session with no live owner has AskGate off altogether and nothing here is read.
  */
 const VERDICTS = "askgate-verdicts";
-/** The file that marks a session whose gate lost a verdict it could not write (`markVerdictsLost`). */
-const VERDICTS_LOST = ".lost";
+/**
+ * The file that marks a session whose gate lost a verdict it could not write
+ * (`markVerdictsLost`). It sits in the session's own directory, beside its AskGate record and
+ * its ledger, and not inside the verdict store: a detector kept inside the fault domain it
+ * reports cannot report that domain failing. Measured, a `chmod 500` of the verdict store alone
+ * leaves the session's directory, its ledger and the CLI healthy, so the mark is written and the
+ * session degrades to strict; only the session's own directory refusing a new file takes the
+ * mark down with the verdict, and that same fault stops the ledger too.
+ */
+const VERDICTS_LOST = "askgate-verdicts-lost";
 
 /**
  * The canonical encoding a write's identity is taken over: object keys sorted at every depth,
@@ -860,10 +868,12 @@ function canonical(value: unknown): unknown {
   if (typeof value === "string") return value.replace(/\s+$/, "");
   if (Array.isArray(value)) return value.map(canonical);
   if (typeof value !== "object" || value === null) return value;
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort())
-    sorted[key] = canonical((value as Record<string, unknown>)[key]);
-  return sorted;
+  // Sorted pairs rather than an object: assigning into a `{}` swallows an own key named
+  // `__proto__`, which would give two different argument sets one identity. A list has no
+  // prototype to fall through and no ambiguity about what was encoded.
+  return Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, member]) => [key, canonical(member)]);
 }
 
 /**
@@ -891,8 +901,15 @@ export function writeIdentity(
   args: Readonly<Record<string, unknown>>,
   uploadBytes?: Uint8Array
 ): string {
-  const { path: _named, content: _inline, ...rest } = args;
-  const judged = uploadBytes === undefined ? args : { ...rest, content: bytesDigest(uploadBytes) };
+  const { path: named, content: inline, ...rest } = args;
+  // An upload is the bytes it sends, however the command named them: a file by `--path` and the
+  // same bytes inline by `--content` are one write and must be one identity, so both reduce to
+  // the digest and neither the path nor the literal text survives into the encoding. The bytes
+  // come from the caller where a file holds them, and from the inline string otherwise.
+  const bytes =
+    uploadBytes ?? (typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined);
+  const upload = typeof named === "string" || typeof inline === "string";
+  const judged = upload && bytes !== undefined ? { ...rest, content: bytesDigest(bytes) } : args;
   return digest(canonical({ tool, args: judged }));
 }
 
@@ -947,9 +964,7 @@ export function clearVerdict(session: string, identity: string): void {
  * only thing holding it.
  */
 export function markVerdictsLost(session: string, now: number): void {
-  const dir = verdictDir(session);
-  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
-  writeFileSync(join(dir, VERDICTS_LOST), JSON.stringify({ v: 1, at: now }), {
+  writeFileSync(join(session, VERDICTS_LOST), JSON.stringify({ v: 1, at: now }), {
     mode: PRIVATE_FILE,
   });
 }
@@ -1008,7 +1023,7 @@ export function readVerdict(session: string, identity: string): VerdictRead {
       return unreadable(file, "verdict on this write");
     return { kind: "refused", reason, at };
   }
-  const lost = join(verdictDir(session), VERDICTS_LOST);
+  const lost = join(session, VERDICTS_LOST);
   const mark = readVerdictFile(lost);
   if (mark === "gone") return { kind: "none" };
   if (mark === "unreadable") return unreadable(lost, "record of a lost verdict");

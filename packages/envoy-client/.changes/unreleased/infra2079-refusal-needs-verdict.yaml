@@ -14,7 +14,13 @@ body: |-
   depth, arrays left in order and trailing whitespace dropped, with an upload's bytes standing in
   for the path that named them. So flag order, `--issue=X` against `--issue X`, a here-document
   body against the same text inline, and an upload's bytes resent through `--content` all meet
-  the same verdict, while a corrected file has a new identity and is free. Verdicts live in the
+  the same verdict, while a corrected file has a new identity and is free. An upload is reduced
+  to the digest of its bytes whether a `--path` named them or `--content` carried them, and the
+  digest is of the bytes themselves and never of a decoded string, so a file that is not valid
+  UTF-8 is not round-tripped; the one limit of the representation is that a file and an inline
+  send meet only where the file is valid UTF-8. The canonical encoding emits sorted key and
+  value pairs rather than assigning into an object, so an argument named `__proto__` is encoded
+  rather than swallowed. Verdicts live in the
   session's own state directory, not the process's marker store, so one session's no never
   refuses another's write and a restart of the gate does not drop it; they are never swept by
   age, and go when a later review of the same write allows it or with the session.
