@@ -24,8 +24,10 @@
 # dispatch-session-settings.sh. The ninth is lib/live-daemon-proof.sh, whose prerequisites check
 # reads LEGION_TEST_PG_DSN for each of the seven proofs that make that run: child-adoption.sh,
 # ci-red-no-takeover.sh, claim-compaction.sh, handoff-records.sh, merged-root-waits.sh,
-# no-required-checks.sh and provider-error-retry.sh. No proof that writes a server its caller's
-# DSN names is left outside this guard.
+# no-required-checks.sh and provider-error-retry.sh. Seven of the nine call this function.
+# envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
+# run_database_url alone, which begins with this guard's own check. Every proof that writes a
+# server its caller's DSN names reads that DSN with this guard before it starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query
@@ -51,24 +53,36 @@
 # Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one
 # that is not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
 #
-# Nothing enforces that pin for this guard. The pin is `github.com/jackc/pgx/v5 v5.11.0` in
+# Nothing enforces that pin. The pin is `github.com/jackc/pgx/v5 v5.11.0` in
 # packages/envoy/go.mod:31 and packages/daemon/go.mod:13, with its checksum in each go.sum.
 # .github/dependabot.yml covers the github-actions ecosystem alone, so no automation raises pgx,
 # and no CI job runs `go mod tidy`, `go mod verify` or any other check that reads which pgx
-# version is in use. A raise is a deliberate edit of those files, and this comment is the one
-# text that ties the pin to this guard. Whoever raises pgx moves the safety of those three
-# proofs, and must drive this guard's own cases (lib/loopback-dsn.test.ts) again.
+# version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
+# files, and this comment is the one text that says what such a raise moves:
+# scripts/e2e/README.md and packages/daemon/internal/daemon/own_database_dsn_test.go point here
+# rather than write it again. Whoever raises pgx moves the safety of those three proofs, and of
+# the ninth call site's rewrite check below, and must drive this guard's own cases
+# (lib/loopback-dsn.test.ts) and that check's own cases (own_database_dsn_test.go) again.
 #
-# The ninth call site's driver reads the DSN again as well. takeOwnDatabase
-# (packages/daemon/internal/daemon/live_agent_proof_test.go:218-254) creates and drops the run's
-# own database with pgx, which the pin above holds to libpq's reading, and then rewrites the DSN
-# with Go's net/url to name that database. net/url ends the user name at the last `@` and starts
-# the query at the first `?`, so for some DSNs this guard takes it reads another host than libpq:
-# measured with Go 1.27.3, postgres://evil.example?@localhost/db, whose host libpq reads as
-# localhost, is rewritten to postgres://evil.example/own_db?@localhost/db. That rewrite is the
-# daemon package's own file, which reads both strings back with pgx before it connects and
-# creates anything (ownDatabaseDSN, packages/daemon/internal/daemon/own_database_dsn_test.go),
-# and this guard reaches no further than the shell.
+# The ninth call site's binary rewrites that DSN itself, and this guard reaches no further than
+# the shell. Each of the seven runs the binary `go test -c -tags e2e ./internal/daemon` builds,
+# and that binary builds DSNs of its own from LEGION_TEST_PG_DSN: TestMain makes the run's one
+# database before any test starts (packages/daemon/internal/daemon/main_test.go, through
+# testdb.RunDatabaseMain), internal/testpg migrates a template and clones it for the tests that
+# ask, and takeOwnDatabase (packages/daemon/internal/daemon/live_agent_proof_test.go) makes the
+# proof's own database. Every one of those rewrites comes from one helper, DatabaseURL in
+# packages/daemon/internal/testpg/testdb/testdb.go. It rewrites with Go's net/url and then reads
+# the DSN and the rewrite back with pgconn.ParseConfig, the parser the driver connects through,
+# before anything connects or creates. net/url ends the user name at the last `@` and starts the
+# query at the first `?`, so for some DSNs this guard takes it reads another host than libpq:
+# measured in a Legion worker pod with Go 1.27.3 and pgx v5.11.0, the DSN
+# postgres://evil.example?x=@localhost/db, whose host libpq reads as localhost and this guard
+# admits, rewrites to postgres://evil.example/postgres?x=@localhost/db, whose host pgx reads as
+# evil.example. DatabaseURL refuses that rewrite, naming what pgx read of both strings, and the
+# binary ends before its first connection with no database made anywhere.
+# own_database_dsn_test.go drives those cases. The two frames divide this way: this guard reads
+# the caller's DSN with libpq in the shell, before anything starts, and the binary reads every
+# DSN it builds from that one back with pgx inside itself.
 #
 # The call runs after the caller's own tool check, because it is python3 that runs the guard.
 # The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection, in its
@@ -94,7 +108,7 @@ require_loopback_dsn() {
 #
 # This mode refuses every DSN the guard refuses, and a value the rebuilt string cannot carry as
 # well. envoy-session-delivery.sh and dispatch-session-settings.sh therefore call it in their
-# setup step, beside require_loopback_dsn and before the builds, the services and the `create
+# setup step as their one read of the DSN, before the builds, the services and the `create
 # database`, so a refused input ends the run where the run's other refusals are. The database's
 # name is only the shell's pid and random bytes, so each has it that early. The three other
 # callers name a database per run or per attempt, and call this where that name is made.

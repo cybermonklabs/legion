@@ -409,7 +409,7 @@ run_attempt() {
     fail "could not create the database $database on LEGION_TEST_PG_DSN; see $run_dir/logs/postgres.log"
   databases+=("$database")
   run_database_url database_url LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
-    "this run creates and force-drops databases there"
+    "this run creates and force-drops databases there" || fail "$database_url"
   note "database $database"
   pass
 

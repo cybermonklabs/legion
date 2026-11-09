@@ -10,10 +10,16 @@
 # observed and `ok <check> (<s>s)`; the first that fails prints `FAIL <check>: <why>` and ends the
 # run non-zero. Exit 2 is an input of the caller's the run refuses. Exit 1 is every other failure.
 # prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
-# nothing here starts or prints, go, awk and python3, and a nats-server: LEGION_E2E_NATS_BIN's, or
-# the pinned one installed with `go install`. It refuses two inputs with exit 2, before the driver
-# is built and before the broker starts: a LEGION_TEST_PG_DSN that is unset, and one whose host is
-# not loopback, which lib/loopback-dsn.sh's require_loopback_dsn reads. broker starts that
+# nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, and a
+# nats-server: LEGION_E2E_NATS_BIN's, or the pinned one installed with `go install`. It refuses
+# two inputs with exit 2, before the driver is built and before the broker starts: a
+# LEGION_TEST_PG_DSN that is unset, and one whose host is not loopback, which
+# lib/loopback-dsn.sh's require_loopback_dsn reads. Exit 2 covers one fault of the host as well:
+# lib/loopback-dsn.py refuses every DSN where this machine has no libpq, the parser it asks which
+# host a DSN names, and this file answers that refusal as it answers the other two. The refusal
+# line tells that case apart, and names libpq and the package to install. The status does not:
+# the helper answers every refusal with one status, so a status of its own here would need this
+# file to read the helper's wording, or to ask for libpq a second time. broker starts that
 # nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
 # `-tags e2e` test binary. proof runs the one test TEST against them and holds that it passed.
 #

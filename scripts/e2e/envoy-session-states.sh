@@ -747,7 +747,7 @@ if [ -n "$needs_dispatch" ]; then
   psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
     fail "could not create database $database in ENVOY_SESSION_STATES_PG_DSN"
   run_database_url database_url ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
-    "the run creates and drops a database there"
+    "the run creates and drops a database there" || fail "$database_url"
   psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||
     fail "the database $database has no pgvector; ENVOY_SESSION_STATES_PG_DSN must name a PostgreSQL carrying it"
   mkdir -p "$work/web-dist"

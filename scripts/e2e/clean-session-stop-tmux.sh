@@ -783,7 +783,7 @@ database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
   fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
 run_database_url database_url CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
-  "the run creates and drops a database there"
+  "the run creates and drops a database there" || fail "$database_url"
 # That string holds spaces and single quotes, so the daemon's configuration file takes it as a
 # single-quoted YAML scalar, in which a single quote is written twice.
 daemon_dsn=${database_url//\'/\'\'}

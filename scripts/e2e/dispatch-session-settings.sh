@@ -134,12 +134,11 @@ echo "== setup"
 for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
-require_loopback_dsn database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "the run creates and drops a database there" || fail "$database_url"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
-# rewrite that refuses a DSN whose values the connection string cannot carry runs in this step,
-# before the builds, the services and the `create database` further down. Both answers go to
-# database_url: the run keeps the connection string alone, and either refusal is the line this
-# script fails with.
+# one read of the DSN runs in this step, before the builds, the services and the `create
+# database` further down: the rewrite refuses every DSN the loopback guard refuses, and a DSN
+# whose values the connection string cannot carry as well. Its answer is the connection string
+# the run keeps, and its refusal is the line this script fails with.
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
