@@ -82,15 +82,18 @@ jobs:
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,
   # and a job's is the sum of its steps' budgets plus the measured maximum of every step with
-  # none. The recording step runs every stubbed row once on one harness lane, measured at 5 m 42 s
-  # for 114 rows in this issue's pod (a replay; a recording pays the harness beside it), so
-  # 342 x 1.15 = 393 s -> 7 min, doubled to 15 for the four shards' worth of rows this suite will
-  # hold and for a runner slower than that pod. The install keeps the 22 minutes
-  # .github/scripts/playwright-install.sh's retry arithmetic gives it, as the shard job's does.
-  # 22 + 15 = 37, and 100 s of unbudgeted steps round it to 39.
+  # none. The recording step runs every stubbed row once on one harness lane, measured at
+  # 7 m 18 s for 132 rows in this issue's pod, so 438 x 1.15 = 504 s -> 9 min, doubled to 18
+  # for a runner slower than that pod and for the rows this layer will hold. The Chromium
+  # install keeps the 4 minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of
+  # unbudgeted steps round it to 26.
   re-record:
     runs-on: ubuntu-24.04
-    timeout-minutes: 39
+    timeout-minutes: 26
+    # This job stays on the runner rather than in the browser image the shard and alone jobs
+    # moved into, for the reason the multiprocess job stays: nothing can make it launch an
+    # engine other than Chromium, so it keeps that one download, and it runs `go` through the
+    # harness, which a `container:` job may not (that job's head says why).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,8 +103,8 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Restored only, as the shard job's is: the harness builds the Dispatch server, which this
-      # job needs and no job of this family saves a cache for.
+      # Restored only: the harness builds the Dispatch server, which this job needs and no job
+      # of this family saves a cache for.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -109,41 +112,28 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # Built here rather than left to run-server.sh, which would build it inside the harness's
+      # own boot wait, as the multiprocess job does for the same reason.
+      - name: Build the Dispatch server
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
       - name: Build dispatch dashboard
         run: bun run build:web
         working-directory: packages/dispatch
-      - id: playwright-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-      - id: apt-debs-key
-        name: Compute the apt archive cache key
-        run: |
-          key=$(.github/scripts/apt-archive-cache-key.sh)
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-      - id: apt-debs
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-debs-key.outputs.key }}
       # Chromium alone: both stub projects launch it (`stub-phone` is an iPhone 13 on Chromium).
-      # From packages/dispatch, as the shard job runs it: the script resolves Playwright from
-      # the working directory, and from the repository root it installs a revision this
-      # package's own Playwright does not look for.
-      - name: Install Chromium
-        timeout-minutes: 22
-        run: |
-          "$GITHUB_WORKSPACE/.github/scripts/playwright-install.sh" chromium
+      - name: Install Playwright Chromium
+        timeout-minutes: 4
+        run: bunx playwright install chromium
         working-directory: packages/dispatch
       # The committed set, kept before the re-recording writes over it in place.
       - name: Keep the committed recordings
         run: cp -r e2e/__recordings__ "$RUNNER_TEMP/committed"
         working-directory: packages/dispatch
       - name: Re-record every stubbed row against the real harness
-        timeout-minutes: 15
+        timeout-minutes: 18
         run: |
           # The lane's Postgres, the copy in ghcr.io/cybermonklabs/legion/ci the shard job uses.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
