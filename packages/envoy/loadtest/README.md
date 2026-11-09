@@ -1662,8 +1662,8 @@ series `TABLES.md`, because `run-step.sh` already wrote them for each step.
 
 ## The tables
 
-`TABLES.md` has fourteen tables, with one row per step (two tables, Live reconnects and Requests
-by route, have more rows), and a fifteenth, Replay, when a step replayed.
+`TABLES.md` has fifteen tables, with one row per step (two tables, Live reconnects and Requests
+by route, have more rows), and a sixteenth, Replay, when a step replayed.
 The window is the measured window (`--duration`). "Cores" means CPU-seconds per second. A cell is
 `-` when it has no value, and also when the read that it comes from failed; a failed read also
 marks the step name with `(commit rows not read)`, `(1 failed read)` or `(<n> failed reads)`
