@@ -6,6 +6,7 @@ import {
   buildDispatchReference,
   buildReferencePath,
   type DispatchReferenceRoute,
+  isSafeAppPath,
   nodeRouteFromHref,
   referenceRouteFromHref,
 } from "./routes";
@@ -59,7 +60,9 @@ export function RefLink({
   const { picture, title } = useReferenceTarget(route, { text: false });
   const path = useReferencePath(route);
   useLayoutEffect(() => {
-    if (anchor instanceof HTMLAnchorElement) {
+    // A path that is not this dashboard's own is no link: the words stand instead, as they do
+    // for a reference that resolves to no page at all.
+    if (anchor instanceof HTMLAnchorElement && isSafeAppPath(path)) {
       anchor.setAttribute("href", path);
     }
   }, [anchor, path]);
@@ -149,9 +152,10 @@ export function linkifyDispatchRefs(root: HTMLElement, { cited, facts }: Referen
       (reference) =>
         reference.reference !== undefined &&
         cited.has(reference.reference) &&
-        // A reference no page opens - a person, whom nothing in Dispatch shows - stays the
-        // words its author wrote: there would be nothing behind the link.
-        (reference.route === undefined || buildReferencePath(reference.route) !== "")
+        // A reference that opens no page of this dashboard - a person, whom nothing in Dispatch
+        // shows - stays the words its author wrote: there would be nothing behind the link.
+        // The same gate `collectReferenceAnchors` writes the href behind, so the two agree.
+        (reference.route === undefined || isSafeAppPath(buildReferencePath(reference.route)))
     );
     if (found.length === 0) {
       continue;
@@ -234,9 +238,10 @@ export function collectReferenceAnchors(
       continue;
     }
     const path = buildReferencePath(route);
-    if (path === "") {
-      // A reference no page opens - a person - is its words, as one that cites nothing is:
-      // there is nothing to click through to and no record to preview.
+    // A reference that opens no page of this dashboard is its words, as one that cites nothing
+    // is: a person, whom nothing in Dispatch shows (the empty path), and anything that does not
+    // resolve to this origin, which no route writes today and none may start writing unnoticed.
+    if (!isSafeAppPath(path)) {
       anchor.replaceWith(document.createTextNode(text));
       continue;
     }

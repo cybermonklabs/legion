@@ -939,6 +939,39 @@ export function shortForm(route: DispatchReferenceRoute): string {
   }
 }
 
+/**
+ * Whether `path` is a link inside this dashboard, which is the one thing written into an `href`
+ * built from a reference a person typed (`RefLink`'s two writers, `features/doc/picture-view`).
+ * Two conditions, because either alone lets a link off the site: it begins with exactly one
+ * slash, so `//evil.example/x`, `javascript:` and `data:` are out, and it still names the site
+ * it is resolved against once the URL parser has read it, so `/\evil.example/x`, which a
+ * leading-slash check passes and every browser sends to evil.example, is out too.
+ *
+ * The answer does not depend on which site serves the dashboard: a path that stays on one
+ * origin stays on every origin, and an absolute URL, this dashboard's own included, is already
+ * out by the leading slash. So the parser is given a base of its own rather than
+ * `window.location.origin`, which is `null` at an opaque origin and no base at all.
+ *
+ * Every path `buildReferencePath` writes passes it today, each segment encoded or matched
+ * against a key pattern. It is the gate all the same, at each sink rather than at the builder,
+ * so no later arm of that switch, and no other route a reference resolves to, can reach an
+ * `href` without passing here.
+ */
+export function isSafeAppPath(path: string): boolean {
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    return false;
+  }
+  try {
+    return new URL(path, SAME_SITE_PROBE_ORIGIN).origin === SAME_SITE_PROBE_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+/** The base `isSafeAppPath` reads a path against: a syntactically valid origin that is no real
+ *  site, so a path that escapes it escapes any origin and nothing is ever fetched from it. */
+const SAME_SITE_PROBE_ORIGIN = "https://same-site.invalid";
+
 /** The SPA path a reference navigates to, whichever side of the issue/project split it is on. A
  *  block opens its document, issue comment or message at the block (`#b-`); a pinned block of a
  *  document opens the version of its document it pins, since a version's stored text holds no
