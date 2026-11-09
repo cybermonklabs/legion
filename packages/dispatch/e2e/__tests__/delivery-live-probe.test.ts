@@ -542,3 +542,26 @@ test(
   },
   PROCESS_TEST_MS
 );
+
+test(
+  "a --reconnect-spread-ms no timer can hold is a usage error, exit 2",
+  async () => {
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    // A wait of more than 2^31-1 ms does not fit a timer: the runtime clamps it to 1 ms, so a
+    // spread whose draws pass that bound makes the probe reopen at once — the opposite of what
+    // the option says, and the opposite of what a row that pins a spread far above its own limit
+    // reads a reopen on a timer as. Measured with the rotation row above: at a spread of 1e12 ms
+    // a probe whose at-once reopen was removed passes that row 3 of 3 in about 1.5 s each, where
+    // at the row's own day it fails at 30 s. The probe refuses such a value rather than honouring
+    // it silently as its opposite.
+    const run = runProbe([
+      ...args(dispatch, TOKEN, "0.01"),
+      "--reconnect-spread-ms",
+      String(2 ** 31),
+    ]);
+    expect(await run.exited()).toBe(2);
+    expect(run.stderr.join("\n")).toContain("--reconnect-spread-ms");
+    expect(dispatch.upgrades).toEqual([]);
+  },
+  PROCESS_TEST_MS
+);
