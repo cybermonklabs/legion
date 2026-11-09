@@ -35,6 +35,7 @@ import {
   writeIdentity,
 } from "@legion/envoy-client/askgate-marker";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
+import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
 import { createAskGate, type Deps, type Pi, spawnDryRun } from "./askgate-core";
 import { createDecisionRecorder } from "./decision-record";
 
@@ -42,6 +43,15 @@ const BASE = ["comment", "--issue", "DSP-1", "--body", "rejected-content"];
 const COMMAND = "dispatch comment --issue DSP-1 --body rejected-content";
 const ARGS = { issue: "DSP-1", body: "rejected-content" };
 const identity = () => writeIdentity("dispatch_comment", ARGS);
+
+/**
+ * The suite's own TMPDIR, made before its first test and removed when it ends. Every row builds
+ * a session directory, and `mkdtempSync("/tmp/…")` wrote them straight into the shared `/tmp`
+ * and left them: ~260 a run, 11,638 of them on this box before a reviewer measured it, taking
+ * `/tmp` from 51 GiB free to 30 in an hour and most likely destroying a working tree mid-run.
+ * The two suites beside this one already did it this way.
+ */
+const SUITE_TMP = temporaryTmpdir("askgate-remedies");
 
 /** One session under test: a live gate, a fake Dispatch, and the real CLI against both. */
 interface Fixture {
@@ -67,7 +77,7 @@ interface Fixture {
 }
 
 function session(answer: "allow" | "revise" = "revise"): Fixture {
-  const work = mkdtempSync("/tmp/askgate-remedies-");
+  const work = mkdtempSync(join(SUITE_TMP, "session-"));
   const sent: string[] = [];
   const server = Bun.serve({
     port: 0,
@@ -97,7 +107,7 @@ function session(answer: "allow" | "revise" = "revise"): Fixture {
   const env = {
     PATH: `${bin}:${process.env.PATH}`,
     HOME: work,
-    TMPDIR: "/tmp",
+    TMPDIR: SUITE_TMP,
     DISPATCH_HOST: "omp",
     DISPATCH_SESSION_ID: "ses-1",
     DISPATCH_STATE_DIR: join(work, "state"),
@@ -676,6 +686,33 @@ describe("every remedy the CLI prints, followed", () => {
       } finally {
         s.stop();
       }
+    }
+  }, 30_000);
+
+  // The only production writer of the lost-verdict mark, reached through the gate rather than
+  // planted by hand. Every row in the tree that wants that state writes the file itself, so
+  // `if (false)` on the write left the whole of pi-envoy green — this branch's own rule,
+  // *build the state by the mechanism that produces it*, broken on the one state where it
+  // matters most, by the suite that wrote the rule.
+  test("a gate whose verdict store refuses the write marks the session", async () => {
+    const s = session();
+    try {
+      // The store exists and takes nothing, which is the fault the mark exists for.
+      mkdirSync(join(s.dir(), "askgate-verdicts-v2"), { recursive: true });
+      chmodSync(join(s.dir(), "askgate-verdicts-v2"), 0o500);
+      expect((await s.gate("main"))?.block).toBe(true);
+      // Written by the gate, read back from disk: the verdict could not be stored, so the
+      // session says so and every later write of it reads absence as unknown.
+      expect(existsSync(join(s.dir(), "askgate-verdicts-lost"))).toBe(true);
+      chmodSync(join(s.dir(), "askgate-verdicts-v2"), 0o700);
+      const after = await s.cli();
+      expect(after.code).toBe(1);
+      expect(after.out).toContain("could not write down");
+      expect(after.posts).toBe(0);
+    } finally {
+      if (existsSync(join(s.dir(), "askgate-verdicts-v2")))
+        chmodSync(join(s.dir(), "askgate-verdicts-v2"), 0o700);
+      s.stop();
     }
   }, 30_000);
 

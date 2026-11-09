@@ -1424,15 +1424,17 @@ describe("absence is a statement only when the store was read whole", () => {
       })
     );
     await refused();
-    const parent = dirname(self.store);
-    chmodSync(parent, 0o000);
+    // The store itself, not its parent: blocking the parent blocks the session directory with
+    // it, so the record cannot be read either and the row passed on the wrong fault — green
+    // with the guard removed.
+    chmodSync(self.store, 0o000);
     try {
       const { code, stdout } = await run(MESSAGE);
       expect(code).toBe(1);
-      expect(stdout).not.toContain("Posted message");
+      expect(stdout).toContain("AskGate reviewed this write and did not send it");
       expect(messagePosts()).toHaveLength(0);
     } finally {
-      chmodSync(parent, 0o700);
+      chmodSync(self.store, 0o700);
     }
   });
 
@@ -1557,32 +1559,97 @@ describe("absence is a statement only when the store was read whole", () => {
         join(dir, writeIdentity("dispatch_message", await dryArgs(MESSAGE))),
         JSON.stringify({ v: 1, reason: 42, at: "whenever" })
       );
-      const { code } = await run(MESSAGE);
+      const { code, stdout } = await run(MESSAGE);
       expect(code).toBe(1);
+      // Which answer, not merely that it refused: without the type check the file reads as a
+      // verdict whose reason is the number 42, which refuses too. The row could not see the
+      // difference it was written for.
+      expect(stdout).toContain("cannot be read");
+      expect(stdout).not.toContain("AskGate reviewed this write and did not send it");
       expect(messagePosts()).toHaveLength(0);
     });
 
     // A store openable by name answers every named read, so an absence in it is certain and
     // the write posts; a verdict in it is still found. Measured rather than reasoned, and the
     // reason the session-wide check no longer tests whether the store lists.
-    test("a verdict store that cannot be listed but can be opened by name is not uncertain", async () => {
+    // Two directions, and only the second reaches the check: a session where nothing is held
+    // never consults it, so the row asserting a post was green with the change reverted. The
+    // held row is a recorded refusal of this write, where the caveat the check decides is
+    // printed — `0o111` answers every named read, so the session is certain and the refusal
+    // carries the one-clause caveat rather than the all-session one.
+    test("a verdict store openable by name is certain, held or not", async () => {
+      const session = join(stateDir, "sessions", "ses-1");
+      const dir = join(session, "askgate-verdicts-v2");
       writeRecord();
-      const dir = join(stateDir, "sessions", "ses-1", "askgate-verdicts-v2");
+      await refused();
       mkdirSync(dir, { recursive: true });
-      writeVerdict(
-        dir.replace(`/${"askgate-verdicts-v2"}`, ""),
-        writeIdentity("dispatch_message", { issue: "DSP-1", body: "another write" }),
-        "failure 7",
-        Date.now()
-      );
       chmodSync(dir, 0o111);
       try {
-        const { code, stdout } = await run(MESSAGE);
-        expect(code).toBe(0);
-        expect(stdout).toContain("posted without review");
+        const held = await run(MESSAGE);
+        expect(held.code).toBe(1);
+        expect(held.stdout).toContain("AskGate reviewed this write and did not send it");
+        expect(held.stdout).toContain("That is the main agent's to send");
+        expect(held.stdout).not.toContain("None of that works from a task subagent");
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+      // And with nothing recorded against this write, an absence it can answer by name posts.
+      rmSync(join(dir, writeIdentity("dispatch_message", await dryArgs(MESSAGE))), {
+        force: true,
+      });
+      chmodSync(dir, 0o111);
+      try {
+        const free = await run(MESSAGE);
+        expect(free.code).toBe(0);
+        expect(free.stdout).toContain("posted without review");
         expect(messagePosts()).toHaveLength(1);
       } finally {
         chmodSync(dir, 0o700);
+      }
+    });
+
+    // The four guards that, removed, post a write a review refused — with no warning and no
+    // ledger row. Each is the shape this branch exists to remove: an unreadable thing read as
+    // "the owner is gone", the gate turned off, the verdict never looked up.
+    for (const [name, fault] of [
+      [
+        "an owner file that cannot be read",
+        (session: string) =>
+          chmodSync(join(session, "askgate", `${process.pid}-${startOf(process.pid)}.json`), 0o000),
+      ],
+      [
+        "a record directory that cannot be listed",
+        (session: string) => chmodSync(join(session, "askgate"), 0o000),
+      ],
+    ] as Array<[string, (session: string) => void]>)
+      test(`${name} does not turn the gate off over a recorded refusal`, async () => {
+        const session = join(stateDir, "sessions", "ses-1");
+        writeRecord();
+        await refused();
+        fault(session);
+        try {
+          const { code } = await run(MESSAGE);
+          expect({ name, code }).toEqual({ name, code: 1 });
+          expect(messagePosts()).toHaveLength(0);
+        } finally {
+          chmodSync(join(session, "askgate"), 0o700);
+          chmodSync(join(session, "askgate", `${process.pid}-${startOf(process.pid)}.json`), 0o600);
+        }
+      });
+
+    test("a foreign verdict store that cannot be listed is not a session holding none", async () => {
+      const session = join(stateDir, "sessions", "ses-1");
+      writeRecord();
+      const older = join(session, "askgate-verdicts");
+      mkdirSync(older, { recursive: true });
+      writeFileSync(join(older, "0".repeat(64)), "{}");
+      chmodSync(older, 0o000);
+      try {
+        const { code } = await run(MESSAGE);
+        expect(code).toBe(1);
+        expect(messagePosts()).toHaveLength(0);
+      } finally {
+        chmodSync(older, 0o700);
       }
     });
   });
