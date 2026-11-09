@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ArtifactApprovalRead, ArtifactRead } from "./dispatch-api.generated";
-import { ActorSchema, type DisplayTree, InboundWriterSchema } from "./dispatch-api-core";
+import { ActorSchema, InboundWriterSchema } from "./dispatch-api-core";
 import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields } from "./dispatch-api-refs";
 

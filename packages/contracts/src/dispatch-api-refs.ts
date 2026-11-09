@@ -1,6 +1,5 @@
 import { z } from "zod";
-import type { ReplyBlock, ReplyBlockRead } from "./dispatch-api.generated";
-import type { DisplayTree } from "./dispatch-api-core";
+import type { ReplyBlockRead } from "./dispatch-api.generated";
 
 /**
  * The shapes several payload families share: what a write moved in the reference graph, whose

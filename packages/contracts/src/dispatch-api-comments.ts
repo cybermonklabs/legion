@@ -1,19 +1,17 @@
 import { z } from "zod";
-import type { Comment, ShapedComment } from "./dispatch-api.generated";
+import type { ShapedComment } from "./dispatch-api.generated";
 import { askFields } from "./dispatch-api-asks";
 import {
   ActorSchema,
   AnchorSchema,
   anchorFields,
   anchorPositionFields,
-  type DisplayTree,
   InboundActorSchema,
 } from "./dispatch-api-core";
 import { ASK_TURNS, DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   ReplyBlockSchema,
-  type ReplyBlockWithTrees,
   referenceChangesFields,
   threadLoginsFields,
   WrittenReplyBlockSchema,

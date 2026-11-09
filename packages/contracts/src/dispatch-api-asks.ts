@@ -17,7 +17,6 @@ import {
   AnchorSchema,
   anchorFields,
   anchorPositionFields,
-  type DisplayTree,
   InboundBySchema,
   InboundWriterSchema,
 } from "./dispatch-api-core";

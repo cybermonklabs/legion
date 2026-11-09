@@ -313,6 +313,10 @@ export function approvalLine(artifact: Pick<Artifact, "approval">): string | und
       return `Approval: approved v${approval.version} by ${approval.by?.id ?? "unknown"}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     case "changes_requested":
       return `Approval: changes requested on v${approval.version} by ${approval.by?.id ?? "unknown"}: ${approval.reason ?? ""}${content}`;
+    // The route states an approval's state as a plain string, so a state this build does not know
+    // prints no line at all rather than a line half of whose fields it would have to guess at.
+    default:
+      return undefined;
   }
 }
 /** A live document's blocks and the UTF-8 bytes of the markdown their ranges index. */
