@@ -488,28 +488,30 @@ jobs:
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-          # The heaviest measured test, alone: about 135 s of the chain. Its -timeout is the
-          # smallest whole minute at which that 135 s is at most half - 2 x 135 s = 270 s = 4.5
-          # minutes, so 5m, which 135 s fills by 45 per cent. The second condition, the floor,
-          # is not roomWaitMargin here: that constant is the documents package's own
-          # (internal/dispatch/docs/settlement_credit_test.go:531) and no pmdoc test reads it.
-          # pmdoc has a floor of its own, perCallReportMargin, 60 s (linear_test.go:1003), which
-          # perCallDeadline checks at every measured call: a call starting with no more than 60 s
-          # of the binary's deadline left fails by name rather than running. The half above
-          # leaves this call 300 - 135 = 165 s when its last measured call starts, well past 60.
-          go test -json -count=1 -timeout 5m -run '^(TestBareURLShapesParseAndRenderLinearly)$' ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc-heaviest.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc-heaviest.log" &
+          # The heaviest measured test, alone. Its -timeout is NOT sized by the half rule, which
+          # the first pair proved makes this call fail: every measured call here runs under
+          # perCallDeadline (linear_test.go:1020), which is what the binary's own deadline leaves
+          # after perCallReportMargin, 60 s - so the bound SHRINKS as the test proceeds, and the
+          # last call of a 240 s test under a 5m deadline gets 2 s and fails by name ("did not
+          # return within 2.121862116s", job 129229030809, round 3 of run 42637377762). The
+          # measurement is CPU time repeated until a window resolves, so its wall time is that CPU
+          # multiplied by the runner's contention, which this arm raises by running three pmdoc
+          # processes beside the package list: the test measured 135 s inside the whole package
+          # and reached 240 s here. So each pmdoc call gets the deadline the whole arm gives it,
+          # the package list's own 12m, and the pair measures the split rather than the limits.
+          go test -json -count=1 -timeout 12m -run '^(TestBareURLShapesParseAndRenderLinearly)$' ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc-heaviest.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc-heaviest.log" &
           pmdoc_heaviest=$!
-          # The other eleven measured tests, about 156 s together: 2 x 156 s = 312 s = 5.2
-          # minutes, so 6m, which 156 s fills by 43 per cent and which leaves 360 - 156 = 204 s
-          # above the chain, past perCallReportMargin's 60 s.
-          go test -json -count=1 -timeout 6m -run '^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$' ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc-others.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc-others.log" &
+          # The other eleven measured tests, for the same reason as the call above: every one of
+          # them reads perCallDeadline too, and round 2's 6m took TestUpdateIsLinearInTheBlockCount
+          # down the same way (job 129229030693). The whole arm's 12m.
+          go test -json -count=1 -timeout 12m -run '^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$' ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc-others.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc-others.log" &
           pmdoc_others=$!
           # The unmeasured remainder, the whole package less those twelve, at the package list's
-          # own -parallel 12: about 100 s. 2 x 100 s = 200 s = 3.33 minutes, so 4m, which 100 s
-          # fills by 42 per cent and which leaves 140 s. perCallReportMargin cannot bind this
-          # call at all: the -skip is exactly the measured set, so no test of it reads a
-          # deadline.
-          go test -json -count=1 -parallel 12 -timeout 4m -skip '^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestBareURLShapesParseAndRenderLinearly|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$' ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc-unmeasured.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc-unmeasured.log" &
+          # own -parallel 12: about 100 s. perCallReportMargin cannot bind this call at all - the
+          # -skip is exactly the measured set, so no test of it reads a deadline - but it carries
+          # the same 12m as the other two, so the three differ in what they run and in nothing
+          # else.
+          go test -json -count=1 -parallel 12 -timeout 12m -skip '^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestBareURLShapesParseAndRenderLinearly|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$' ./internal/dispatch/pmdoc/ > "$RUNNER_TEMP/go-test-json/pmdoc-unmeasured.json" 2> "$RUNNER_TEMP/go-test-logs/pmdoc-unmeasured.log" &
           pmdoc_unmeasured=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
