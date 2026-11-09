@@ -2895,16 +2895,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_legion == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # 12 minutes, which is the rule this file uses elsewhere -- the measured maximum plus 15 per
-    # cent, rounded up -- applied to what this job costs since cybermonklabs/legion#2922 added the
-    # stall watchdog's suites to packages/pi-legion. Over the merge-group runs of 2026-11-08 the
-    # job ran 322 to 362 s before that change merged (18:46Z) and 536, 541, 575, 587, 593, 598 and
-    # 602 s after it, its `Test pi-legion` step carrying the move from about 290 s to about 520 s.
-    # The 10 minutes that stood here was derived from the first of those two populations, so it
-    # cut the job off at 602 s in the merge_group run of pull request 2938 (job 128896832850,
-    # every step of it successful), which `ci-ok` read as a selected job that did not succeed and
-    # the merge queue read as failed checks. 602 x 1.15 = 692 s.
-    timeout-minutes: 12
+    # 13 minutes: the measured maximum plus 15 per cent, rounded up, which is the step rule
+    # .github/workflows/dispatch-browser.yaml's head writes down, applied here to the whole job,
+    # since none of its steps carries a budget of its own. The 10 minutes that stood here came
+    # from #2512 (a limit above each job's slowest green run, 2026-10-30), before
+    # cybermonklabs/legion#2922 (merged 2026-11-08T18:46:47Z) added the stall watchdog's suites to
+    # packages/pi-legion. Merge-group runs on 2026-11-08 took 303 to 370 s without them, and
+    # 536 to 602 s with them, the 602 s one being job 128896832850 of pull request 2938, which hit
+    # the limit with every step successful. The slowest finished run with them is 616 s
+    # (pull-request job 128907622960), and pull-request job 128868703882 was cut at 617 s with
+    # `Test pi-legion` 451 s in, short of the fastest 479 s that step took in eight runs with
+    # the suites, so that run needed at least 645 s. 645 x 1.15 = 742 s, so 13 minutes.
+    timeout-minutes: 13
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
