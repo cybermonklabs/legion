@@ -5290,7 +5290,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5344,7 +5344,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5402,7 +5402,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5475,7 +5475,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -5484,7 +5484,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5541,7 +5541,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5599,7 +5599,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5655,7 +5655,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5715,7 +5715,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -5724,7 +5724,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5777,7 +5777,7 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -5786,7 +5786,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5829,7 +5829,7 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -5838,7 +5838,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5881,7 +5881,7 @@ export interface operations {
           "application/json": components["schemas"]["ResidentRooms"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5937,7 +5937,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -5984,7 +5984,7 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -5993,7 +5993,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6040,7 +6040,7 @@ export interface operations {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6084,7 +6084,7 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6093,7 +6093,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6139,7 +6139,7 @@ export interface operations {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6148,7 +6148,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6191,7 +6191,7 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6200,7 +6200,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6245,7 +6245,7 @@ export interface operations {
           "application/json": components["schemas"]["RoomCounters"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6314,7 +6314,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6323,7 +6323,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6380,7 +6380,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6442,7 +6442,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6451,7 +6451,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6507,7 +6507,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6564,7 +6564,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6625,7 +6625,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6634,7 +6634,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6690,7 +6690,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6752,7 +6752,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6761,7 +6761,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6835,7 +6835,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6844,7 +6844,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6905,7 +6905,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -6965,7 +6965,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -6974,7 +6974,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7034,7 +7034,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7043,7 +7043,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7099,7 +7099,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7155,7 +7155,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7215,7 +7215,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7224,7 +7224,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7280,7 +7280,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7335,7 +7335,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7344,7 +7344,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7400,7 +7400,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7460,7 +7460,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7469,7 +7469,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7527,7 +7527,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7584,7 +7584,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7640,7 +7640,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7700,7 +7700,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7709,7 +7709,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7769,7 +7769,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7778,7 +7778,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7834,7 +7834,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7893,7 +7893,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7902,7 +7902,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -7961,7 +7961,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -7970,7 +7970,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8030,7 +8030,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8039,7 +8039,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8095,7 +8095,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8149,7 +8149,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8207,7 +8207,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8216,7 +8216,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8272,7 +8272,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8328,7 +8328,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8388,7 +8388,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8397,7 +8397,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8457,7 +8457,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8466,7 +8466,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8522,7 +8522,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8582,7 +8582,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8591,7 +8591,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8651,7 +8651,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8660,7 +8660,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8716,7 +8716,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8725,7 +8725,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8796,7 +8796,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8805,7 +8805,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8865,7 +8865,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8874,7 +8874,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8929,7 +8929,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -8985,7 +8985,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -8994,7 +8994,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9049,7 +9049,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9107,7 +9107,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -9116,7 +9116,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9176,7 +9176,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -9185,7 +9185,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9245,7 +9245,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -9254,7 +9254,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9308,7 +9308,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9362,7 +9362,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9427,7 +9427,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9482,7 +9482,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9538,7 +9538,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9596,7 +9596,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -9605,7 +9605,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9663,7 +9663,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -9672,7 +9672,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9732,7 +9732,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -9741,7 +9741,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9806,7 +9806,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9862,7 +9862,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9919,7 +9919,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -9973,7 +9973,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10031,7 +10031,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -10040,7 +10040,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10085,7 +10085,7 @@ export interface operations {
           "text/event-stream": unknown;
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10141,7 +10141,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10197,7 +10197,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10264,7 +10264,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10342,7 +10342,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -10351,7 +10351,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10406,7 +10406,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10462,7 +10462,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10524,7 +10524,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -10533,7 +10533,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10589,7 +10589,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10664,7 +10664,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -10673,7 +10673,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10730,7 +10730,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10787,7 +10787,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10862,7 +10862,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -10871,7 +10871,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10928,7 +10928,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -10989,7 +10989,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -10998,7 +10998,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11057,7 +11057,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11115,7 +11115,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11177,7 +11177,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -11186,7 +11186,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11255,7 +11255,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -11264,7 +11264,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11333,7 +11333,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -11342,7 +11342,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11398,7 +11398,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11455,7 +11455,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11517,7 +11517,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -11526,7 +11526,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11582,7 +11582,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11638,7 +11638,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11699,7 +11699,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11755,7 +11755,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11816,7 +11816,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -11825,7 +11825,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11882,7 +11882,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -11938,7 +11938,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12000,7 +12000,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12009,7 +12009,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12066,7 +12066,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12130,7 +12130,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12186,7 +12186,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12246,7 +12246,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12255,7 +12255,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12311,7 +12311,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12366,7 +12366,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12375,7 +12375,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12431,7 +12431,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12485,7 +12485,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12528,7 +12528,7 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12537,7 +12537,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12580,7 +12580,7 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12589,7 +12589,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12643,7 +12643,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12699,7 +12699,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12708,7 +12708,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12762,7 +12762,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12820,7 +12820,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12829,7 +12829,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12883,7 +12883,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12892,7 +12892,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -12952,7 +12952,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -12961,7 +12961,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13015,7 +13015,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13075,7 +13075,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13084,7 +13084,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13140,7 +13140,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13200,7 +13200,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13209,7 +13209,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13263,7 +13263,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13272,7 +13272,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13328,7 +13328,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13388,7 +13388,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13397,7 +13397,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13455,7 +13455,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13464,7 +13464,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13522,7 +13522,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13531,7 +13531,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13600,7 +13600,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13609,7 +13609,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13670,7 +13670,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13724,7 +13724,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13782,7 +13782,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13791,7 +13791,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13847,7 +13847,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13903,7 +13903,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -13963,7 +13963,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -13972,7 +13972,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14033,7 +14033,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14042,7 +14042,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14114,7 +14114,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14123,7 +14123,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14177,7 +14177,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14235,7 +14235,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14244,7 +14244,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14300,7 +14300,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14356,7 +14356,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14412,7 +14412,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14421,7 +14421,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14477,7 +14477,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14533,7 +14533,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14542,7 +14542,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14604,7 +14604,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14613,7 +14613,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14673,7 +14673,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14682,7 +14682,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14740,7 +14740,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14749,7 +14749,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14806,7 +14806,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14881,7 +14881,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -14890,7 +14890,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -14947,7 +14947,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15004,7 +15004,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15079,7 +15079,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -15088,7 +15088,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15145,7 +15145,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15202,7 +15202,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15263,7 +15263,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -15272,7 +15272,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15331,7 +15331,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15391,7 +15391,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -15400,7 +15400,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15460,7 +15460,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -15469,7 +15469,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15530,7 +15530,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15590,7 +15590,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -15599,7 +15599,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15657,7 +15657,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15713,7 +15713,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15771,7 +15771,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15825,7 +15825,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15883,7 +15883,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15937,7 +15937,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -15991,7 +15991,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16045,7 +16045,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16103,7 +16103,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -16112,7 +16112,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16166,7 +16166,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16220,7 +16220,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16281,7 +16281,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -16290,7 +16290,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16349,7 +16349,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -16358,7 +16358,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16412,7 +16412,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16468,7 +16468,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -16477,7 +16477,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16531,7 +16531,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16587,7 +16587,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, no connection of a pool came free within its acquire bound. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -16634,7 +16634,7 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
-      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit within its bound, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
           [name: string]: unknown;
@@ -16643,7 +16643,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorBody"];
         };
       };
-      /** @description Unserved: DATABASE_BUSY, no connection of a pool came free within its acquire bound, so nothing ran. Retry-After says how long to wait before sending it again. */
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
