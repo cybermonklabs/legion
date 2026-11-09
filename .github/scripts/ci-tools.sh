@@ -16,19 +16,27 @@
 #   the source that served those bytes named, and reads nothing else.
 #
 #   A failure of THIS RUN is never a reason to try another source either. The one this file can
-#   prove is a local write error: curl exits 23 where it could not write the file it was
-#   fetching into, and a destination ci_tools_extract cannot open is that same failure on the
-#   other side. No second address cures a file this runner will not let a fetch write, so the
-#   fetch refuses there and then and names no service.
+#   prove is a local write error: ci_tools_curl opens the file it was handed before it invokes
+#   curl, curl exits 23 where the write failed under it, and a destination ci_tools_extract
+#   cannot open is that same failure on the other side. No second address cures a file this
+#   runner will not let a fetch write, so the fetch refuses there and then and names no service.
 #
 # WHAT A REFUSAL OF THIS FILE CLAIMS: IT PROVES THE CAUSE IT CAN PROVE AND CLAIMS NOTHING ABOUT
 # THE REST. One rule for the file, written here because a reader of either function below meets
 # it here, and three causes a function below can prove:
 #
-#   A LOCAL WRITE ERROR OF THIS RUN. curl exits 23 where it could not write the file it was
-#   given, and ci_tools_extract's pre-check opens the destination before a byte of an archive is
-#   read. Each of the two knows the file was never written into, so each sentence names this run
-#   and that file and says nothing whatever about the bytes the address serves.
+#   A LOCAL WRITE ERROR OF THIS RUN, which three places prove and one sentence reports:
+#   ci_tools_curl opens the file it was handed before it invokes curl at all and answers with
+#   curl's own exit 23 where this run cannot write it, curl exits 23 where the write failed
+#   under it, and ci_tools_extract's pre-check opens the destination before a byte of an
+#   archive is read. Each of the three knows the file was never written into, so each sentence
+#   names this run and that file and says nothing whatever about the bytes the address serves.
+#   What the two pre-checks close is the half a check can prove — a destination this run cannot
+#   open at all, which they refuse before a request is made and before a ladder of seven
+#   attempts is spent learning it — and not the half no check can: a destination that opens and
+#   fills part way through the write, which is ENOSPC on a runner, still reaches curl, spends
+#   whatever of the ladder curl retries it on, and is still refused as this run's fault by that
+#   same exit 23 in that same sentence.
 #   A MEMBER THE ARCHIVE DOES NOT HOLD, which python3's zipfile answers for by name: the archive
 #   read, and it holds no member of that name, which is a row naming a path that archive has not
 #   got and a mistake in this repository.
@@ -115,7 +123,11 @@
 #                                         under the retry ladder and the bounds every source is
 #                                         read with. .github/scripts/mirror-ci-tools.sh fetches
 #                                         the asset it pushes with it, so the copy is filled
-#                                         with the same ladder an install reads it under.
+#                                         with the same ladder an install reads it under. It
+#                                         opens <file> first and answers with curl's write
+#                                         error, exit 23, where this run cannot write it, so
+#                                         no ladder is spent on a destination the open has
+#                                         already refused.
 #   ci_tools_extract <archive> <member>
 #                    <destination> <url>  that member of that archive at <destination>, read by
 #                                         the suffix of the address it came from rather than by
@@ -238,9 +250,12 @@
 #                          created under noclobber, and a run that wants a second fetch under
 #                          this seam removes it with the file it names.
 #                          What it buys a test: a fetch that fails the way a full runner does.
-#                          Point it at a path curl cannot write — a symlink to a directory is
-#                          one — and curl exits 23, the local write error above, in this file's
-#                          own code and with no network of any kind.
+#                          Point it at a path this run cannot write — a symlink to a directory
+#                          is one — and the fetch answers with exit 23, the local write error
+#                          above, out of ci_tools_curl's own open, with no curl attempt and no
+#                          network of any kind. Point it at a symlink to /dev/full and the open
+#                          succeeds instead, so that fetch reaches curl and meets the write
+#                          error where a runner with no room left meets it.
 #
 # .github/scripts/ci-tools.test.sh serves all four sources from a local HTTP origin through the
 # first five of those seams, and points the sixth at a path curl cannot write, so every case
@@ -265,8 +280,10 @@ ci_tools__damaged_archive=4
 # the live shape of it — .github/workflows/ci.yaml samples disk space around the envoy-infra
 # live tests because runners fill up — and a fetch that meets it reads no second source, since
 # no other address serves a file this runner will not let it write.
-# ci_tools__curl_report below writes the one sentence for it and hands this number back, and
-# ci_tools_fetch, ci_tools__second_source and ci_tools_fetch_primary read it to refuse.
+# ci_tools_curl answers with this number in curl's place where its own open proved that cause
+# before curl was invoked, ci_tools__curl_report below writes the one sentence for it either
+# way and hands this number back, and ci_tools_fetch, ci_tools__second_source and
+# ci_tools_fetch_primary read it to refuse.
 ci_tools__write_error=23
 
 # ci_tools__manifest: the manifest this call reads.
@@ -531,6 +548,23 @@ ci_tools__tempfile() {
 # nowhere: ci_tools__curl_report below reads it as this run's own write error, and the caller
 # refuses where it stands.
 #
+# THE DESTINATION IS PROVED BEFORE CURL IS INVOKED, which is the pre-check ci_tools_extract
+# makes before it reads a byte of an archive, made here because this is the one place this
+# file invokes curl: every fetch of this file and the one .github/scripts/mirror-ci-tools.sh
+# makes reach curl through this function, so the proof is written once and not at five call
+# sites. <file> is opened for writing — appended to and not truncated, since curl truncates it
+# itself and the file may be one a caller handed in — and where this run cannot open it this
+# function answers with exit 23 and invokes no curl: the cause is the one curl would report, so
+# the answer is the number curl reports it with, and ci_tools__curl_report writes the one
+# sentence and the caller refuses on the one status either way.
+# What that buys is the ladder. `--retry-all-errors` rides out a local write error as readily
+# as a reset, so curl handed a file this run cannot write spends the full seven attempts and
+# 63 s before it returns the exit the caller refuses on without reading another address —
+# measured on a destination no attempt could ever have written. Giving `--retry-all-errors` up
+# would buy that minute back by losing the retries of curl exit 18 and exit 56 this ladder
+# exists for, so the retry set stays exactly as it is and the cause is proved before the first
+# attempt instead.
+#
 # `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
 # may start: an attempt already running when the minute is over still finishes under
 # `--max-time`, and curl starts no attempt after it.
@@ -548,6 +582,11 @@ ci_tools__tempfile() {
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
+  # The pre-check above. bash says on stderr why the file could not be opened, as it does for
+  # ci_tools_extract, and the status is the one curl answers a write error with.
+  if ! : >> "$file"; then
+    return "$ci_tools__write_error"
+  fi
   curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
 }
 
@@ -555,7 +594,11 @@ ci_tools_curl() {
 # <what every other exit says>: the sentence that exit is reported in, printed, and the status
 # the caller returns with it. It is this file's one reader of a curl exit, so the four fetches
 # that make one — the primary's, the second source's, the ghcr blob's with the token request
-# before it, and the npm tarball's — say one thing about a local write error.
+# before it, and the npm tarball's — say one thing about a local write error. The exit is
+# curl's own where curl ran and ci_tools_curl's answer where its open proved the cause before
+# curl was invoked, and the sentence is deliberately the one sentence: a destination that was
+# unwritable before the request and one curl discovered are the same fault of this run, and
+# every word said of either is true of the other.
 # Exit 23 is the one cause a fetch can prove, and the sentence is the whole of what is known:
 # this run could not write that file, so the address was never read into it, and what that
 # address serves is untouched by this refusal. The status is that 23, which is what
@@ -1176,11 +1219,13 @@ ci_tools__primary_open() {
 # ci_tools_fetch <row> <dest>: the row's bytes at <dest>, from the primary where it serves them
 # and from the second source where it does not.
 # OF THE THREE CAUSES THIS FILE'S HEADER NAMES, THIS FETCH PROVES ONE: a local write error,
-# which curl answers with exit 23. This run could not write the file it was fetching into, so
-# the address was never read into it and nothing of what that address serves has been seen,
-# and that is where the fetch stops, on either side: no second source serves a file this
-# runner will not let a fetch write, and reading one costs a second full retry ladder — about
-# two minutes — to learn what the first already knows.
+# which ci_tools_curl's open proves before a request is made where the destination cannot be
+# opened at all and curl answers with exit 23 where the write failed under it. This run could
+# not write the file it was fetching into, so the address was never read into it and nothing
+# of what that address serves has been seen, and that is where the fetch stops, on either
+# side: no second source serves a file this runner will not let a fetch write, and reading one
+# costs a second full retry ladder — about two minutes — to learn what the first already
+# knows. Where the open is what proved it, not even the first ladder runs.
 # Every other failure of the primary IS a reason to read the second source, which is what a
 # 504, a reset and a timeout are, and the line above that second fetch says so. The two
 # failures that stop this fetch where the bytes did arrive — a digest mismatch, and damage the
