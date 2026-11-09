@@ -339,6 +339,35 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 	}
 }
 
+// deleteConsumer removes sessionID's consumer (bus.SessionConsumers.Delete) once the session's
+// registration is gone, so the consumer holds a slot of the stream's consumer cap no longer
+// rather than waiting out the server's inactivity threshold
+// (bus.SessionConsumerInactiveThreshold). A failure is logged, not returned: the deregistration
+// that asked for it answers the same either way, and the listener's sweep and that threshold
+// each reach the consumer again.
+//
+// The session's lock orders the delete against this listener's own consumer calls for the
+// session and against nothing else: a registration's create or filter update, an unsubscribe's
+// update, and a relay restart, which the lock keeps whole (locks). A restart already past its
+// wanted check on another goroutine finds the consumer missing with no pending start, the delete
+// having dropped it, and ends in bus.ErrSessionConsumerNotFound, which pauses its relay rather
+// than creating anything. A second listener task — a rolling deploy's other task, or the one a
+// heartbeat races to — can still create the consumer in that window, and the listener's periodic
+// sweep, not this lock, is what reaches that consumer.
+func (m *sessionDelivery) deleteConsumer(ctx context.Context, sessionID string) {
+	if m == nil || m.consumers == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	defer cancel()
+	unlock := m.locks.lock(sessionID)
+	err := m.consumers.Delete(ctx, sessionID, nil)
+	unlock()
+	if err != nil {
+		m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
+}
+
 // storedInterestTopics is the topics of sessionID's stored interest row, read within ctx: none when
 // it has no row, or a row this build cannot decode, whose topics nothing routes (store.Registry.Get).
 func storedInterestTopics(ctx context.Context, registry *store.Registry, sessionID string) ([]string, error) {
