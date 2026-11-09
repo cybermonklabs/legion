@@ -1762,14 +1762,14 @@ echo "case: the plain call's -run list is what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
 check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, over every package that has one" \
-  "$(is "$out" "go test -json -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon|TestTheta)\$' ./lane/a ./lane/a/sub")"
+  "$(is "$out" "go test -json -count=1 -timeout 6m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon|TestTheta)\$' ./lane/a ./lane/a/sub")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -json -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "go test -json -count=1 -timeout 6m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"

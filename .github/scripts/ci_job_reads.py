@@ -822,7 +822,7 @@ def race_impossible_script(packages) -> str:
     if not packages:
         return ""
     names = sorted(set().union(*packages.values()))
-    return (f"go test -json -count=1 -timeout 10m -run '^({'|'.join(names)})$' "
+    return (f"go test -json -count=1 -timeout 6m -run '^({'|'.join(names)})$' "
             + " ".join(f"./{under}" for under in packages))
 
 

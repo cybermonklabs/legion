@@ -4000,24 +4000,32 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Each go test call's -timeout is the smallest whole minute at which its slowest package, on
-    # the slower attempt of this change's measurement pair, takes at most half of it, so a hung
-    # test prints the dump that names it well before the runner cancels the job and a test that
-    # merely runs long does not (dispatch://INFRA-1075, check 6224bb0e). Measured on the slower
-    # attempt of run 42553491297, whose shape this is: the package list's slowest package is pmdoc
-    # at 350 s, so 12 minutes; routes at 32 s takes 2; natslive's bus at 8 s and integration at 3 s
-    # take 1 minute each, the smallest there is.
+    # Each go test call's -timeout meets two conditions, and both are measured on the slower
+    # attempt of this change's own pair (dispatch://INFRA-1075, check 6224bb0e). The first is
+    # R6's: the limit is the smallest whole minute at which the call's slowest package takes at
+    # most half of it, so a hung test prints the dump that names it well before the runner cancels
+    # the job, and a test that merely runs long does not. The second is a floor the first does not
+    # see: a call whose tests read roomWaitMargin - the documents package's room waits, 30 s
+    # (settlement_credit_test.go:517) - must leave at least that margin above its slowest
+    # package's own time, or those tests refuse the run rather than waiting in it. A limit at
+    # least twice its package's time clears the floor by the same arithmetic that clears the half.
     #
-    # The race-impossible call keeps 10 minutes rather than the 6 its documents package's 158 s
-    # would give, because the rule's half is not the only floor: those tests refuse a run whose
-    # remaining deadline is under roomWaitMargin, 30 s (settlement_credit_test.go:517), so a call
-    # must leave that above its own longest run as well. At 4 minutes they said so themselves -
-    # "the test binary's deadline leaves 20.769s, not more than roomWaitMargin (30s): this looks
-    # like a misconfigured run; raise -timeout" - in both arms of run 42577832967.
+    # Measured on run 42553491297's slower attempt, whose shape this is:
     #
-    # The job's own bound is its measured time on that slower attempt, 496 s, plus the largest of
-    # those limits, 12 minutes, plus 6, rounded up: 27. The six calls of the unit step run at the
-    # same time, so the step's own worst case is the longest of them rather than their sum.
+    #   call              slowest package   limit   fills   leaves
+    #   the package list  pmdoc 350 s        12m     49 %    370 s
+    #   race-impossible   docs 158 s          6m     44 %    202 s
+    #   routes            routes 32 s         2m     27 %    (no room wait)
+    #   natslive          bus 8 s             1m     13 %    (no room wait)
+    #   integration       integration 3 s     1m      5 %    (no room wait)
+    #
+    # At 4 minutes the race-impossible call failed that floor and said so itself, in both arms of
+    # run 42577832967: "the test binary's deadline leaves 20.769s, not more than roomWaitMargin
+    # (30s): this looks like a misconfigured run; raise -timeout".
+    #
+    # The job's own bound is its measured time on that attempt, 496 s, plus the largest of those
+    # limits, 12 minutes, plus 6, rounded up: 27. The six calls of the unit step run at the same
+    # time, so the step's own worst case is the longest of them rather than their sum.
     timeout-minutes: 27
     services:
       postgres:
@@ -4304,7 +4312,7 @@ jobs:
           # API package's build, with nothing running beside it (run 42307926510,
           # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
           # so running them at the same time changes no number any of them asserts on.
-          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 6m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
