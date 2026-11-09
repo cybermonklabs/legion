@@ -308,23 +308,50 @@ function writeJsonWhole(file: string, value: unknown): void {
   renameSync(part, file);
 }
 
+/** How many times one edit of plan.md is made when Dispatch answers that its document service
+ *  is unavailable. */
+const editAttempts = 5;
+
 /** One edit of plan.md, refused when it did not apply every op or did not mint `version`, whose
  *  summary is that version's own. The e2e client types the answer as `{ applied }` alone, so the
  *  contract's own type is what reads the minted version. `whose` names the edit in the refusal,
- *  which a failed run keeps as its evidence. */
+ *  which a failed run keeps as its evidence.
+ *
+ *  Dispatch answers an edit `503 DOC_SERVICE_UNAVAILABLE` while its document service is between
+ *  states, which one seed of twelve runs met: the edit is made again, up to `editAttempts`
+ *  times and a second apart, because a seed that stops there costs a whole combination of runs
+ *  and says nothing about the rule under test. Every other refusal stands at the first answer.
+ */
 async function editPlan(
   artifact: string,
   ops: EditOp[],
   version: number,
   whose: string
 ): Promise<void> {
-  const edited = (await editArtifact(
-    artifact,
-    { ops, summary: `revision ${version}` },
-    { as: "agent" }
-  )) as EditArtifactResponse;
-  if (edited.applied !== ops.length || edited.version?.number !== version) {
-    fail(`${whose} applied ${JSON.stringify(edited)}`);
+  for (let attempt = 1; ; attempt += 1) {
+    let edited: EditArtifactResponse;
+    try {
+      edited = (await editArtifact(
+        artifact,
+        { ops, summary: `revision ${version}` },
+        { as: "agent" }
+      )) as EditArtifactResponse;
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      if (attempt >= editAttempts || !why.includes("DOC_SERVICE_UNAVAILABLE")) {
+        fail(`${whose} was refused: ${why}`);
+      }
+      process.stderr.write(
+        `plan-pointer-drive.ts: ${whose} answered DOC_SERVICE_UNAVAILABLE,` +
+          ` attempt ${attempt} of ${editAttempts}\n`
+      );
+      await Bun.sleep(1000);
+      continue;
+    }
+    if (edited.applied !== ops.length || edited.version?.number !== version) {
+      fail(`${whose} applied ${JSON.stringify(edited)}`);
+    }
+    return;
   }
 }
 
