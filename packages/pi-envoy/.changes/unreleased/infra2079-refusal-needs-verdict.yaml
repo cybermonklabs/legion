@@ -22,13 +22,15 @@ body: |-
   same question; the marker binding's latent order-sensitivity goes with it. One place knows how
   an upload's bytes arrive (`uploadBytesOf`), reading them from the arguments rather than the
   flags, so `--path`, `--content`, `--content-file` and `--path-file` are one write.
-  The gate asks on a session's first gated write whether its state directory can hold a verdict
-  at all, by writing and removing one file where a verdict would go, measured at 23.5 µs once
-  per session: it otherwise learns it cannot persist only when it has something to persist, and
-  an outcome no review stands behind never gets that far, so a restarted gate on a still-faulty
-  session minted an unbound marker and the rejected write posted. That stop is the session's and
-  a switch to another one does not inherit it, and a readable mark already saying a verdict was
-  lost is sufficient, so rewriting one that cannot be rewritten no longer reaches the stop.
+  The gate asks on every gated write whether the session's state directory can hold a verdict at
+  all, by writing and removing one probe file, measured at 22.6 µs on a healthy session: it
+  otherwise learns it cannot persist only when it has something to persist, and an outcome no
+  review stands behind never gets that far, so a restarted gate on a still-faulty session minted
+  an unbound marker and the rejected write posted. The answer is concluded each time and never
+  remembered, so a transient fault cannot stop a healthy session for the life of the process and
+  a fault that clears is noticed; it takes the verdict store and the mark both failing to reach
+  the stop, and a readable mark already recording a lost verdict is sufficient, so a mark that
+  cannot be rewritten no longer reaches it.
   Every source that decides records and clears. A review that rejects writes the verdict into
   the session's own state directory, under the identity of the write the model judged rather than
   the words of the command; a review that allows removes the verdict it replaces; and a rebuttal

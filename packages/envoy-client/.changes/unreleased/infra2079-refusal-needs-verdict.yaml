@@ -34,6 +34,13 @@ body: |-
   neither a trailing `| head -n 1` nor `2>&1 | tail -n 1` — the stages AskGate's own grammar
   blesses — can take the only record of it. The ledger line carries `askgate.chose`, the mode the
   session set, beside `askgate.mode`, which says what became of the write.
+  A verdict lookup reads the identity of the previous version as well as the current one, so an
+  upgrade does not silently free every write a session had refused: a marker that stops being
+  recognised reads as stale and refuses where the session chose block, but a verdict that stops
+  being recognised would read as none and post. Marker incompatibility across the upgrade is
+  accepted, since it fails closed and markers are swept within two hours.
+  The order-sensitivity fixed here is over argument keys, top level and nested; reordered
+  command-line flags still change the marker's argv key and find no marker, as before.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
   leave the loser refused, and now both post, one with the warning. A resent literal call is read
   by the gate and reviewed afresh. dispatch://INFRA-2079, row 3.5.

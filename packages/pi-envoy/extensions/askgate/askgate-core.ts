@@ -262,9 +262,9 @@ import {
   markVerdictsLost,
   mintMarker,
   operandPath,
-  probeVerdicts,
   readVerdict,
   uploadIsDocument,
+  verdictsUnkeepable,
   writeIdentity,
   writeVerdict,
 } from "@legion/envoy-client/askgate-marker";
@@ -2480,11 +2480,6 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
      * window of one call, and that call is refused on its own account. If the fault has in fact
      * cleared, the session is healthy and should not stay stopped.
      */
-    let verdictsUnkeepable = false;
-    /** The session the stop belongs to, so a switch or branch to another one does not inherit it. */
-    let unkeepableSession: string | undefined;
-    /** The session the verdict store was last probed for, so the probe runs once per session. */
-    let probed: string | undefined;
     let failures = 0;
     /** Rules calls in a row that ended without a rules verdict. */
     let ruleFailures = 0;
@@ -3077,24 +3072,18 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       // Before any review: a session whose directory has taken neither a verdict nor the mark
       // of a lost one keeps no record of anything, its ledger included. Reviewing further would
       // reach verdicts the CLI can never see, so every gated write of it is refused instead.
-      // Asked once per session, on its first gated write, and before any outcome is reached:
-      // the gate otherwise learns it cannot persist only when it has a verdict to persist, and
-      // an unreviewed outcome never does, so a restarted gate on a still-faulty session minted
-      // an unbound marker and the rejected write posted.
+      // Asked on every gated write and never remembered: a conclusion about this session now,
+      // not a latch that outlives its cause. It takes both the verdict store and the mark
+      // failing, which is the two-tier rule — a fault in the store alone degrades the session to
+      // strict and the mark records that — so a transient fault cannot stop a healthy session,
+      // and one that clears is noticed on the next write.
       const here = deps.sessionDir();
-      if (here !== undefined && probed !== here) {
-        probed = here;
-        try {
-          probeVerdicts(here, deps.now());
-        } catch (error) {
-          verdictsUnkeepable = true;
-          unkeepableSession = here;
-          deps.runtimeLogger.warn(
-            `askgate: this session's state directory takes no file, so AskGate can keep no verdict and will send no gated write of it: ${messageOf(error)}`
-          );
-        }
+      if (here !== undefined && verdictsUnkeepable(here, deps.now())) {
+        deps.runtimeLogger.warn(
+          "askgate: this session's state directory takes no file, so AskGate can keep no verdict and sends no gated write of it until that changes"
+        );
+        return unkeepable;
       }
-      if (verdictsUnkeepable && unkeepableSession === here) return unkeepable;
       const resolved = resolveRole(ctx);
       if (resolved === undefined) return noModelRole;
       if (rebuttal !== undefined) {
@@ -3964,14 +3953,12 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
               // A mark already there and readable says everything a new one would: the session
               // reads absence as unknown from here on. Rewriting it is how a verdict store at
               // 0500 beside a mark at 0400 reached the stop although nothing was missing.
-              if (readVerdict(session, decided).kind !== "lost")
+              if (readVerdict(session, [decided]).kind !== "lost")
                 markVerdictsLost(session, deps.now());
             } catch (markError) {
               // Neither the verdict nor the mark: the session's directory takes no new file, so
-              // its ledger is failing too and nothing of it is being recorded. The gate stops
-              // reviewing rather than reach verdicts it already knows it cannot keep.
-              verdictsUnkeepable = true;
-              unkeepableSession = session;
+              // its ledger is failing too. The next gated write concludes the same thing from
+              // the directory itself (`verdictsUnkeepable`) rather than from a flag set here.
               deps.runtimeLogger.warn(
                 `askgate: this session's state directory takes no file, so AskGate can keep no verdict and will send no further gated write of it: ${messageOf(markError)}`
               );

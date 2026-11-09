@@ -21,6 +21,7 @@ import {
   markVerdictsLost,
   mintMarker,
   setRecordMode,
+  verdictsUnkeepable,
   writeIdentity,
   writeVerdict,
 } from "../askgate-marker";
@@ -1045,6 +1046,66 @@ describe("absence is a statement only when the store was read whole", () => {
     expect(stdout).toContain("rule no_change");
     expect(stdout).not.toContain("carries no AskGate marker");
     expect(messagePosts()).toHaveLength(0);
+  });
+
+  // A verdict written by the version before this one is still found. The two artifacts fail in
+  // opposite directions across an upgrade: a marker that stops being recognised reads as stale
+  // and refuses where the session chose block, while a verdict that stops being recognised
+  // reads as none and posts — fail-open and permanent, this branch's own defect reintroduced by
+  // its deployment.
+  test("a verdict the previous version filed is still found after the upgrade", async () => {
+    writeRecord();
+    const args = await dryArgs(MESSAGE);
+    // The encoding of the previous head: sorted pairs, no type tag.
+    const prior = (value: unknown): unknown =>
+      typeof value === "string"
+        ? value.replace(/\s+$/, "")
+        : Array.isArray(value)
+          ? value.map(prior)
+          : typeof value !== "object" || value === null
+            ? value
+            : Object.entries(value as Record<string, unknown>)
+                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                .map(([key, member]) => [key, prior(member)]);
+    const was = sha(prior({ tool: "dispatch_message", args }));
+    expect(was).not.toBe(writeIdentity("dispatch_message", args));
+    writeVerdict(
+      join(stateDir, "sessions", "ses-1"),
+      was,
+      "failure 7: say what changed, not that something did",
+      Date.now()
+    );
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // The stop is a conclusion about the session now, not a latch: a fault that clears is noticed,
+  // and it takes the verdict store and the mark both failing to reach it. A transient fault
+  // permanently stopping a healthy session is the shape this branch refused to ship twice.
+  test("a session that could keep no verdict keeps them again once the fault clears", async () => {
+    const session = join(stateDir, "sessions", "ses-1");
+    writeRecord();
+    mkdirSync(session, { recursive: true });
+    chmodSync(session, 0o500);
+    try {
+      expect(verdictsUnkeepable(session, Date.now())).toBe(true);
+    } finally {
+      chmodSync(session, 0o700);
+    }
+    expect(verdictsUnkeepable(session, Date.now())).toBe(false);
+    // A fault in the verdict store alone is not it: the mark can still be written, which is
+    // what degrades the session to strict instead of stopping it.
+    mkdirSync(join(session, "askgate-verdicts"), { recursive: true });
+    chmodSync(join(session, "askgate-verdicts"), 0o500);
+    try {
+      expect(verdictsUnkeepable(session, Date.now())).toBe(false);
+    } finally {
+      chmodSync(join(session, "askgate-verdicts"), 0o700);
+    }
+    // And the probe leaves nothing behind.
+    expect(readdirSync(session).filter((name) => name.startsWith(".probe-"))).toEqual([]);
   });
 
   test("a standing refusal reaches no other issue and no other text", async () => {

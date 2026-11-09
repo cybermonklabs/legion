@@ -936,6 +936,57 @@ export function uploadBytesOf(
   return typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined;
 }
 
+/**
+ * The encoding verdicts were written under before `canonicalText`, kept so that a verdict a
+ * previous version recorded is still found after an upgrade.
+ *
+ * The two artifacts fail in opposite directions across a version boundary, and only one of them
+ * needs this. A marker whose digest stops being recognised reads as `stale`, which refuses where
+ * the session chose block: it fails closed, and markers are short-lived and swept, so an upgrade
+ * invalidating them costs a resend. A verdict whose identity stops being recognised reads as
+ * `none`, which posts — fail-open, permanent, and exactly the defect this branch exists to
+ * remove, reintroduced by its own deployment. So the lookup reads both identities and the mint
+ * writes only the current one.
+ */
+function priorCanonical(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\s+$/, "");
+  if (Array.isArray(value)) return value.map(priorCanonical);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, member]) => [key, priorCanonical(member)]);
+}
+
+/** The identity a verdict of the previous version was filed under. */
+function priorIdentity(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  uploadBytes?: Uint8Array
+): string {
+  const { path: named, content: inline, ...rest } = args;
+  const bytes =
+    uploadBytes ?? (typeof inline === "string" ? Buffer.from(inline, "utf8") : undefined);
+  const upload = typeof named === "string" || typeof inline === "string";
+  const judged = upload && bytes !== undefined ? { ...rest, content: bytesDigest(bytes) } : args;
+  return digest(priorCanonical({ tool, args: judged }));
+}
+
+/**
+ * Every identity this write may have been filed under: the current one first, then those of
+ * earlier versions. A gate of one version and a CLI of another meet across an upgrade — the
+ * installed shim resolves the plugin per invocation — and a verdict that goes unrecognised
+ * posts the write it refused.
+ */
+export function writeIdentities(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  uploadBytes?: Uint8Array
+): string[] {
+  const now = writeIdentity(tool, args, uploadBytes);
+  const before = priorIdentity(tool, args, uploadBytes);
+  return before === now ? [now] : [now, before];
+}
+
 /** `<session>/askgate-verdicts`, where that session's verdicts of no are kept. */
 function verdictDir(session: string): string {
   return join(session, VERDICTS);
@@ -992,25 +1043,51 @@ export function markVerdictsLost(session: string, now: number): void {
   });
 }
 
-/**
- * Whether this session can hold a verdict at all: one file written and removed where a verdict
- * would go. Throws what the attempt threw.
- *
- * The gate asks this on its first gated write rather than waiting to need it, because it only
- * ever discovers it cannot persist when it has something to persist, and an outcome no review
- * stands behind never gets that far: a restarted gate on a still-faulty session would mint an
- * unbound marker and the rejected write would post. Asking first makes the recurrence actual
- * rather than assumed.
- */
-export function probeVerdicts(session: string, now: number): void {
-  const dir = verdictDir(session);
-  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
-  const file = join(dir, `.probe-${randomBytes(8).toString("hex")}`);
+/** Writes one probe file where `write` puts it and removes it; false on any failure. */
+function canWrite(write: (name: string) => string, now: number): boolean {
+  const name = `.probe-${randomBytes(8).toString("hex")}`;
+  let file: string | undefined;
   try {
+    file = write(name);
     writeFileSync(file, JSON.stringify({ v: 1, at: now }), { flag: "wx", mode: PRIVATE_FILE });
+    return true;
+  } catch {
+    return false;
   } finally {
-    rmSync(file, { force: true });
+    // The probe leaves nothing behind, and a removal that fails is not itself a reason to stop:
+    // a leftover `.probe-` is no identity (identities are hexadecimal) and the next sweep of the
+    // directory takes it.
+    try {
+      if (file !== undefined) rmSync(file, { force: true });
+    } catch {
+      // Nothing more to do: the file is named so that nothing reads it as a verdict.
+    }
   }
+}
+
+/**
+ * Whether this session can hold no verdict at all: neither one where a verdict goes nor the mark
+ * of a lost one. Both must fail, which is the two-tier rule the model already states — a fault in
+ * the verdict store alone degrades the session to strict, and only the session's own directory
+ * refusing a file stops the gate.
+ *
+ * Asked on every gated write and never remembered. The gate otherwise learns it cannot persist
+ * only when it has something to persist, and an outcome no review stands behind never gets that
+ * far, so a restarted gate on a still-faulty session would mint an unbound marker and the
+ * rejected write would post. Asking each time also means a fault that clears — a disk freed, a
+ * permission repaired, a transient failure — is noticed: a conclusion drawn now, not a latch
+ * that outlives its cause. A probe file is briefly visible to anything watching the directory;
+ * no production watcher reads it today.
+ */
+export function verdictsUnkeepable(session: string, now: number): boolean {
+  if (
+    canWrite((name) => {
+      mkdirSync(verdictDir(session), { recursive: true, mode: PRIVATE_DIR });
+      return join(verdictDir(session), name);
+    }, now)
+  )
+    return false;
+  return !canWrite((name) => join(session, name), now);
 }
 
 /** What a session's verdict store says about one write. */
@@ -1052,7 +1129,25 @@ function readVerdictFile(file: string): Record<string, unknown> | "gone" | "unre
  * no verdict store at all has said nothing: an older gate wrote none, and a session that has
  * refused nothing writes none.
  */
-export function readVerdict(session: string, identity: string): VerdictRead {
+export function readVerdict(session: string, identities: readonly string[]): VerdictRead {
+  for (const identity of identities) {
+    const found = readOneVerdict(session, identity);
+    if (found !== undefined) return found;
+  }
+  const lost = join(session, VERDICTS_LOST);
+  const mark = readVerdictFile(lost);
+  if (mark === "gone") return { kind: "none" };
+  if (mark === "unreadable")
+    return {
+      kind: "unknown",
+      why: `AskGate's record of a lost verdict cannot be read (${lost})`,
+      path: lost,
+    };
+  return { kind: "lost", path: lost };
+}
+
+/** This session's verdict filed under one identity, or undefined where it holds none. */
+function readOneVerdict(session: string, identity: string): VerdictRead | undefined {
   const file = join(verdictDir(session), identity);
   const unreadable = (path: string, what: string): VerdictRead => ({
     kind: "unknown",
@@ -1067,9 +1162,5 @@ export function readVerdict(session: string, identity: string): VerdictRead {
       return unreadable(file, "verdict on this write");
     return { kind: "refused", reason, at };
   }
-  const lost = join(session, VERDICTS_LOST);
-  const mark = readVerdictFile(lost);
-  if (mark === "gone") return { kind: "none" };
-  if (mark === "unreadable") return unreadable(lost, "record of a lost verdict");
-  return { kind: "lost", path: lost };
+  return undefined;
 }

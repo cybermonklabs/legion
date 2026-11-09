@@ -11,7 +11,7 @@ import {
   operandPath,
   readVerdict,
   uploadBytesOf,
-  writeIdentity,
+  writeIdentities,
 } from "./askgate-marker";
 import { newAsks } from "./askgate-new-asks";
 import {
@@ -504,7 +504,7 @@ export async function runDispatchCli(
         uploadUnread = typeof parsed.args.path === "string" && sends === undefined;
         const said = uploadUnread
           ? undefined
-          : readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes));
+          : readVerdict(dir, writeIdentities(parsed.tool, parsed.args, uploadBytes));
         // Step one, and the reason this branch is ordered rather than conditional: this
         // session's own verdict on this write comes before everything else, because it is the
         // only thing here that is a verdict. A verdict is not a mode's to overrule, and it is
