@@ -72,8 +72,8 @@ runs:
     # second call of this action in one job says `cache` over bytes no cache served — job
     # 128864748583 of run 42524376194 refused the npm install of an earlier call under that
     # word.
-    # The test is the one that action makes — a file at that path whose `--revision` is the
-    # pinned version — so this step says `true` for exactly the installs it keeps.
+    # The test is narrower than that action's (an executable file whose `--revision` is the
+    # pinned version), so this step says `true` only for installs that action keeps.
     # `true` or `false` is the whole output: nothing a bun printed reaches $GITHUB_OUTPUT, where
     # a second line would be a second output of this step.
     - id: bun-already-here

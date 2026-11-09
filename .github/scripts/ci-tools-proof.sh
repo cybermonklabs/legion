@@ -77,8 +77,8 @@
 #       this repository, so the rig holds a binary to a row the way every action does.
 #       It refuses the job where the version is not the one .bun-version pins or the binary is
 #       not that row's bytes, and it is what the arm64 job's two halves are read by.
-#       It ends with the bunx reading `installed-bunx` makes, since every call of it is taken
-#       after an install.
+#       It takes the bunx reading `installed-bunx` makes after the digest and before
+#       `--expect-refused`, since every call of it is taken after an install.
 #       `--expect-refused <host>` adds the reading that says which source served those bytes:
 #       the fault proxy must have refused a request to that host, after the probe marked its
 #       log, with the 504 that sent the install to its second source. Neither the version nor
@@ -95,8 +95,8 @@
 #       answers every version reading of `bun` and fails at the first `bunx` of a later job,
 #       which is ci.yaml's lint, test, ci-caches and docs-site jobs and
 #       .github/workflows/dispatch-browser.yaml.
-#       `installed-bun` ends with the same reading, so the arm64 job takes it from there; the
-#       x64 job, which reads its four faulted head installs tool by tool with `version-answers`,
+#       `installed-bun` takes the same reading, so the arm64 job takes it from there; the x64
+#       job, which reads its four faulted head installs tool by tool with `version-answers`,
 #       runs this verb.
 #
 #   corrupt [row…]
@@ -160,6 +160,9 @@
 # `--expect-source github-release` is read as the same statement the other way round: the origin
 # served neither second source for this row, so the bytes the step refused came from the primary
 # path and from nowhere else.
+# A Bun already installed on the runner reads the same way, though setup-bun names it
+# `existing-install` rather than `github-release`: this rig reads the route and not the word,
+# so the word a refusal printed is read in the job's own log and not by this script.
 #
 # Everything this script writes lives under $RUNNER_TEMP/ci-tools-proof/ (under $TMPDIR off a
 # runner), so one directory holds the whole rig and the job's own temporary files are elsewhere.
@@ -750,8 +753,9 @@ installed_bun() {
 # makes each of these readings the bytes that name runs rather than the name itself.
 # A bunx that is a copy of that bun, or a link to it from somewhere else, reads as the same
 # bytes and passes, which is the statement this reading makes.
-# It prints what it read and returns non-zero rather than refusing the job itself, because both
-# of its callers have readings of their own to finish first.
+# It prints what it read and returns non-zero rather than refusing the job itself, so that
+# `installed-bun` can finish its other readings before it refuses; `installed-bunx` refuses at
+# once on that return.
 bunx_reading() {
   [ "$#" -eq 2 ] ||
     die "bunx_reading takes the bun this job holds and the version .bun-version pins, and this call gave $#"
@@ -786,7 +790,7 @@ bunx_reading() {
 # reads its four head installs under the fault tool by tool with `version-answers`, each one's
 # digest having been held by the action that installed it, so the reading left for the Bun of
 # that list is the name beside it; `installed-bun`, which the arm64 job reads its two halves
-# with, ends with the same call.
+# with, takes the same reading between its digest reading and `--expect-refused`.
 installed_bunx() {
   [ "$#" -eq 0 ] || die "installed-bunx takes no argument, and this call gave $#"
   local bun pinned
