@@ -276,13 +276,15 @@ type liveEnv struct {
 	// audience filled in, the operator's pod every launch carries; operatorConfigMap is the run's
 	// copy of the ConfigMap it names.
 	operatorPodFile, operatorConfigMap string
-	// The agent-secrets checks' inputs: the production broker, the email of the person who
-	// approves the run's credential request for LEGION_E2E_APPROVAL, the sha256 of the automatic
-	// rule's dummy value, the checkout's agent-secrets binary, and the token file the script mints
-	// for LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
-	// person approving it. Every field here is read with os.Getenv, unlike the rest of liveEnv: unset
-	// is a blocked run of the secrets-* checks, never a refusal to start (secretsBlocked).
-	agentSecretsURL, agentSecretsOperator, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// The agent-secrets checks' inputs: the production broker, the sha256 of the automatic rule's
+	// dummy value, the checkout's agent-secrets binary, and the token file the script mints for
+	// LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
+	// person approving it. No check here waits on a person:
+	// secrets-approval-ask asserts its pending request's approver is one owner rather than the
+	// shared marker and cancels the request itself. Every field here is read with os.Getenv,
+	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
+	// to start (secretsBlocked).
+	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
 	// providers Secret under liveSessionsSecretKey for every pod to dial as it dials the worker
@@ -339,7 +341,6 @@ func readLiveEnv(t *testing.T) liveEnv {
 		operatorPodFile:       get("LEGION_E2E_OPERATOR_POD"),
 		operatorConfigMap:     get("LEGION_E2E_OPERATOR_CONFIGMAP"),
 		agentSecretsURL:       os.Getenv("LEGION_E2E_AGENT_SECRETS_URL"),
-		agentSecretsOperator:  os.Getenv("LEGION_E2E_AGENT_SECRETS_OPERATOR"),
 		agentSecretsAutoSHA:   os.Getenv("LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"),
 		agentSecretsBin:       os.Getenv("LEGION_E2E_AGENT_SECRETS_BIN"),
 		agentSecretsTokenFile: os.Getenv("LEGION_E2E_AGENT_SECRETS_TOKEN_FILE"),
@@ -827,7 +828,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
 		fail("%v", err)
 	}
-	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsOperator, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
+	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
 		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
 		// person approves it, and the client keeps logging in for as long as the run lasts.
 		client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}

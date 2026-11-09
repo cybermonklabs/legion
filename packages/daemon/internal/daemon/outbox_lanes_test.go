@@ -158,6 +158,9 @@ func (d *postingDispatch) SetStatus(context.Context, string, string) (dispatch.I
 func (d *postingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("postingDispatch takes no hand-over")
 }
+func (d *postingDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("postingDispatch releases no claim")
+}
 func (d *postingDispatch) PostMessage(_ context.Context, key, body string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -227,6 +230,9 @@ func (d *laneBoard) SetStatus(_ context.Context, _ string, status string) (dispa
 }
 func (d *laneBoard) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("laneBoard takes no hand-over")
+}
+func (d *laneBoard) ReleaseClaim(context.Context, string) error {
+	return errors.New("laneBoard releases no claim")
 }
 func (d *laneBoard) PostMessage(context.Context, string, string) error { return nil }
 func (d *laneBoard) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
@@ -541,7 +547,7 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	runLanes(t, runner, clock)
 
 	commitRows(t, pool, runner.records, "held-notice", mustOutboxRow(t, "LEGION-2",
-		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, clock.Now().Add(time.Hour)))
+		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now().Add(time.Hour)))
 	testwait.Eventually(t, "the lane armed its wait for the hour", func() bool {
 		live, _ := clock.armed(time.Hour)
 		return live == 1
@@ -719,7 +725,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock, publisher.gate.open)
 
-	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}
+	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))

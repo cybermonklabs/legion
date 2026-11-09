@@ -1135,7 +1135,8 @@ EOF
 	: >"$d/runs.log"
 	for run in 1 2 3 4 5; do
 		echo "=== run $run ===" >>"$d/runs.log"
-		PATH="$d/bin:$PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m -- sh -c '
+		PATH="$d/bin:$PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
+			--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
 			export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
 			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"

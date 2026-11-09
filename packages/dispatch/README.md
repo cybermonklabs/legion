@@ -41,10 +41,16 @@ runs the Vite development server for interface work.
 
 ## End-to-end tests
 
-`bun run e2e` builds the SPA and drives Playwright against the real Go Dispatch
+`bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
+against the real Go Dispatch
 server and Postgres. It runs Playwright through `e2e/run.ts`, which starts the
 harness (`e2e/harness-start.ts`: the fakes, then `e2e/run-server.sh`, then the
-plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server. The
+plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server.
+Playwright runs under Node, which reads `@legion/contracts` from that package's
+built `dist/`, so the script builds it first: a fresh checkout has no `dist/`
+and `bun install` makes none. `e2e/run.ts` refuses the run before it starts a
+harness or a Postgres when Playwright has not downloaded a browser the run
+needs, naming `bun run e2e:install` and how large that download is. The
 script builds the server
 with the caller's `go` into `packages/envoy/dispatch-e2e` and execs it, so a
 SIGTERM to the pid it hands its caller stops the server. It pins every server
@@ -119,10 +125,13 @@ its lane's database before every row. A worker finds its lane by
 A lane's Postgres comes from one of two variables, and a run of more than one
 lane that sets neither is refused. On a machine with Docker and no Postgres
 binaries, `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest you
-name, which is what CI does. On a machine with a Postgres installation and no
-Docker, such as an issue pod, `DISPATCH_E2E_PG_BIN` is a directory holding
-`initdb` and `pg_ctl`. Each lane's data lives under the run's own temporary
-directory and goes with the run.
+name; CI's visual job uses it too, since it runs on the runner with only its
+Playwright command in a container. On a machine with a Postgres installation
+and no Docker, such as an issue pod or CI's shard and alone jobs, which run in
+a container carrying PostgreSQL 18 with `vector`, `DISPATCH_E2E_PG_BIN` is a
+directory holding `initdb` and `pg_ctl`.
+Each lane's data lives under the run's own temporary directory and goes with
+the run.
 
 ```bash
 cd packages/dispatch

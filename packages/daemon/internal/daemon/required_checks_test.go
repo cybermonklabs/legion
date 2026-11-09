@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -29,11 +30,7 @@ import (
 // requires nothing. While failing is set, the rulesets read answers 502.
 func rulesetsStandIn(t *testing.T, failing *atomic.Bool, requires string) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
-		}
+	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"}}`))
@@ -48,9 +45,7 @@ func rulesetsStandIn(t *testing.T, failing *atomic.Bool, requires string) *httpt
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server
+	}})
 }
 
 // mergeableStandIn is GitHub's REST API for acme/widgets as the required-checks read sees it: pull
@@ -58,11 +53,7 @@ func rulesetsStandIn(t *testing.T, failing *atomic.Bool, requires string) *httpt
 // rulesets require pr-checks-result and whose branch protection requires nothing.
 func mergeableStandIn(t *testing.T, state string) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
-		}
+	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":` + state + `}`))
@@ -73,9 +64,7 @@ func mergeableStandIn(t *testing.T, state string) *httptest.Server {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server
+	}})
 }
 
 // seedUnjudgedRound records a round as a live tree had one before the daemon read required sets:
@@ -282,11 +271,7 @@ func TestARateLimitAnswerEndsTheRequiredChecksPass(t *testing.T) {
 // workflow runs are what runs answers when asked, a JSON array.
 func requiredWorkflowStandIn(t *testing.T, runs func() string) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
-		}
+	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"}}`))
@@ -306,9 +291,7 @@ func requiredWorkflowStandIn(t *testing.T, runs func() string) *httptest.Server 
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server
+	}})
 }
 
 // reviewRuns is the head's workflow runs: the required review workflow's run 37 at attempt, with
@@ -418,27 +401,44 @@ func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
 // in testing, reviewing, retro or merging, where nothing moves yet, and the first read after the
 // issue reaches awaiting_merge has to catch it then, with no change in the GitHub answer to key
 // off.
+//
+// A read that finds a head mergeable is applied too while the record holds that same head
+// conflicting, whatever mergeability the record stores beside it: that read is what clears the
+// mark the conflict-round exemption is read from (record.PullRequest.ConflictingHead), and the
+// return the merge queue's own state makes writes that mark while the record already reads
+// MERGEABLE, where no change in GitHub's answer ever follows to carry the clearing read in.
 func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		state        string
-		stored       record.Mergeability
-		mergeability record.Mergeability
-		want         phase.Phase
+		name  string
+		state string
+		// stored and conflicting are what the record holds before the pass: GitHub's mergeability
+		// as the last read of it found it, and the head the daemon last judged conflicting with
+		// its base.
+		stored      record.Mergeability
+		conflicting string
+		// mergeability and wantConflicting are what the record holds after the pass, and want is
+		// the phase the issue is left in.
+		mergeability    record.Mergeability
+		wantConflicting string
+		want            phase.Phase
 	}{
-		{"conflicting", "false", "", record.MergeabilityConflicting, phase.Implementing},
-		{"not yet computed", "null", "", record.MergeabilityUnknown, phase.AwaitingMerge},
-		{"mergeable", "true", "", record.MergeabilityMergeable, phase.AwaitingMerge},
-		{"conflict already recorded", "false", record.MergeabilityConflicting, record.MergeabilityConflicting, phase.Implementing},
+		{name: "conflicting", state: "false", mergeability: record.MergeabilityConflicting, wantConflicting: "code", want: phase.Implementing},
+		{name: "not yet computed", state: "null", mergeability: record.MergeabilityUnknown, want: phase.AwaitingMerge},
+		{name: "mergeable", state: "true", mergeability: record.MergeabilityMergeable, want: phase.AwaitingMerge},
+		{name: "conflict already recorded", state: "false", stored: record.MergeabilityConflicting,
+			mergeability: record.MergeabilityConflicting, wantConflicting: "code", want: phase.Implementing},
+		{name: "a mergeable read of the head the record holds conflicting", state: "true",
+			stored: record.MergeabilityMergeable, conflicting: "code",
+			mergeability: record.MergeabilityMergeable, want: phase.AwaitingMerge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.AwaitingMerge, "retro",
 				record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
-			if tc.stored != "" {
-				if _, err := pool.Exec(context.Background(), "update pull_requests set mergeability = $1 where issue = 'CAPTURE-1'", string(tc.stored)); err != nil {
-					t.Fatalf("seed the stored mergeability: %v", err)
-				}
+			if _, err := pool.Exec(context.Background(),
+				"update pull_requests set mergeability = $1, conflicting_head = $2 where issue = 'CAPTURE-1'",
+				string(tc.stored), tc.conflicting); err != nil {
+				t.Fatalf("seed the mergeability and the conflicting head the record holds: %v", err)
 			}
 			w := requiredRuntime(pool, mergeableStandIn(t, tc.state).URL, quietLogger())
 			w.readRequiredChecks(context.Background())
@@ -448,6 +448,9 @@ func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *te
 			}
 			if pr.Mergeability != tc.mergeability {
 				t.Fatalf("recorded mergeability = %q, want %q", pr.Mergeability, tc.mergeability)
+			}
+			if pr.ConflictingHead != tc.wantConflicting {
+				t.Fatalf("the record holds %q conflicting, want %q: a read finding the marked head mergeable clears the mark", pr.ConflictingHead, tc.wantConflicting)
 			}
 			if tc.want != phase.Implementing {
 				return
@@ -470,11 +473,7 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.AwaitingMerge, "retro",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
-		}
+	api := githubtest.Server(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":false}`))
@@ -483,9 +482,8 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	defer server.Close()
-	requiredRuntime(pool, server.URL, quietLogger()).readRequiredChecks(context.Background())
+	}})
+	requiredRuntime(pool, api, quietLogger()).readRequiredChecks(context.Background())
 	got, pr := capturePhase(t, pool)
 	if got != phase.Implementing {
 		t.Fatalf("after the pass the issue is in %s, want implementing: the conflict must withdraw the READY whether or not the rulesets read succeeds", got)

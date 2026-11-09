@@ -14,6 +14,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
@@ -130,7 +131,7 @@ export function useIssueTableColumns(
               <PriorityControl
                 disabled={row.original.issue.status === "done"}
                 issueKey={row.original.issue.key}
-                priority={row.original.issue.priority}
+                priority={issuePriority(row.original.issue.priority)}
               />
             ),
           },

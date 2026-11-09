@@ -13,12 +13,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -72,9 +73,10 @@ const fakeCodegraph = `#!/bin/sh
 printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 `
 
-// issueVolume is one issue's volume and what a pod's two init containers run against it: a PATH
-// whose git clones a local bare remote in place of github.com/acme/widgets, the provisioning token
-// file `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
+// issueVolume is one issue's volume and what a pod's two init containers run against it (the third
+// a `skills_repository` adds, `skills-fetch`, mounts nothing of this volume): a PATH whose git
+// clones a local bare remote in place of github.com/acme/widgets, the provisioning token file
+// `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
 // fetching container's own filesystem, and, as in a pod, a jj config home that starts empty and no
 // user configuration. defaultBranch is the remote's default branch, which `provision` is told.
 type issueVolume struct {
@@ -147,19 +149,14 @@ func (v *issueVolume) withRemote(t *testing.T, defaultBranch string) *issueVolum
 	remote := filepath.Join(dir, "remote.git")
 	seed := filepath.Join(dir, "seed")
 	for _, argv := range [][]string{
-		{"git", "init", "--bare", "--initial-branch=" + defaultBranch, remote},
-		{v.realJJ, "git", "init", "--colocate", seed},
+		fixturegit.InitBare(remote, defaultBranch),
+		append([]string{v.realJJ}, fixturegit.JJInit(seed, true)[1:]...),
 		{v.realJJ, "describe", "-m", "seed", "-R", seed},
 		{v.realJJ, "bookmark", "set", defaultBranch, "-r", "@", "-R", seed},
 		{v.realJJ, "git", "remote", "add", "origin", remote, "-R", seed},
 		{v.realJJ, "git", "push", "--remote", "origin", "--bookmark", defaultBranch, "-R", seed},
 	} {
-		setup := exec.Command(argv[0], argv[1:]...)
-		setup.Dir = dir
-		setup.Env = fixtureenv.Isolated(t.TempDir())
-		if output, err := setup.CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", strings.Join(argv, " "), err, output)
-		}
+		fixturegit.Isolated(t, t.TempDir()).Run(dir, argv...)
 	}
 	v.env["WINIT_REMOTE"] = remote
 	v.defaultBranch = defaultBranch
@@ -238,18 +235,11 @@ func (v *issueVolume) codegraphCalls(t *testing.T) []string { return logLines(t,
 
 func (v *issueVolume) jj(t *testing.T, args ...string) string {
 	t.Helper()
-	command := exec.Command(v.realJJ, args...)
 	// Every call names the repository it reads with -R, so the helper runs in the volume's root,
 	// which holds them all: jj searches upward from the directory it runs in for the closest .jj,
 	// so a command with no Dir would open the workspace the test process stands in, which in a
 	// Legion issue pod is a real one.
-	command.Dir = v.root
-	command.Env = fixtureenv.Isolated(t.TempDir())
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("jj %s: %v", strings.Join(args, " "), err)
-	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(fixturegit.Isolated(t, t.TempDir()).Out(v.root, append([]string{v.realJJ}, args...)...))
 }
 
 func (v *issueVolume) git(t *testing.T, args ...string) string {
@@ -796,22 +786,7 @@ type initProcess struct {
 }
 
 // lockedBuffer is a process's stderr, readable while the process still writes it.
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
+type lockedBuffer = testlog.Buffer
 
 // start runs workspace-init for issue as a separate process whose jj invocations carry tag, in
 // its own process group so a test can kill it with whatever it spawned.

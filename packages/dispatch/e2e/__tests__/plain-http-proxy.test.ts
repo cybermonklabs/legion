@@ -20,9 +20,8 @@ import { plainHttpHost } from "../plain-http-origin";
 // The proxy runs as the harness runs it, a `bun` process of its own, with the plain-HTTP port
 // unset under every name this lane carries it under so it binds a port the OS chooses, and
 // `PLAYWRIGHT_BASE_URL` naming the stand-in as the server under test. The stand-in answers with
-// Bun's own Response, which the test preload (web/src/__tests__/setup.ts) does not replace, for
-// the reason e2e/__tests__/round-robin-proxy.test.ts gives.
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
+// the global `Response`, which is Bun's own here: this half loads no preload and registers no DOM,
+// so nothing replaces it.
 const proxyModule = fileURLToPath(new URL("../plain-http-proxy.ts", import.meta.url));
 
 /** One request the stand-in upstream saw. */
@@ -43,10 +42,9 @@ beforeAll(async () => {
     fetch(request) {
       const url = new URL(request.url);
       seen.push({ host: request.headers.get("host"), path: `${url.pathname}${url.search}` });
-      if (url.pathname !== "/auth/_dev/signin")
-        return new NativeResponse("no route", { status: 404 });
+      if (url.pathname !== "/auth/_dev/signin") return new Response("no route", { status: 404 });
       // The dev sign-in route's own answer: a 302 that sets the session cookie.
-      return new NativeResponse(null, {
+      return new Response(null, {
         headers: {
           Location: "/",
           "Set-Cookie": `${sessionCookieName}=stand-in; Path=/; HttpOnly; SameSite=Lax`,

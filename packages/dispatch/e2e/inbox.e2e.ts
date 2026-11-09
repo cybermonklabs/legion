@@ -145,7 +145,7 @@ test("an ask thread shows its newest two replies, expands the earlier ones, and 
       setCreatedAt("comments", reply.id, `2026-10-03T00:00:0${index + 1}Z`)
     )
   );
-  expect((await getAsk(ask.id)).replies.map((reply) => reply.body)).toEqual([
+  expect(((await getAsk(ask.id)).replies ?? []).map((reply) => reply.body)).toEqual([
     "Oldest reply",
     "Older reply",
     "Middle reply",
@@ -903,6 +903,7 @@ test("a pending credential request alone is listed, counted, and keeps the empty
         kind: "agent_secret",
         record_id: "record-alice",
         requested_at: new Date().toISOString(),
+        session: { enrollment: null, request: null },
       },
       {
         approve_url: "https://secrets.internal.example/approve/record-bob",
@@ -911,6 +912,7 @@ test("a pending credential request alone is listed, counted, and keeps the empty
         kind: "agent_secret",
         record_id: "record-bob",
         requested_at: new Date().toISOString(),
+        session: { enrollment: null, request: null },
       },
     ]);
     // The broker publishes nothing to Dispatch's event feed, so the list is read on load.
@@ -1033,6 +1035,7 @@ test.describe("credential record path", () => {
           kind: "agent_secret",
           record_id: "record-old-broker",
           requested_at: new Date().toISOString(),
+          session: { enrollment: null, request: null },
         },
       ]);
 
@@ -1067,9 +1070,10 @@ test.describe("credential record path", () => {
   });
 });
 
-// No Dispatch event names a credential request (the broker holds no Dispatch credential by
-// design), so an Inbox already open can only learn of one, or that one is gone, from the
-// credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`, `features/credentials/pending.ts`).
+// No Dispatch event names a credential request (the broker writes nothing in Dispatch by design;
+// its model judge only reads an issue there), so an Inbox already open can only learn of one, or
+// that one is gone, from the credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`,
+// `features/credentials/pending.ts`).
 // `page.clock` fast-forwards past that interval without disturbing the event feed: its socket is
 // replaced only after 45 s with no frame (`LIVE_SOCKET_SILENT_MS`, `api/live-socket.ts`), well
 // past the 15.5 s advanced here, so the feed never has a gap and the poll is the only thing that
@@ -1097,6 +1101,7 @@ test("a credential request seeded after the Inbox loads appears, and counts, wit
         kind: "agent_secret",
         record_id: "record-alice",
         requested_at: new Date().toISOString(),
+        session: { enrollment: null, request: null },
       },
     ]);
     await page.clock.fastForward(15_500);

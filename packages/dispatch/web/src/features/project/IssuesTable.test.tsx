@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
@@ -49,6 +50,9 @@ function savedIssue(key: string): Issue {
     number: Number(key.split("-")[1]),
     closed_at: null,
     external_links: [],
+    decisions_artifact_id: "",
+    plan_artifact_id: "",
+    verification_artifact_id: "",
   };
 }
 function Route(): ReactNode {
@@ -141,19 +145,20 @@ test("rows keep parent links, unread marks, asks, progress and route reach, with
 });
 
 test("j and k focus table issues and o and Enter open the issue rather than its parent", async () => {
+  const user = userEvent.setup();
   table([issue("CORE-1", { parent: "CORE-9" }), issue("CORE-2")]);
   const first = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const second = screen.getByRole("row", { name: "CORE-2 Work CORE-2" });
-  fireEvent.keyDown(window, { key: "j" });
-  expect(document.activeElement).toBe(first);
-  fireEvent.keyDown(window, { key: "j" });
-  expect(document.activeElement).toBe(second);
-  fireEvent.keyDown(window, { key: "k" });
-  expect(document.activeElement).toBe(first);
-  fireEvent.keyDown(window, { key: "o" });
+  await user.keyboard("j");
+  expect(first).toHaveFocus();
+  await user.keyboard("j");
+  expect(second).toHaveFocus();
+  await user.keyboard("k");
+  expect(first).toHaveFocus();
+  await user.keyboard("o");
   await waitFor(() => expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-1"));
   second.focus();
-  fireEvent.keyDown(window, { key: "Enter" });
+  await user.keyboard("{Enter}");
   await waitFor(() => expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-2"));
 });
 
@@ -172,9 +177,10 @@ test("typed title and every picked label match case-insensitively, as on Board",
 });
 
 test("opening a Labels facet does not pass its values through another column's formatter", async () => {
+  const user = userEvent.setup();
   table([issue("CORE-1", { labels: ["frontend"] })]);
   const trigger = await screen.findByRole("button", { name: "Filter Labels" });
-  fireEvent.click(trigger);
+  await user.click(trigger);
   expect(await screen.findByRole("combobox", { name: "Search Labels" })).toBeDefined();
   expect(screen.getByRole("option", { name: "frontend, 1 issue" })).toBeDefined();
 });
@@ -197,6 +203,7 @@ test("Created sorts RFC3339 fractional timestamps by instant, not by text", asyn
 });
 
 test("a table rank write is held by the durable store on the issue's write line", async () => {
+  const user = userEvent.setup();
   const response = Promise.withResolvers<Response>();
   const send = spyOn(globalThis, "fetch").mockReturnValue(response.promise);
   const { client } = table([
@@ -204,8 +211,8 @@ test("a table rank write is held by the durable store on the issue's write line"
     issue("CORE-2", { labels: ["legion"] }),
   ]);
   restores.push(() => send.mockRestore());
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
-  fireEvent.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
   await waitFor(() => expect(writesOf(client).rows().length).toBe(1));
   expect(writesOf(client).rows()[0]?.target).toBe("issue:CORE-2");
   expect(writesOf(client).rows()[0]?.login).toBe("alice");
@@ -223,6 +230,7 @@ test("a table rank write is held by the durable store on the issue's write line"
 });
 
 test("an epic creation committed without an answer never sends parent writes to an unknown issue", async () => {
+  const user = userEvent.setup();
   const create = spyOn(api, "createIssue").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
@@ -234,8 +242,8 @@ test("an epic creation committed without an answer never sends parent writes to 
     send.mockRestore();
     prompt.mockRestore();
   });
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  fireEvent.click(screen.getByRole("button", { name: "New epic from these" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
   expect((await screen.findByTestId("landed-without-answer")).textContent).toContain(
     "The selected issues have not been moved"
   );
@@ -248,6 +256,7 @@ test("an epic creation committed without an answer never sends parent writes to 
 });
 
 test("a possible duplicate offers an explicit force choice rather than forcing the first create", async () => {
+  const user = userEvent.setup();
   const calls: CreateIssueInput[] = [];
   const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
     calls.push(input);
@@ -266,10 +275,10 @@ test("a possible duplicate offers an explicit force choice rather than forcing t
     send.mockRestore();
     prompt.mockRestore();
   });
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  fireEvent.click(screen.getByRole("button", { name: "New epic from these" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
   expect((await screen.findByRole("alert")).textContent).toContain("CORE-9");
-  fireEvent.click(screen.getByRole("button", { name: "Create anyway" }));
+  await user.click(screen.getByRole("button", { name: "Create anyway" }));
   await waitFor(() =>
     expect(
       within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
@@ -279,6 +288,7 @@ test("a possible duplicate offers an explicit force choice rather than forcing t
 });
 
 test("a stopped epic creation retries its committed request under the same key", async () => {
+  const user = userEvent.setup();
   const rows = [issue("CORE-1")];
   const created = new Map<string, Issue>();
   const keys: string[] = [];
@@ -310,8 +320,8 @@ test("a stopped epic creation retries its committed request under the same key",
     prompt.mockRestore();
   });
   const { client } = table(rows);
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  fireEvent.click(screen.getByRole("button", { name: "New epic from these" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
   await screen.findByRole("alert");
   const refused = writesOf(client)
     .rows()
@@ -325,7 +335,7 @@ test("a stopped epic creation retries its committed request under the same key",
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   const recovery = screen.getByRole("region", { name: "Interrupted table action" });
   expect(recovery.textContent).toContain("not yet adopted");
-  fireEvent.click(within(recovery).getByRole("button", { name: "Finish" }));
+  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() => expect(rows[0]?.parent).toBe("CORE-9"));
   await waitFor(() =>
     expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
@@ -333,6 +343,7 @@ test("a stopped epic creation retries its committed request under the same key",
 });
 
 test("dismissing an interrupted action preserves layout and sends none of its future steps", async () => {
+  const user = userEvent.setup();
   localStorage.setItem(
     "dispatch.project-table.CORE",
     JSON.stringify({
@@ -350,7 +361,7 @@ test("dismissing an interrupted action preserves layout and sends none of its fu
   restores.push(() => send.mockRestore());
   table([issue("CORE-1")]);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
-  fireEvent.click(within(recovery).getByRole("button", { name: "Dismiss" }));
+  await user.click(within(recovery).getByRole("button", { name: "Dismiss" }));
   expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull();
   const saved = JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}");
   expect(saved.action).toBeUndefined();
@@ -385,28 +396,30 @@ test("the open table read waits behind an unanswered Board move", async () => {
 });
 
 test("a failed project listing can be retried without navigating away", async () => {
+  const user = userEvent.setup();
   const { client, listing } = table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   listing.mockRejectedValueOnce(new Error("unreachable"));
   await client.invalidateQueries({ queryKey: ["issues"] });
   await screen.findByRole("alert");
-  fireEvent.click(screen.getByRole("button", { name: "Retry loading issues" }));
+  await user.click(screen.getByRole("button", { name: "Retry loading issues" }));
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
 });
 
 test("Title and Columns popovers allow internal Tab, close on focus leaving, and restore focus on Escape", async () => {
+  const user = userEvent.setup();
   table([issue("CORE-1")]);
   const title = await screen.findByRole("button", { name: "Filter Title" });
-  fireEvent.click(title);
+  await user.click(title);
   const dialog = screen.getByRole("dialog", { name: "Filter Title" });
   expect(screen.getByTestId("issues-table-scroll").contains(dialog)).toBe(false);
-  fireEvent.keyDown(document, { key: "Escape" });
+  await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(document.activeElement).toBe(title);
   const columns = screen.getByRole("button", { name: "Columns" });
-  fireEvent.click(columns);
+  await user.click(columns);
   expect(screen.getByRole("dialog", { name: "Columns" })).toBeDefined();
-  fireEvent.keyDown(document, { key: "Tab" });
+  await user.tab();
   expect(screen.getByRole("dialog", { name: "Columns" })).toBeDefined();
   const controls = within(screen.getByRole("dialog", { name: "Columns" })).getAllByRole("checkbox");
   controls[1]?.focus();
@@ -416,14 +429,15 @@ test("Title and Columns popovers allow internal Tab, close on focus leaving, and
 });
 
 test("a partially refused batch keeps selection and identifies the writes already saved", async () => {
+  const user = userEvent.setup();
   const send = spyOn(api, "send")
     .mockResolvedValueOnce(savedIssue("CORE-1"))
     .mockRejectedValueOnce(new ApiError(403, { error: "refused", code: "FORBIDDEN" }));
   table([issue("CORE-1"), issue("CORE-2")]);
   restores.push(() => send.mockRestore());
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  fireEvent.click(screen.getByRole("button", { name: "Take out of epic" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   expect((await screen.findByRole("alert")).textContent).toContain("1 of 2 changes saved.");
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-1" }).checked).toBe(
     true
@@ -434,8 +448,9 @@ test("a partially refused batch keeps selection and identifies the writes alread
 });
 
 test("Clear filters also clears Needs you, Unread and Unclaimed", async () => {
+  const user = userEvent.setup();
   table([issue("CORE-1", { open_asks: 2 })], "?needs-you=1&unread=1&unclaimed=1");
-  fireEvent.click(await screen.findByRole("button", { name: "Clear filters" }));
+  await user.click(await screen.findByRole("button", { name: "Clear filters" }));
   for (const name of ["Needs you", "Unread", "Unclaimed"]) {
     await waitFor(() =>
       expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
@@ -444,17 +459,19 @@ test("Clear filters also clears Needs you, Unread and Unclaimed", async () => {
 });
 
 test("the Done facet does not claim an unloaded count is zero", async () => {
+  const user = userEvent.setup();
   table([issue("CORE-1"), issue("CORE-2", { status: "done" })]);
-  fireEvent.click(await screen.findByRole("button", { name: /^Filter Status/ }));
+  await user.click(await screen.findByRole("button", { name: /^Filter Status/ }));
   expect(screen.getByRole("option", { name: "Done, not loaded" })).toBeDefined();
 });
 
 test("loading closed issues retains the open rows and controls, including after a refusal", async () => {
+  const user = userEvent.setup();
   const { listing } = table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const closed = Promise.withResolvers<IssueSummary[]>();
   listing.mockReturnValueOnce(closed.promise);
-  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await user.click(screen.getByRole("button", { name: "Clear filters" }));
   expect(screen.getByRole("table", { name: "Project issues table" })).toBeDefined();
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
   closed.reject(new Error("closed listing refused"));
@@ -464,6 +481,7 @@ test("loading closed issues retains the open rows and controls, including after 
 });
 
 test("an epic's Start all includes queued siblings hidden by a priority filter", async () => {
+  const user = userEvent.setup();
   const written: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     const key = request.path.split("/").at(-1) ?? "";
@@ -480,12 +498,13 @@ test("an epic's Start all includes queued siblings hidden by a priority filter",
     "?group=epic&f.priority=0"
   );
   restores.push(() => send.mockRestore());
-  fireEvent.click(await screen.findByRole("button", { name: "Epic actions ▾" }));
-  fireEvent.click(screen.getByRole("button", { name: "Start all its queued issues next" }));
+  await user.click(await screen.findByRole("button", { name: "Epic actions ▾" }));
+  await user.click(screen.getByRole("button", { name: "Start all its queued issues next" }));
   await waitFor(() => expect(new Set(written)).toEqual(new Set(["CORE-2", "CORE-3"])));
 });
 
 test("a refused bulk operation retries independently while the other operations land", async () => {
+  const user = userEvent.setup();
   const sent: string[] = [];
   let refused = false;
   const send = spyOn(api, "send").mockImplementation(async (request) => {
@@ -501,9 +520,9 @@ test("a refused bulk operation retries independently while the other operations 
   const { client, listing } = table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
   await screen.findByRole("checkbox", { name: "Select CORE-1" });
   for (const key of ["CORE-1", "CORE-2", "CORE-3"])
-    fireEvent.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
+    await user.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
   const before = listing.mock.calls.length;
-  fireEvent.click(screen.getByRole("button", { name: "Take out of epic" }));
+  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByRole("alert");
   expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
   expect(
@@ -558,6 +577,7 @@ test("a late Done listing applies the requested URL page instead of clamping it 
 });
 
 test("parent-changing actions skip closed selections and New epic refuses an all-closed selection", async () => {
+  const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
   const create = spyOn(api, "createIssue").mockRejectedValue(new Error("Unexpected create"));
   const prompt = spyOn(window, "prompt").mockReturnValue("Should not be created");
@@ -567,13 +587,13 @@ test("parent-changing actions skip closed selections and New epic refuses an all
     prompt.mockRestore();
   });
   table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?nofilter=1");
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  fireEvent.click(screen.getByRole("button", { name: "Take out of epic" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByText(/Skipped 1 closed issue/);
   expect(send.mock.calls.map(([request]) => request.path)).toEqual(["/api/v1/issues/CORE-1"]);
-  fireEvent.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  fireEvent.click(screen.getByRole("button", { name: "New epic from these" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
   expect((await screen.findByRole("alert")).textContent).toContain(
     "Select at least one open issue"
   );
@@ -605,6 +625,7 @@ test("created-by sessions use their live name and state, and a null creator is U
 });
 
 test("a refused merge move leaves the source open and does not post the close reason", async () => {
+  const user = userEvent.setup();
   const requests: { path: string; body: unknown }[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     requests.push({ path: request.path, body: request.body });
@@ -627,10 +648,11 @@ test("a refused merge move leaves the source open and does not post the close re
     ],
     "?group=epic"
   );
-  fireEvent.click(await screen.findByRole("button", { name: "Epic actions ▾" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "Merge into another epic" }), {
-    target: { value: "CORE-2" },
-  });
+  await user.click(await screen.findByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
   expect((await screen.findByRole("alert")).textContent).toContain("CORE-3");
   expect(requests.map(({ path }) => path)).toEqual([
     "/api/v1/issues/CORE-3",
@@ -653,6 +675,7 @@ test("ancestor reads have one retry policy rather than multiplying inner and out
 });
 
 test("Start next stops at a refused predecessor and names every issue that did not move up", async () => {
+  const user = userEvent.setup();
   const sent: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     sent.push(request.path);
@@ -664,9 +687,9 @@ test("Start next stops at a refused predecessor and names every issue that did n
     issue("CORE-2", { labels: ["legion"], rank: "B" }),
     issue("CORE-3", { labels: ["legion"], rank: "C" }),
   ]);
-  fireEvent.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: "Select CORE-3" }));
-  fireEvent.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-3" }));
+  await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
   expect((await screen.findByRole("alert")).textContent).toContain(
     "Did not move up: CORE-3, CORE-2"
   );

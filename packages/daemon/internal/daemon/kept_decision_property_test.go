@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1029,28 +1030,16 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 // keptLog is the engine's log as the run reads it: the JSON lines slog writes, under a lock,
 // since a step that runs rows at once logs from several lanes.
 type keptLog struct {
-	mu    sync.Mutex
-	lines []byte
-}
-
-func (l *keptLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, p...)
-	return len(p), nil
+	testlog.Buffer
 }
 
 // since is everything written to the log after mark, and mark is how much it holds now.
 func (l *keptLog) since(mark int) string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return string(l.lines[mark:])
+	return l.String()[mark:]
 }
 
 func (l *keptLog) mark() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.lines)
+	return l.Len()
 }
 
 // mirror writes what Dispatch says of key — its status and the keys it waits on — as the
@@ -1323,7 +1312,7 @@ func (r *keptRun) owedRefs() map[string]bool {
 // an issue of that tree reaches the tree itself and nothing is kept for it.
 func (r *keptRun) architectHears(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
-	return found && claimTookRole(machine.Claim().State)
+	return found && supervise.TookRole(machine.Claim().State)
 }
 
 // parkedOrWaiting is whether the root has no run of its own: parked out of the workflow, lingering
@@ -2428,10 +2417,10 @@ func (r *keptRun) ready(tree *keptTree) {
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	launch := machine.Claim().Generation
 	r.handle(machine, supervise.StreamHello{Claim: tree.token, Generation: launch})
-	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || claimTookRole(state) {
+	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.TookRole(state) {
 		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"})
 	}
-	if state := machine.Claim().State; state == supervise.StateRegistered || claimTookRole(state) {
+	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.TookRole(state) {
 		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: "ses-architect"})
 	}
 	r.waitMachines()
@@ -2443,7 +2432,7 @@ func (r *keptRun) ready(tree *keptTree) {
 // (terminalEventID, one per launch) has not been applied.
 func (r *keptRun) readyFactEnabled(tree *keptTree) (string, uint64, bool) {
 	machine, found := r.sup.Machine(tree.token)
-	if !found || !claimTookRole(machine.Claim().State) {
+	if !found || !supervise.TookRole(machine.Claim().State) {
 		return "", 0, false
 	}
 	launch := machine.Claim().Generation

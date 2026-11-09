@@ -1,17 +1,15 @@
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  realpathSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -28,28 +26,45 @@ import path from "node:path";
 // must stop its server when it ends.
 setDefaultTimeout(120_000);
 
-const root = path.resolve(import.meta.dir, "../../../..");
-const scratch = realpathSync(mkdtempSync(path.join(tmpdir(), "skill-scenarios-isolation-")));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+// Every row here runs the rig through python3, which puts it in a process group of its own
+// (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
+const withoutPython = skipWithout("python3");
 
-/** Writes `text` to `file`, making its directory, and makes it executable when `mode` says so. */
+const root = path.resolve(import.meta.dir, "../../../..");
+const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+
+/**
+ * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The
+ * module body makes nothing: `scratch` is reserved at the call and made by the hook that
+ * reservation registered, and a `bun test -t <pattern>` that selects no row of this file runs no
+ * hook of it, where a module body that built the checkout and ran the two rigs would leave all of
+ * it behind.
+ */
+const stagings: (() => void)[] = [];
+
+/** Writes `text` to `file`, making its directory, and makes it executable when `mode` says so,
+ *  when the staging runs. */
 function put(file: string, text: string, mode = 0o644) {
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, text);
-  chmodSync(file, mode);
+  stagings.push(() => {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, text);
+    chmodSync(file, mode);
+  });
 }
 
 // The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
-mkdirSync(path.dirname(rig), { recursive: true });
-copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
-for (const lib of ["rig.sh", "port-file.sh", "held-port.py"]) {
-  mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
-  copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
-}
 const stub = path.join(scratch, "stub");
-mkdirSync(stub);
+stagings.push(() => {
+  mkdirSync(path.dirname(rig), { recursive: true });
+  copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  for (const lib of ["rig.sh", "port-file.sh", "held-port.py"]) {
+    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
+    copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
+  }
+  mkdirSync(stub);
+});
 put(
   path.join(co, "packages/dispatch/e2e/run-server.sh"),
   ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
@@ -156,14 +171,16 @@ const work = path.join(scratch, "work");
 function label(name: string, settings: string) {
   const dir = path.join(work, "profiles", name);
   put(path.join(dir, `home/.omp/profiles/skills-${name}/agent/config.yml`), settings);
-  for (const [file, text] of [
-    ["checkout", co],
-    ["pin", "omp@stub"],
-    ["profile", `skills-${name}`],
-    ["built-from", `checkout ${co}`],
-    ["ready", ""],
-  ])
-    writeFileSync(path.join(dir, file), `${text}\n`);
+  stagings.push(() => {
+    for (const [file, text] of [
+      ["checkout", co],
+      ["pin", "omp@stub"],
+      ["profile", `skills-${name}`],
+      ["built-from", `checkout ${co}`],
+      ["ready", ""],
+    ])
+      writeFileSync(path.join(dir, file), `${text}\n`);
+  });
 }
 label(
   "on",
@@ -177,22 +194,27 @@ put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
 /** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
- * and config directories: jq is a mise shim on a devbox, which finds nothing under a fresh HOME
- * without them. */
+ * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
+ * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
+ * developer's own home decides nothing here. */
+const miseData =
+  process.env.MISE_DATA_DIR ??
+  (process.env.XDG_DATA_HOME === undefined
+    ? undefined
+    : path.join(process.env.XDG_DATA_HOME, "mise"));
 const env = {
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",
   TMPDIR: scratch,
-  MISE_DATA_DIR:
-    process.env.MISE_DATA_DIR ??
-    path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"), "mise"),
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? path.join(homedir(), ".config"),
+  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+  ...(process.env.XDG_CONFIG_HOME === undefined
+    ? {}
+    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
   STUB_DIR: stub,
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
 };
-mkdirSync(env.HOME);
 
 /** The parent between the test and the rig: it puts the rig in a process group of its own
  * (posix_spawnp with POSIX_SPAWN_SETPGROUP, which is setpgid in the child between fork and exec),
@@ -244,30 +266,44 @@ async function runRig(args: string[], vars: Record<string, string> = {}) {
   return { code, stderr };
 }
 
-const start = String(Math.floor(Date.now() / 1000));
-const runs = await Promise.all(
-  [1, 2].map(async (n) => {
-    const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
-    return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
-  })
-);
+/** What the two runs reported, and each server one of them started: both read by the hook below,
+ *  which stages the checkout and then runs the two rigs. */
+let runs: { n: number; code: number; stderr: string; dir: string }[] = [];
+let servers: { pid: number; port: number; database: string }[] = [];
+/** The batch's start second, which every run of this file is given; set with the two runs. */
+let start = "";
 const lines = (file: string) =>
   existsSync(file)
     ? readFileSync(file, "utf8")
         .split("\n")
         .filter((line) => line !== "")
     : [];
-/** Each server a run started: its pid, its port and the database its DATABASE_URL names. */
-const servers = lines(path.join(stub, "servers.log")).map((line) => {
-  const [pid = "", port = "", url = ""] = line.split(" ");
-  return { pid: Number(pid), port: Number(port), database: new URL(url).pathname.slice(1) };
+
+beforeAll(async () => {
+  // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
+  // of them, and this hook would throw on a host that does not have it.
+  if (withoutPython) return;
+  // A staging may queue another, so the queue is drained until it is empty.
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
+  mkdirSync(env.HOME);
+  start = String(Math.floor(Date.now() / 1000));
+  runs = await Promise.all(
+    [1, 2].map(async (n) => {
+      const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
+      return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
+    })
+  );
+  servers = lines(path.join(stub, "servers.log")).map((line) => {
+    const [pid = "", port = "", url = ""] = line.split(" ");
+    return { pid: Number(pid), port: Number(port), database: new URL(url).pathname.slice(1) };
+  });
 });
 
-test("both runs finish", () => {
+test.skipIf(withoutPython)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
 
-test("each run makes a database of its own in the batch's Postgres", () => {
+test.skipIf(withoutPython)("each run makes a database of its own in the batch's Postgres", () => {
   const made = lines(path.join(stub, "docker.log")).filter((line) =>
     line.includes("CREATE DATABASE")
   );
@@ -278,45 +314,51 @@ test("each run makes a database of its own in the batch's Postgres", () => {
   ]);
 });
 
-test("each run starts a Dispatch server of its own, on its own database and port", () => {
-  expect(servers.map((server) => server.database).sort()).toEqual([
-    "run_askgate_facts_on_1",
-    "run_askgate_facts_on_2",
-  ]);
-  expect(new Set(servers.map((server) => server.port)).size).toBe(2);
-});
-
-test("each run's agent, seeds and capture reach the run's own Dispatch and no other", () => {
-  const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
-  const urls = new Set<string>();
-  for (const { n, dir } of runs) {
-    const database = `run_askgate_facts_on_${n}`;
-    const server = servers.find((s) => s.database === database);
-    const url = `http://127.0.0.1:${server?.port}`;
-    urls.add(url);
-    expect(JSON.parse(readFileSync(path.join(dir, "dispatch.json"), "utf8"))).toEqual({
-      postgres: "stub-postgres",
-      database,
-      port: server?.port,
-      url,
-    });
-    expect(lines(path.join(dir, "pane.env"))).toContain(`DISPATCH_URL=${url}`);
-    expect(lines(path.join(dir, "agent-env.txt"))).toContain(`DISPATCH_URL=${url}`);
-    // The run's world, its fixture and its capture, each through that server to that database.
-    expect(seeds.filter((seed) => seed.database === database)).toEqual(
-      ["project", "askgate", "capture-askgate"].map((command) => ({
-        command,
-        port: server?.port,
-        database,
-      }))
-    );
+test.skipIf(withoutPython)(
+  "each run starts a Dispatch server of its own, on its own database and port",
+  () => {
+    expect(servers.map((server) => server.database).sort()).toEqual([
+      "run_askgate_facts_on_1",
+      "run_askgate_facts_on_2",
+    ]);
+    expect(new Set(servers.map((server) => server.port)).size).toBe(2);
   }
-  expect(urls.size).toBe(2);
-});
+);
+
+test.skipIf(withoutPython)(
+  "each run's agent, seeds and capture reach the run's own Dispatch and no other",
+  () => {
+    const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
+    const urls = new Set<string>();
+    for (const { n, dir } of runs) {
+      const database = `run_askgate_facts_on_${n}`;
+      const server = servers.find((s) => s.database === database);
+      const url = `http://127.0.0.1:${server?.port}`;
+      urls.add(url);
+      expect(JSON.parse(readFileSync(path.join(dir, "dispatch.json"), "utf8"))).toEqual({
+        postgres: "stub-postgres",
+        database,
+        port: server?.port,
+        url,
+      });
+      expect(lines(path.join(dir, "pane.env"))).toContain(`DISPATCH_URL=${url}`);
+      expect(lines(path.join(dir, "agent-env.txt"))).toContain(`DISPATCH_URL=${url}`);
+      // The run's world, its fixture and its capture, each through that server to that database.
+      expect(seeds.filter((seed) => seed.database === database)).toEqual(
+        ["project", "askgate", "capture-askgate"].map((command) => ({
+          command,
+          port: server?.port,
+          database,
+        }))
+      );
+    }
+    expect(urls.size).toBe(2);
+  }
+);
 
 // The run's exit handler kills its server's whole tree before the run exits, so a server's pid is
 // gone or a zombie by the time its run has ended.
-test("each run stops its Dispatch server when it ends", () => {
+test.skipIf(withoutPython)("each run stops its Dispatch server when it ends", () => {
   expect(servers.length).toBe(2);
   const running = servers.filter(
     ({ pid }) =>
@@ -328,27 +370,33 @@ test("each run stops its Dispatch server when it ends", () => {
 
 // AskGate's review would time out under Oh My Pi's default handler limit, so a run whose profile
 // leaves the limit there scores the timeout rather than the rule: the rig refuses it, starting nothing.
-test("a run on a profile whose settings leave the handler limit at its default is refused, naming the key", async () => {
-  const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
-  expect(code).toBe(1);
-  expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-  expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
-  expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
-});
+test.skipIf(withoutPython)(
+  "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
+    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+  }
+);
 
 // The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
 // claim about what we run today): the run's working directory must hold that file, with the line
 // the prompt quotes.
-test("a link run's working directory holds the crontab its prompt cites, with the line it quotes", async () => {
-  const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {
-    SKILL_SCENARIOS_ASKGATE_CASE: "link",
-  });
-  expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-  const dir = path.join(work, "runs", "askgate-link-on-1");
-  const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
-  const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
-  const [, line = "", text = ""] = quoted ?? [];
-  expect(quoted).not.toBeNull();
-  const crontab = lines(path.join(dir, "cwd", "export-host.crontab"));
-  expect(crontab[Number(line) - 1]).toBe(text);
-});
+test.skipIf(withoutPython)(
+  "a link run's working directory holds the crontab its prompt cites, with the line it quotes",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {
+      SKILL_SCENARIOS_ASKGATE_CASE: "link",
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const dir = path.join(work, "runs", "askgate-link-on-1");
+    const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
+    const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
+    const [, line = "", text = ""] = quoted ?? [];
+    expect(quoted).not.toBeNull();
+    const crontab = lines(path.join(dir, "cwd", "export-host.crontab"));
+    expect(crontab[Number(line) - 1]).toBe(text);
+  }
+);

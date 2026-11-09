@@ -1,0 +1,123 @@
+Experiment 19, Temporal: an activity handed out with ErrResultPending, its worker killed, and its completion by token.
+Recorded 2026-11-08T02:36:34Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+mechanism: Temporal Asynchronous Activity Completion: an activity body that returns activity.ErrResultPending, completed later by whoever holds the task token
+sdk-completion-call: client.CompleteActivity(ctx, taskToken, result, nil)
+activity-task-queue: exp19-activity-1794104913926560919
+workflow-task-queue: exp19-workflow-1794104913926560919
+driver-process-registered-the-handout-activity: false
+case-a: the handout that is not re-run: the worker that took the activity is killed with SIGKILL and replaced while the activity is still started
+handout-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e19/exp19-handout-effects-1794104913926560919
+handout-token-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e19/exp19-handout-tokens-1794104913926560919
+handout-start-to-close-timeout: 1m0s
+handout-maximum-attempts: 1
+[worker1] exp19worker: pid=57710
+worker1-pid: 57710
+handout-workflow-id: exp19-handout-1794104913926560919
+handout-run-id: 01a1b8fc-717b-7a0f-bac5-3de6edc1f6d8
+handout-first-body-line: attempt=1 pid=57710 at=2026-11-08T02:28:34.695980552Z
+handout-tokens-written-before-kill: 1
+handout-body-executions-before-kill: 1
+handout-activity-pending-before-kill: true
+handout-activity-state-before-kill: Started
+handout-activity-attempt-before-kill: 1
+handout-workflow-status-before-kill: Running
+kill-sent: true
+killed-pid: 57710
+kill-signal: SIGKILL
+worker1-alive-after-kill: false
+timed: handout-watched-after-the-kill-for: 2s
+handout-activity-pending-after-kill: true
+handout-activity-state-after-kill: Started
+handout-activity-attempt-after-kill: 1
+handout-body-executions-after-kill: 1
+handout-workflow-status-after-kill: Running
+worker2-pid: 57718
+[worker2] exp19worker: pid=57718
+timed: handout-replacement-worker-polled-the-same-queue-for: 8s
+handout-activity-pending-after-replacement-worker: true
+handout-activity-state-after-replacement-worker: Started
+handout-activity-attempt-after-replacement-worker: 1
+handout-activity-task-started-events-after-replacement-worker: 0
+handout-activity-task-scheduled-events-after-replacement-worker: 1
+handout-body-executions-after-replacement-worker: 1
+handout-tokens-written-after-replacement-worker: 1
+handout-last-activity-history-event-after-replacement-worker: EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+handout-history-event-count-after-replacement-worker: 5
+handout-workflow-status-after-replacement-worker: Running
+case-b: the completion from another process: a process that runs no worker and registers no activity calls client.CompleteActivity with the task token
+completion-token-bytes: 142
+completion-result-sent: exp19-outside-answer-1794104913926560919
+timed: handout-stayed-handed-out-until-the-completion-call-for: 10.286s
+completion-called-by-pid: 57727
+completion-caller-ran-a-worker: false
+completion-caller-registered-the-activity: false
+completion-accepted-by-the-server: true
+completion-error-type: none
+completion-error-message: none
+handout-workflow-returned: true
+handout-workflow-received-result: exp19-outside-answer-1794104913926560919
+handout-workflow-activity-error-type: none
+handout-workflow-activity-error: none
+handout-body-executions-total: 1
+handout-activity-task-started-events-total: 1
+handout-activity-task-completed-events: 1
+handout-activity-task-failed-events: 0
+handout-activity-task-timed-out-events: 0
+handout-last-activity-history-event: EVENT_TYPE_ACTIVITY_TASK_COMPLETED
+handout-history-event-count: 11
+handout-workflow-status: Completed
+case-c-fence: the token of a superseded attempt: attempt 1 records its token and fails, attempt 2 runs, and the completion is tried with attempt 1's token
+fence-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e19/exp19-fence-effects-1794104913926560919
+fence-maximum-attempts: 2
+fence-workflow-id: exp19-fence-1794104913926560919
+[worker2] time=2026-11-08T02:28:45.232Z level=ERROR msg="Activity error." Namespace=e7 TaskQueue=exp19-activity-1794104913926560919 WorkerID=57718@legion-infra-infra-1546@ WorkflowID=exp19-fence-1794104913926560919 RunID=01a1b8fc-9ba7-7d47-93a9-30d9c5bb8670 ActivityType=exp19Handout Attempt=1 Error="attempt 1 recorded its task token and then failed, so the server starts another attempt (type: HandoutAttemptFailed, retryable: true)"
+fence-body-line-1: attempt=1 pid=57718 at=2026-11-08T02:28:45.226594448Z
+fence-body-line-2: attempt=2 pid=57718 at=2026-11-08T02:28:46.212122698Z
+fence-body-executions: 2
+fence-attempts-that-recorded-a-token: [1 2]
+fence-activity-state-while-attempt-2-is-pending: Started
+fence-activity-attempt-reported-by-the-server: 2
+fence-stale-token-completion-accepted: false
+fence-stale-token-completion-error-type: *serviceerror.NotFound
+fence-stale-token-completion-error-message: invalid activityID or activity already timed out or invoking workflow is completed
+fence-current-token-completion-accepted: true
+fence-current-token-completion-error-type: none
+fence-current-token-completion-error-message: none
+fence-workflow-returned: true
+fence-workflow-received-result: exp19-current-attempt-answer-1794104913926560919
+fence-workflow-activity-error: none
+fence-body-executions-total: 2
+fence-activity-task-started-events: 1
+fence-activity-task-failed-events: 0
+fence-activity-task-completed-events: 1
+fence-last-activity-history-event: EVENT_TYPE_ACTIVITY_TASK_COMPLETED
+fence-workflow-status: Completed
+case-c-bound: the bound: the same handout with a short start-to-close timeout and nobody completing it
+bound-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e19/exp19-bound-effects-1794104913926560919
+bound-start-to-close-timeout: 10s
+bound-maximum-attempts: 1
+bound-workflow-id: exp19-bound-1794104913926560919
+bound-first-body-line: attempt=1 pid=57718 at=2026-11-08T02:28:46.567615019Z
+timed: bound-workflow-waited-for: 10.03s
+bound-workflow-returned: true
+bound-workflow-received-result: none
+bound-workflow-activity-error-type: *internal.ActivityError
+bound-workflow-activity-error-is-timeout: true
+bound-workflow-activity-timeout-type: StartToClose
+bound-workflow-activity-retry-state: MaximumAttemptsReached
+bound-workflow-activity-error: activity error (type: exp19Handout, scheduledEventID: 5, startedEventID: 6, identity: ): activity StartToClose timeout (type: StartToClose)
+bound-body-executions-total: 1
+bound-tokens-written-total: 1
+bound-activity-task-started-events: 1
+bound-activity-task-scheduled-events: 1
+bound-activity-task-timed-out-events: 1
+bound-last-activity-history-event: EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT
+bound-workflow-status: Completed
+reasoned: what-the-replacement-window-covers: the replacement worker polled the same task queue for 8s inside a 1m0s start-to-close timeout, so the re-dispatch counted above is what the server did in that window, not what it would do once the bound expires
+reasoned: what-a-pod-cannot-do: this run handed work out for seconds and sat through a 10s bound; nothing here observed a handout left open for the hours a prompt into a live session can take, and a handout of hours would have to carry a start-to-close timeout of hours for the server to leave it alone that long
+limit: one dev server, one handout per case, two worker processes and seconds rather than hours: it shows what this server did with an activity whose body returned ErrResultPending when its worker died, when another process completed it, when a superseded attempt's token was used and when nobody completed it, not how a cluster behaves, not what a completion storm costs, and not that Legion's sessions would map onto this mechanism
+experiment 19: PASS

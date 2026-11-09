@@ -157,6 +157,10 @@ func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error
 	return errors.New("the architect routes hand nothing over")
 }
 
+func (r *statusRecorder) ReleaseClaim(context.Context, string) error {
+	return errors.New("the architect routes release no claim")
+}
+
 func (r *statusRecorder) PostMessage(context.Context, string, string) error { return nil }
 func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil

@@ -19,6 +19,8 @@ function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
     name,
     primary: id === SPEC_ID,
     project: "CORE",
+    ref_key: `CORE-1/${name}`,
+    session_id: null,
     slug: name.replace(".", "-"),
     versions: [],
     ...(approval === undefined ? {} : { approval }),
@@ -174,7 +176,6 @@ test("a reason line leaves out an absent reason and an absent reviewer", () => {
     decisionsEntry({
       by: { id: "alice", kind: "user" },
       latest_version: 2,
-      reason: null,
       state: "changes_requested",
       version: 2,
     }),

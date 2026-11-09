@@ -36,7 +36,14 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
  * `packages/dispatch/AGENTS.md` ("How an agent is shown") catches that member use.
  */
 
-type SessionActor = Extract<Actor, { kind: "session" }>;
+type SessionActor = Actor & { kind: "session" };
+
+/** Whether an actor is a session's. An actor's kind reaches the browser as the string the route
+ *  table declares, and `session` is the one word that names a session; every surface that needs
+ *  the session itself narrows here. */
+function isSessionActor(actor: Actor): actor is SessionActor {
+  return actor.kind === "session";
+}
 
 /** An agent to name: an actor, or a bare session id with the title stamped where it was
  *  recorded. */
@@ -66,7 +73,7 @@ function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent {
     return {
       attribution: actorAttribution(actor),
       name: actorName(actor, registry.titles),
-      sessionId: actor.kind === "session" ? actor.id : undefined,
+      sessionId: isSessionActor(actor) ? actor.id : undefined,
     };
   }
   return {
@@ -203,7 +210,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
     );
   }
   const { actor } = props;
-  if (actor.kind !== "session") {
+  if (!isSessionActor(actor)) {
     // An act an agent made for its person is recorded as the person's, so the person's name
     // carries the agent beside it, by the one rule every reader of an act follows.
     const text = actor.kind === "user" ? actorActText(actor.id, actor.act) : actor.id;
@@ -250,9 +257,14 @@ function SessionAgentName({
     named = name;
   } else {
     // No `aria-label`: the link is named by its visible name, and the attribution after it is
-    // read once, as text.
+    // read once, as text. Inside a sentence it is underlined, as every other inline link of the
+    // app is: the link blue alone does not reach 3:1 against the text around it in dark, so
+    // colour on its own would be the only thing marking it a link (axe's `link-in-text-block`).
     named = (
-      <Link className={inline ? `${LINK_CLASS} dispatch-inline-link` : LINK_CLASS} to={to}>
+      <Link
+        className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        to={to}
+      >
         {name}
       </Link>
     );

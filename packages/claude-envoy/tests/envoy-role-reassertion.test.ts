@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdir, rm, stat, utimes, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { EnvoyApiError, type Interest, type SubscribeResult } from "@legion/envoy-client/transport"
 import type {
@@ -21,7 +20,15 @@ import {
   SessionIdentity,
 } from "../src/session-identity"
 import { STATE_FILE_MAX_AGE_MS } from "../src/session-state"
-import { emptyReplay, type FakeClient, testCapabilities, waitFor } from "./channel-session-harness"
+import {
+  emptyReplay,
+  type FakeClient,
+  testCapabilities,
+  useScratchState,
+  waitFor,
+} from "./channel-session-harness"
+
+const scratchState = useScratchState()
 
 class IdleNats implements ChannelForwarderConnection {
   subscribe(): ChannelTopicSubscription {
@@ -78,7 +85,7 @@ const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 const OTHER_INSTANCE = "f0e1d2c3b4a596876543210fedcba987"
 
 test("reasserts a restored role after a successful registration heartbeat loses it", async () => {
-  const stateDirectory = join(tmpdir(), `claude-envoy-reassert-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const roleFile = roleStateFile(stateDirectory, "ses_current")
   await mkdir(dirname(roleFile), { recursive: true })
   await writeFile(roleFile, JSON.stringify({ session_id: "ses_current", role: "reviewer" }))
@@ -124,12 +131,11 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     ])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("runs the regain hook once a heartbeat's soft claim takes the held role back, and not while the listener still names this session", async () => {
-  const stateDirectory = join(tmpdir(), `claude-envoy-regain-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   let holder = "ses_current"
   const regains: string[] = []
   const regained = Promise.withResolvers<void>()
@@ -173,7 +179,6 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     expect(regains).toEqual(["legion-claim reclaimed"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -182,7 +187,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
   // used to answer 404. GET /v1/roles/<role> is untouched and still answers 404, with the
   // role-holder body, when no live session holds the role. The heartbeat's re-assertion reads
   // that route (`undefinedOnNotFound`), so it stays as it is.
-  const stateDirectory = join(tmpdir(), `claude-envoy-role-404-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const regains: string[] = []
   const regained = Promise.withResolvers<void>()
   const client: FakeClient = {
@@ -233,7 +238,6 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -242,7 +246,7 @@ test("a soft claim a different live session refuses removes the role record, whi
   // by `setRole`'s 409 naming a session other than this one — that session holds the role, and
   // this one demonstrably does not — and never by a publish answer. INFRA-839 changed only the
   // publish route, so this path is as it was.
-  const stateDirectory = join(tmpdir(), `claude-envoy-role-refused-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const removed = Promise.withResolvers<void>()
   const client: FakeClient = {
     subscribe: async () => registered(),
@@ -289,7 +293,6 @@ test("a soft claim a different live session refuses removes the role record, whi
     expect(regains).toEqual([])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -299,7 +302,7 @@ test("a refusal naming this session under another process keeps the record, asks
   // because the standing claim is on this session id; the role is still not this process's, and
   // the record is its only way back to it. So the record stays, every heartbeat asks again, and
   // the claim lands as soon as nobody renews the stale one.
-  const stateDirectory = join(tmpdir(), `claude-envoy-role-same-id-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const roleFile = roleStateFile(stateDirectory, "ses_current")
   const claims: unknown[] = []
   let staleClaimLive = true
@@ -368,7 +371,6 @@ test("a refusal naming this session under another process keeps the record, asks
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -381,7 +383,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
   // claim from the process its claim names, which clears the mark. The record is kept
   // throughout: removing it is what a refusal naming another session does, and nothing here
   // says another session has the role.
-  const stateDirectory = join(tmpdir(), `claude-envoy-role-handed-back-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const roleFile = roleStateFile(stateDirectory, "ses_current")
   const claims: unknown[] = []
   let handedBack = true
@@ -443,7 +445,6 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -452,7 +453,7 @@ test("the age sweep does not reach the record of a process still pressing its re
   // the record it is pressed for must stay readable however long the refusal lasts: the retry
   // marks it seen, as a confirmed holder's heartbeat does, and the thirty-day age never reaches
   // it.
-  const stateDirectory = join(tmpdir(), `claude-envoy-role-pressed-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const roleFile = roleStateFile(stateDirectory, "ses_current")
   const claims: unknown[] = []
   const client: FakeClient = {
@@ -507,6 +508,5 @@ test("the age sweep does not reach the record of a process still pressing its re
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })

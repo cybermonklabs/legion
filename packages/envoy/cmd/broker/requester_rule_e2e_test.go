@@ -152,8 +152,10 @@ const (
 
 	// requesterDaemonLoginAccount is the ServiceAccount the daemon logs in as to get the launcher
 	// credential its pods enrol under (BROKER_SERVICE_LOGINS). It is an account of its own
-	// because the broker refuses a login account BROKER_SERVICES binds for the service's pods:
-	// every such pod holds a token for it and could log in as the service itself.
+	// because this leg drives a launcher enrolling pods it does not run as: a login account
+	// BROKER_SERVICES also binds for the service's pods is a pod of that account enrolling
+	// itself, and such a login reaches the one pod whose token made it and no other
+	// (enroll.Service.podUnderTokenLogin).
 	requesterDaemonLoginAccount = "system:serviceaccount:example:example-daemon-login"
 	// requesterDaemonPod is the pod UID the daemon's projected token proves, which its enrollment
 	// records as its runtime id and which every line of this test names that pod by.
@@ -244,8 +246,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		"BROKER_SIGNIN_CLIENT_SECRET_FILE=" + signInClientSecretFile(t),
 		"BROKER_SIGNIN_DOMAIN=" + brokertest.SignInDomain,
 		"BROKER_SERVICES=" + requesterDaemonService + "=" + requesterDaemonAccount,
-		// The daemon's own login account, which is how it gets the launcher credential its pods
-		// enrol under: an account of its own, never one BROKER_SERVICES binds for its pods.
+		// The daemon's login account, which is how it gets the launcher credential its pods enrol
+		// under. It is an account of its own because this leg enrols pods of requesterDaemonAccount.
 		"BROKER_SERVICE_LOGINS=" + requesterDaemonService + "=" + requesterDaemonLoginAccount,
 		"BROKER_VM_SERVICES=" + requesterBoxService + "=" + requesterBoxAccount,
 		// Each google-service-account secret mints for the one account the deployment binds it
@@ -358,7 +360,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	// administrator's Google service-account grant, the owner approves it, and the token the
 	// broker mints carries exactly the Workspace scopes the secret lists.
 	t.Run("a pod of legion-daemon is granted GCP_ADMIN by its owner and reads a token of exactly its scopes", func(t *testing.T) {
-		code, stdout, stderr := daemonPod.run(t, cli, base, "request", requesterGCPAdmin, "--ttl", requesterTTL)
+		code, stdout, stderr := daemonPod.run(t, cli, base, "request", requesterGCPAdmin, "--ttl", requesterTTL,
+			"--reason", "the daemon pod needs its owner's admin grant")
 		if code != cliExitPending {
 			t.Fatalf("agent-secrets request %s as a pod of %s exited %d, want %d (pending): the list names the pod's service, and an admin secret is human tier, so it is the owner's to approve and never an automatic grant\nstdout: %s\nstderr: %s",
 				requesterGCPAdmin, requesterDaemonService, code, cliExitPending, stdout, stderr)
@@ -453,7 +456,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	// tier alone, exactly as it was before the requesters tag existed.
 	var openRecordID string
 	t.Run("a secret with no requesters is still an approval request to its owner", func(t *testing.T) {
-		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterOpenSecret)
+		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterOpenSecret,
+			"--reason", "checking a secret with no requesters still waits for its owner")
 		if code != cliExitPending {
 			t.Fatalf("agent-secrets request %s as %s exited %d, want %d (pending): a secret with no requesters reaches its owner as it always has\nstdout: %s\nstderr: %s",
 				requesterOpenSecret, jason, code, cliExitPending, stdout, stderr)
@@ -478,7 +482,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	// The approver's own path, which no other row reaches: a request that was pending while the
 	// list still named its person, approved after the list dropped them.
 	t.Run("approving a pending request the list no longer allows records a policy denial", func(t *testing.T) {
-		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterAzureAdmin, "--ttl", requesterTTL)
+		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterAzureAdmin, "--ttl", requesterTTL,
+			"--reason", "checking an approval after the list drops the requester")
 		if code != cliExitPending {
 			t.Fatalf("agent-secrets request %s as %s exited %d, want %d (pending): the list still names jason, and the secret is sami's to approve\nstdout: %s\nstderr: %s",
 				requesterAzureAdmin, jason, code, cliExitPending, stdout, stderr)

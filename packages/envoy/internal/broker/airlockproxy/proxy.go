@@ -242,6 +242,11 @@ type connInfo struct {
 	// from it - each request is decided from the grant it read for itself - and what it is
 	// here for is the line a request logs before that read answers.
 	grant requests.AirlockConnection
+	// cut is the connection under this one's TLS, which the cut of a joined connection
+	// stops before it writes close_notify (cutJoined). It travels here so that the watcher
+	// of a join reaches it as it reaches everything else it was opened with, rather than
+	// sniffing a type out of the chain of wrappers under the decrypted connection.
+	cut *cutConn
 }
 
 // connKey is the context key connInfo travels under.
@@ -552,7 +557,8 @@ func (s *Server) connectBound(hijacker http.Hijacker, placeholder string, grant 
 		client.Close()
 		return
 	}
-	decrypted := tls.Server(newIdleConn(client, s.idle), &tls.Config{
+	cut := &cutConn{Conn: newIdleConn(client, s.idle)}
+	decrypted := tls.Server(cut, &tls.Config{
 		// http/1.1 alone, and deliberately: an HTTP/2 request carries its authority in the
 		// :authority pseudo-header, which net/http puts in Host, but it also lets one
 		// connection carry requests for several authorities. Offering only HTTP/1.1 keeps one
@@ -568,7 +574,7 @@ func (s *Server) connectBound(hijacker http.Hijacker, placeholder string, grant 
 		},
 	})
 	connection := net.Conn(decrypted)
-	s.conns.Store(connection, connInfo{target: target, host: host, port: port, password: placeholder, grant: grant})
+	s.conns.Store(connection, connInfo{target: target, host: host, port: port, password: placeholder, grant: grant, cut: cut})
 	s.track(connection)
 	if !s.innerLn.hand(connection) {
 		// The drain closed the listener between the hijack and here.

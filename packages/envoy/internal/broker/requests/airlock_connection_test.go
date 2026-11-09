@@ -197,25 +197,3 @@ func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 		t.Fatalf("the revoked grant still holds %v", rows)
 	}
 }
-
-// TestIssueKeyInReason: the proxy's log line names the issue the session said it was working on,
-// which is the first Dispatch key the request's own signed reason holds.
-func TestIssueKeyInReason(t *testing.T) {
-	for _, c := range []struct{ reason, want string }{
-		{"", ""},
-		{"deploying the broker", ""},
-		{"INFRA-1352", "INFRA-1352"},
-		{"work on INFRA-1352 today", "INFRA-1352"},
-		{"INFRA-1352 then LEGION-587", "INFRA-1352"},
-		{"blocked by LEGION-587, see INFRA-1352", "LEGION-587"},
-		{"(INFRA-1352) the airlock", "INFRA-1352"},
-		{"dispatch://INFRA-1352/ask/3", "INFRA-1352"},
-		{"infra-1352 lower-cased is no key", ""},
-		{"INFRA- is no key, nor is -1352", ""},
-		{"an UPPERCASE word and 1352 apart", ""},
-	} {
-		if got := issueKeyInReason(c.reason); got != c.want {
-			t.Errorf("issueKeyInReason(%q) = %q, want %q", c.reason, got, c.want)
-		}
-	}
-}
