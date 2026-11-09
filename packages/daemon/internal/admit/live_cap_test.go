@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The admission cap is read at every decision that needs one (Admission.capacity), not copied
+// The admission cap is read at every decision that needs one (Admission.readCap), not copied
 // when admission was built: a cap raised through the settings route — the same Apply an operator
 // call makes — is the cap the next admission decision promotes under, with nothing rebuilt. The
 // change says as much to the caller that asked for it: a decision-class path, taking effect at

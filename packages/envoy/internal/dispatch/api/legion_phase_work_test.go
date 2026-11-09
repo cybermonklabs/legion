@@ -9,11 +9,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
-// The phase-work set of the Legion board: the four rows about when it is read again and when it
-// answers from what it holds. They are here rather than in legion_board_test.go, which holds the
-// board's own rows, because that file crossed a thousand lines and these have a subject of their
-// own (legion_phase_work.go). Their fixtures are that file's and shared: seedPhaseWorkChain,
-// seedLegionRoleEvent and holdAGeneration.
+// The phase-work set of the Legion board: when it is read again, and when it answers from what
+// it holds (legion_phase_work.go). seedLegionRoleEvent is shared with legion_board_test.go; the
+// other fixtures here are these tests' own.
 
 // TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename: the issues that carry Legion phase
 // work are one read (legion.PhaseWorkKeys), which takes each session's newest title the one way
@@ -215,4 +213,53 @@ func TestUnwatchLeavesTheWatchOfTheGenerationThatReplacedItAlone(t *testing.T) {
 	if work.isCurrent() {
 		t.Error("the live generation's own unwatch left the set current, want it watched by nothing")
 	}
+}
+
+// seedPhaseWorkChain seeds three issues of INFRA, top to bottom: a top the daemon reports, a
+// middle it reports nothing of, and a bottom it reports. The walk stops below the middle while
+// the middle is no Legion issue, and climbs to the top the moment it carries phase work, so the
+// bottom's tree is what a board read says of the phase-work set.
+func seedPhaseWorkChain(t *testing.T, rig *hubRig, first int, at time.Time) (top, middle, bottom string) {
+	t.Helper()
+	top = seedLegionIssue(t, rig.database, "INFRA", first, "The top, which the daemon reports", "a", nil, "")
+	middle = seedLegionIssue(t, rig.database, "INFRA", first+1, "The tracking issue in neither half of the rule", "b", nil, top)
+	bottom = seedLegionIssue(t, rig.database, "INFRA", first+2, "The bottom, which the daemon reports", "c", nil, middle)
+	for _, key := range []string{top, bottom} {
+		seedLegionObservation(t, rig.database, "INFRA", key, legion.FieldPhase, `"implementing"`, at)
+	}
+	seedLegionRead(t, rig.database, "INFRA", at, "")
+	return top, middle, bottom
+}
+
+// legionBoardOnTheHub is the board the hub's own server reads, the one whose phase-work set the
+// event feed keeps: the rig builds the hub on a server of its own, so the handler's set is
+// another one, filled by its own reads and marked stale by nothing.
+func legionBoardOnTheHub(t *testing.T, rig *hubRig, project string) legionBoardResponse {
+	t.Helper()
+	population, err := rig.hub.server.readLegionBoard(t.Context(), project)
+	if err != nil {
+		t.Fatalf("read %s's board on the hub's server: %v", project, err)
+	}
+	return legionBoardCompute(population, time.Now().UTC())
+}
+
+// holdAGeneration keeps one generation of the hub running for the rest of the test: nothing of
+// the hub runs while no conn holds a sub (deliveryHub.Subscribe), and these tests read what the
+// event feed does to the phase-work set rather than what any view answers. The sub is a
+// timeline view, which reads no Legion board, so every board read here is the test's own, and
+// the generation stands from before the events the test writes, so the feed carries them.
+func holdAGeneration(t *testing.T, rig *hubRig) {
+	t.Helper()
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("hold", presetView(deliveryLiveTimeline, 7, "")))
+	t.Cleanup(func() { rig.hub.Close(conn) })
+}
+
+// applyEvents wakes the relay the hub reads its events from and waits until the hub holds every
+// event the test wrote. The generation holdAGeneration started is what applies them.
+func (r *hubRig) applyEvents(t *testing.T, what string) {
+	t.Helper()
+	head := eventHead(t, r.database)
+	notifyChannel(t, r.database, EventsChannel, "")
+	r.waitForEventCursor(t, head, what)
 }

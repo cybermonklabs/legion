@@ -49,8 +49,8 @@ type Admission struct {
 	// Cap is the deployment's admission cap, the slots the header counts against.
 	Cap *int `json:"cap,omitempty"`
 	// Active is every issue holding a slot, which a daemon may widen to children as well as
-	// roots (dispatch://INFRA-980). Dispatch counts the slots in use from each issue's own
-	// `slot` instead.
+	// roots (dispatch://INFRA-980). The board counts the slots in use from it, and from each
+	// issue's own `slot` only where a daemon sends no `active`.
 	Active []string `json:"active,omitempty"`
 	// Waiting is the waiting line in the daemon's own order, which the board's Queue column shows
 	// without re-sorting.

@@ -163,8 +163,8 @@ type legionBoardCard struct {
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the
 // kind of wait (`ask`, `gate`, or whatever a later daemon names), when it began, and when a person
-// answered it — an answered root waits for a slot at the front of the queue rather than for a
-// person.
+// answered it. An answered root keeps the slot it held and stands in the queue until the pass
+// that resumes it.
 type legionBoardWait struct {
 	Kind       string     `json:"kind"`
 	Since      *time.Time `json:"since"`

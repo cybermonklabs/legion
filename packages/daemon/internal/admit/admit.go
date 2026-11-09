@@ -32,10 +32,10 @@ import (
 type Admission struct {
 	store  record.Store
 	engine *workflow.Engine
-	// readCap answers the admission cap, read at every decision that needs one rather
-	// than copied here: New sets it to the cap it was given, and the daemon replaces it with a
-	// read of its settings holder (ReadCapFrom), so an operator's `admission_cap` change reaches
-	// the next admission with nothing rebuilt.
+	// readCap answers the admission cap, read at every decision that needs one rather than
+	// copied here: New answers the cap it was given, and the daemon builds admission through
+	// NewReading over its settings holder, so an operator's `admission_cap` change reaches the
+	// next admission with nothing rebuilt.
 	readCap func() int
 	project string
 	log     *slog.Logger
