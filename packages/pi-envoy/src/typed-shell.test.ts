@@ -211,12 +211,15 @@ describe("running a person's command", () => {
 
   // zsh reads `~/.zshenv` whatever its other arguments, and no variable closes that door, so a
   // zsh is given `-f`. This image has no zsh, so the row stands one in: a file named `zsh` that
-  // prints the arguments it was handed. `getShellConfig` resolves it because `SHELL` names it
-  // and this machine can run it, and it caches what it resolved, so the variables are set for a
-  // process of its own that is started with them rather than for this one. What the row proves
-  // is that the flag is passed; that a real zsh then reads no `.zshenv` is zsh's own behaviour,
-  // which no row on this image can show. The last argument is the command with the host's shell
-  // prefix before it, so the row matches the arguments rather than comparing the whole list.
+  // prints the arguments it was handed. `getShellConfig` resolves it from `SHELL` alone, which
+  // it takes as given once this machine can run it, so the row sets no `PATH` for it, and it
+  // caches what it resolved, so the variables are set for a process of its own that is started
+  // with them rather than for this one. What the row proves is that the flag is passed first;
+  // that a real zsh then reads no `.zshenv` is zsh's own behaviour, which no row on this image
+  // can show. Where `-f` sits is the whole of it: in `zsh -c <command> -f` the `-f` is the
+  // shell's own `$0` and not a flag, and `~/.zshenv` is read all the same. The last argument is
+  // the command with the host's shell prefix before it, so the row reads the first two
+  // arguments rather than the whole list.
   test("passes `-f` to a zsh, whose `.zshenv` no environment closes", async () => {
     const directory = scratch();
     const shell = join(directory, "zsh");
@@ -241,14 +244,14 @@ describe("running a person's command", () => {
     );
     try {
       const runs = Bun.spawn([process.execPath, runner], {
-        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, SHELL: shell },
+        env: { ...process.env, SHELL: shell },
         stderr: "pipe",
         stdout: "ignore",
       });
       await runs.exited;
       expect(await new Response(runs.stderr).text()).toBe("");
       expect(runs.exitCode).toBe(0);
-      expect(readFileSync(printed, "utf8").split("\n")).toContain("-f");
+      expect(readFileSync(printed, "utf8").split("\n").slice(0, 2)).toEqual(["-f", "-c"]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

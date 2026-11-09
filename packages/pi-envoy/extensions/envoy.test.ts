@@ -13475,6 +13475,48 @@ console.log(JSON.stringify(args));
         ).toEqual([]);
       }, 20_000);
 
+      // The same move, made before the command is asked for: the delivery awaits the whole body
+      // and then the Dispatch accept, and a host that leaves inside that window is already on
+      // another conversation when the command starts. The command was asked of the session the
+      // message was addressed to all the same, so the conversation the host moved to is handed
+      // nothing here either.
+      test("hands the agent no copy when the host moved on before the command was asked", async () => {
+        let live = "ses_delivery";
+        const { agent, fixture, replied, replies } = await bootShellSession(
+          "shell-command-host-moved-first",
+          {
+            accept: () => {
+              // The host leaves while Dispatch answers the accept, with no event for the move,
+              // so the plugin's own `sessionID` still reads ses_delivery.
+              live = "ses_after_shell";
+              return { accepted: true, body: "!printf hi" };
+            },
+            hostSessionID: () => live,
+          }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-host-moved-first"));
+        await replied(1);
+
+        // The person is answered, and the live view of the session the message was addressed to
+        // carries the report, keyed on the Dispatch message it answers.
+        expect(replies[0]?.body).toMatchObject({
+          body: expect.stringContaining("```\nhi\n```"),
+        });
+        const frames = streamFrames();
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+        expect(frames[0]?.message.parts).toEqual([
+          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+        ]);
+        // The conversation the host moved to reads nothing of a command it was never asked for.
+        expect(
+          fixture.deliveries.filter((delivery) =>
+            delivery.content.includes("A person ran this shell command")
+          )
+        ).toEqual([]);
+      }, 20_000);
+
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
       // command run on with its session gone. What this row proves is the plugin's half: the

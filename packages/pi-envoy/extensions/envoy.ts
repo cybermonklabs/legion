@@ -1387,7 +1387,6 @@ export default function envoyExtension(pi: PiApi): void {
     typedPictures.withdraw(turn.messageId);
     const running = runningShellCommand;
     const session = sessionID;
-    const asked = hostSessionID();
     const cwd = activeSessionContext?.cwd ?? process.cwd();
     // Every text this message is answered with opens with the person's line as they sent it and
     // as Dispatch stored it, never the trimmed command: that is what the live view reads a
@@ -1427,16 +1426,9 @@ export default function envoyExtension(pi: PiApi): void {
             turn.messageId
           );
         }
-        // The agent's copy goes to the session the command was asked of and to no other: a
-        // `/new` or a `/resume` fires no shutdown and so does not stop a running command, and the
-        // session the host moved to would otherwise read "A person ran this shell command in this
-        // session" over another conversation's output, from another working directory. Which
-        // session is open is the host's live id, never the module's `sessionID`: the host moves
-        // its session manager and awaits its resets before it emits `session_switch`, and a move
-        // with no session event reaches `sessionID` only at the next reconcile pass, so through
-        // either window `sessionID` still names the session the command was asked of while the
-        // host is already on another conversation.
-        if (hostSessionID() === asked) {
+        // The agent's copy goes to the session the command was asked of and to no other, which
+        // counts as open only while this instance and the host alike still name it.
+        if (sessionOpen(session)) {
           pi.sendMessage(
             {
               content: shellCommandMessage(report),
