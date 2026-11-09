@@ -1152,7 +1152,7 @@ GATES = [
     # claim different steps and do not collide.
     gate("envoy_go_race_docs", "envoy-go-docs-finalizers", exact=[
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/", {}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
         ]),
     ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + CI_SELF),
 

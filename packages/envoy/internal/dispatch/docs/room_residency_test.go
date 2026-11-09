@@ -1014,10 +1014,11 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					t.Fatal(err)
 				}
 				go func() {
-					// Released whichever way this goroutine leaves. Release puts no connection
-					// back that is busy, cancelled or inside a transaction; it destroys it
-					// (pgxpool conn.go:32-33), so cancelling closing frees this one as surely
-					// as a close that ran to the end does.
+					// Released whichever way this goroutine leaves, which hands the connection back
+					// to the pool's accounting, so Pool.Close stops waiting for it. A cancelled
+					// Exec closes the connection, and Release destroys a closed, busy or
+					// mid-transaction connection rather than putting it back (pgxpool
+					// conn.go:32-33).
 					defer closer.Release()
 					issueKey := fmt.Sprintf("DOC-%d", number)
 					// The close waits on the issue row the write holds until the write commits.
@@ -1107,10 +1108,10 @@ func parkedCommitTrial() (int, bool) {
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
 // (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
-// left open there costs the whole run its deadline - 60 minutes of envoy-go-race-docs, 34 of
-// envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs the case in a child
-// process of this test binary with one trial's commit parked for good and requires the child to
-// print the case's own --- FAIL line inside a deadline of its own.
+// left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
+// envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
+// the case in a child process of this test binary with one trial's commit parked for good and
+// requires the child to print the case's own --- FAIL line inside a deadline of its own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if os.Getenv(storetest.DatabaseURLEnv) == "" {
 		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
@@ -1127,19 +1128,19 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// (storetest.go:110). Both measurements take it in: 54.56 s in this package's issue pod
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
-	// and it is minutes below the deadline of any run that holds this package (34 m of
-	// envoy-go-docs-finalizers, 60 m of envoy-go-race-docs), so a child that truly wedges ends in
-	// this row's own failure rather than in the parent run's panic.
+	// and it is minutes below the deadline of any run that holds this package (the -timeout
+	// .github/workflows/ci.yaml gives envoy-go-docs-finalizers and envoy-go-race-docs), so a child
+	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
-	// -test.timeout arms only around the tests (testing.go, runTests), so the deadline above
-	// watches none of what the child does after them: storetest.Main's wait for those drops
-	// (storetest.go:110), the admin Exec that drops the template on context.Background(), the
-	// leak report. A child stuck in one of those would hold this row until the run that holds
-	// this package reached its own deadline, which is the end this row exists to prevent, so the
-	// child is bounded from here too. The margin over childDeadline is what that teardown is
-	// worth: the 15 s the plain drop is retried for, the forced drop behind it and the template
-	// drop after that, which a minute covers with room to spare while leaving this row minutes
-	// inside the shortest run that holds the package.
+	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
+	// the deadline above watches none of what the child does after them: storetest.Main's wait for
+	// those drops (storetest.go:110), the admin Exec that drops the template on
+	// context.Background(), the leak report. A child stuck in one of those would hold this row
+	// until the run that holds this package reached its own deadline, which is the end this row
+	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is
+	// what that teardown is worth: the 15 s the plain drop is retried for, the forced drop behind
+	// it and the template drop after that, which a minute covers with room to spare while leaving
+	// this row minutes inside the shortest run that holds the package.
 	const childTeardown = time.Minute
 	killing, cancelKilling := context.WithTimeout(context.Background(), childDeadline+childTeardown)
 	defer cancelKilling()
@@ -1147,10 +1148,10 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
 		"-test.timeout="+childDeadline.String())
 	command.Env = append(os.Environ(), parkedCommitEnv+"=0")
-	// CombinedOutput reads the child through a pipe, and Wait returns only once that pipe has
-	// closed -- a pipe every process the child starts inherits -- so the kill the context sends
-	// the child would not on its own free this row. WaitDelay bounds that last wait: ten seconds
-	// after the kill, Wait closes the pipe itself and returns what was read.
+	// Killing the child closes its end of the pipe CombinedOutput reads, so Wait returns. A
+	// process the child started would keep that pipe open after the kill, and WaitDelay bounds
+	// that case: ten seconds after the kill, Wait closes the pipe itself and returns what was
+	// read.
 	command.WaitDelay = 10 * time.Second
 	started := time.Now()
 	output, err := command.CombinedOutput()
@@ -1161,12 +1162,12 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if err == nil {
 		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
 	}
-	// This row is the only run of the committing flag's ownership logic, of a commit that returns
-	// late and of a close cancelled while it waits on the issue row, so a race in any of them is
-	// reported here or nowhere: the child fails for its parked commit either way, and the checks
-	// below, which ask only why it failed, would pass straight over the race.
+	// This row is the only run of the committing flag's early return in the release and of a
+	// close cancelled while it waits on the issue row, so a race in either is reported here or
+	// nowhere: the child fails for its parked commit either way, and the checks below, which ask
+	// only why it failed, would pass straight over the race.
 	if strings.Contains(string(output), "WARNING: DATA RACE") {
-		t.Fatalf("the child reported a data race in %v, under the parked commit's own ownership logic that this row alone runs:\n%s", took, output)
+		t.Fatalf("the child reported a data race in %v:\n%s", took, output)
 	}
 	if strings.Contains(string(output), "panic: test timed out") {
 		t.Fatalf("the case held its package's cleanup to the child's %v deadline (%v) instead of reporting the wedged commit:\n%s", childDeadline, took, output)
