@@ -24,12 +24,14 @@ name: CodeQL
 # so no analysis here covers them. Build modes are the starter workflow's: `autobuild` for go,
 # which CodeQL has no `none` mode for, and `none` for the three others.
 #
-# A pull request that changes only documentation starts no analysis (paths-ignore, as
-# docs.github.com's "Avoiding unnecessary scans of pull requests" shows). The list is this
-# repository's prose: every Markdown file, the five prose subtrees of docs/ (their JSON and PNG
-# attachments included), skills/ and LICENSE. docs/site is NOT ignored beyond its Markdown,
-# because it holds 30 TypeScript files the javascript-typescript analysis reads. A change to any
-# of the ignored paths still reaches CodeQL through the push to main and the weekly run.
+# Every pull request starts an analysis, documentation-only ones included, and that is why this
+# trigger carries no `paths-ignore`. The code-scanning rule on the ruleset of `main` holds a pull
+# request until CodeQL has reported on it, so a pull request the workflow skipped was held for an
+# analysis that never came: measured on 2026-11-09, a scratch pull request changing one Markdown
+# file was blocked with no CodeQL check run at all, while the same rule let through a pull
+# request that changed a file carrying an open alert. The cost is one run for each
+# documentation-only change, 4 to 9 minutes as measured on 2026-11-08. The `push` and `schedule`
+# triggers below carry no such list either, so `main`'s own alerts are unaffected.
 #
 # No `merge_group` trigger, though GitHub's documentation adds one. A pull request that adds a
 # high-severity finding is held by GitHub's own code-scanning rule on the ruleset of `main`
@@ -42,15 +44,6 @@ name: CodeQL
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/brainstorms/**'
-      - 'docs/plans/**'
-      - 'docs/research/**'
-      - 'docs/solutions/**'
-      - 'docs/superpowers/**'
-      - 'skills/**'
-      - 'LICENSE'
   push:
     branches: [main]
   schedule:
