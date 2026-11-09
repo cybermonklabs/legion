@@ -107,18 +107,23 @@ mkdir -p "$evidence/logs"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
-# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-refusal-fallback.XXXXXXXX")
 timeout_hook=
+# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
 # cleanup reports how the run ended with rc: the script's own status for EXIT, 128 plus the
 # signal's number for INT and TERM, so an interrupted run never reports success. The panes are the
-# driver's own children and it stops them itself.
+# driver's own children and it stops them itself. natsd is this script's own, started under
+# start_process's `set -m` in a process group of its own, so nothing else ends it: it is stopped
+# by the pid start_process recorded, and `$work`, which holds only the natsd binary this run built
+# and its JetStream store, goes with it. The evidence directory is not touched: every log, the
+# transcript and each pane's Oh My Pi transcript live there and are the run's record.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
-  [ -z "${nats_pid:-}" ] || stop_pid nats "$nats_pid" 10 >/dev/null 2>&1 || true
+  stop_pid "${nats_pid:-}"
+  [ -z "${work:-}" ] || rm -rf "${work:?}"
   if [ "$rc" -eq 0 ]; then
     echo "refusal fallback e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
   else

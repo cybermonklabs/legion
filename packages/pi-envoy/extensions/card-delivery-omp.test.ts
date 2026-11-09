@@ -10,6 +10,7 @@ import {
   deliveryFor,
   isSummarization,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
   sendRelayFrame,
@@ -30,18 +31,9 @@ import { z } from "zod";
 // until the test answers it.
 // LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server (the name the daemon's tests read, packages/daemon/internal/testnats/nats.go). A run
-// without both skips, except on GitHub Actions, where the pi-envoy job supplies both.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+// without both skips, except on GitHub Actions, where the pi-envoy job supplies both
+// (`ompNatsGuard`).
+const { skip, setup } = ompNatsGuard();
 
 /** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
 const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;

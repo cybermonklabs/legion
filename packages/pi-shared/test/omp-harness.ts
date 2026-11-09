@@ -679,6 +679,53 @@ export function isSummarization(request: Request): boolean {
   );
 }
 
+/** The real binary and the NATS server one case runs against, as `ompNatsGuard().setup()`
+ *  resolves them: `binary` is what `runLegionPane` spawns, `nats` what `LegionPaneOptions.nats`
+ *  takes. */
+export interface OmpNatsRun {
+  /** `LEGION_TEST_OMP`: the Oh My Pi binary of the repository's .omp-pin. */
+  readonly binary: string;
+  /** `LEGION_TEST_NATS_URL`: the NATS server the pane's Envoy extension connects to. */
+  readonly nats: string;
+}
+
+/** What `ompNatsGuard` hands a file that runs the real binary against a real NATS server. */
+export interface OmpNatsGuard {
+  /** What every case of the file passes `test.skipIf`. */
+  readonly skip: boolean;
+  /** Whether this run is on GitHub Actions (`GITHUB_ACTIONS`, not `CI`), for a file that needs a
+   *  third thing of its host and so guards it the same way (a tmux on PATH, say). */
+  readonly onActions: boolean;
+  /** The binary and the server a case runs against; throws on GitHub Actions without them. */
+  readonly setup: () => OmpNatsRun;
+}
+
+/**
+ * The guard every real-Oh-My-Pi pane test opens with: `LEGION_TEST_OMP` names the binary and
+ * `LEGION_TEST_NATS_URL` the NATS server each pane runs against, which `LegionPaneOptions.nats`
+ * requires — a session whose `ENVOY_NATS_URL` reaches no server is given no consumer, and its
+ * claim boot then ends the session (INFRA-771), so a pane without a real server proves nothing.
+ *
+ * A run without either variable skips, since neither a binary nor a server is on every host.
+ * On GitHub Actions it throws naming the variable instead: Actions is the host that ships the
+ * change, its job supplies both, and a skip there would hide the only run of the check. The
+ * switch is `GITHUB_ACTIONS === "true"`, not `CI`, which agent harnesses on the devbox export.
+ */
+export function ompNatsGuard(): OmpNatsGuard {
+  const binary = process.env.LEGION_TEST_OMP;
+  const nats = process.env.LEGION_TEST_NATS_URL;
+  const onActions = process.env.GITHUB_ACTIONS === "true";
+  return {
+    skip: (binary === undefined || nats === undefined) && !onActions,
+    onActions,
+    setup: () => {
+      if (binary === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+      if (nats === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
+      return { binary, nats };
+    },
+  };
+}
+
 /** Which Legion pane `runLegionPane` runs, and what its stand-in answers beyond the runner's routes. */
 export interface LegionPaneOptions {
   /**

@@ -5,6 +5,7 @@ import {
   type Cleanup,
   call,
   type LegionPane,
+  ompNatsGuard,
   type Reply,
   runLegionPane,
   type ToolResult,
@@ -24,19 +25,8 @@ import {
 // runs against: a session's only inbound is the consumer the listener builds for it, relayed on
 // its own relay subject, so a pane with no NATS server registers nothing and claims nothing
 // (INFRA-771). A run without both skips, except on GitHub Actions, where a skip would hide the
-// only run of the check on the host that ships it (GITHUB_ACTIONS, not CI: agent harnesses on
-// the devbox export CI=true).
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+// only run of the check on the host that ships it (`ompNatsGuard`).
+const { skip, setup } = ompNatsGuard();
 
 /** Every pane runs in this tree; a root architect's own issue is the tree. */
 const TREE = "TOOLS-1";

@@ -2532,3 +2532,42 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "resolve the role's holder", before, after)
 	})
 }
+
+// A copy held back for a role route, forwarded to a live holder, whose stored copy the stream
+// does not acknowledge is counted unanswered rather than failed, by the same rule a batch's own
+// role forward is counted by (forwardUnanswered,
+// TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered): the publish was confirmed, so what
+// is missing is the acknowledgement and not the bus, and a copy may yet stand for the holder's
+// consumer. Counting it failed would read a forward NATS took as one it refused, which is the
+// other half of that rule and is what TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried
+// holds. The holder here is registered and live, as a session plugin registers it, and the
+// stream captures no agent subject over the pass, so nothing acknowledges the forward - and no
+// session answers one.
+func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
+	ctx := store.WithTransactionTracking(context.Background())
+	rig := newRoleRig(t)
+	const role, holder = "reviewer", "ses_fallback_unacknowledged"
+	roleTopic := contracts.RoleTopicPrefix + role
+	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
+	rig.silent(t, roleTopic)
+	deps, registry := rig.countingDeps(t)
+	// The row is seeded while the stream still captures agent subjects, since the scan that
+	// holds the copy back sends the comment's own mention to a session's agent subject; the
+	// capture is narrowed for the pass alone, which is the send under test.
+	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
+	rig.narrowAgentCapture(t)
+
+	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+
+	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
+		t.Fatalf("the copy whose forward the stream did not acknowledge is published=%v settled=%v, want it left unsettled for a later pass",
+			held.published, held.settled)
+	}
+	body := failureReasons(t, registry)
+	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="unanswered"} 1`) {
+		t.Fatalf("/metrics body = %q, want the fallback forward the stream did not acknowledge counted unanswered", body)
+	}
+	if strings.Contains(body, `reason="failed"`) {
+		t.Fatalf("/metrics body = %q counts a fallback forward NATS took as a publish failure", body)
+	}
+}

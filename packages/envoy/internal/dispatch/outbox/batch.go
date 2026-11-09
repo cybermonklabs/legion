@@ -765,7 +765,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 				deps.countPublishFailure("denied")
 			case hold != nil:
 				deps.countRoleForwardHeld(hold.heldState)
-			case send.dest.forward != nil && errors.Is(err, bus.ErrNotAcknowledged) && !errors.Is(err, bus.ErrPublishUnconfirmed):
+			case forwardUnanswered(send.dest.forward != nil, err):
 				deps.countPublishFailure("unanswered")
 			default:
 				deps.countPublishFailure("failed")
@@ -824,6 +824,17 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		}
 		settle(chosen, err)
 	}
+}
+
+// forwardUnanswered reports whether a send that did not reach NATS is a role forward left
+// unanswered rather than one that failed: it was a forward, the stream did not acknowledge the
+// copy it took (bus.ErrNotAcknowledged), and the publish itself was confirmed, so a copy may yet
+// reach the holder's consumer. An unconfirmed publish (bus.ErrPublishUnconfirmed) is no such
+// case and counts a failure, as every send that is no forward does. One rule for the two
+// switches that count such a send, the batch's (sendChains) and the fallback copies'
+// (recordFallbackCopies), so the two cannot drift apart.
+func forwardUnanswered(forward bool, err error) bool {
+	return forward && errors.Is(err, bus.ErrNotAcknowledged) && !errors.Is(err, bus.ErrPublishUnconfirmed)
 }
 
 // firstAnswered returns the first chain of inflight whose current send's answer is in, and that

@@ -14,6 +14,7 @@ import {
   deliveryFor,
   type Interactive,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
   sendRelayFrame,
@@ -42,19 +43,8 @@ import { z } from "zod";
 // Oh My Pi in RPC mode and gets its start message as the daemon's prompt, runs against the same
 // stand-in (`startDaemonController`). LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the
 // NATS server, as in pi-envoy's real-binary tests. A run without both skips, except on GitHub
-// Actions, where the pi-legion job supplies both (GITHUB_ACTIONS, not CI: agent harnesses on the
-// devbox export CI=true).
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+// Actions, where the pi-legion job supplies both (`ompNatsGuard`).
+const { skip, setup } = ompNatsGuard();
 
 /**
  * The start message `legion controller start` hands the controller as

@@ -624,7 +624,7 @@ func roleFallbackKey(keys, settled map[string]string, unpinned *unpinnedRoleMent
 // refused (bus.ErrNotCaptured) and the row backed off for ever. A role no live holder can take is
 // forwarded too: its copy is kept on the role's kept lane for the holder that claims the role
 // next (keptOrSkipped, roleForward.keep), and the stream's acknowledgement of that keep settles
-// the row as a holder's receipt of a forward settles it. It is nil for every other destination,
+// the row as its acknowledgement of a forward settles one. It is nil for every other destination,
 // which the pass publishes to its topic as before (publishFallbackCopies). The comment's
 // mentions by session are the caller's to put on the forward, which has read them to decide the
 // row (decideFallbackCopy), as the batch puts them on the forward of its own role route.

@@ -12,6 +12,7 @@ import {
   call,
   deliveryFor,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
   serveStandin,
@@ -27,17 +28,12 @@ import {
 } from "../src/stall-evidence";
 import { stallExitsFile } from "../src/stall-exits";
 
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-export const skip = (omp === undefined || natsUrl === undefined) && !onActions;
+/** The binary (LEGION_TEST_OMP) and the NATS server (LEGION_TEST_NATS_URL) every case here runs
+ *  against: a run without both skips, except on GitHub Actions, where it throws (`ompNatsGuard`). */
+const ompNats = ompNatsGuard();
 
-/** The binary and the NATS server the case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+/** What the cases in extensions/legion-stall-watchdog-omp.test.ts pass `test.skipIf`. */
+export const skip = ompNats.skip;
 
 const PROJECT = "watch";
 export const ROLE = "implementer";
@@ -344,7 +340,7 @@ export interface StallPane {
  * is a turn; a turn of the pane's own conversation is answered from `reply`.
  */
 export async function startPane(options: PaneOptions): Promise<StallPane> {
-  const { binary, nats } = setup();
+  const { binary, nats } = ompNats.setup();
   const registered: Record<string, unknown> = JSON.parse(
     await readFile(
       path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register.json"),

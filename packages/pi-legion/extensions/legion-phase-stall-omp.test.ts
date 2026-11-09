@@ -7,6 +7,7 @@ import {
   call,
   type LegionPane,
   type LegionPaneOptions,
+  ompNatsGuard,
   type Reply,
   type Request,
   runLegionPane,
@@ -21,22 +22,12 @@ import {
 // listener builds for it, relayed on its own relay subject, so a pane with no NATS server
 // registers nothing and claims nothing (INFRA-771). A run without both skips, except on GitHub
 // Actions, where a skip would hide the only run of the check on the host that ships it
-// (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export CI=true).
+// (`ompNatsGuard`).
 // It is also the only check that the run-end nudge's hidden self-check starts no run: the nudge
 // treats any `agent_start` after a settle as a newer run and withholds its steer, so a host that
 // counted the side turn as a run would silence the nudge with every unit test still green.
 // The WAITING self-check case below fails if that ever changes.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+const { skip, setup } = ompNatsGuard();
 
 /** The implementer pane the phase-stall cases run, with what its stand-in daemon recorded and
  * its transcript's phase-stall entries. */

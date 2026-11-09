@@ -12,6 +12,7 @@ import {
   call,
   deliveryFor,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
   serveStandin,
@@ -45,22 +46,11 @@ import {
 // `bash` settings in the profile, so the pin's own `--mode rpc` defaults decide. The pane takes no NATS
 // delivery of its own here, but it is given a real server all the same: a session receives only
 // what its own consumer holds (dispatch://INFRA-771), so one that can open no relay subject is
-// given no consumer, and its claim boot ends the session rather than running on deaf. LEGION_TEST_OMP
-// names the binary and LEGION_TEST_NATS_URL the server, as in
+// given no consumer, and its claim boot ends the session rather than running on deaf.
+// LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the server, as in
 // legion-background-subagent-omp.test.ts; a run without them skips, except on GitHub Actions,
-// where the pi-legion job supplies both (GITHUB_ACTIONS, not CI: agent harnesses on the devbox
-// export CI=true).
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and the NATS server the case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+// where the pi-legion job supplies both (`ompNatsGuard`).
+const { skip, setup } = ompNatsGuard();
 
 /** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
 const ROLE = "implementer";
