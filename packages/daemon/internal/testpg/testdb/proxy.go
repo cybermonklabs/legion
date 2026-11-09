@@ -24,9 +24,8 @@ import (
 //
 // The server the proxy dials is the one pgconn.ParseConfig reads from dsn, and the URL it answers
 // is rewriteDSN's, which reads that URL back with the same parser: this helper moves the host of
-// a DSN, so it is the second place a reading of net/url's could send a test's traffic to a
-// machine the caller never named (DatabaseURL says how the two parsers differ). The refusals name
-// the reading alone and print no password.
+// a DSN, so it takes the check DatabaseURL's comment describes. The refusals name the reading
+// alone and print no password.
 func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
 	const named = "the database URL to proxy"

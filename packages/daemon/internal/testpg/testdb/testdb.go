@@ -17,9 +17,8 @@
 // internal/store's own tests take the same fixture every other package's tests take.
 //
 // DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
-// every caller of it is here or in internal/testpg, but for internal/daemon's live proofs, which
-// make a database of their own for a run (live_agent_proof_test.go). RandomName is exported for
-// internal/testpg alone, which names its template and each clone of it with it.
+// its own comment says which callers make that rewrite and what it refuses. RandomName is
+// exported for internal/testpg alone, which names its template and each clone of it with it.
 package testdb
 
 import (
@@ -136,6 +135,12 @@ func RandomName(prefix string) (string, error) {
 // as loopback, which is the only DSN the live proofs' shell guard admits
 // (scripts/e2e/lib/loopback-dsn.sh), can rewrite into a URL pgx connects to another machine with.
 // The refusal says what pgx read of each string, and prints no password.
+//
+// This check is the second of the two frames that hold a live proof to the server its caller
+// named, and it is the one place the Go half of those frames is written. The first frame is that
+// shell guard: it reads the caller's DSN with libpq before anything starts, and it reaches no
+// further than the shell. The comment above require_loopback_dsn is the one place the shell half
+// is written. testdb_test.go drives the cases of this check.
 func DatabaseURL(dsn, database string) (string, error) {
 	return rewriteDSN("LEGION_TEST_PG_DSN", dsn, rewrite{database: database})
 }
@@ -189,8 +194,12 @@ func readingOf(cfg *pgconn.Config) reading {
 func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		return "", fmt.Errorf("read %s as a URL: %s", name, parseReason(err))
+		// net/url's own reason quotes the text it stopped at, and that text can be part of the
+		// password (parseReason below), so the refusal is parseReason's fixed line and what pgx
+		// read of the same DSN, which holds no password.
+		before, beforeErr := pgconn.ParseConfig(dsn)
+		return "", fmt.Errorf("%s: %s\n\tpgx reads %s as %s",
+			name, parseReason(err), name, dsnReading(before, beforeErr))
 	}
 	if want.database != "" {
 		parsed.Path = "/" + want.database
@@ -224,15 +233,19 @@ func dsnReading(cfg *pgconn.Config, err error) string {
 	return readingOf(cfg).String()
 }
 
-// parseReason is why a parser refused a DSN, with no connection string in it. net/url names the
-// URL it refused (url.Error) and pgx quotes the connection string back ahead of its own reason
-// (pgconn.ParseConfigError, "cannot parse `<the DSN>`: <the reason>"), and either text holds the
-// password. pgx redacts that password itself, and says in pgconn/errors.go that the redaction is
-// best effort, so this cuts the string out rather than trust it.
+// parseReason is why a parser refused a DSN, with no part of the DSN in it. Both parsers quote
+// the text they refused, and either quotation can hold the password. net/url names the URL and
+// the text it stopped at (url.Error): a password holding a `#`, a `?` or a `/` ends the
+// authority there, and net/url reads the rest of that password as a port it then names. So a
+// url.Error gives the fixed line below and no text of its own. pgx quotes the connection string
+// ahead of its own reason (pgconn.ParseConfigError, "cannot parse `<the DSN>`: <the reason>"),
+// and that reason is kept with the quoted string cut off the front of it. pgx redacts the
+// password itself, and says in pgconn/errors.go that the redaction is best effort, so this cuts
+// the string out rather than trust it.
 func parseReason(err error) string {
 	var badURL *url.Error
-	if errors.As(err, &badURL) && badURL.Err != nil {
-		return badURL.Err.Error()
+	if errors.As(err, &badURL) {
+		return "net/url cannot read it as a URL"
 	}
 	var refused *pgconn.ParseConfigError
 	if errors.As(err, &refused) {

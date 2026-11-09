@@ -172,9 +172,9 @@ func dropInBackground(name string) {
 // the memoisation this file exists for, which is what the test of it counts.
 //
 // The admin database's URL and the template's are testdb.DatabaseURL's, as each clone's is
-// (Clone): that one helper reads every rewrite of LEGION_TEST_PG_DSN back with the parser pgx
-// connects through, and this file makes none of its own. The template's URL is made before the
-// `create database`, so a refused rewrite leaves no database behind.
+// (Clone), and this file makes no rewrite of its own: that helper's comment says what it refuses.
+// The template's URL is made before the `create database`, so a refused rewrite leaves no
+// database behind.
 func prepare(dsn string) error {
 	shared.server = dsn
 	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
