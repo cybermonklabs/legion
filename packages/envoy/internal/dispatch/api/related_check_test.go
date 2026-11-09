@@ -1231,14 +1231,7 @@ func TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt(t *testing.T) {
 	createSuggestionProject(t, handler, "ASKROW")
 	createSearchIssue(t, handler, "ASKROW", decoyTitle, decoySpec)
 	key := createSearchIssue(t, handler, "ASKROW", title, spec)
-	opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/asks", map[string]any{
-		"question": question,
-		"options":  []map[string]string{{"label": "Brass"}, {"label": "Steel"}},
-	}, "alice")
-	if opened.Code != http.StatusCreated {
-		t.Fatalf("open the ask on %s: status=%d body=%s", key, opened.Code, opened.Body.String())
-	}
-	askID := decodeBody[testAskWithSuggestions](t, opened).ID
+	askID := openRelatedAsk(t, handler, key, question)
 	refreshTermStats(t, database, "ASKROW")
 
 	suggestions := srv.relatedCheck(context.Background(),
@@ -1255,5 +1248,100 @@ func TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt(t *testing.T) {
 		t.Fatalf("the item for %s = kind %q id %q ask %+v, want the open ask %s: the check replaced the "+
 			"ask with the issue row, so a filer is no longer told the question is already open",
 			key, item.Kind, item.ID, item.Ask, askID)
+	}
+}
+
+// openRelatedAsk opens an ask on an issue and answers its id.
+func openRelatedAsk(t *testing.T, handler http.Handler, issue, question string) string {
+	t.Helper()
+	opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
+		"question": question,
+		"options":  []map[string]string{{"label": "Brass"}, {"label": "Steel"}},
+	}, "alice")
+	if opened.Code != http.StatusCreated {
+		t.Fatalf("open the ask on %s: status=%d body=%s", issue, opened.Code, opened.Body.String())
+	}
+	return decodeBody[testAskWithSuggestions](t, opened).ID
+}
+
+// The same rule under the arrival order that breaks a rule written the other way round: the
+// issue's own document row first, its open ask second, its issue row third. A loop that lets
+// only an issue row replace a held document keeps the document, passes the ask over because it
+// is not an issue, and then lets the issue row replace the document - so the item for this
+// owner is a bare issue with no Ask, and a filer repeating an open question is not told it is
+// already open. TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt above cannot see that,
+// because its fixture has the ask arrive first and the loop never chooses.
+//
+// The order is nothing unusual: every row of an issue's owner carries the issue's own
+// updated_at, so the page's recency tie-break cannot separate rows level on the fused score and
+// the tie falls to the row id, a random uuid for a document and for an ask. The fixture
+// therefore forces it rather than leaving it to those ids. A row's fused score is
+// 1/(searchFusionK + pos), pos its rank within its own kind's leg (relatedFusedSQL), so this
+// owner's rows arrive document, ask, issue exactly when its document is 1st among documents, its
+// ask 2nd among asks and its issue 3rd among issues. Each of those places is held by a strict
+// superset of the text's rare words, which relatedCoordinationRank sums the idf of, so no idf
+// has to be guessed at:
+//
+//   - documents: the target's spec is the only document row, because the three issues beside it
+//     are filed with no spec and an empty primary document is not in document_search at all;
+//   - asks: the decoy ask's question holds all five rare words, the target's ask three of them;
+//   - issues: the two decoy titles hold five and four, and the target's issue row - its key, its
+//     title and its own spec (migration 20261105145242_issues_search_spec) - three.
+//
+// The run reads that order back off the check's own keyword statement before it asserts the
+// item, so a fixture that stopped forcing it fails here rather than passing by luck.
+//
+// Keyword-only, as the two tests above are: the ordering under test is the keyword leg's and
+// needs no model; the embedder is configured only because the check's server takes one.
+func TestRelatedCheckKeepsAnOpenAskWhoseDocumentRowArrivesFirst(t *testing.T) {
+	const title = "Theodolite gimbal on the tender"
+	const spec = "The theodolite gimbal slips while the capstan is wound."
+	const question = "Should the theodolite gimbal be freed before the capstan is wound?"
+	const decoyQuestion = "Does the theodolite gimbal foul the capstan tally at the breakwater?"
+	const widestDecoy = "Theodolite gimbal capstan tally breakwater survey"
+	const narrowerDecoy = "Theodolite gimbal capstan tally drift"
+	const text = "Theodolite gimbal capstan tally breakwater"
+	handler, database, srv := meaningServer(t, &fakeEmbedder{vectors: map[string][]float32{}})
+	createSuggestionProject(t, handler, "DOCROW")
+	host := createSearchIssue(t, handler, "DOCROW", widestDecoy, "")
+	createSearchIssue(t, handler, "DOCROW", narrowerDecoy, "")
+	key := createSearchIssue(t, handler, "DOCROW", title, spec)
+	openRelatedAsk(t, handler, host, decoyQuestion)
+	askID := openRelatedAsk(t, handler, key, question)
+	refreshTermStats(t, database, "DOCROW")
+
+	picked, err := recallPick(context.Background(), srv, "DOCROW", text, "", "")
+	if err != nil {
+		t.Fatalf("pick the check's terms: %v", err)
+	}
+	rows, err := recallNewSearch(context.Background(), srv, "DOCROW", picked)
+	if err != nil {
+		t.Fatalf("run the check's keyword statement: %v", err)
+	}
+	var arrived []string
+	for _, row := range rows {
+		if ownedByIssue(row, key) {
+			arrived = append(arrived, row.Kind)
+		}
+	}
+	if !slices.Equal(arrived, []string{"document", "ask", "issue"}) {
+		t.Fatalf("%s's rows arrived %v, want [document ask issue]: the fixture no longer forces the order "+
+			"this test exists for, so it no longer covers the case the ask-first fixture cannot see", key, arrived)
+	}
+
+	suggestions := srv.relatedCheck(context.Background(),
+		relatedInput{project: "DOCROW", text: text, keywordsOnly: true})
+	if suggestions.Outcome != "found" {
+		t.Fatalf("suggestions = %+v, want the issue's rows found by their own words", suggestions)
+	}
+	index := slices.Index(relatedOwnerKeys(suggestions.Related), key)
+	if index < 0 {
+		t.Fatalf("related = %+v, want an item standing for %s", suggestions.Related, key)
+	}
+	item := suggestions.Related[index]
+	if item.Kind != "ask" || item.ID != askID || item.Ask == nil || item.Ask.State != "open" {
+		t.Fatalf("the item for %s = kind %q id %q ask %+v, want the open ask %s: the held document row "+
+			"gave way to the issue row and the ask was passed over, so a filer is not told the question "+
+			"is already open", key, item.Kind, item.ID, item.Ask, askID)
 	}
 }

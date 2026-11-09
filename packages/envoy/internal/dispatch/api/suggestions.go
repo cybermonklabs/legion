@@ -651,15 +651,23 @@ func (s *server) fillRelatedItems(
 		}
 	}
 
-	// One item per owner: the owner's best-ranked row, but for one exchange - an issue's own
-	// document row gives way to the issue row. An issue and its spec share an owner, and the
-	// row's label reads the issue's key and title either way, so taking whichever the score put
-	// first sent a reader who clicked it to /issues/KEY/spec?q=… rather than to the issue, with
-	// nothing on screen to say so. Every other row an issue owns - an ask, a comment, a message -
-	// keeps the place it won, because it carries what the issue row does not: an ask's state most
-	// of all, which is how a filer is told the question is already open, or how it was settled
-	// (suggestionFromResult copies Ask from the row it is given, so an issue row standing in for
-	// an ask row says nothing of either).
+	// One item per owner: the owner's best-ranked row that is not a document, and the document
+	// only when no other row of that owner reached the page. An issue and its spec share an
+	// owner, and a row's label reads the issue's key and title either way, so listing the
+	// document sends a reader who clicks it to /issues/KEY/spec?q=… rather than to the issue,
+	// with nothing on screen to say so. Every other row an issue owns - an ask, a comment, a
+	// message - carries what the document row does not, an ask's state most of all, which is how
+	// a filer is told the question is already open or how it was settled (suggestionFromResult
+	// copies Ask from the row it is given, so a row standing in for an ask row says nothing of
+	// either). Which is why the held document gives way to any later row, and not to an issue row
+	// alone: an owner's rows arrive in the fused order, so an owner whose document arrives ahead
+	// of its ask would keep that document until the issue row replaced it, and the ask - the one
+	// row that tells a filer the question is already open - would be passed over.
+	//
+	// The owner key carries the owner's kind, so this reaches a project document's own owner too:
+	// there the held row is the document itself, and a later ask or comment on it takes its
+	// place. Same trade - an ask row carries a state a document row has none of - on an owner
+	// that has no issue row to fall back on.
 	seen := map[string]int{}
 	related := make([]model.SearchResult, 0, len(candidates))
 	for _, result := range candidates {
@@ -670,7 +678,7 @@ func (s *server) fillRelatedItems(
 			related = append(related, result)
 			continue
 		}
-		if result.Kind == "issue" && related[at].Kind == "document" {
+		if related[at].Kind == "document" {
 			related[at] = result
 		}
 	}

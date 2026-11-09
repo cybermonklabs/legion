@@ -5,10 +5,12 @@ import "fmt"
 // This file holds the related-item check's own SQL: the four statements it runs
 // (relatedKeywordQuery and relatedKeywordExcludingQuery, relatedMeaningQuery and
 // relatedMeaningExcludingQuery, paired into relatedKeywordStatement and
-// relatedMeaningStatement) and the three fragments they are built from
-// (relatedCoordinationRank, relatedTermWeights, relatedFusedSQL). They sit here together,
-// apart from the Go of the check that runs them (suggestions.go), so that each can be read,
-// measured and compared with search's own statements (search.go) on its own.
+// relatedMeaningStatement) and the fragments below that they are built from. Two fragments they
+// also read live elsewhere: relatedQOpener, which every one of them opens with
+// (related_terms.go), and relatedExcludedOwners, which the two excluding statements take
+// (related_excluded_owners.go). They sit here together, apart from the Go of the check that
+// runs them (suggestions.go), so that each can be read, measured and compared with search's own
+// statements (search.go) on its own.
 
 var (
 	// relatedKeywordLegs is search's keyword legs (searchKeywordLegs) ranked by the chosen
