@@ -346,7 +346,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 	t.Run("the promotion of a re-admitted root", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
 		// Two slots, and a root of another tree holds one of them from here to the end of the
-		// subtest: the re-admitted root takes the other at its promotion, so the member's task row
+		// subtest: the re-admitted root takes the other at its promotion, so the member's start row
 		// waits for a slot rather than running the moment the outbox wakes. That wait is what
 		// gives the passes below a state to act on.
 		cfg.AdmissionCap = 2

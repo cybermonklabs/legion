@@ -24,8 +24,8 @@ const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
  * the moment the boot registers the signal, so the name is taken as soon as `claims/ready` has
  * answered. It is not the channel server's own wiring, which reports a prompt submitted after
  * that registration and nothing before it (`registeredPane` below). */
-const firstTurnNow = (takeTheName: () => void): void => {
-  takeTheName()
+const firstTurnNow = (started: () => void): void => {
+  started()
 }
 const scratch: string[] = []
 afterEach(async () => {
@@ -634,8 +634,8 @@ async function registeredPane(options: {
   const remembered: string[] = []
   const lines: string[] = []
   let stops = 0
-  let takeTheNameAtFirstTurn: (() => void) | undefined
-  const submitPrompt = (): void => takeTheNameAtFirstTurn?.()
+  let reportFirstTurn: (() => void) | undefined
+  const submitPrompt = (): void => reportFirstTurn?.()
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
@@ -661,11 +661,11 @@ async function registeredPane(options: {
     stop: () => {
       stops += 1
     },
-    // The server's own wiring: the step goes in a slot the phase hook's `UserPromptSubmit`
-    // calls, and a prompt that finds it empty signals nothing (`onFirstTurn` in
+    // The server's own wiring: the signal goes in a slot the phase hook's `UserPromptSubmit`
+    // calls, and a prompt that finds it empty reports nothing (`onFirstTurn` in
     // `src/envoy-channel-server.ts`).
-    onFirstTurn: (takeTheName) => {
-      takeTheNameAtFirstTurn = takeTheName
+    onFirstTurn: (started) => {
+      reportFirstTurn = started
     },
     env: options.env,
     pollMs: 5,

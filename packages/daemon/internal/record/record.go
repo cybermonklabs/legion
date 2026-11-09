@@ -1587,22 +1587,23 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), where the outbox
-// stood when it retired (retired_at_row), and the task it holds, nil for none, with the task's
+// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
+// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
 // generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
-	// RetiredAtRow is the outbox's high-water row id at the moment this claim's retirement was
-	// recorded (store's putClaim), and 0 for a claim that has never retired and for one an
-	// earlier release retired, which recorded the moment nowhere. It orders the outbox against
-	// the stop: a row at or below it stood there when the worker was stopped, and a row above it
-	// was written after. It says nothing about a claim that is not retired now, which is the
-	// only state its reader looks at (admit's stopOutlivedStart).
-	RetiredAtRow int64
-	Pending      *supervise.Delivery
+	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
+	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
+	// does not), and 0 for a claim that has never retired and for one an earlier release retired,
+	// which recorded the moment nowhere. What it is for: its one reader weighs the write mark of a
+	// start row the issue owes against it, to tell a row the workflow wrote after the stop from one
+	// already written when the stop was recorded (admit's stopOutlivedStart). It says nothing about
+	// a claim that is not retired now, which is the only state that reader looks at.
+	RetiredAtWriteMark int64
+	Pending            *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

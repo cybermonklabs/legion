@@ -2256,22 +2256,36 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
 // that would only ever start a stopped worker. Its three terms together say the stop is the whole
 // of this row's story, and held, the claim as record.Store.RoleClaims reads it (nil for a role
-// the store holds no claim of), carries all three: its state, where the outbox stood when it
-// retired, and the task it holds. That read runs after the owed rows the fences kept, which is
-// what keeps the second term honest: a stop made between the two reads is in the claim read here,
-// so a row the earlier read said was owed is weighed against a mark that is never older than it.
+// the store holds no claim of), carries all three: its state, the write mark its retirement took,
+// and the task it holds. That read runs after the owed rows the fences kept, which is what keeps
+// the second term honest: a stop made between the two reads is in the claim read here, so a row
+// the earlier read said was owed is weighed against a mark that is never older than it.
+//
+// That second term compares write marks and not row ids, and both sides take their numbers from
+// one sequence (store's putClaim, whose doc holds what that sequence orders and what it does
+// not): a row's write mark is the write that last set its payload, and the claim's is the write
+// that recorded its retirement. An id cannot stand in for it, because record.Store.ReplaceOwedStart
+// rewrites the start an issue already owes in place and keeps its id — so a start written after a
+// stop can carry an id from before it, which is exactly what `legion claims stop` and then
+// `legion claims retry`, with no admission pass between them, writes.
+//
+// Two other places could hold this rule instead, and neither can:
+//
+//   - ReplaceOwedStart declining to reuse a row at or below the target claim's mark. It matches
+//     by issue and not by role, deliberately, so it holds no claim token to read a mark from; and
+//     in the one case this rule exists for, it would cost the issue its place in the waiting line,
+//     which is the whole reason that rewrite is in place.
+//   - The stop ending the role's owed rows in its own write. putClaim is shared by every path
+//     that retires a claim, so that would make every retirement an outbox write, and a pass would
+//     still need a rule of its own for a row a dead lane's lease hid from that write.
 func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if held == nil || held.State != supervise.StateRetired {
 		return false
 	}
-	// The claim's mark is the outbox's high-water row id at the moment its retirement was
-	// recorded, stamped by the write that recorded it (store's putClaim). Outbox ids come from
-	// one increasing sequence, so the mark splits the outbox at the stop.
-	//
-	// A row at or below the mark stood in the outbox when the worker was stopped, so the stop is
-	// the whole of its story: whatever it was written for, the worker it would reach is gone, and
-	// its only effect when a slot came would be to start a stopped worker.
+	// A row at or below the mark carries a payload written before the retirement was recorded,
+	// so the stop is the whole of its story: whatever it was written for, the worker it would
+	// reach is gone, and its only effect when a slot came would be to start a stopped worker.
 	//
 	// A row above the mark was written after the stop, so it is the workflow's own next start of
 	// this worker — a re-admitted tree's promotion, the held phase's retry — and the row is the
@@ -2280,11 +2294,11 @@ func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// nothing would start that phase again, the slot repair being no backstop, as it skips a
 	// retired claim on purpose (resumeSlottedWorkers).
 	//
-	// A claim an earlier release retired carries 0, below every outbox id, so none of its owed
+	// A claim an earlier release retired carries 0, below every write mark, so none of its owed
 	// rows is ended and its stop reads as that release read it. What the rule still does not
 	// reach is an owed row a lane has already leased, which is not in this read at all
 	// (record.Store.OwedStarts).
-	if owed.ID > held.RetiredAtRow {
+	if owed.WriteMark > held.RetiredAtWriteMark {
 		return false
 	}
 	// A task the claim still works would say the claim kept the work of this very row — the row

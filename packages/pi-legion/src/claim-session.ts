@@ -89,11 +89,12 @@ export function createClaimSession(deps: {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
   // The boot's first-turn signal, held from the moment the boot registers it, and whether a turn
-  // of this session has started. The two arrive in either order and both orders take the name
-  // exactly once: a turn that starts before the boot registers the signal is remembered here and
-  // reported the moment it registers, and a second turn reports a turn already reported, which
-  // does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
-  let claimAtFirstTurn: (() => void) | undefined;
+  // of this session has started. Calling it reports a turn and claims nothing: the claim step the
+  // boot runs after `claims/ready` is what takes the name. The two arrive in either order and both
+  // orders take the name exactly once: a turn that starts before the boot registers the signal is
+  // remembered here and reported the moment it registers, and a second turn reports a turn already
+  // reported, which does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
+  let reportFirstTurn: (() => void) | undefined;
   let turnStarted = false;
 
   const boot = async (
@@ -124,9 +125,9 @@ export function createClaimSession(deps: {
       // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
       // so no claim subscribes to one.
       claimRole: (role) => claimEnvoyRole(sessionID, role, context),
-      onFirstTurn: (claim) => {
-        claimAtFirstTurn = claim;
-        if (turnStarted) claim();
+      onFirstTurn: (started) => {
+        reportFirstTurn = started;
+        if (turnStarted) started();
       },
       // The pane's own bound, read from its environment as both watches of this entry read
       // theirs (`stallLimits` in `extensions/legion.ts`).
@@ -158,7 +159,7 @@ export function createClaimSession(deps: {
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
     firstTurnStarted: () => {
       turnStarted = true;
-      claimAtFirstTurn?.();
+      reportFirstTurn?.();
     },
   };
 }

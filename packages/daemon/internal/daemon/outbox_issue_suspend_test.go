@@ -912,7 +912,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 
 		run("the re-admitted tree's branches and relaunches")
 		run("the relaunches left over the branches")
-		// The member's task row waits for a slot of its own, which the next admission pass grants;
+		// The member's start row waits for a slot of its own, which the next admission pass grants;
 		// the controller's tick is that pass here.
 		if _, err := intake.ApplyFact(ctx, pool, "controller", "tick-after-the-readmission", intake.ControllerTick{}, engine, admission); err != nil {
 			t.Fatal(err)

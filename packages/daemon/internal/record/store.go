@@ -1819,6 +1819,15 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // (StillWorked) and every completion of it is refused HANDOFF_STALE_ASSIGNMENT. A row that has
 // never been leased keeps the empty token, which is what an unleased row carries.
 //
+// The rewrite takes a fresh number from outbox_write_mark_seq, the sequence an insert takes one
+// from through the column's own default. The row keeps the id that holds its place in the line,
+// so its id says when the issue first came to wait and nothing about when this payload was
+// written; the write mark says the second, which is what the stop rule needs of it (admit's
+// stopOutlivedStart, and store's putClaim for what the sequence orders). A rewrite that left
+// the mark where it stood would hand that rule a start written after an operator's stop under
+// the number the row took before it, and the rule would end the start the retry had just
+// written.
+//
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
@@ -1827,6 +1836,7 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
 	}
 	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
+			write_mark = nextval('outbox_write_mark_seq'),
 			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
 		where id = (select id from outbox
 			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
@@ -1842,19 +1852,20 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
 // admission slot and that no live lease holds, oldest first by the pair the waiting line orders
-// them on (OwedStart), with the role, phase and generation each row serves and the lease token
-// it still carries. A row a lane holds now is left out: its slot came, so it is neither waiting
-// in the line nor safe for admission's repair to finish. A row whose lease has lapsed is not
-// that — the lane that held it is gone and only a finished delivery removes a row — so it is
-// listed, exactly as the outbox's own due predicate lists it again (outboxUnleasedDue); left
-// out, its issue would stand in no part of the line and nothing would ever deliver or repair it.
+// them on (OwedStart), with the write mark of the write that last set each row's payload, the
+// role, phase and generation each row serves and the lease token it still carries. A row a lane
+// holds now is left out: its slot came, so it is neither waiting in the line nor safe for
+// admission's repair to finish. A row whose lease has lapsed is not that — the lane that held
+// it is gone and only a finished delivery removes a row — so it is listed, exactly as the
+// outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
+// stand in no part of the line and nothing would ever deliver or repair it.
 //
 // The lapse is judged against the database's own clock, the one moment a read with no caller's
 // now can ask for. The lane that wrote the lease and the rows' other readers compare against the
 // daemon's clock, which the deployment keeps on the same time.
 func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([]OwedStart, error) {
-	rows, err := tx.Query(ctx, `select issue, created_at, id, coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),
-			coalesce((payload->>'generation')::bigint, 0), lease_token
+	rows, err := tx.Query(ctx, `select issue, created_at, id, write_mark, coalesce(payload->>'role', ''),
+			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token
 		from outbox where kind = $1 and split_part(issue, '-', 1) = $2
 			and payload->>'op' = 'start' and payload->>'needsSlot' = 'true'
 			and (lease_until is null or lease_until <= now())
@@ -1866,8 +1877,8 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 	var owed []OwedStart
 	for rows.Next() {
 		var start OwedStart
-		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.Role, &start.Phase, &start.Generation,
-			&start.LeaseToken); err != nil {
+		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.WriteMark, &start.Role, &start.Phase,
+			&start.Generation, &start.LeaseToken); err != nil {
 			return nil, fmt.Errorf("list the starts %s owes its workers: %w", project, err)
 		}
 		owed = append(owed, start)
@@ -2440,11 +2451,13 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 //
 // Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that every claim read is
-// at least as new as the row beside it and a stop made between the two reads is seen here. A
-// claim retired in that window carries a mark (RetiredAtRow) at or above the row the earlier
-// read said was still owed, which is what the stop rule ends; reading the claims first would
-// hold that row one pass longer. That is where the call sits — the pass reads its owed rows into
-// record.LineFacts first, and weighs them here after.
+// at least as new as the row beside it and a stop made between the two reads is seen here. What
+// that buys is the mark the stop rule weighs each owed row against
+// (RoleClaim.RetiredAtWriteMark, taken in store's putClaim, whose doc holds what the sequence
+// behind it orders): a claim retired in that window took its number after the write of every
+// row the earlier read saw, so such a row is at or below the mark and the rule ends it, where
+// reading the claims first would hold that row one pass longer. That is where the call sits —
+// the pass reads its owed rows into record.LineFacts first, and weighs them here after.
 func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error) {
 	held := make(map[claim.Token]*RoleClaim, len(tokens))
 	if len(tokens) == 0 {
@@ -2466,7 +2479,7 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_row,
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
 		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
@@ -2479,7 +2492,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var pending bool
 		var task supervise.Delivery
 		var confirmed *time.Time
-		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtRow,
+		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
