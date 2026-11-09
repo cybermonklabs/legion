@@ -979,6 +979,9 @@ test.skipIf(skip)(
         }
       }
     }
+    // An exact count read through a reader that withholds a line the host has not finished, so
+    // the transcript has to end on a finished line first or the count could be one short.
+    await session.transcriptWhole();
     const userMessages = (await session.messages())
       .filter(({ message }) => message.role === "user")
       .map((entry) => JSON.stringify(entry));
@@ -1487,6 +1490,7 @@ test.skipIf(skip)(
     wake.reply("Read the startup card.");
     await settledOn(session, "Read the startup card.");
     expect(session.turns).toHaveLength(2);
+    await session.transcriptWhole();
     const delivered = (await session.transcriptLines()).filter(
       (line) => line.includes('"custom_message"') && line.includes(card.summary)
     );

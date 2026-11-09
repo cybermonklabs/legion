@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -25,7 +25,7 @@ import {
   StringCodec,
 } from "nats";
 import { z } from "zod";
-import { cardLines } from "../test/card-entries";
+import { readCardLines } from "../test/card-entries";
 
 // How an Envoy card and a person's Send reach the real Oh My Pi (extensions/envoy.ts's card send,
 // and src/card-wake.ts's delivery choice and its wake for a card the host folds): cards come over
@@ -52,6 +52,10 @@ const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/
 
 /** How long a case waits for one thing the session owes it before failing on it. */
 const DEADLINE_MS = 30_000;
+
+/** How long a card read waits for the session file to end on a finished line. One line is one
+ * write, so this is orders of magnitude more than it takes; it is a hang guard, not a sleep. */
+const CARDS_WHOLE_MS = 5_000;
 
 /** The one stream the stand-in listener answers a consumer registration with, and stamps every
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
@@ -183,7 +187,8 @@ interface CardSession {
   state(): Promise<z.infer<typeof RpcStateSchema>>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
-  /** The session file's `envoy-message` custom messages, as raw JSON lines. */
+  /** The session file's `envoy-message` custom messages, as raw JSON lines, read once that file
+   * ends on a finished line, so an exact count of them is not one short (`readCardLines`). */
   cardEntries(): Promise<string[]>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
@@ -532,7 +537,7 @@ async function startSession(
       const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return cardLines(await readFile(file, "utf8"), writer);
+      return readCardLines(file, writer, CARDS_WHOLE_MS);
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
