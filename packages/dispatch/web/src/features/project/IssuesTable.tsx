@@ -40,6 +40,7 @@ import {
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { useAgentRegistry } from "../refs/agent-registry";
+import { setSelectedIssues } from "../search/bar-scope";
 import { useKeymap } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -323,6 +324,43 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     getPaginationRowModel: getPaginationRowModel(),
   });
 
+  // The keys the table lists under the filters and the search it is showing, in row order. A key
+  // it no longer lists drops out of the selection - another filter, another project - so a row
+  // that is listed again comes back unselected; this is the rule `hooks/useMarkedKeys.ts` holds
+  // the Inbox's marks to, written against the table's own `rowSelection` rather than a second
+  // selection beside it. Joined into a string, so the pruning runs when the keys change rather
+  // than on every render that rebuilds the rows, and `undefined` while the listing is still out,
+  // which prunes nothing.
+  const listedKeys =
+    issues.data === undefined
+      ? undefined
+      : table
+          .getFilteredRowModel()
+          .rows.map((row) => row.id)
+          .join(" ");
+  useEffect(() => {
+    if (listedKeys === undefined) return;
+    const listed = new Set(listedKeys === "" ? [] : listedKeys.split(" "));
+    setSelection((current) =>
+      Object.keys(current).every((key) => listed.has(key))
+        ? current
+        : Object.fromEntries(Object.entries(current).filter(([key]) => listed.has(key)))
+    );
+  }, [listedKeys]);
+
+  // What the bar says it will act on when it opens over this table: the issues the reader has
+  // selected, in the order the table lists them. It belongs to the table while it is mounted,
+  // so leaving the page - the Board, another project, anywhere - clears it again.
+  const selectedSignature = table
+    .getFilteredRowModel()
+    .rows.filter((row) => row.getIsSelected())
+    .map((row) => row.id)
+    .join(" ");
+  useEffect(() => {
+    setSelectedIssues(selectedSignature === "" ? [] : selectedSignature.split(" "));
+    return () => setSelectedIssues([]);
+  }, [selectedSignature]);
+
   const {
     busy,
     notice,
@@ -459,6 +497,20 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       palette: false,
       run: openFocusedRow,
       when: () => document.activeElement?.matches("[data-issue-row]") === true,
+    },
+    {
+      // Selecting walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
+      id: "list-select",
+      keys: "x",
+      label: "Select or deselect the focused issue",
+      palette: false,
+      run: () => {
+        const key = focusedRow()?.getAttribute("data-issue-row");
+        if (key !== null && key !== undefined) {
+          table.getCoreRowModel().rowsById[key]?.toggleSelected();
+        }
+      },
+      when: () => focusedRow() !== null,
     },
   ]);
   const controlSignature = params.toString();

@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -117,7 +118,7 @@ function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { client, listing };
+  return { client, listing, view };
 }
 
 test("rows keep parent links, unread marks, asks, progress and route reach, with priority editable", async () => {
@@ -695,4 +696,50 @@ test("Start next stops at a refused predecessor and names every issue that did n
   );
   expect(sent).toEqual(["/api/v1/issues/CORE-3"]);
   expect(writesOf(client).rows()).toHaveLength(1);
+});
+
+test("x selects the focused issue and the bar is told, in the order the table lists them", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1"), issue("CORE-2")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.keyboard("j");
+  await user.keyboard("x");
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-1" }).checked).toBe(
+    true
+  );
+  expect(readSelectedIssues()).toEqual(["CORE-1"]);
+  await user.keyboard("j");
+  await user.keyboard("x");
+  expect(readSelectedIssues()).toEqual(["CORE-1", "CORE-2"]);
+  // The same key on the same row takes the selection back off, as the row's own checkbox does.
+  await user.keyboard("x");
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-2" }).checked).toBe(
+    false
+  );
+  expect(readSelectedIssues()).toEqual(["CORE-1"]);
+});
+
+test("an issue the table stops listing drops out of the selection and out of what the bar acts on", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1", { title: "Sextant" }), issue("CORE-2", { title: "Astrolabe" })]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  expect(readSelectedIssues()).toEqual(["CORE-1", "CORE-2"]);
+  await user.type(screen.getByRole("searchbox", { name: "Search issues" }), "sextant");
+  await waitFor(() => expect(readSelectedIssues()).toEqual(["CORE-1"]));
+  expect(screen.queryByRole("checkbox", { name: "Select CORE-2" })).toBeNull();
+  // Listed again, the row comes back unselected rather than carrying a hidden mark.
+  await user.clear(screen.getByRole("searchbox", { name: "Search issues" }));
+  const second = await screen.findByRole<HTMLInputElement>("checkbox", { name: "Select CORE-2" });
+  expect(second.checked).toBe(false);
+  expect(readSelectedIssues()).toEqual(["CORE-1"]);
+});
+
+test("leaving the table clears what the bar says it will act on", async () => {
+  const user = userEvent.setup();
+  const { view } = table([issue("CORE-1")]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  expect(readSelectedIssues()).toEqual(["CORE-1"]);
+  view.unmount();
+  expect(readSelectedIssues()).toEqual([]);
 });
