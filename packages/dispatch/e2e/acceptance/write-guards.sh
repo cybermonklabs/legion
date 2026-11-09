@@ -492,7 +492,10 @@ upload base "$guard" guard.md "$work/base-three.md" "$doc_token"
 # --- base: a replacement that names no token at all ----------------------------------------------
 
 # Dispatch refuses every replacement that names no token, so no replacement lands unguarded. The
-# command exits non-zero and the route answers 400 PRECONDITION_REQUIRED; nothing is written.
+# command exits non-zero and the route answers 400 PRECONDITION_REQUIRED; nothing is written, so
+# the document stands where the accepted upload above left it.
+read_token base "$guard" guard.md
+before_refusal="$doc_token"
 cli artifact --issue "$guard" --name guard.md --path "$work/base-four.md" >"$work/out" 2>&1 &&
   fail base "a replacement naming no token" "the command exited 0: $(<"$work/out")"
 pass base "a replacement naming no token exits non-zero"
@@ -510,9 +513,10 @@ expect base "it is refused PRECONDITION_REQUIRED" '"PRECONDITION_REQUIRED"' '.co
 refusal base "the refusal" 'dispatch doc-read'
 
 read_token base "$guard" guard.md
-[[ "$doc_token" == "$live_token" ]] ||
-  fail base "the refused replacement wrote nothing" "the document token moved to $doc_token"
-pass base "the refused replacement wrote nothing: the document is where it was"
+[[ "$doc_token" == "$before_refusal" ]] ||
+  fail base "the refused replacement wrote nothing" \
+    "the document token moved from $before_refusal to $doc_token"
+pass base "the refused replacement wrote nothing: the document is where the accepted upload left it"
 
 # --- close: the issues the run wrote -------------------------------------------------------------
 
