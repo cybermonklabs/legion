@@ -206,13 +206,16 @@ if [[ "${AUTODEPLOY_TEST_SCHEMA_UNREADABLE:-}" == 1 ||
 fi
 # The migration advisory key, as the server holds it. $schema.key, holding a number above zero,
 # stands for another session holding the key; every statement that reaches for it takes one off
-# that number, so the key comes free after that many tries. A try (pg_try_advisory_lock) refused
-# the key answers f, and one that took it answers t. No fake can model the snapshot the read
-# takes, so what this pins is which statements run, in which order, in the one run.
+# that number, so the key comes free after that many tries. The word `always` stands for a holder
+# that never lets go of it inside the read's deadline, as a backend left building an index
+# concurrently by a killed pod does. A try (pg_try_advisory_lock) refused the key answers f, and
+# one that took it answers t. No fake can model the snapshot the read takes, so what this pins is
+# which statements run, in which order, in the one run.
 key_held() {
   local remaining
   [[ -s "$AUTODEPLOY_TEST_SCHEMA.key" ]] || return 1
   remaining=$(<"$AUTODEPLOY_TEST_SCHEMA.key")
+  [[ "$remaining" == always ]] && return 0
   ((remaining > 0)) || return 1
   printf '%s\n' "$((remaining - 1))" >"$AUTODEPLOY_TEST_SCHEMA.key"
 }
@@ -532,6 +535,36 @@ fi
 # Nothing in the run waits on the key inside the database, in a statement run or in an argument.
 if grep -qF 'select pg_advisory_lock(' "$argv"; then
   fail 'deployer waited on the migration key in a blocking statement, which deadlocks the migration runner'
+fi
+
+# A key no session ever lets go of, as a pod killed mid-CREATE INDEX CONCURRENTLY leaves behind:
+# the backend goes on building the index, and holds the key for minutes. The deployer tries the
+# key a second apart for its whole deadline, never reads behind it, and then refuses: a schema
+# version it cannot read is no ground to deploy on. (The deployer's waits are the fake sleep
+# above, which returns at once, so its 60 tries take no time here.)
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(deploy_once); then
+  fail 'deployer deployed without reading the schema version behind a key no session released'
+fi
+no_secret 'the migration key held past the deadline'
+# The whole poll, not a first try taken for an answer: 60 tries, one per psql run, and no read in
+# any of them. A deployer that gave up on the first refusal would try once.
+if [[ $(grep -cF "$schema_try" "$argv") -ne 60 ]] || [[ $(grep -c "$psql_run" "$argv") -ne 60 ]]; then
+  fail 'deployer did not poll the migration key through its deadline before giving up'
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]]; then
+  fail 'deployer did not report the unreadable schema version behind the held key and stop'
+fi
+# Nothing of the deploy ran: no pg_dump, which is how the pre-deploy backup is taken, and no
+# compose, so the previous image still serves. ($backups holds the dumps of the cases above, so
+# what this reads is the argument log of this run, which fresh_env emptied.)
+if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
+  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer deployed, or backed up for a deploy, behind a migration key it could not take'
 fi
 
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
