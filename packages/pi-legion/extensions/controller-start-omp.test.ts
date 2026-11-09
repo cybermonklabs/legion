@@ -21,7 +21,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { connect, StringCodec } from "nats";
 import { z } from "zod";
-import { completeLines } from "../test/transcript-entries";
+import { completeLines, writtenLines } from "../test/transcript-entries";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
 // it: both plugins, the controller's environment, and `/legion-controller-start` on the command
@@ -456,7 +456,7 @@ async function startController(
   };
 
   // The pane appends to its transcript as this polls it, so a read can land between a line's
-  // bytes and its newline; `completeLines` withholds that fragment until the write has finished
+  // bytes and its newline; `writtenLines` withholds that fragment until the write has finished
   // it, rather than handing `JSON.parse` half an object (dispatch://INFRA-2188). Once Oh My Pi
   // has exited nothing will finish it, so every line is parsed and a fragment throws.
   const transcriptLines = async (): Promise<string[]> => {
@@ -467,7 +467,7 @@ async function startController(
     if (files.length !== 1)
       throw new Error(`want one transcript under ${sessions}, found ${files}`);
     const text = await readFile(path.join(sessions, files[0] ?? ""), "utf8");
-    return exitCode === undefined ? completeLines(text) : text.split("\n").filter(Boolean);
+    return writtenLines(text, exitCode === undefined ? "alive" : "gone");
   };
 
   let taken = 0;

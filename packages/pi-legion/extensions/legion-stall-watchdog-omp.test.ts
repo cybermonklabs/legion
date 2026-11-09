@@ -458,6 +458,7 @@ test.skipIf(skip)(
       pane.turns().find((turn) => conversation(turn).includes("Kernel died"))
     );
     expect(conversation(after)).toContain("Kernel died");
+    await pane.settled();
     expect(ofKind(await pane.records(), "step").map((record) => record.step)).toEqual([
       "end-processes",
     ]);

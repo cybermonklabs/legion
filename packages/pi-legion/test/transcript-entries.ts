@@ -40,7 +40,7 @@ async function soleTranscript(sessions: string): Promise<string | undefined> {
 
 /**
  * The entries of `customType` in the one `.jsonl` under `sessions`; `[]` when the directory does
- * not hold exactly one, as before. `writer` says whether something may still be appending.
+ * not hold exactly one. `writer` says whether something may still be appending.
  */
 export async function transcriptEntries(
   sessions: string,
@@ -64,11 +64,27 @@ export async function transcriptEntries(
 /**
  * Whether the transcript holds no half-written line. An absence read taken while it does would be
  * the absence of a line still being written, not of the record the case says is not there. True
- * when the directory holds no one transcript yet: there is no half-written line then either.
+ * when the directory does not hold exactly one transcript — nothing half-written is there to wait
+ * for, and `transcriptEntries` reads that directory as empty too.
  */
 export async function transcriptSettled(sessions: string): Promise<boolean> {
   const file = await soleTranscript(sessions);
   if (file === undefined) return true;
   const text = await readFile(file, "utf8");
   return text === "" || text.endsWith("\n");
+}
+
+/**
+ * Waits until `transcriptSettled` holds, polling every 25 ms, and throws naming the directory at
+ * `withinMs`. One line is one `write`, so a wait that reaches its bound is a transcript nothing
+ * is finishing rather than a poll that was too quick.
+ */
+export async function awaitSettled(sessions: string, withinMs: number): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!(await transcriptSettled(sessions))) {
+    if (Date.now() > deadline) {
+      throw new Error(`the transcript under ${sessions} still ends mid-line`);
+    }
+    await Bun.sleep(25);
+  }
 }

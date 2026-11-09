@@ -26,7 +26,7 @@ import {
   type StallWatchRecord,
 } from "../src/stall-evidence";
 import { stallExitsFile } from "../src/stall-exits";
-import { transcriptEntries, transcriptSettled, writtenLines } from "./transcript-entries";
+import { awaitSettled, transcriptEntries, writtenLines } from "./transcript-entries";
 
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
@@ -532,15 +532,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     },
     exited: rpc.exited,
     running: () => running,
-    async settled() {
-      const deadline = Date.now() + SETTLED_MS;
-      while (!(await transcriptSettled(sessions))) {
-        if (Date.now() > deadline) {
-          throw new Error(`the transcript under ${sessions} still ends mid-line`);
-        }
-        await Bun.sleep(25);
-      }
-    },
+    settled: () => awaitSettled(sessions, SETTLED_MS),
     async until(what, probe) {
       const deadline = Date.now() + DEADLINE_MS;
       for (;;) {
