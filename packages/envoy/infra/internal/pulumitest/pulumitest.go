@@ -22,14 +22,12 @@ import (
 // localRun is how to run the live tests by hand, from the repository root.
 const localRun = "From the repository root, build the listener image, then the held-port image the " +
 	"live tests run on top of it, and fetch the docker provider plugin v" + DockerPluginVersion +
-	", checking it against the SHA-256 the envoy-smoke job of " +
-	".github/workflows/ci.yaml pins:\n" +
+	", whose address and SHA-256 the `pulumi-docker` row of .github/ci-tools.yaml pins:\n" +
 	"  docker buildx build --load -t legion-envoy-smoke:local -f packages/envoy/docker/Dockerfile .\n" +
 	"  docker buildx build --load --build-arg BASE=legion-envoy-smoke:local " +
 	"-t legion-envoy-smoke-heldport:local -f packages/envoy/infra/host/heldportwrapper/Dockerfile .\n" +
-	"  curl -fsSL -o /tmp/" + dockerPluginTarball + " " +
-	"https://github.com/pulumi/pulumi-docker/releases/download/v" + DockerPluginVersion + "/" +
-	dockerPluginTarball + "\n" +
+	"  bash -c '. .github/scripts/ci-tools.sh && ci_tools_fetch pulumi-docker /tmp/" +
+	dockerPluginTarball + "'\n" +
 	"then, in packages/envoy/infra, with the pulumi CLI on PATH:\n" +
 	"  ENVOY_SMOKE_HELD_PORT_IMAGE=legion-envoy-smoke-heldport:local " +
 	"ENVOY_INFRA_DOCKER_PLUGIN=/tmp/" + dockerPluginTarball + " " +
@@ -39,7 +37,9 @@ const localRun = "From the repository root, build the listener image, then the h
 	"envoy-smoke job; see .github/workflows/ci.yaml."
 
 // DockerPluginVersion is the docker provider plugin the live programs pin, and so the version of
-// the tarball DockerPluginEnv names. CI reads it from here when it downloads that tarball.
+// the tarball DockerPluginEnv names. The `pulumi-docker` row of .github/ci-tools.yaml carries that
+// same version, and .github/scripts/check-ci-tools.sh refuses the two when they disagree, so the
+// tarball CI fetches from the row is of the version this constant pins.
 const DockerPluginVersion = "4.11.0"
 
 // dockerPluginTarball is the linux/amd64 tarball of DockerPluginVersion, as the docker provider's
