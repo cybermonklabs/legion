@@ -100,42 +100,50 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 	return false
 }
 
-// reviewToApply is the review of reviews, GitHub's list of pr's, that the workflow would hold as the
-// pull request's newest deciding review had every webhook arrived, judged by the workflow's own
-// rules rather than a copy of them: of the reviews that decide (intake.PullRequestReview.Decides)
-// and are newer (intake.PullRequestReview.Order) than the newest the pull request's record holds
-// (record.PullRequest.ReviewSeen), the newest the workflow lets decide
-// (workflow.Engine.DecidesRound): the reviewer's own review-App session, told from any other
-// review-App session's by its Legion footer against the session recorded on the reviewer's claim
-// (workflow.Engine.ReviewerSession, read once per pull request that has a candidate), or an author
-// with write access read as a webhook's review reads it (intake.ResolveAuthorCanWrite with
-// reviewerCanWrite). GitHub lists reviews in the order
-// they were created, and a draft keeps its place when it is submitted later, so the list's order
-// decides nothing. Its body is the review's whole body, where the webhook's envelope carries its
-// first 2,048 characters. It says false when no review qualifies. A deciding review GitHub lists
-// without an id or a submission time, which the workflow could not order, is an error, as is a
-// failed permission read; either applies nothing.
+// reviewToApply is the review of reviews, GitHub's list of pr's, that the workflow would hold as
+// the pull request's newest deciding review had every webhook arrived, judged by the workflow's
+// own rule rather than by a second one beside it: of the reviews that decide
+// (intake.PullRequestReview.Decides) and are newer (intake.PullRequestReview.Order) than the
+// newest the pull request's record holds (record.PullRequest.ReviewSeen), the newest the
+// workflow refuses nothing in (workflow.Engine.RefusesRound). That one judgement answers both
+// halves: who wrote the review - a review-App review read against the session recorded on the
+// reviewer's claim (workflow.Engine.ReviewerSession, read once per pull request that has a
+// candidate), anyone else's against the write access GitHub gives the account as a webhook's
+// review reads it (intake.ResolveAuthorCanWrite with reviewerCanWrite) - and the head the
+// review says it read.
 //
-// What a listed review decides is the workflow's judgement alone, so that one place decides it:
-// the fact carries intake.PullRequestReview.ReadFromList, and the workflow lets a listed review
-// decide the round only when the review App submitted it and its Legion footer names the pull
-// request's current head (workflow's refusesRound). The list's commit_id is no evidence of the
-// head a review read: GitHub moves it to the pull request's current head
-// (dispatch://INFRA-1557), which is why a person's listed review, whose body carries no Legion
-// footer, decides nothing here where their webhook's review still decides. A review the workflow
-// refuses for its footer is applied once - the event id names the review - and records the
-// refusal that the stuck notice of the round nothing decided names
-// (record.ReviewDecision.Refused).
+// GitHub lists reviews in the order they were created, and a draft keeps its place when it is
+// submitted later, so the list's order decides nothing. Its body is the review's whole body,
+// where the webhook's envelope carries its first 2,048 characters. It says false when no review
+// qualifies. A deciding review GitHub lists without an id or a submission time, which the
+// workflow could not order, is an error, as is a failed permission read; either applies nothing.
 //
-// A review is judged once per daemon process, for the read's own judgements, as a webhook's is
-// judged once when it is delivered: a review the workflow did not let decide - its author without
-// write access, or the review App's from a session that is not the reviewer's - is kept as refused
-// (refusedReviews) and not judged again by this process, so an account given write access after
-// the read judged its review cannot turn that review into a later round's decision, which its
-// webhook could not either. The set is held in memory, so after a restart the first read judges a
-// review not yet recorded again, with the permission GitHub gives then; and the read judges once
-// more a review its webhook's delivery refused, since the workflow records nothing for a review
-// that decides nothing. A read that failed judged nothing, and the next read of the issue asks again.
+// A candidate the judgement refuses is passed over and logged, and the read goes on to the one
+// below it, so a newer review the rule refuses hides no older one it admits: GitHub's list
+// holds every review the pull request has ever had, so a person's listed approval, or a
+// review-App approval of a head the branch has left, would otherwise stand in front of the
+// reviewer's own approval of the head on this read and on every read after it. The fact carries
+// intake.PullRequestReview.ReadFromList, which is what has a person's listed review refused
+// here: the list's commit_id is no evidence of the head a review read, since GitHub moves it to
+// the pull request's current head (dispatch://INFRA-1557). That same person's review by webhook
+// decides as it always has, on the commit_id the event carried.
+//
+// Nothing is applied for a review this passes over, so no event id of it is marked applied and
+// the pull request's newest deciding review stands where it was: a review-App review refused
+// because the record had not yet reached the head its footer names is judged again by the next
+// read of the issue, and decides the round once that head has arrived. The refusal a reviewer's
+// own mistake leaves on its row for the stuck notice (record.ReviewDecision.Refused) is the
+// webhook's to record, which is where such a review arrives first.
+//
+// A review is judged once per daemon process for the half of the judgement that answers for good
+// (workflow.Engine.DecidesRound), as a webhook's review is judged once when it is delivered: a
+// review whose author the workflow does not let decide - an account without write access, or the
+// review App from a session that is not the reviewer's - is kept as refused (refusedReviews) and
+// not judged again by this process, so an account given write access after the read judged its
+// review cannot turn that review into a later round's decision, which its webhook could not
+// either. The set is held in memory, so after a restart the first read judges a review not yet
+// recorded again, with the permission GitHub gives then. A read that failed judged nothing, and
+// the next read of the issue asks again.
 func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.Client, pr record.PullRequest, reviews []githubReview) (intake.PullRequestReview, bool, error) {
 	var candidates []intake.PullRequestReview
 	for _, listed := range reviews {
@@ -181,16 +189,27 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		if err != nil {
 			return intake.PullRequestReview{}, false, fmt.Errorf("read whether %s may decide review %d: %w", review.Author, review.ID, err)
 		}
-		if w.engine.DecidesRound(resolved, reviewerSession) {
+		refusal := w.engine.RefusesRound(resolved, pr, reviewerSession)
+		if refusal == "" {
 			return resolved, true, nil
 		}
-		w.refuseReview(review.ID)
+		w.log.Warn("workflow: a review GitHub lists decides nothing; this read passes over it and reads the review below it",
+			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "review", resolved.ID, "author", resolved.Author,
+			"state", resolved.State, "refused", refusal, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
+		// Only the half of the judgement that answers for good is remembered: a review refused
+		// for the head its footer names is refused at the head the record holds now, and the
+		// next read of the issue judges it at the head the record holds then.
+		if !w.engine.DecidesRound(resolved, reviewerSession) {
+			w.refuseReview(review.ID)
+		}
 	}
 	return intake.PullRequestReview{}, false, nil
 }
 
 // reviewRefused is whether this process has already judged the review GitHub lists under id and
-// found the workflow does not let it decide, and refuseReview records one it has. The per-issue
+// found the workflow lets its author decide nothing (workflow.Engine.DecidesRound), and
+// refuseReview records one it has. A review refused for the head it read is in neither: it is
+// judged again at the head the record holds then (reviewToApply). The per-issue
 // read (readIssuePullRequest) judges reviews on a goroutine of its own for each issue, so the set
 // is kept under readMemoMu rather than by whichever read touched it last.
 func (w *workflowRuntime) reviewRefused(id int64) bool {

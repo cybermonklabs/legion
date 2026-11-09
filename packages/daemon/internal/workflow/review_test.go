@@ -1775,6 +1775,39 @@ func TestAReviewAppReviewDecidesOnlyTheHeadItsFooterNames(t *testing.T) {
 	}
 }
 
+// The head the round records for a review is the head the review says it read, not the one
+// GitHub lists the review under (reviewHead): a review-App review names the head it read in its
+// Legion footer, where GitHub's commit_id for it is the pull request's head as GitHub holds it,
+// which GitHub moves onto each later head (dispatch://INFRA-1557). Here the reviewer approves
+// the head the record holds while the implementer's push to the next head is on its way, so the
+// approval arrives with its footer naming the head it read and a commit_id naming the head after
+// it. Recorded from the commit_id, the approval would stand the moment that next head arrived
+// and send the issue to accepting on code no review ever read.
+func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
+	pool := migratedPool(t)
+	seedReviewOf(t, pool, headOne, "green")
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"})
+	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headTwo,
+		Author: testReviewApp, Body: reviewBody("ship it", headOne), SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the approval the issue is in %s, want reviewing: a push is on its way from the head it read", got)
+	}
+	if got := reviewerDecision(t, pool); got == nil || got.State != "approved" || got.Head != headOne {
+		t.Fatalf("the reviewer's decision = %+v, want the approval recorded at %s, the head its footer names", got, headOne)
+	}
+
+	apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})
+	apply("read", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
+		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the push's head arrived the issue is in %s, want reviewing: no review read that head", got)
+	}
+	if got := reviewerDecision(t, pool); got == nil || got.Head != headOne {
+		t.Fatalf("the reviewer's decision = %+v, want it still recorded at %s", got, headOne)
+	}
+}
+
 // A REQUEST_CHANGES is held to its footer's head exactly as an approval is: one whose footer
 // names a head the branch has left ends no round, so the issue stays in reviewing and the round
 // goes stuck when its reviewer completes, rather than sending the work back on a reading of code
