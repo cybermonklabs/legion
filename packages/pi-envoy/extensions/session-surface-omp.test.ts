@@ -127,6 +127,8 @@ interface Sent {
 interface SurfaceSession {
   /** The directory the session runs in, which its `!command` runs in too. */
   readonly workspace: string;
+  /** The HOME the binary runs with, which its `!command` runs with too. */
+  readonly home: string;
   /** Every Messages request so far, in arrival order. */
   readonly turns: readonly Turn[];
   /** Every frame the session published on its agent stream, in arrival order. */
@@ -185,16 +187,26 @@ async function until<T>(
 /**
  * Starts the real Oh My Pi in RPC mode with only envoy.ts loaded, against one stand-in that is the
  * model gateway, the Envoy listener and Dispatch, and the NATS server `setup` names. `config` lines
- * go into the profile's config.yml and `env` beside the plugin's own variables. Resolves once the
- * session has registered its id with the listener, the test holds a NATS connection, and this
- * test's subscription to the session's stream is live.
+ * go into the profile's config.yml and `env` beside the plugin's own variables, and `prepare` is
+ * handed the two directories before the binary starts, for a case whose point is a file the
+ * binary must read at its launch. Resolves once the session has registered its id with the
+ * listener, the test holds a NATS connection, and this test's subscription to the session's
+ * stream is live.
  */
 async function startSession(
-  options: { readonly config?: readonly string[]; readonly env?: Record<string, string> } = {}
+  options: {
+    readonly config?: readonly string[];
+    readonly env?: Record<string, string>;
+    readonly prepare?: (paths: {
+      readonly home: string;
+      readonly workspace: string;
+    }) => Promise<void>;
+  } = {}
 ): Promise<SurfaceSession> {
-  const { config = [], env = {} } = options;
+  const { config = [], env = {}, prepare } = options;
   const { binary, nats } = setup();
   const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
+  await prepare?.({ home, workspace });
 
   const turns: Turn[] = [];
   /** The body and mode each published message id carries, which the accept answers with. */
@@ -325,6 +337,7 @@ async function startSession(
   let armed = false;
   let taken = 0;
   const session: SurfaceSession = {
+    home,
     workspace,
     turns,
     frames,
@@ -878,9 +891,8 @@ test.skipIf(skip)(
   120_000
 );
 
-// The command runs as typing the same bang command into the binary's own CLI runs it, which on
-// the real session is read off the five variables the host adds over its environment for every
-// shell command of its own.
+// The command runs under the host's own shell configuration, which on the real session is read
+// off the five variables the host adds over the environment it builds for a child shell.
 test.skipIf(skip)(
   "a Send of a command reading the host's own variables answers with them set",
   async () => {
@@ -889,6 +901,61 @@ test.skipIf(skip)(
     const sent = await session.send(command);
     expect(await session.reply(sent, "the reply to the command reading the host's variables")).toBe(
       `${command}\n\n\`\`\`\n1|1|true|not a tty\n\`\`\``
+    );
+  },
+  120_000
+);
+
+// That environment is the host's own for a child shell, not the binary's whole process
+// environment. The host drops the git location variables from it, because forwarding `GIT_DIR`
+// makes a `git` the command runs ignore its `cwd` and write to the worktree or index that names,
+// and it drops the values the launch directory's `.env` files loaded. This session is launched
+// under a `GIT_DIR` and over a workspace holding an `.env`, and neither value reaches the
+// command. That the binary did load that `.env` is read off the other name in it: the command
+// limit this session stops a command at, where the default is two minutes.
+test.skipIf(skip)(
+  "a Send reading `GIT_DIR` and a launch `.env` value answers with neither set",
+  async () => {
+    const session = await startSession({
+      env: { GIT_DIR: "/elsewhere/.git" },
+      prepare: async ({ workspace }) => {
+        await Bun.write(
+          path.join(workspace, ".env"),
+          `LEGION_SURFACE_DOTENV=from the launch directory\nENVOY_SHELL_COMMAND_LIMIT_MS=${SHELL_LIMIT_MS}\n`
+        );
+      },
+    });
+    const command = `!printf '%s|%s' "\${GIT_DIR-unset}" "\${LEGION_SURFACE_DOTENV-unset}"`;
+    const sent = await session.send(command);
+    expect(await session.reply(sent, "the reply to the command reading the two")).toBe(
+      `${command}\n\n\`\`\`\nunset|unset\n\`\`\``
+    );
+    const slept = await session.send("!sleep 600");
+    expect(await session.reply(slept, "the reply to `!sleep 600` under the `.env` limit")).toBe(
+      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
+    );
+  },
+  120_000
+);
+
+// No login shell: a login shell reads the profile of the HOME it runs with, and this session's
+// HOME holds one that prints a banner and runs a `cd` of its own, under each of the three names
+// the shells this machine resolves read. The command answers with the session's own directory
+// and with nothing but its own output, which is what R4 asks of it.
+test.skipIf(skip)(
+  "a Send of `!pwd -P` answers the session's directory, though its HOME holds a profile",
+  async () => {
+    const session = await startSession({
+      prepare: async ({ home }) => {
+        const profile = `printf 'a banner\\n'\ncd ${home}\n`;
+        for (const name of [".profile", ".bash_profile", ".zprofile"]) {
+          await Bun.write(path.join(home, name), profile);
+        }
+      },
+    });
+    const sent = await session.send("!pwd -P");
+    expect(await session.reply(sent, "the reply to `!pwd -P` under a profile")).toBe(
+      `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
   },
   120_000

@@ -314,9 +314,17 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   Use the arrow keys to choose, **Tab** or **Enter** to pick, and **Escape** to close the list.
   BTW offers no commands.
 - On an Oh My Pi session, a **Send** or an **Aside** whose first character is `!` runs the rest of
-  the line as a shell command, exactly as typing the same `!` line into Oh My Pi's own window runs
-  it: the same shell, with the same login arguments and the same environment, in the session's own
-  working directory.
+  the line as a shell command, under the session's own shell settings: the shell Oh My Pi
+  resolved, the environment it gives a shell command of its own, and the session's working
+  directory.
+  A few things differ from typing the same `!` line into Oh My Pi's own window.
+  The shell is not a login shell, so no profile of the session's home prints a banner or changes
+  the directory your command answers from.
+  `cd` moves only that one command: each runs in a process of its own, so nothing one command
+  leaves behind reaches the next.
+  The command gets no terminal, and nothing is sent to its standard input.
+  The mark is one `!`, so `!!ls` runs `!ls`, and the agent always reads what a command printed,
+  where Oh My Pi's own `!!` keeps it from the agent.
   A `!` with nothing after it is no command and reaches the agent as the message it is.
   What it printed appears in the conversation as your own message, is posted as the reply to your
   message, and is given to the agent to read at its next turn; it starts no turn.

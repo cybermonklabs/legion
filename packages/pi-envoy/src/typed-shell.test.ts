@@ -1,8 +1,17 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
   SHELL_OUTPUT_MAX,
@@ -32,6 +41,16 @@ async function untilTrue(ready: () => boolean): Promise<boolean> {
   return ready();
 }
 
+/** Whether `pid` is still in this machine's process table. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("the command a person's message says to run", () => {
   test("is the rest of a line whose first character is the mark, trimmed as the CLI trims it", () => {
     expect(shellCommandFrom("!printf hi")).toBe("printf hi");
@@ -54,6 +73,17 @@ describe("the command a person's message says to run", () => {
 });
 
 describe("running a person's command", () => {
+  // The host builds its shell configuration once and keeps it until it refreshes it
+  // (`procmgr.refreshShellConfigCache()`, which `extensions/envoy.ts` calls at session start), so
+  // a row that changes this process's environment must drop what was built before it, and leave
+  // nothing of its own behind for the next row or the next file.
+  beforeEach(() => {
+    procmgr.__resetShellConfigCacheForTests();
+  });
+  afterEach(() => {
+    procmgr.__resetShellConfigCacheForTests();
+  });
+
   test("answers with what it printed, and names no status for one that exited 0", async () => {
     const directory = scratch();
     try {
@@ -89,17 +119,18 @@ describe("running a person's command", () => {
     }
   });
 
-  // The CLI's bang command runs under the shell the host resolves, which is `SHELL` when it names
-  // a bash or a zsh this machine can run, and not the `/bin/sh` this module used to start. The
-  // shell the command really ran under is the one it reads back out of its own `SHELL`, which the
-  // host sets to it.
-  test("starts the shell `SHELL` names, as the host's own resolution does", async () => {
+  // The command runs under the shell the host resolved, which this module takes from the host's
+  // own configuration rather than resolving again: `SHELL` when it names a shell this machine
+  // can run, and not the `/bin/sh` this module used to start. The shell the command really ran
+  // under is the one it reads back out of its own `SHELL`, which that configuration sets to it.
+  test("starts the shell the host's own configuration resolved", async () => {
     const directory = scratch();
     const named = Bun.which("bash") ?? Bun.which("zsh");
     if (named === null) throw new Error("this machine has neither a bash nor a zsh to name");
     const before = process.env.SHELL;
     process.env.SHELL = named;
     try {
+      expect(procmgr.getShellConfig().shell).toBe(named);
       const result = await runShellCommand('printf %s "$SHELL"', {
         cwd: directory,
         limitMs: 10_000,
@@ -112,24 +143,52 @@ describe("running a person's command", () => {
     }
   });
 
-  // A login shell, as the CLI starts one: it reads the profile of the HOME it runs with, and a
-  // shell started without `-l` reads none of them. bash falls back to `.profile` with no
-  // `.bash_profile` beside it, dash reads `.profile`, and zsh reads `.zprofile`.
-  test("starts a login shell, as the CLI's bang command does", async () => {
+  // No login shell, which the host's own args would start (`-l -c`): a login shell reads the
+  // profile of the HOME it runs with, and a profile that prints a banner and runs a `cd` of its
+  // own would answer the person in place of their command and move it out of the session's
+  // directory. bash falls back to `.profile` with no `.bash_profile` beside it, dash reads
+  // `.profile`, and zsh reads `.zprofile`, so a profile under each name covers the shells this
+  // machine resolves.
+  test("starts no login shell, so a profile answers nothing in the command's place", async () => {
     const directory = scratch();
+    const home = scratch();
+    const profile = `printf 'banner\\n'\ncd ${home}\nTYPED_SHELL_TEST_PROFILE=read\n`;
+    await Bun.write(join(home, ".profile"), profile);
+    await Bun.write(join(home, ".zprofile"), profile);
     const before = process.env.HOME;
-    await Bun.write(join(directory, ".profile"), "TYPED_SHELL_TEST_PROFILE=read\n");
-    await Bun.write(join(directory, ".zprofile"), "TYPED_SHELL_TEST_PROFILE=read\n");
-    process.env.HOME = directory;
+    process.env.HOME = home;
     try {
-      const result = await runShellCommand('printf %s "$TYPED_SHELL_TEST_PROFILE"', {
+      const result = await runShellCommand('pwd -P; printf %s "$TYPED_SHELL_TEST_PROFILE"', {
         cwd: directory,
         limitMs: 10_000,
       });
-      expect(result.output).toBe("read");
+      expect(result.output).toBe(realpathSync(directory));
     } finally {
       if (before === undefined) delete process.env.HOME;
       else process.env.HOME = before;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // The environment is the host's own for a child shell, not this process's: the host drops the
+  // git location variables from it (`filterChildShellEnv`), because forwarding them makes `git`
+  // ignore the command's `cwd` and write to the worktree or index they name. A session launched
+  // under a `GIT_DIR` hands the command none.
+  test("hands the command the host's environment, which carries no `GIT_DIR`", async () => {
+    const directory = scratch();
+    const before = process.env.GIT_DIR;
+    process.env.GIT_DIR = "/elsewhere/.git";
+    try {
+      const result = await runShellCommand(
+        'if [ -z "$GIT_DIR" ]; then printf unset; else printf %s "$GIT_DIR"; fi',
+        { cwd: directory, limitMs: 10_000 }
+      );
+      expect(result.output).toBe("unset");
+      expect(procmgr.getShellConfig().env.GIT_DIR).toBeUndefined();
+    } finally {
+      if (before === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = before;
       rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -315,6 +374,51 @@ describe("running a person's command", () => {
     }
   }, 60_000);
 
+  // A `stop` the session hands in after the command has already ended is nothing: a command that
+  // ended well is never reported as stopped, whichever moment a shutdown lands in. The row puts
+  // the stop in that moment: the command leaves a process of its own session holding its pipe,
+  // which the kill of the command's group cannot reach, so the reads run on to the drain grace
+  // after the command's own shell is gone, and the stop is handed in once this machine's process
+  // table no longer holds that shell.
+  test("ignores a `stop` that arrives after the command has already ended", async () => {
+    const directory = scratch();
+    const setsid = Bun.which("setsid");
+    if (setsid === null) throw new Error("this machine has no setsid to leave a group with");
+    const pidFile = join(directory, "pid");
+    const escaped = join(directory, "escaped");
+    const shellPid = (): number => {
+      try {
+        return Number(readFileSync(pidFile, "utf8").trim());
+      } catch {
+        return 0;
+      }
+    };
+    try {
+      const result = await runShellCommand(
+        `echo $$ > ${pidFile}; ${setsid} sh -c 'printf gone > ${escaped}; sleep 5' &` +
+          ` while [ ! -f ${escaped} ]; do sleep 0.02; done; printf hi`,
+        {
+          cwd: directory,
+          limitMs: 60_000,
+          started: (stop) => {
+            // The shell leaves the process table when it is reaped, which is what resolves the
+            // wait on it, so by the time a poll of this machine's table can see it gone the
+            // command has ended here too: the stop below lands after that end and inside the
+            // reads that follow it, which is the moment this row is about.
+            void untilTrue(() => {
+              const pid = shellPid();
+              return pid > 0 && !alive(pid);
+            }).then(stop);
+          },
+        }
+      );
+      expect(result.output).toBe("hi");
+      expect(result.status).toBeUndefined();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   // The command's group is its own, so nothing but this module's own kill ends it: an `/exit` or
   // a crash during `!while :; do :; done` must leave no process behind. Proved as the reviewer
   // proved the defect - a process that ends well before the command's limit, which is the case
@@ -340,14 +444,6 @@ describe("running a person's command", () => {
         "process.exit(0);",
       ].join("\n")
     );
-    const alive = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
     try {
       const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
       await runs.exited;

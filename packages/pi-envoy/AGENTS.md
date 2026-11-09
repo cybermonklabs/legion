@@ -232,22 +232,32 @@ rest is the command whatever it starts with, trimmed as the CLI's own bang handl
 leaves no command at all and reaches the model as the prompt it is. The command runs on the same
 detached promise, never inside the
 queued delivery task, whose pass deadline a two-minute command would blow while holding every
-other Dispatch message for the session behind it. It runs as typing the same bang command into
-Oh My Pi's own CLI runs it: the shell the host resolves (`SHELL` when it names a bash or a zsh
-this machine can run, else the first `bash` or `sh` on `PATH`, else the first of those two in
-`/bin`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, else `sh`; the host's own `shellPath`
-setting is the one part of its resolution an extension cannot read), as a login shell unless
-`PI_BASH_NO_LOGIN` or `CLAUDE_BASH_NO_LOGIN` is set, with `PI_SHELL_PREFIX` (or
-`CLAUDE_CODE_SHELL_PREFIX`) before the command, in the directory
-`SessionContext.cwd` names, with the session's environment and the five the host adds over it
-(`SHELL`, `GIT_EDITOR=true`, `GPG_TTY=not a tty`, `OMPCODE=1`, `CLAUDECODE=1`, and `CI=true`
-unless `PI_BASH_NO_CI` or `CLAUDE_BASH_NO_CI` is set). Nothing else is added to what the CLI
-does; what is kept on top of it is what answering through a Dispatch reply needs, and
-`src/typed-shell.ts` labels each as that: a process group of its own, both
-streams pipes read to their end with the first 32,000 bytes kept and the rest thrown away, so a
-command that prints without end writes no file and fills no disk, no standard input and no pty,
-and the stop after
-`ENVOY_SHELL_COMMAND_LIMIT_MS` (default 120000) with what it printed kept. One command runs for a
+other Dispatch message for the session behind it.
+It runs under the host's own shell configuration, read from the host itself
+(`procmgr.getShellConfig()` of `@oh-my-pi/pi-utils`, which `extensions/envoy.ts` also refreshes
+at a session change): the shell it resolved, its shell prefix (`PI_SHELL_PREFIX`) before the
+command, and the environment it builds for a child shell, which is the session's own less the
+values the launch directory's `.env` files loaded and less `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE` and the rest of the git location variables, which would make a `git` the
+command runs ignore its `cwd` and write to another worktree or index (`filterChildShellEnv`),
+plus the five the host adds (`SHELL`, `GIT_EDITOR=true`, `GPG_TTY=not a tty`, `OMPCODE=1`,
+`CLAUDECODE=1`, and `CI=true` unless `PI_BASH_NO_CI` or `CLAUDE_BASH_NO_CI` is set), in the
+directory `SessionContext.cwd` names.
+What this caller still does differently from the same line typed at the CLI is listed in
+`src/typed-shell.ts`'s own header and is this: `!!` is no second mark, since the mark is one `!`
+and what a command printed always reaches the agent, where the CLI's `!!` hides it (R4 is that
+the agent reads the output); the shell is not a login shell, since the host's own args are
+`-l -c` and this caller passes `-c` in their place, so no profile of the session's HOME prints a
+banner or runs a `cd` in the command's answer (the variable `PI_BASH_NO_LOGIN` is never written
+into `process.env` for it, which would change every other command the session runs); `!cd` moves
+no session, each command being a process of its own rather than the host's own shell for the
+session; there is no pty and no interactive flag; no `user_bash` extension hook runs; and four
+things answering through a Dispatch reply needs, which a person at a terminal does not, are kept
+on top, each labelled as that in `src/typed-shell.ts`: a process group of its own, both streams
+pipes read to their end with the first 32,000 bytes kept and the rest thrown away, so a command
+that prints without end writes no file and fills no disk, the ignored standard input, and the
+stop after `ENVOY_SHELL_COMMAND_LIMIT_MS` (default 120000) with what it printed kept.
+One command runs for a
 session at a time, and a `!` that arrives while one runs is answered naming the command still
 running. The group is also killed as this process exits and at `session_shutdown`, which holds
 the running command's own kill: a detached group outlives the session otherwise, so an `/exit`
