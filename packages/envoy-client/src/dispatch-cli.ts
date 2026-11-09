@@ -128,7 +128,7 @@ const STORE_RECOVERY =
  * resending cannot help — nothing may write to a foreign store, so no review clears it.
  */
 const FOREIGN_VERDICTS =
-  "No marker was tampered with and nothing of the call is at fault. A verdict this session holds, or one its gate did not record, cannot be read by this version of the dispatch CLI, so a refusal of this very write cannot be ruled out and it is not sent. Resending changes nothing while the session lives: a new session gets a fresh record from the gate running now, so restarting is what clears it.";
+  "No marker was tampered with and nothing of the call is at fault. A verdict this session holds, or one its gate did not record, cannot be read by this version of the dispatch CLI, so a refusal of this very write cannot be ruled out and it is not sent. Send it as one bash call of literal words and the gate reviews it now and mints a marker for it, which posts it. The session goes on reading this way until the Oh My Pi process it belongs to restarts: a new session inside the same process is written by the same gate and reads the same.";
 
 /**
  * What the agent reads when an upload's own file cannot be read here. Its bytes are what the
@@ -512,27 +512,43 @@ export async function runDispatchCli(
         // An upload whose own bytes cannot be read has no identity, and no identity is never
         // no verdict.
         uploadUnread = typeof parsed.args.path === "string" && sends === undefined;
-        // A gate that records no verdicts leaves nothing behind when its review refuses, so an
-        // empty store proves nothing about this write and absence is not a statement. The
-        // record says which, rather than the CLI inferring it from a directory being empty.
+        // The store is always read. A gate that records no verdicts changes how **absence** is
+        // read, never whether the lookup happens: a refusal is a verdict whoever wrote it, and
+        // skipping the read because one live owner is incapable hid a recorded no and posted
+        // the write it refused. The capability governs the interpretation of nothing found.
         const capable = gate.kind === "on" && gate.verdicts;
-        const said = uploadUnread
+        const stored = uploadUnread
           ? undefined
-          : capable
-            ? readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes))
-            : ({
+          : readVerdict(dir, writeIdentity(parsed.tool, parsed.args, uploadBytes));
+        const said: typeof stored =
+          stored?.kind === "none" && !capable
+            ? {
                 kind: "unknown",
                 why: "this session's AskGate does not record the writes its reviews refuse, so whether it refused this one cannot be told",
                 path: join(dir, ASKGATE_RECORD),
-              } as const);
+              }
+            : stored;
+        // Consumed once, before the chain, and only where a refusal is not already standing:
+        // a refusal spends nothing. An argv-only marker is passed over unless the store said
+        // nothing, so it cannot be spent on a write that is about to be held.
+        const spent =
+          gate.kind === "on" && said?.kind !== "refused"
+            ? consumeMarker(
+                gate.stores,
+                argv,
+                parsed.args,
+                files,
+                Date.now(),
+                gate.markers,
+                said?.kind === "none"
+              )
+            : undefined;
         // Step one, and the reason this branch is ordered rather than conditional: this
         // session's own verdict on this write comes before everything else, because it is the
         // only thing here that is a verdict. A verdict is not a mode's to overrule, and it is
         // not a damaged file's to downgrade: a recorded no outranks both a marker that does not
-        // cover the write and a store that cannot be read. Where a bound marker and a no both
-        // stand — a clear or a mint removal that failed — the no wins, since nothing here can
-        // tell which came later, and a stale no costs a resend while a stale permission posts
-        // something a reviewer rejected.
+        // cover the write and a store that cannot be read. Nothing is consumed on this path —
+        // a refusal spends no marker.
         if (said?.kind === "refused")
           finding = {
             verdict: "refused",
@@ -541,15 +557,15 @@ export async function runDispatchCli(
             reason: `AskGate reviewed this write and did not send it: ${said.reason}`,
             advice: { refused: REFUSAL_STANDS, posted: REFUSAL_STANDS },
           };
-        // A marker bound to this very write is a verdict of allow for it, from a review that
-        // read these bytes. It outranks every "cannot tell": those say some refusal may exist
-        // somewhere, and this says what the review decided about this write. It does not
-        // outrank a recorded refusal of this write, which is the case above.
-        else if (
-          gate.kind === "on" &&
-          consumeMarker(gate.stores, argv, parsed.args, files, Date.now(), gate.markers).ok
-        )
-          finding = undefined;
+        // A marker **bound** to this very write is a verdict of allow for it, from a review
+        // that read these bytes, so it outranks every "cannot tell". An argv-only marker is
+        // not: it says no review stands behind it, and the gate mints one for every task
+        // subagent's literal write into the parent's session, so letting it take this shortcut
+        // posted the write the parent's review had refused. `ok` and `bound` are different
+        // questions, and only the second may answer this one. An argv-only marker is consumed
+        // and honoured only where the store said nothing at all, which is where the write
+        // posts regardless — so a refusal still spends nothing.
+        else if (spent?.ok === true) finding = undefined;
         else if (gate.kind === "broken")
           finding = {
             verdict: "unknown",
@@ -576,18 +592,8 @@ export async function runDispatchCli(
                 : { refused: FOREIGN_VERDICTS, posted: FOREIGN_VERDICTS },
           };
         } else {
-          // The consume above either took a marker, in which case this is not reached, or took
-          // none and said why. Repeating it here reads the store again after that attempt, so
-          // the reasons below are this call's own.
-          const spent = consumeMarker(
-            gate.stores,
-            argv,
-            parsed.args,
-            files,
-            Date.now(),
-            gate.markers
-          );
-          if (!spent.ok && spent.verdict === "stale")
+          if (spent === undefined || spent.ok) throw new Error("unreachable: a marker was taken");
+          if (spent.verdict === "stale")
             finding = {
               verdict: "stale",
               mode: gate.mode,
@@ -604,7 +610,7 @@ export async function runDispatchCli(
                       posted: `${SAME_MESSAGE} Send a write in a later message than the call that changes its file.`,
                     },
             };
-          else if (!spent.ok && spent.verdict === "unknown")
+          else if (spent.verdict === "unknown")
             finding = {
               verdict: "unknown",
               mode: gate.mode,
@@ -612,9 +618,9 @@ export async function runDispatchCli(
               reason: spent.why,
               advice: { refused: MARKER_UNREADABLE, posted: MARKER_UNREADABLE },
             };
-          else if (!spent.ok)
-            // No marker, and this session said nothing about the write. Where it lost a verdict
-            // it could not write down, nothing found is no proof that nothing was said.
+          // No marker, and this session said nothing about the write. Where it lost a verdict
+          // it could not write down, nothing found is no proof that nothing was said.
+          else
             finding =
               said.kind === "lost"
                 ? {

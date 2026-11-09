@@ -377,7 +377,7 @@ function isOwnerText(value: unknown): value is OwnerText {
  */
 function parseOwner(
   text: string
-): { owner: AskgateOwner; mode: AskgateMode; verdicts: boolean; markers: string } | undefined {
+): { owner: AskgateOwner; mode: AskgateMode; verdicts: boolean; markers: string[] } | undefined {
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -390,13 +390,39 @@ function parseOwner(
   // fact and not a guess. It records no verdicts, and its markers bind the one encoding that
   // version used. One historical encoder, named by a declared fact rather than tried among
   // several — and deletable once no such gate is left, with the record itself saying when.
-  const declared: OwnerCaps = typeof caps === "object" && caps !== null ? (caps as OwnerCaps) : {};
   return {
     owner: { pid, start, ns: ns ?? null, store },
     mode: mode === "block" ? "block" : "warn",
-    verdicts: declared.verdicts === VERDICTS,
-    markers: declared.markers === MARKERS_CANONICAL ? MARKERS_CANONICAL : MARKERS_RAW,
+    ...held(caps, "caps" in data),
   };
+}
+
+/**
+ * What a record's capabilities entitle its gate to, written so that holding nothing is the
+ * answer and every other one needs a reason.
+ *
+ * Three states, and only the first two are facts. A field that is **absent entirely** is a gate
+ * from before capabilities: that is a fact about a version, so it infers the one encoding that
+ * version used. A field that **is exactly this version's** is a fact it declared. Anything else
+ * — an unrecognised value, an unknown or missing key, a duplicate that `JSON.parse` collapsed,
+ * a shape that is not an object — is a claim this reader cannot evaluate, and it holds nothing:
+ * no verdict capability, and no encoding, so no digest matches and every marker reads as stale.
+ *
+ * Written the other way round, `markers` once read an unrecognised value as the historical
+ * encoding, so `{markers:"future"}` was honoured as raw and an old marker let a refused write
+ * post. The rule is that a claim one cannot evaluate yields nothing, never a default.
+ */
+function held(caps: unknown, present: boolean): { verdicts: boolean; markers: string[] } {
+  if (!present) return { verdicts: false, markers: [MARKERS_RAW] };
+  if (typeof caps !== "object" || caps === null || Array.isArray(caps))
+    return { verdicts: false, markers: [] };
+  const declared = caps as Record<string, unknown>;
+  const keys = Object.keys(declared);
+  // Every key known, every value known, nothing over: a duplicate key `JSON.parse` collapsed
+  // leaves a shape that fails this, so order cannot decide what a record permits.
+  if (keys.length !== 2 || declared.verdicts !== VERDICTS || declared.markers !== MARKERS_CANONICAL)
+    return { verdicts: false, markers: [] };
+  return { verdicts: true, markers: [MARKERS_CANONICAL] };
 }
 
 /** Writes `text` to `file` through an exclusive owner-only temporary file and `rename`. */
@@ -648,7 +674,7 @@ export function askgateState(dir: string, now = Date.now()): AskgateState {
     readonly store: string;
     readonly mode: AskgateMode;
     readonly verdicts: boolean;
-    readonly markers: string;
+    readonly markers: readonly string[];
   }[] = [];
   for (const name of names) {
     // Not an owner file: a temporary file that its write's `rename` has yet to make one.
@@ -691,7 +717,7 @@ export function askgateState(dir: string, now = Date.now()): AskgateState {
     stores: live.map(({ store }) => store),
     mode: live.some(({ mode }) => mode === "block") ? "block" : "warn",
     verdicts: live.every(({ verdicts }) => verdicts),
-    markers: [...new Set(live.map(({ markers }) => markers))],
+    markers: [...new Set(live.flatMap(({ markers }) => markers))],
   };
 }
 
@@ -813,7 +839,13 @@ function readMarker(file: string): Marker | "gone" | "unreadable" {
  *   since AskGate mints nothing when it rejects.
  */
 export type Consumed =
-  | { readonly ok: true }
+  /**
+   * One marker consumed. `bound` is whether its review read these very arguments and files: an
+   * argv-only marker says in as many words that no review stands behind it — a halt, a skip, a
+   * subagent's pass — so it is permission without a verdict, and only a bound one may outrank
+   * the CLI's uncertainty about a refusal it cannot read.
+   */
+  | { readonly ok: true; readonly bound: boolean }
   | {
       readonly ok: false;
       readonly verdict: "stale";
@@ -838,7 +870,13 @@ export function consumeMarker(
   files: readonly FileDigest[],
   now: number,
   /** The marker encodings the session's live owners declare (`askgateState`). */
-  encodings: readonly string[] = [MARKERS_CANONICAL]
+  encodings: readonly string[] = [MARKERS_CANONICAL],
+  /**
+   * Whether an argv-only marker may be spent. False where the caller will refuse the write
+   * whatever it finds, so that a refusal consumes nothing and the same call meets the same
+   * answer rather than an emptier store.
+   */
+  acceptUnbound = true
 ): Consumed {
   const key = argvDigest(argv);
   // One digest per encoding a live owner says it writes. Not a search over every encoding that
@@ -899,10 +937,11 @@ export function consumeMarker(
     }
   }
   usable.sort((a, b) => Number(b.bound) - Number(a.bound));
-  for (const { file } of usable) {
+  for (const { file, bound } of usable) {
+    if (!bound && !acceptUnbound) continue;
     try {
       unlinkSync(file);
-      return { ok: true };
+      return { ok: true, bound };
     } catch (error) {
       if (!hasErrnoCode(error, "ENOENT")) throw error;
     }

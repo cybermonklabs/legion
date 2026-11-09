@@ -512,7 +512,8 @@ review refused that very write (dispatch://INFRA-2079, row 3.5):
   file per refused write, named by the write's identity, whose body is the reason the review
   gave and when. The directory carries the scheme, so a change to the encoding is a new
   directory: a verdict of another scheme is never decoded, only detected, and a session holding
-  one refuses every gated write in block mode until it ends. `<state>/sessions/<id>/askgate-verdicts-lost`
+  one holds every gated write in block mode that no marker bound to it covers — a literal
+  resend the gate reviews and mints for still posts — until the Oh My Pi process restarts. `<state>/sessions/<id>/askgate-verdicts-lost`
   is the mark: its presence makes the session read a write it has nothing recorded against as
   unknown rather than unreviewed, for the rest of that session's life, and it never clears. An
   operator whose session refuses every unreviewed write should look for that file first — the
@@ -579,8 +580,10 @@ CLI's checks warn by default: a file changed after the review, a marker past its
 missing when the gate ran each post with a warning and an `unmarked` or `unreadable` entry that
 the report counts, and refuse only when the session chose block explicitly — `OMP_ASKGATE=block`,
 or, with no such variable, an `experiments` entry whose arm is on. A gated write with **no**
-marker is not one of them: no review ever saw it, so it posts with a warning in either mode
-(dispatch://INFRA-2079, row 3.5).
+marker is not one of them where the gate recording the session says it records its refusals: no
+review ever saw it, so it posts with a warning in either mode (dispatch://INFRA-2079, row 3.5).
+Where the record carries no such capability, or one this version does not recognise, absence
+states nothing and that write is held in block mode.
 AskGate ignores any other value of `OMP_ASKGATE`, `off` included, and the first review shows one
 notice that names `askgate.enabled` as the switch. The gate writes the checks' mode into the
 session's own record (not a process-wide file, so a process that binds two sessions keeps each

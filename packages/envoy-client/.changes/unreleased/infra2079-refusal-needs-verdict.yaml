@@ -6,7 +6,10 @@ body: |-
   complete.
   A call the gate never read — from a subagent, a script, an eval cell, `xargs`, `python3 -c` or
   any form outside the literal grammar — posts with a warning naming the call and why no review
-  ran, in every mode, where it used to be refused in `block`. A write AskGate's own review
+  ran, in every mode, where it used to be refused in `block`, provided the gate recording the
+  session says it records the writes its reviews refuse. Where it does not, or declares a
+  capability this version does not recognise, finding nothing states nothing and the write is
+  held in block mode until the Oh My Pi process restarts. A write AskGate's own review
   refused is held in either mode, since a verdict is not a mode's to overrule, and it outranks
   both a marker that does not cover the write and a store that cannot be read.
   A verdict is identified by what the reviewer judged and nothing of how the command spelled it
@@ -55,17 +58,19 @@ body: |-
   had refused. A record with no capabilities is a gate from before them — it records no
   verdicts, so every unmarked write of that session is unknown, and its markers bind the one
   encoding that version used, so they are honoured rather than refused with the untrue reason
-  that the arguments differ. An unrecognised capability is treated as not held, so a verdict
-  store this version does not know is unknown and a marker encoding it cannot compute reads as
-  stale; both fail closed. A marker bound to this very write outranks every such uncertainty,
+  that the arguments differ — a check that in block mode had refused every reviewed literal
+  write for the session's life, since an old gate mints a fresh old-encoding marker on every
+  write and the sweep never catches up. An unrecognised capability is treated as not held, so a
+  verdict store this version does not know is unknown and a marker encoding it cannot compute
+  reads as stale; both fail closed. Only a capability field that is absent altogether infers
+  the historical encoding, because absence is a fact about a gate that predates the field,
+  where a value present and unrecognised is a claim this reader cannot evaluate. A marker bound to this very write outranks every such uncertainty,
   since it is a verdict of allow for this write.
   The cost is measured rather than bounded by a phrase: a session whose record carries no
   verdict capability refuses every unmarked write in block mode for the rest of its life,
   including a subagent's, a script's and an eval cell's, and sessions on this fleet run 22 to 50
   hours. Restarting the session clears it, since a new session gets a record from the gate
-  running now; nothing else does. In block mode this previously refused every reviewed literal
-  write for the session's life, which is the check restored here rather than described more
-  weakly.
+  running now; nothing else does.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
   leave the loser refused, and now both post, one with the warning. A resent literal call is read
   by the gate and reviewed afresh. dispatch://INFRA-2079, row 3.5.

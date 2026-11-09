@@ -1181,8 +1181,10 @@ describe("absence is a statement only when the store was read whole", () => {
   // Its mirror: the same old gate mints markers under the encoding of its own version, and it
   // mints a fresh one on every write, so refusing them never ages out. The record names the
   // encoding, so they are honoured rather than refused with a reason that is not true.
-  test("a marker of the encoding the record declares is honoured", async () => {
-    writeRecord("ses-1", undefined, "block", { verdicts: undefined, markers: "raw" });
+  test("a marker of the encoding an absent capability implies is honoured", async () => {
+    // Absent, not present-and-unrecognised: a record with no capabilities is a gate from
+    // before them, which is a fact about a version and infers the encoding that version used.
+    writeRecord("ses-1", undefined, "block", null);
     const args = await dryArgs(MESSAGE);
     const file = join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`);
     writeFileSync(
@@ -1212,6 +1214,122 @@ describe("absence is a statement only when the store was read whole", () => {
     mint(MESSAGE, await dryArgs(MESSAGE));
     const { code } = await run(MESSAGE);
     expect(code).toBe(1);
+    expect(messagePosts()).toHaveLength(0);
+  });
+
+  // The precedence rule, which nothing tested when it was written, and both blockers lived in
+  // the gap. A marker **bound** to this write is a verdict of allow for it and outranks every
+  // "cannot tell"; an argv-only marker is permission with no review behind it and outranks
+  // nothing. The gate mints the second for every task subagent's literal write into the
+  // parent's session, so the difference is the whole of it.
+  for (const [kind, bind] of [
+    ["a bound", true],
+    ["an argv-only", false],
+  ] as const) {
+    test(`${kind} marker against each thing the store can say`, async () => {
+      const session = () => join(stateDir, "sessions", "ses-1");
+      const rows: Array<[string, () => Promise<void>, boolean]> = [
+        [
+          "an unreadable verdict store",
+          async () => {
+            mkdirSync(join(session(), "askgate-verdicts-v2"), { recursive: true });
+            chmodSync(join(session(), "askgate-verdicts-v2"), 0o000);
+          },
+          bind,
+        ],
+        [
+          "a foreign verdict store",
+          async () => {
+            const older = join(session(), "askgate-verdicts");
+            mkdirSync(older, { recursive: true });
+            writeFileSync(join(older, "0".repeat(64)), "{}");
+          },
+          bind,
+        ],
+        ["a lost-verdict mark", async () => markVerdictsLost(session(), Date.now()), bind],
+        [
+          "a recorded refusal of another write",
+          async () => {
+            writeVerdict(
+              session(),
+              writeIdentity("dispatch_message", { issue: "DSP-1", body: "something else" }),
+              "failure 7",
+              Date.now()
+            );
+          },
+          true,
+        ],
+        ["a recorded refusal of this write", async () => void (await refused()), false],
+        ["nothing at all", async () => {}, true],
+      ];
+      for (const [name, arrange, expected] of rows) {
+        rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+        rmSync(store(), { recursive: true, force: true });
+        posts.length = 0;
+        writeRecord();
+        await arrange();
+        mint(MESSAGE, bind ? await dryArgs(MESSAGE) : null);
+        try {
+          const { code } = await run(MESSAGE);
+          expect({ name, posted: code === 0 }).toEqual({ name, posted: expected });
+          expect(messagePosts()).toHaveLength(expected ? 1 : 0);
+        } finally {
+          // Only the unreadable-store row locks it; the rest never create the directory.
+          if (existsSync(join(session(), "askgate-verdicts-v2")))
+            chmodSync(join(session(), "askgate-verdicts-v2"), 0o700);
+        }
+      }
+    });
+  }
+
+  // A capability nobody can evaluate holds nothing. Read the other way round, an unrecognised
+  // value became a known encoding, so `{markers:"future"}` honoured a released marker and the
+  // write a review had refused posted.
+  test("a capability that is present and not recognised holds nothing", async () => {
+    for (const caps of [
+      { markers: "future" },
+      {},
+      { verdicts: "askgate-verdicts-v2" },
+      { verdicts: "askgate-verdicts-v2", markers: "canonical", extra: "1" },
+    ] as Array<Record<string, string>>) {
+      rmSync(join(stateDir, "sessions"), { recursive: true, force: true });
+      rmSync(store(), { recursive: true, force: true });
+      posts.length = 0;
+      writeRecord("ses-1", undefined, "block", caps);
+      const args = await dryArgs(MESSAGE);
+      writeFileSync(
+        join(markers(), `${argvDigest(MESSAGE)}.${randomBytes(16).toString("hex")}`),
+        JSON.stringify({
+          v: 2,
+          argv: argvDigest(MESSAGE),
+          args: sha(args),
+          files: [],
+          toolCallId: "call-1",
+          outcome: "verdict",
+          createdAt: Date.now(),
+        }),
+        { mode: 0o600 }
+      );
+      const { code } = await run(MESSAGE);
+      expect({ caps, code }).toEqual({ caps, code: 1 });
+      expect(messagePosts()).toHaveLength(0);
+    }
+  });
+
+  // One live owner from before capabilities beside a capable one hid a recorded refusal: the
+  // CLI stopped reading the store rather than reading absence differently.
+  test("an incapable owner beside a capable one still reads a recorded refusal", async () => {
+    writeRecord();
+    await refused();
+    writeRecord(
+      "ses-1",
+      { pid: process.pid, start: startOf(process.pid), store: store() },
+      "warn",
+      null
+    );
+    const { code, stdout } = await run(MESSAGE);
+    expect(code).toBe(1);
+    expect(stdout).toContain("AskGate reviewed this write and did not send it");
     expect(messagePosts()).toHaveLength(0);
   });
 

@@ -3787,12 +3787,14 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         expect(shell.stderr.toString()).toBe("");
         const run = JSON.parse(shell.stdout.toString()) as {
           argv: string[];
-          consumed: { ok: boolean };
+          consumed: { ok: boolean; bound?: boolean };
         };
         // The argv bash passed keys the marker the gate minted, and the marker is spent.
         expect(run.argv).not.toContain("--advisor-rebuttal");
         expect(minted?.argv).toBe(argvDigest(run.argv));
-        expect(run.consumed).toEqual({ ok: true });
+        // Bound, since a rebuttal's dry run read these very arguments: only a bound marker
+        // outranks the CLI's uncertainty about a refusal it cannot read.
+        expect(run.consumed).toEqual({ ok: true, bound: true });
         expect(markersIn(g.store)).toEqual([]);
       }
     }, 30_000);

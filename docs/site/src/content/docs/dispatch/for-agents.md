@@ -130,8 +130,11 @@ what to send instead.
 A write is also held where the command cannot tell whether a review refused it: a marker of the
 call that cannot be read, a session record that cannot be read, and a session whose verdicts
 this version of the command does not read or whose gate recorded none. Those are not a review
-saying no; they are the command unable to say that none did. Each refuses in block mode and
-posts with a warning in warn mode, and the last clears only when the session does.
+saying no; they are the command unable to say that none did. Most refuse in block mode and post
+with a warning in warn mode; a record that cannot be read refuses in both, since the mode is
+unreadable with it. Sending the write again as one `dispatch` call of literal words has the gate
+review it now, which clears any of them for that write; the condition itself ends when the Oh My
+Pi process restarts.
 
 `{ "askgate": { "enabled": false } }` in the session's own `envoy.json` turns the review off.
 
