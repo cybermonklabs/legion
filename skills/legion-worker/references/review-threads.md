@@ -98,7 +98,10 @@ began.
 2. **The implementer fixes the text and pushes it, once.** Its session is live from its own phase
    until the issue closes, so that message reaches it there and it makes the fixes while the
    architect reads the issue for acceptance: it runs in no phase, writes no handoff, and makes
-   one push of one commit of the text fixes. It replies on each thread, naming that commit, and
+   one push of one commit of the text fixes. **That push is not done until the pull request's
+   body carries each `Threads` entry at the head it just made**: the body is the implementer's
+   own record of the threads, and the round that forgets it is the round this loop was measured
+   losing. It replies on each thread, naming that commit, and
    resolves none. Then `envoy_publish` to the reviewer's role topic, and to that topic alone,
    naming the new head by SHA, the threads it answered, and that the push's own diff changes no
    code that runs (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`).
@@ -107,7 +110,10 @@ began.
    head's checks (`skill://legion-worker/references/merge-gate.md`). The `before_merge` results
    that passed at the head it approved first are still current for it when the fix's own diff
    changes no code that runs: it reads that diff, and its approval says it read it, that the
-   diff changes no code that runs, the head each result ran at and the head it approves. Then
+   diff changes no code that runs, the head each result ran at and the head it approves.
+   **That approval is not done until the head it approves has been published to the architect's
+   role topic**: nothing else tells the architect the loop closed, and an approval nobody is
+   told of leaves the issue waiting. Then
    `envoy_publish` to the architect's role topic naming that head. No daemon check reads this
    approval — READY reads the round's first approval, since only a review in `reviewing` is
    recorded — so that message is the architect's gate, and its acceptance is the one gate on

@@ -4333,13 +4333,16 @@ test("threads-closed, text-fixes: a body still naming the threads open fails, an
 });
 
 // Catches: a scorer that holds the resolve calls to the thread count, so a second call on a
-// thread the reviewer already resolved fails a run that broke no rule, and one blind to a second
-// disposition reply on one thread.
-test("threads-closed, text-fixes: a thread resolved twice passes, and one replied to twice fails", () => {
+// thread the reviewer already resolved fails a run that broke no rule; and one that holds the
+// reply calls to it, which fails a run whose threads each carry their disposition reply and
+// whose implementer then answered something else. The rule is one disposition reply per thread,
+// a requirement on each thread rather than a cap on how often an agent may speak, and a run of
+// 2026-11-09 was failed by the count alone (the owner's ruling, with both scorings in #2827).
+test("threads-closed, text-fixes: a thread resolved twice passes, and so does one replied to twice", () => {
   expect(out).toMatch(
     /threads-closed-text-fixes-head-7\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
   );
-  expect(out).toMatch(/threads-closed-text-fixes-head-8\tpass=false\t.*replied=2 replyCalls=3 /);
+  expect(out).toMatch(/threads-closed-text-fixes-head-8\tpass=true\t.*replied=2 replyCalls=3 /);
 });
 
 // Catches: a scorer that reads the diff alone and not the number of pushes, so a run that pushed
@@ -4409,7 +4412,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t10/25\t0/25\t3\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t11/25\t0/25\t3\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
 });

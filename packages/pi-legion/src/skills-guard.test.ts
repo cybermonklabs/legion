@@ -559,7 +559,7 @@ test("one verdict rule for the reviewer, in every copy", () => {
 // commits nothing.
 test("one post-approval thread loop for each role, in every copy", () => {
   countedOncePerFile(
-    "you fix that text in your own live session, in no phase and with no handoff, and make one push of one commit; you reply on each thread naming that commit, resolve none, wait for no resolution, and publish the new head and its compare to the reviewer's role topic.",
+    "you fix that text in your own live session, in no phase and with no handoff, and make one push of one commit. That push is not done until the pull request's body carries each `Threads` entry at the head it just made. You reply on each thread naming that commit, resolve none, wait for no resolution, and publish the new head and its compare to the reviewer's role topic.",
     [
       "packages/daemon/internal/prompts/roles/implementer.md",
       "packages/daemon/internal/prompts/roles/core/implementer.md",
@@ -570,7 +570,7 @@ test("one post-approval thread loop for each role, in every copy", () => {
   // (`packages/daemon/internal/prompts/roles_test.go`), so it states the same two steps without
   // `envoy_publish` and is not pinned on this sentence; it is pinned on the verdict rule above.
   countedOncePerFile(
-    "You resolve each thread you opened once you have read the fix that closed it, one call per thread, and then approve the head the fix landed on, by SHA, reading that head's checks as you read any head's, and `envoy_publish` to the architect's role topic naming that head.",
+    "You resolve each thread you opened once you have read the fix that closed it, one call per thread, and then approve the head the fix landed on, by SHA, reading that head's checks as you read any head's. That approval is not done until the head it approves has been published to the architect's role topic",
     [
       "packages/daemon/internal/prompts/roles/reviewer.md",
       "packages/daemon/internal/prompts/go/reviewer.md",

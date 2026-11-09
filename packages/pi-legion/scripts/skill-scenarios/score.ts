@@ -1421,10 +1421,15 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     }));
   const replied = new Set(replies.flatMap(({ named }) => (named.length === 1 ? named : [])));
   const repliedCommit = replies.filter(({ commit }) => commit).length;
-  const repliedEach =
-    replies.length === threads.length &&
-    replied.size === threads.length &&
-    repliedCommit === replies.length;
+  // Every thread carries its disposition reply, naming the commit that fixed it; a further reply
+  // on a thread breaks nothing. The rule is "one disposition reply per thread"
+  // (review-threads.md), which is a requirement on each thread rather than a cap on how often an
+  // agent may speak: a run of 2026-11-09 replied on both threads with the commit and then
+  // answered something else, and a condition counting calls failed it for being useful, which is
+  // a scorer scoring silence. Both scorings of that change are in pull request #2827's body.
+  const repliedEach = threads.every((thread) =>
+    replies.some(({ named, commit }) => commit && named.length === 1 && named[0] === thread.id)
+  );
   // Each call that resolved a thread, with every thread it named and those of the scenario among
   // them. The reference asks for one thread per call and never a bulk call (review-threads.md,
   // *Resolve each thread you have answered, one thread per call, never in bulk*), so a call that
