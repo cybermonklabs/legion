@@ -1167,3 +1167,4 @@ notice comes once per handoff commit, from whichever pass finds it first.
   this pod's: it names another pod UID, it is not signed by the cluster the broker trusts
   (`BROKER_K8S_OIDC_ISSUER`), or it is for another audience. An expired token is answered
   `POD_TOKEN_EXPIRED` instead.
+<!-- selection probe -->
