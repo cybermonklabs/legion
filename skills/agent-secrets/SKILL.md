@@ -21,8 +21,8 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   with some of its secrets missing (`cmdExec`, `packages/envoy/cmd/agent-secrets/main.go`).
 - `--reason` is necessary wherever a person approves: a request that names a secret someone must
   decide, and carries none, is denied whole. Say what the credential is for, in a sentence the
-  approver can decide on. A request every name of which is granted at once reaches nobody and
-  needs none.
+  approver can decide on, and name in it the issue you work on, by its key (below). A request
+  every name of which is granted at once reaches nobody and needs none.
 - `agent-secrets --help` holds the rest: the flags that narrow a GitHub App token
   (`--github-owner`, `--github-repo`, `--github-read-only`), and how long a grant lasts.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
@@ -151,6 +151,24 @@ refusal that is permanent; 126 and 127 from `agent-secrets register --exec`, who
 run or was not found; and 129, 130, 131 and 143 from a signal at the value prompt of
 `agent-secrets secret create` or `secret set`. `agent-secrets --help` lists them all.
 
+## Asking so a model judge can decide it
+
+Your deployment may run a model judge over a narrow class of the requests that would otherwise
+wait for a person. Three things in your own command decide whether a request can fall in that
+class:
+
+- One secret. A request that names two is outside it.
+- `--ttl 15m`, or less. A longer one is outside it. With no `--ttl`, the judge reads the lifetime
+  the broker gives instead: 15 minutes for a human-tier secret, which is inside it, and the whole
+  session for a secret tagged `default-grant=session`, which is outside it. Pass `--ttl 15m`.
+- The key of the issue you work on in `--reason`, for an issue that is not done.
+
+The rules of your deployment decide which secrets the judge may take, and you are told none of
+them, so ask this way and wait as you would anyway. One class is never judged, whatever those
+rules say: a secret tagged as an administrator's, of which a person approves every release. The
+judge approves a request in its class or leaves it for the person who approves it today, and it
+never denies. Every other request waits for that person, as it does now.
+
 ## Waiting, and a grant you already hold
 
 - `--wait` waits 30 minutes by default. A session that must not block passes `--wait 0s`, reads the
@@ -169,7 +187,8 @@ The broker tells a session no names. A name comes from your deployment instructi
 prompt, a skill, or the issue you work on. There is no list to browse and nothing to guess.
 
 - Request a secret only to use it for the work in front of you. A request made to learn whether a
-  secret exists reaches a person's Inbox.
+  secret exists is recorded against your session with the reason you signed, and it reaches a
+  person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
 - A secret that a service owns, such as `LEGION_SLACK_BOT_TOKEN`, goes to that service's own pods
   and VMs and to nothing else: `Evaluate` in `packages/envoy/internal/broker/policy/policy.go`

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -62,7 +63,8 @@ type grantRelease struct {
 // service BROKER_SERVICES' accounts prove), or any granted name carries a requesters tag
 // (anyListed: an entry naming a service matches by those same accounts) — that the current
 // policy still allows the session, with the names its operator withheld from it, every granted
-// name under the login that decided it (stillAllowed), that no granted name's max-grant is now
+// name under the login that decided it, or, for a grant the model judge decided, under the
+// judge the rules still give that name (stillAllowed), that no granted name's max-grant is now
 // shorter than the lifetime the grant's request signed (overMaxGrant), and that no granted
 // name's airlock entry has changed since the request recorded its fingerprint, which ends the
 // grant for good.
@@ -110,13 +112,16 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 			return grantRelease{}, err
 		}
 		for _, g := range granted {
-			if err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, requester); err != nil {
+			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
 				// A grant whose frozen source is not the one the name is served from now (its kind
 				// was changed or removed) ends for good: setting the kind back serves the same
 				// source again, and the grant must not come back with it. So does one whose
 				// requesters tag no longer lists this session: listing the person again must not
-				// revive a grant made while they were off the list.
-				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) {
+				// revive a grant made while they were off the list. So does a judged grant of a
+				// secret the policy now tags as an administrator's: a person approves every
+				// release of one, so taking the tag off again must not revive a grant no person
+				// ever approved — the session asks again, as a new request.
+				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
 				return grantRelease{}, err
@@ -304,6 +309,13 @@ func requesterNotListed(name string) error {
 	return fmt.Errorf("%w: %w: %s no longer lists this requester", ErrGrantNotLive, errRequesterNotListed, name)
 }
 
+// judgedAdminSecret is the refusal of a granted name the live policy tags as an administrator's
+// (policy.TagAdmin) on a grant the model judge decided, which ends the grant for good
+// (errJudgedAdminSecret).
+func judgedAdminSecret(name string) error {
+	return fmt.Errorf("%w: %w: %s is an administrator's secret, and a person approves every release of one", ErrGrantNotLive, errJudgedAdminSecret, name)
+}
+
 // GrantEndedActor is what a grant the broker itself ended at release records as having ended it,
 // as revoked_by and as its grant.revoked audit row's actor.
 const GrantEndedActor = "broker:release-recheck"
@@ -438,7 +450,12 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 // asks again. A name whose requesters tag no longer lists this requester is not live either, and
 // ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
 // all, so a grant made before it dropped them must not go on releasing while they are off it.
-func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy string, requester policy.Requester) error {
+// A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
+// held to the rules instead of to that login, and to the admin tag over both: the secret must not
+// be an administrator's now, and the rules in force must still give the name a judge of at least
+// the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
+// No judge login goes through record.MayDecide, which refuses every one of them.
+func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
 	d, err := set.Evaluate(name, requester)
 	if errors.Is(err, policy.ErrUnknownSecret) {
 		return noLongerServed(name)
@@ -449,6 +466,7 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 	if set.Secrets[name].Source != frozenSource {
 		return sourceMoved(name)
 	}
+	_, judged := record.JudgeLogin(decidedBy)
 	switch {
 	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed:
 		return requesterNotListed(name)
@@ -458,8 +476,51 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 		return nil
 	case frozenDecision == policy.Automatic && !slices.Contains(requester.Withheld, name):
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
+	case judged:
+		return judgeStillDecides(set, rules, name, lifetime)
 	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy):
 		return fmt.Errorf("%w: %s now needs its owner's approval, which this grant does not have", ErrGrantNotLive, name)
+	}
+	return nil
+}
+
+// judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the secret must
+// not be an administrator's under the live policy, and the rules in force must still give name a
+// judge of at least lifetime, the seconds the grant was given. The judge's authority is that
+// entry and not a person's, so this arm reads the entry where the person's arm reads a login: a
+// secret handed to another person ends a grant that person must approve and did not, and leaves
+// a judged one alone, no person's approval being what it rested on, while a rules file that
+// stops letting the judge decide this name, or that lowers it below what this grant holds, ends
+// it. An entry that changed at all already ends the grant through the frozen
+// request_secrets.airlock_digest, so this states the same rule where a reader of the release
+// checks it, over the one thing the judge's approval rested on.
+//
+// The admin tag is read first and off the live policy set, because it outranks whatever seconds
+// a rules file gives the name: the tag's promise is that a person approves every release of the
+// credential (policy.TagAdmin), and a release is exactly what this is deciding, so an owner who
+// tags a secret an administrator's after the judge decided it stops the releases a model
+// approved rather than only the next decision (judge's admin check, currentPolicyAdmits). The
+// promise is the secret's and not the rules file's to make, so no judge entry answers it, and
+// the refusal ends the grant for good (errJudgedAdminSecret): the session asks again, and the
+// judge then refuses it at decision time. A person's own grant of an admin secret is untouched,
+// this arm being a judged grant's alone — a person approved it, which is all the tag asks.
+//
+// A grant with no lifetime — one that lasts until its session ends — is not live under a judge
+// decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
+// exactly what the judge's seconds are there to bound, so the judge made no such grant and no
+// such grant is its.
+func judgeStillDecides(set *policy.Set, rules airlock.Rules, name string, lifetime *int) error {
+	if set.Secrets[name].Admin {
+		return judgedAdminSecret(name)
+	}
+	bound, ok := rules.JudgeSeconds(name)
+	switch {
+	case lifetime == nil:
+		return fmt.Errorf("%w: %s was granted until its session ends, which the judge never decides", ErrGrantNotLive, name)
+	case !ok:
+		return fmt.Errorf("%w: the rules no longer let the judge decide %s", ErrGrantNotLive, name)
+	case !record.JudgeAllowsLifetime(bound, *lifetime):
+		return fmt.Errorf("%w: the rules now let the judge decide at most %d seconds of %s, short of this grant's %d", ErrGrantNotLive, bound, name, *lifetime)
 	}
 	return nil
 }
@@ -474,6 +535,92 @@ var errSourceMoved = errors.New("source moved")
 // reuseLiveGrant end such a grant for good (endGrant), so putting the person back on the list
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
+
+// errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret the live
+// policy tags as an administrator's (policy.TagAdmin): the tag was added after the model judge
+// decided the request, and a person approves every release of such a secret. Values and
+// reuseLiveGrant end such a grant for good (endGrant), so taking the tag off again never brings
+// back a grant no person approved; the session asks again, as a new request, which the judge
+// refuses while the tag stands.
+var errJudgedAdminSecret = errors.New("judged administrator's secret")
+
+// JudgePolicy answers what the live policy says about name for the enrollment that asked,
+// whether that name is withheld from its session, and whether the secret is an administrator's:
+// the one question the broker's model judge asks the machine before it decides a pending request
+// (judge.Requests, whose other two methods are the writes a verdict makes — ApplyJudgeDecision
+// and LogJudged, in machine_state.go).
+//
+// It re-reads everything now rather than taking what the request froze. The policy comes from
+// m.Policy.Get(), the snapshot a request made minutes ago may no longer have been decided under,
+// and the requester from the database through the same m.requester Create decides with, so the
+// person the session acts for, the service its account still proves and the names its operator
+// has taken back from it are read exactly as a decision reads them, rather than a second time in
+// words of this method's own.
+//
+// The withheld flag is answered beside the decision because Evaluate folds a withheld name into
+// its outcome — a withheld agent-tier name comes back as an approval rather than as automatic —
+// so the two are not one answer: the judge decides no name its session's operator withheld,
+// whatever the policy would otherwise give it.
+//
+// The admin flag is answered beside it for the same sort of reason and off the same snapshot
+// (policy.Secret.Admin, the admin: "true" tag): Evaluate folds the tag into nothing at all — an
+// admin secret is human tier and comes back as the ordinary approval its owner makes — so the
+// outcome alone cannot tell an administrator's credential from any other the owner approves.
+// The judge decides none of them, whatever seconds a rules file gives it for the name, and the
+// one snapshot both answers come off is what keeps the tag and the outcome from being read a
+// policy apart.
+//
+// An enrollment that is no longer live (revoked, or its lease lapsed) is an error carrying
+// pgx.ErrNoRows, never a decision: the judge's check fails and the request waits for its person,
+// where a silent approval would grant a credential to a box that has gone.
+func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, bool, error) {
+	enr, err := m.enrollment(ctx, enrollmentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return policy.Decision{}, false, false, fmt.Errorf("enrollment %s is no longer live: %w", enrollmentID, err)
+		}
+		return policy.Decision{}, false, false, err
+	}
+	requester, err := m.requester(ctx, m.Store.Pool, enr)
+	if err != nil {
+		return policy.Decision{}, false, false, err
+	}
+	set := m.Policy.Get()
+	decision, err := set.Evaluate(name, requester)
+	if err != nil {
+		return policy.Decision{}, false, false, err
+	}
+	return decision, slices.Contains(requester.Withheld, name), set.Secrets[name].Admin, nil
+}
+
+// JudgeRequestState answers the state a decision on recordID would meet now: the second
+// question the broker's model judge asks the machine (judge.Requests), read immediately before
+// it spends a model call on the request.
+//
+// It answers what applyDecisionAttempt's own state read answers, in the same words: "pending"
+// for a request still waiting on its person, "expired" for one whose pending_expires_at has
+// passed though the sweep has not written that transition yet — the decision transaction
+// answers such a request ErrExpired, so a judge that asked a model about it would have paid for
+// an approval the machine then refused — and the row's own state for one already granted,
+// denied, cancelled or expired. The request is the one the record names, as every read of this
+// package is, and the read takes no lock: it is a gate on work the judge is about to start and
+// never the check a decision is made under, which applyDecisionAttempt makes again under its
+// own `for update`.
+//
+// A record with no request row is pgx.ErrNoRows, which the judge records as a state it could
+// not read and asks nothing on.
+func (m *Machine) JudgeRequestState(ctx context.Context, recordID string) (string, error) {
+	var state string
+	var expired bool
+	if err := m.Store.Pool.QueryRow(ctx, `select state, pending_expires_at <= now() from requests where record_id=$1`, recordID).
+		Scan(&state, &expired); err != nil {
+		return "", err
+	}
+	if state == "pending" && expired {
+		return "expired", nil
+	}
+	return state, nil
+}
 
 // Get reads one request by id. Its Approver is the approver column of its credential-request
 // record, the column PendingForApprover lists the record by, so the request names exactly the
@@ -690,13 +837,17 @@ func writtenBeforeMigration13(alias string) string {
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
 // prove) and no granted name carries a requesters tag (anyListed: an entry naming a service
 // matches by those same accounts), or the current policy still allows it to the session
-// (stillAllowed, the check Values makes), and its whole approval chain still verifies
-// (VerifyChain, the same check Values makes). A caller that already holds a live grant for these
-// exact names never re-asks a human who already approved it, a policy tightened since then is
-// never bypassed by reuse, and neither is a chain that no longer verifies.
-// A grant whose secret no longer lists this requester is not merely passed over: it is ended for
-// good here, as Values ends it (errRequesterNotListed), and Create goes on to write the denied
-// request that tells the session why.
+// (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
+// give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
+// whose secret the policy now tags as an administrator's), and its whole approval chain still
+// verifies (VerifyChain, the same check Values makes). A caller that already holds a live grant
+// for these exact names never re-asks a human who already approved it, a policy tightened since
+// then is never bypassed by reuse, and neither is a chain that no longer verifies.
+// A grant whose secret no longer lists this requester, and a judged grant of a secret the policy
+// now tags as an administrator's, are not merely passed over: each is ended for good here, as
+// Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
+// the names afresh — the denied request that tells the session why, where the list dropped it,
+// and the card the tag's own person answers, where the tag ended it.
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
@@ -727,12 +878,13 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names [
 			return Request{}, false, err
 		}
 		for _, g := range granted {
-			err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, requester)
+			err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 			switch {
-			case errors.Is(err, errRequesterNotListed):
-				// The list dropped this requester while the grant was live: end it here as Values
-				// does, rather than leave it live and unrevoked, and answer no reusable grant so
-				// Create goes on to write the denied request the session reads its reason off.
+			case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
+				// The list dropped this requester while the grant was live, or the secret became
+				// an administrator's, which a person approves every release of: end the grant
+				// here as Values does, rather than leave it live and unrevoked, and answer no
+				// reusable grant so Create goes on to ask for the names afresh.
 				if ended := m.endGrant(ctx, grantID, err); !errors.Is(ended, ErrGrantNotLive) {
 					return Request{}, false, ended
 				}
@@ -890,8 +1042,15 @@ type RecordDecision struct {
 	At           time.Time
 	CredentialID string
 	// Login is the person who decided the record, empty for an event no person made (expired,
-	// cancelled).
+	// cancelled), and empty for the model judge's own approval, which is no person's
+	// (decider.eventLogin).
 	Login string
+	// Actor is the audit actor the event was written under: record.HumanActor for a person's
+	// decision, record.JudgeActor for one the model judge made, and the broker's own actor for an
+	// event it ended on its own. It is the one field that tells the judge's decision from a
+	// person's, since a judged event carries no login at all, so every surface that says who
+	// decided a record reads it beside Login (record.JudgeLogin).
+	Actor string
 	// Detail is what the decision records beside its event, empty when it records nothing. An
 	// agent_secret approval carries one exactly when ApplyDecision recorded the request denied
 	// rather than granted: because its requesting enrollment was no longer live, or because the
@@ -968,17 +1127,19 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	// Whether the record is still pending follows PendingForApprover's rule: an agent_secret record
 	// by its request's state, a machine login by its terminal event. A decided record's terminal
 	// event names the decision; a request an ended enrollment cancelled before endEnrollment wrote
-	// that event has none, and its request row stands in for it.
-	var event, credID, login, eventDetail string
+	// that event has none, and its request row stands in for it. The actor is the event's own and
+	// has no stand-in there: a record with no event was decided by nobody, so there is nobody to
+	// name, and the empty actor says so.
+	var event, credID, login, actor, eventDetail string
 	var decidedAt time.Time
 	if agentSecret {
 		err = m.Store.Pool.QueryRow(ctx, `select coalesce(ev.event, r.state), coalesce(ev.at, r.decided_at), coalesce(ev.credential_id, ''),
-				coalesce(ev.login, ''), coalesce(ev.detail, r.decision_detail, '')
+				coalesce(ev.login, ''), coalesce(ev.actor, ''), coalesce(ev.detail, r.decision_detail, '')
 			from requests r left join credential_request_events ev on ev.record_id=r.record_id and ev.event = any($2)
-			where r.record_id=$1 and r.state <> 'pending'`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &eventDetail)
+			where r.record_id=$1 and r.state <> 'pending'`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &actor, &eventDetail)
 	} else {
-		err = m.Store.Pool.QueryRow(ctx, `select event, at, coalesce(credential_id,''), coalesce(login, ''), coalesce(detail, '') from credential_request_events
-			where record_id=$1 and event = any($2)`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &eventDetail)
+		err = m.Store.Pool.QueryRow(ctx, `select event, at, coalesce(credential_id,''), coalesce(login, ''), coalesce(actor, ''), coalesce(detail, '') from credential_request_events
+			where record_id=$1 and event = any($2)`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &actor, &eventDetail)
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -987,7 +1148,7 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		return RecordDetail{}, err
 	}
 	detail.State = event
-	detail.Decided = &RecordDecision{Event: event, At: decidedAt, CredentialID: credID, Login: login, Detail: eventDetail}
+	detail.Decided = &RecordDecision{Event: event, At: decidedAt, CredentialID: credID, Login: login, Actor: actor, Detail: eventDetail}
 	var revoked int
 	err = m.Store.Pool.QueryRow(ctx, `select 1 from credential_request_events where record_id=$1 and event='revoked' limit 1`, recordID).Scan(&revoked)
 	switch {
@@ -1006,6 +1167,15 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 // the record the approval rests on and whose Approver is that person's login, which for an
 // operator's own list can be another login. ExpiresAt is nil for a grant that lasts until its
 // session ends.
+//
+// Approver and DecidedBy are two different facts and a judged grant tells them apart. Approver is
+// the grant's own column: whose grant it is, which is what this list filters by and what
+// mayRevoke reads, and for a grant the model judge approved it is the record's own approver — the
+// owner, or record.AnyoneApprover for a shared secret — since the judge decides in their stead
+// (D1, decider.grantApprover). DecidedBy is who decided the request the grant rests on
+// (requests.decided_by): that same person for a person's own approval, and record.JudgeActor for
+// the judge's, so a surface that says who decided this grant names the judge rather than a person
+// who never saw the request. It is empty for an automatic grant, which nobody decided.
 type ApproverGrant struct {
 	GrantID    string
 	Granted    string
@@ -1013,6 +1183,7 @@ type ApproverGrant struct {
 	Enrollment record.Enrollment
 	Names      []string
 	Approver   string
+	DecidedBy  string
 	ExpiresAt  *time.Time
 	CreatedAt  time.Time
 }
@@ -1028,8 +1199,16 @@ type ApproverGrant struct {
 // signed-in person already lists and revokes the service login behind them, which no person
 // approved (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover
 // and an empty login are no signed-in person and list nothing. No row that already belongs to
-// somebody moves: a grant with an approver, or on a person's own session, is listed for that
-// person and no one else, exactly as before.
+// somebody moves: a grant with a person's approver, or on a person's own session, is listed for
+// that person and no one else, exactly as before.
+//
+// It lists, to every signed-in person in the same way, every live grant whose approver is the
+// sentinel record.AnyoneApprover: the model judge approved it in anyone's stead, so the grant
+// records anyone as its approver and names no person at all, and such a grant of a shared secret
+// sits on a pod, whose enrollment has no operator either. Without this nobody would see what the
+// judge had approved. That is the reasoning the paragraph above already gives — every signed-in
+// person sees these — over the grants anyone may approve in the first place, so the people who
+// see one are the people who could have approved it themselves.
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
@@ -1039,16 +1218,16 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	if login == "" || login == record.AnyoneApprover {
 		return nil, nil
 	}
-	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), g.expires_at, g.created_at,
+	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}')
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
 		join launcher_credentials c on c.id=e.launcher_credential_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
-		and (g.approver=$1 or e.operator=$1
+		and (g.approver=$1 or e.operator=$1 or g.approver=$2
 			or (g.approver is null and e.operator is null and c.service is not null))
-		order by g.created_at desc`, login)
+		order by g.created_at desc`, login, record.AnyoneApprover)
 	if err != nil {
 		return nil, err
 	}
@@ -1056,7 +1235,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	var out []ApproverGrant
 	for rows.Next() {
 		var g ApproverGrant
-		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.ExpiresAt, &g.CreatedAt, &g.Names); err != nil {
+		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names); err != nil {
 			return nil, err
 		}
 		g.Granted = policy.Approval

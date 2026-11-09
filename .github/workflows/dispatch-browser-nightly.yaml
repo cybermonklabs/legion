@@ -24,8 +24,9 @@ name: Dispatch browser nightly
 on:
   schedule:
     # Nightly, hours from e2e.yaml's 04:41, the repository's other schedule: a full lane takes
-    # four shard machines, three alone machines and a two-process machine at once, and two
-    # nightlies starting together would queue behind each other for the account's runners.
+    # four shard machines, four alone machines, a visual machine and a two-process machine at
+    # once, and two nightlies starting together would queue behind each other for the account's
+    # runners.
     - cron: "17 2 * * *"
   workflow_dispatch:
 

@@ -613,7 +613,7 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the sharded projects' value: the
-  // three `-alone` projects and the multiprocess one each set `retries: 0`, each for a reason
+  // four `-alone` projects and the multiprocess one each set `retries: 0`, each for a reason
   // its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the

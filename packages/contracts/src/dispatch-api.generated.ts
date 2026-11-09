@@ -2815,6 +2815,7 @@ export interface components {
       approver: null | string;
       /** Format: date-time */
       created_at: string;
+      decided_by: null | string;
       enrollment: components["schemas"]["RecordEnrollmentResp"];
       /** Format: date-time */
       expires_at: null | string;
