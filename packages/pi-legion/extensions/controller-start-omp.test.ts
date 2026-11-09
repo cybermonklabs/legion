@@ -698,10 +698,12 @@ interface ControllerInbound {
  * coming up. Waiting for a readiness signal first would be the better fix and there is none left
  * to wait for: the cases already await the subscription's own registration, the role claim that
  * follows it and, at the second site, the start turn's model request (the comment above "a card
- * and a Legion notice that arrive while the start command's claim runs" states that order), and
- * three of the four timeouts were a repeat sent after a receipt of that same pane had already
- * been answered. The wait is a hang guard over a busy pane, so it is sized from the measurement
- * and the case still fails when no receipt ever comes, which the case below holds it to.
+ * and a Legion notice that arrive while the start command's claim runs" states that order). Two
+ * of the four timeouts were a repeat sent after a receipt of that same pane had already been
+ * answered, and the other two were the first request a case makes, one of them sent from inside
+ * the role-claim handler, the moment that case exists to test. The wait is a hang guard over a
+ * busy pane, so it is sized from the measurement and the case still fails when no receipt ever
+ * comes, which the case below holds it to.
  */
 const RECEIPT_TIMEOUT_MS = 15_000;
 
