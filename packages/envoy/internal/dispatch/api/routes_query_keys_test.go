@@ -43,9 +43,15 @@ var queryKeyExceptions = map[string]string{
 // the key as a parameter and the literal is at the call rather than at the read. The list is
 // pinned rather than described: a new unresolvable read changes it and fails, so the hole stays
 // named and small instead of growing quietly.
+// server.go holds two such helpers, parseQueryInt and parseQueryBool, and each reads its key as
+// `query[field]`, so the pin carries that site twice. Every key either is called with is named by
+// a parameters struct, checked by hand as this pin's own instruction says: parseQueryInt with
+// `limit`, `offset` and `max_chars`, and parseQueryBool with `keywords_only`, which both
+// searchRouteQuery and the related route's query struct declare.
 var queryKeysReadThroughAHelper = []string{
 	`delivery.go: Get(name)`,
 	`delivery.go: Has(name)`,
+	`server.go: query[field]`,
 	`server.go: query[field]`,
 }
 
