@@ -99,13 +99,13 @@ fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point
 - The single fileset `'~(.legion | docs/solutions)'` leaves out `.legion/`, where handoffs lived
   before they moved to Dispatch and which nothing writes or reads now, so nobody reviews a path
   there, and retro's learnings: paths that change between one role's verified head and the next
-  without changing the product. No path test stands behind this: READY compares no head with
-  another — the daemon reads the round's recorded approval and checks nothing above it, refusing
-  only `READY_NOT_APPROVED`, for a round that recorded no approval
+  without changing the product. This is what lets each role compare against *its own* last
+  verified head instead of trusting another role's numbers. No path test stands behind the
+  fileset: READY never compares the approved head with the head it merges — of its refusals, only
+  `READY_NOT_APPROVED` reads the approval, and only whether one was recorded
   (`packages/daemon/internal/api/ready.go`) — and what carries a result across one push is the
   carry rule in `skill://legion-worker/references/merge-gate.md` with the architect's acceptance.
-  This is what lets each role compare against *its own* last verified head instead of trusting
-  another role's numbers. It must be one expression: jj unions positional filesets, so two
+  It must be one expression: jj unions positional filesets, so two
   separate `'~.legion' '~docs/solutions'` arguments select every file and exclude nothing. Where
   `.legion/` is gone, jj warns `No matching entries for paths: .legion` on stderr; the hash is
   unaffected.

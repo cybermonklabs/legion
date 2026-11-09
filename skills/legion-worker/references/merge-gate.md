@@ -9,8 +9,9 @@ architect's acceptance, in `accepting` → retro → the merger's READY → the 
 issue → the production check after the close, which the project's `production_check` setting
 gives to a role or takes away. Every handoff is a record on the
 Dispatch issue, never a commit, so the head that merges carries none. Retro commits nothing
-(*Retro*, below), so the approved head is the head that merges. READY compares no head with
-another: the daemon reads the round's recorded approval and nothing above it, and the repository's
+(*Retro*, below), so the approved head is the head that merges. READY never compares the approved
+head with the head it merges: of its refusals, only `READY_NOT_APPROVED` reads the approval, and
+only whether one was recorded, so the daemon reads nothing above that head, and the repository's
 branch rules decide the merge (the owner's ruling, dispatch://INFRA-714/ask/beea7685). What holds
 a head the implementer pushed above the one the reviewer approved is this reference's own carry
 rule and the architect's acceptance, not a path test.

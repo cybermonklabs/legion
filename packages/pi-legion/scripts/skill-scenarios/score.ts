@@ -1004,30 +1004,40 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // message was sent, naming the head the fix must land above (`toldImplementer`). A
   // `REQUEST_CHANGES` round opens no such loop and sends none.
   // And the rule is not only that the message was sent: it is sent once the issue stands in
-  // `accepting`, which the reviewer reads with `read_record` (review-threads.md step 1). The
-  // round ends on both halves, so an accepted completion can land before the review's webhook,
-  // and a push in that gap voids the approval — the reviewer's own round-1 finding, which
-  // `workflow/review.go` makes load-bearing. The stand-in serves `accepting` from the accepted
-  // completion, so the ordering the run must show is: the completion is accepted, the reviewer
-  // reads the record after it, and the publish follows that read. Scoring the send alone, as
-  // this did until 2026-11-09, passed a reviewer that published with its review.
+  // `accepting`, which the reviewer reads with the `legion` tool's `read_record`
+  // (review-threads.md step 1). The round ends on both halves, so an accepted completion can
+  // land before the review's webhook, and a push in that gap voids the approval — the
+  // reviewer's own round-1 finding, which `workflow/review.go` makes load-bearing. So the
+  // ordering the run must show is: the reviewer calls `read_record`, the record it is answered
+  // with stands in `accepting`, and the publish follows that answer.
+  //
+  // Both halves of that are read, the agent's call and the server's answer, because neither
+  // alone says it. The call is the reviewer's own (`read_record` and no other op), since other
+  // callers read the same route — `handoff_complete` reads the state before it posts
+  // (`pi-shared/src/legion-phase-ops.ts`) and the phase reminder reads it to check the record —
+  // so a reviewer that completed again after its acceptance and published would otherwise pass
+  // without ever having read the record. The answer is the stand-in's own line, which records
+  // the phase each state read served (`served`), taken at or after the call: a call's timestamp
+  // is the assistant message's, written before the tool ran, so the publish is ordered against
+  // the server's line and never against the call.
   const daemonLines = parsed(path.join(runDir, "daemon.log"), DaemonLine);
-  const acceptedAt = daemonLines.find(
-    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
-  )?.at;
-  // The read is the one whose answer showed `accepting`: the stand-in records the phase each
-  // state read served (`served`), so a read taken before the completion was accepted, which
-  // answers `reviewing`, is not the read the rule asks for. Taking any 200 on that route, as
-  // this did until 2026-11-09, scored the claim boot's own read.
+  const entries = session(runDir);
+  const results = outcomes(entries);
+  const readRecord = steps(entries).find(
+    (step) =>
+      step.tool === "legion" &&
+      step.args.op === "read_record" &&
+      /"phase"\s*:\s*"accepting"/.test(results.get(step.id)?.text ?? "")
+  );
   const readAfter =
-    acceptedAt === undefined
+    readRecord === undefined
       ? undefined
       : daemonLines.find(
           (line) =>
             line.path === "/legion/v1/state" &&
             line.status === 200 &&
             line.served === "accepting" &&
-            line.at > acceptedAt
+            line.at >= readRecord.at
         )?.at;
   const toldImplementer =
     readAfter !== undefined &&
@@ -1102,23 +1112,41 @@ function namesCommit(text: string, sha: string): boolean {
  * run_project). The words are the role names themselves, not the `by` constants above, which
  * name the roles of the gh calls the stand-in recorded. */
 type Role = "implementer" | "reviewer" | "architect";
-/** One line of `<run>/published.jsonl`: a message Envoy accepted on a role topic of this run,
- * with the time, the topic and the body Envoy carried (record-publishes.ts), or a boundary the
- * rig writes as it boots an agent (`boot`, the role of the agent whose turn starts there). */
-const PublishedLine = z.looseObject({
+/** One line of `<run>/published.jsonl`. The file is the recorder's own record of its run as much
+ * as of the run's messages (record-publishes.ts): it opens with `recording`, written once the
+ * subscription is registered with the server, ends with `closed`, written when the rig stops it,
+ * and holds one message between them. A reader that took a short file for a quiet run would
+ * score a recorder that died as a loop whose agents sent nothing, so `unscored` requires both
+ * ends before any send of the run is read. */
+const PublishedMessage = z.looseObject({
   at: z.string(),
-  topic: z.string().optional(),
-  message: z.string().optional(),
-  boot: z.string().optional(),
+  topic: z.string(),
+  message: z.string(),
+  sender: z.string(),
 });
+const PublishedLine = z.union([
+  z.looseObject({ at: z.string(), recording: z.string() }),
+  z.looseObject({ at: z.string(), closed: z.string() }),
+  PublishedMessage,
+]);
 /** A message that reached a role topic: the fact, not an intention read out of an agent's code. */
 interface Publish {
   readonly at: string;
   readonly topic: string;
   readonly message: string;
+  readonly sender: string;
+}
+/** Whether the run's record is whole: the recorder said it had subscribed and said it was
+ * stopped, so every message of the run between those two lines is in the file. */
+function recordWhole(runDir: string): { opened: boolean; closed: boolean } {
+  const lines = parsed(path.join(runDir, "published.jsonl"), PublishedLine);
+  return {
+    opened: lines.some((line) => "recording" in line),
+    closed: lines.some((line) => "closed" in line),
+  };
 }
 /** Every message Envoy accepted on a role topic of this run, in the order it accepted them, or
- * those of one agent's turn when `by` names a role.
+ * those one agent sent when `by` names a role.
  *
  * Until 2026-11-09 this was worked out from the agent's own transcript: the arguments of an
  * `envoy_publish` tool call, the JSON content of a `write` to `xd://envoy_publish`, and an
@@ -1128,26 +1156,30 @@ interface Publish {
  * taken before the cell runs. What the servers did is recorded instead: the rig subscribes to
  * the bus for the length of a run and appends every message Envoy published on one of this run's
  * role topics, and the score and the harness read that one file, so no publish can score a wake
- * the next agent never had (`rig.sh`'s reviewer_wake calls `score.ts published`, which is the
- * `lastPublishTo` below).
+ * the next agent never had (`rig.sh`'s reviewer_wake calls `score.ts published`).
  *
- * The run's agents do not overlap — the rig stops one before it boots the next (worker_boot) —
- * so the `boot` line it writes as each agent starts divides the file into one window per agent,
- * and `by` reads one window. A run whose file holds no boot line has published nothing of any
- * agent's, which `unscored` reads as a rig error rather than as an act not done. */
+ * Who sent a message is the sender Envoy recorded (`source_session`) against the session id of
+ * that half's own transcript, and nothing else: the rig writes no mark of its own into the
+ * record, so one writer decides one fact. */
 function publishes(runDir: string, by?: Role): Publish[] {
-  const sends: Publish[] = [];
-  let booted = "";
+  const sender = by === undefined ? undefined : sessionOf(runDir, by);
+  const sent: Publish[] = [];
   for (const line of parsed(path.join(runDir, "published.jsonl"), PublishedLine)) {
-    if (line.boot !== undefined) {
-      booted = line.boot;
-      continue;
-    }
-    if (line.topic === undefined) continue;
-    if (by !== undefined && booted !== by) continue;
-    sends.push({ at: line.at, topic: line.topic, message: line.message ?? "" });
+    // The two ends of the record are the recorder's own lines (`recordWhole`), not messages.
+    const message = PublishedMessage.safeParse(line);
+    if (!message.success) continue;
+    const { at, topic, sender: from } = message.data;
+    if (sender !== undefined && from !== sender) continue;
+    sent.push({ at, topic, message: message.data.message, sender: from });
   }
-  return sends;
+  return sent;
+}
+/** The session id the agent of `role` ran as: a half the rig boots after the first keeps its
+ * transcript in `<run>/sessions/<role>`, and the run's first agent in `<run>/sessions`
+ * (rig.sh's worker_boot). */
+function sessionOf(runDir: string, role: Role): string | undefined {
+  const own = path.join(runDir, "sessions", role);
+  return sessionId(existsSync(own) ? sessionIn(own) : session(runDir));
 }
 /** Whether a message of this run reached `role`'s topic naming one of `names`. The loop after an
  * approval that leaves text threads open runs in `accepting`, where the daemon starts no phase
@@ -1164,7 +1196,7 @@ function publishes(runDir: string, by?: Role): Publish[] {
  * topic before it is no answer to what happened then. */
 function publishedTo(
   runDir: string,
-  by: Role | undefined,
+  by: Role,
   role: Role,
   names: string[],
   after = ""
@@ -1178,32 +1210,27 @@ function publishedTo(
       )
   );
 }
-/** Every role this agent's messages reached, in the order they reached them: what *else* a wake
- * went to. The rule sends the implementer's message to the reviewer's topic **and to that topic
- * alone** (review-threads.md step 2), so a run that copies the architect in has not done the
- * step the loop is measured on — the architect's own wake belongs to the reviewer, after its
- * second approval, and a copy before it is the architect being told a thing that has not
- * happened. */
-function publishedRoles(runDir: string, by: Role): string[] {
-  return publishes(runDir, by)
-    .map((sent) => /-(implementer|reviewer|architect)$/.exec(sent.topic)?.[1] ?? "")
-    .filter((role) => role !== "");
+/** Whether every message this agent sent went to `role`'s topic. The rule sends the
+ * implementer's message to the reviewer's topic **and to that topic alone** (review-threads.md
+ * step 2), so a run that copies another role in has not done the step the loop is measured on —
+ * the architect's own wake belongs to the reviewer, after its second approval, and a copy before
+ * it is the architect being told a thing that has not happened. Every other topic counts, not
+ * the three roles of this loop alone: a copy to the tester's or the merger's topic is the same
+ * act, and a reader that knew only three role names passed a run that sent one (measured by the
+ * deep pass of 2026-11-09 on a copy of `threads-closed-text-fixes-head-1`). */
+function sentOnlyTo(runDir: string, by: Role, role: Role): boolean {
+  return publishes(runDir, by).every((sent) => sent.topic.endsWith(`-${role}`));
 }
-/** The last message of this run that reached `role`'s topic, as the rig's own reader wants it:
- * the message the next agent is given, or undefined when none reached it. */
-function lastPublishTo(runDir: string, role: string): Publish | undefined {
-  return publishes(runDir)
-    .filter((sent) => sent.topic.endsWith(`-${role}`))
-    .at(-1);
+/** Every message of this run that reached `role`'s topic, in the order Envoy accepted them, as
+ * the rig's own reader wants them: what the next agent is handed, since Envoy delivers each one
+ * and a half given only the last would be missing a wake its own run sent. */
+function publishesTo(runDir: string, role: string): Publish[] {
+  return publishes(runDir).filter((sent) => sent.topic.endsWith(`-${role}`));
 }
 /** Whether the agent sent the architect the message a thread no text fix can close takes: one
  * route, and the architect is the only role that can move the issue for it
  * (review-threads.md step 4). */
-function toldArchitect(
-  runDir: string,
-  by: Role | undefined,
-  threads: z.infer<typeof Threads>
-): boolean {
+function toldArchitect(runDir: string, by: Role, threads: z.infer<typeof Threads>): boolean {
   return publishedTo(
     runDir,
     by,
@@ -1392,9 +1419,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
-  const toReviewerAlone = publishedRoles(runDir, "implementer").every(
-    (role) => role === "reviewer"
-  );
+  const toReviewerAlone = sentOnlyTo(runDir, "implementer", "reviewer");
   const toldArchitectOfHead = publishedTo(
     runDir,
     "reviewer",
@@ -1489,13 +1514,11 @@ const CASED: Record<string, CasedScenario> = Object.fromEntries(
  * text under test when it is a failure of the rig. It is a rig error instead (unscored), as a run
  * whose own agent got no model turn already is. A scenario absent here boots one agent. */
 const BOOTS: Record<string, string[]> = { "threads-closed": [RESOLVES] };
-/** The agents whose own sends a scenario scores, in the order the rig boots them. Each owns the
- * window of `<run>/published.jsonl` that its boot line opens, so a run missing one of these
- * lines holds no record of that agent's sends (`unscored`). */
-const SENDERS: Record<string, Role[]> = {
-  "reviewer-text-findings": [RESOLVES],
-  "threads-closed": [FIXES, RESOLVES],
-};
+/** The scenarios whose score reads what an agent sent, which are the scenarios the rig records
+ * (rig.sh's start_recorder). A run of one of these is scored only on a whole record, opened and
+ * closed by the recorder itself (`unscored`); every other scenario records nothing and reads
+ * nothing. */
+const RECORDED = ["reviewer-text-findings", "threads-closed"];
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
  * batch's Postgres container (its id) and the server on it. */
@@ -3783,14 +3806,18 @@ function unscored(
     if (!booted.some((entry) => entry.message?.role === "assistant"))
       return `the ${role} half never started: sessions/${role} holds no transcript, or one with no assistant message`;
   }
-  // What each agent sent is Envoy's own record of this run (`publishes`), into which the rig
-  // writes a boot line as it starts each agent. A run whose record is missing, or missing the
-  // line of an agent whose sends the score reads, is a rig error rather than a run that sent
-  // nothing: the recorder did not run, or wrote somewhere else.
-  const recorded = parsed(path.join(runDir, "published.jsonl"), PublishedLine);
-  for (const role of SENDERS[scenario] ?? []) {
-    if (!recorded.some((line) => line.boot === role))
-      return `<run>/published.jsonl carries no boot line of the ${role} half, so nothing recorded what Envoy accepted for it`;
+  // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
+  // only when the recorder said both that it had subscribed and that it was stopped. A recorder
+  // that died mid-run — its connection lost, its process killed — leaves the second line out,
+  // and every message it missed would otherwise read as a message never sent, which is the
+  // parser's old fault in a new place. That is a rig error, as a run whose agent got no model
+  // turn is.
+  if (RECORDED.includes(scenario)) {
+    const record = recordWhole(runDir);
+    if (!record.opened)
+      return "<run>/published.jsonl has no `recording` line: the publish recorder never subscribed to the bus";
+    if (!record.closed)
+      return "<run>/published.jsonl has no `closed` line: the publish recorder did not run to the end of the run, so what it missed is unknown";
   }
   for (const call of calls) {
     const named: string[] = [];
@@ -4239,13 +4266,13 @@ if (import.meta.main) {
     scoreRuns(rest[0] ?? "", rest[1]);
   } else if (command === "published" && rest.length === 2) {
     // The harness's own reader of a publish, so the rig and the score read one: rig.sh's
-    // reviewer_wake asks for the last message the run's first agent published to a role's topic
-    // and gives it to the next agent, and the score asks the same code whether it was sent.
-    // Two readers of one fact disagreed before this (2026-11-09): a publish made from `eval`
-    // scored `toldReviewer` while the reviewer half booted with an empty prompt.
+    // reviewer_wake asks for every message a role's topic was sent, in Envoy's own order, and
+    // hands each to the next agent as a delivery of its own, and the score asks the same code
+    // whether the message the rule names was among them. Two readers of one fact disagreed
+    // before this (2026-11-09): a publish made from `eval` scored `toldReviewer` while the
+    // reviewer half booted with an empty prompt.
     const runDir = rest[0] ?? "";
-    const sent = lastPublishTo(runDir, rest[1] ?? "");
-    console.log(JSON.stringify(sent ?? null));
+    console.log(JSON.stringify(publishesTo(runDir, rest[1] ?? "")));
   } else {
     console.error(
       "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | published <run dir> <role>"

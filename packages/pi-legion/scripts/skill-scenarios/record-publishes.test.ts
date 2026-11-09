@@ -54,17 +54,28 @@ async function recording(name: string, prefix: string) {
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
+  /** The run's messages, without the recorder's own opening and closing lines. */
+  const messages = async () => (await written()).filter((line) => "topic" in line);
   /** Every line of the record once the message naming `last` is one of them. */
   const recorded = async (last: string) => {
     for (;;) {
-      const lines = await written();
+      const lines = await messages();
       if (lines.some((line) => String(line.message).includes(last))) return lines;
       await Bun.sleep(20);
     }
   };
+  /** The record as the rig's stop leaves it: TERM, which the recorder answers with its closing
+   * line, and then what the file holds. */
+  const stopped = async () => {
+    recorder.kill("SIGTERM");
+    await recorder.exited;
+    return await written();
+  };
   return {
     client,
     recorded,
+    written,
+    stopped,
     stop: async () => {
       await client.close();
       recorder.kill();
@@ -122,6 +133,12 @@ test.skipIf(skip)(
         message: "the fixes are pushed: head abc1234",
         sender: "01a0f2cc",
       });
+      // The record's own two ends, which tell a reader it is whole: the recorder wrote the
+      // first when it had subscribed, and the second when the rig stopped it (score.ts's
+      // `unscored` reads a record without both as a rig error).
+      const whole = await run.stopped();
+      expect(whole[0]).toMatchObject({ recording: "legion-proof-lweval-1-" });
+      expect(whole.at(-1)).toMatchObject({ closed: "stopped" });
     } finally {
       await run.stop();
     }

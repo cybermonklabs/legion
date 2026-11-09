@@ -1129,11 +1129,6 @@ review_thread_of_comment() {
 # COMMENT: the id a resolution names (the reviewer's message to the implementer, the implementer's
 # resolveReviewThread).
 bot_thread_node_id() { review_thread_of_comment "$1" | jq -er .id; }
-# thread_newest_by_live ID ROLE RESOLVED: the same reading taken from GitHub now rather than from
-# a file, for an until_true that waits on a reviewer's own resolution — which may land after its
-# approval, since a thread is resolved once the reviewer has read the fix. A read that fails
-# prints no thread, which the reading rejects, so the wait polls on.
-thread_newest_by_live() { thread_newest_by <(review_thread "$1") "$2" "$3"; }
 # thread_newest_by FILE ROLE RESOLVED: the thread FILE holds (review_thread's output) reads
 # isResolved RESOLVED (`true` or `false`) and its newest submitted comment is ROLE's App's
 # (role_app_slug). One helper for both readings the proofs take: the implementer's
@@ -1155,9 +1150,6 @@ thread_answered_by() {
   jq -e --arg author "$author" --argjson resolved "$3" '.isResolved == $resolved
     and any(.comments[1:][]; .state == "SUBMITTED" and .author == $author)' "$1" >/dev/null
 }
-# thread_resolved_with_reply FILE ROLE: the thread FILE holds is resolved and carries that reply:
-# the bot's thread the reviewer answered and resolved itself.
-thread_resolved_with_reply() { thread_answered_by "$1" "$2" true; }
 # bot_thread_answered COMMENT ROLE RESOLVED: the same reading taken from GitHub now, of the thread
 # the comment COMMENT opened. One helper for both readings the proofs take of that thread: the
 # implementer answers it and resolves nothing, so its round is

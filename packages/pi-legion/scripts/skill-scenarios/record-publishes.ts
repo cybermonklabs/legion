@@ -8,9 +8,8 @@
  * then an evaluator over an `eval` cell's source. A reader of intent is wrong in both directions
  * — it passed a run on a message the agent wrote and never sent, and failed one whose message was
  * sent in a shape it could not read — and it timed a cell by the call's own timestamp, which
- * precedes the cell's execution. This records the fact instead: Envoy publishes each accepted
- * message on its topic's NATS subject, so a subscriber of `notifications.role.*` sees exactly what
- * reached a topic, when, and from whom, whatever tool the agent used.
+ * precedes the cell's execution. This records the fact instead: a subscriber of the bus sees
+ * exactly what reached a topic, when, and from whom, whatever tool the agent used.
  *
  * What it subscribes to is `notifications.>` rather than the role subjects themselves, because a
  * role message with a live holder never travels on its role subject: the publish route resolves
@@ -23,39 +22,73 @@
  * a drain later delivers, carries the envelope's own id, and a copy of an id already written is
  * passed over.
  *
- * Each line is `{"at","topic","message","sender","subject"}`: `at` is the time this saw the
- * message, the envelope's `issued_at` when it carries one, `topic` the envelope's own topic,
- * `message` its body (its payload, or its one-line summary when the payload is empty, which is
- * how the listener carries a message of one line), `sender` the session Envoy recorded and
- * `subject` the NATS subject
- * the copy arrived on. Lines are appended in arrival order and never rewritten, so a reader takes
- * the last line of a topic as the message that topic last carried.
- *
- * It prints `recording <out file>` once subscribed, which is what the rig waits for before it
- * boots an agent, and exits on SIGTERM with the file flushed.
+ * The file is a record of the recorder's own run as much as of the run's messages, because a
+ * reader must be able to tell a run that published nothing from one this never saw. It opens with
+ * `{"at","recording"}`, written once the subscription is registered with the server, and ends
+ * with `{"at","closed"}`, written when the rig stops it. A file without both is a rig error
+ * (score.ts's `unscored`), so a recorder that died mid-run — its connection lost, its process
+ * killed — scores no run at all rather than scoring every message it missed as a message never
+ * sent. Between them each message is `{"at","topic","message","sender","subject"}`: `at` is the
+ * envelope's `issued_at`, `topic` its own topic, `message` its body (its payload, or its one-line
+ * summary when the payload is empty, which is how the listener carries a message of one line),
+ * `sender` the session Envoy recorded and `subject` the NATS subject the copy arrived on. An
+ * envelope that is not one of this run's role messages is passed over, and one that reaches a
+ * role topic of this run without the fields an envelope carries is a defect of the listener or of
+ * this reader: it is logged, counted and left out, never guessed at.
  */
 import { appendFileSync } from "node:fs";
 import { connect } from "nats";
+import { z } from "zod";
 
 const [outFile, prefix] = Bun.argv.slice(2);
 if (outFile === undefined || prefix === undefined) {
   console.error("usage: bun record-publishes.ts <out file> <topic prefix>");
   process.exit(2);
 }
-const url = process.env.SKILL_SCENARIOS_NATS_URL ?? process.env.ENVOY_NATS_URL;
+const url = process.env.SKILL_SCENARIOS_NATS_URL;
 if (url === undefined || url === "") {
-  console.error("record-publishes.ts: no NATS url (SKILL_SCENARIOS_NATS_URL, ENVOY_NATS_URL)");
+  console.error("record-publishes.ts: no NATS url (SKILL_SCENARIOS_NATS_URL)");
   process.exit(2);
 }
 
+/** What the listener puts on the bus, as far as this reads it: the fields every envelope of a
+ * message carries (`contracts.Envelope`, `messageEnvelope` in
+ * `packages/envoy/cmd/listener/api.go`). A frame that is not a message — a receipt, a cursor, a
+ * Dispatch event — fails this parse and is passed over; one on a role topic of this run that
+ * fails it is reported. */
+const Envelope = z.looseObject({
+  event_id: z.string().min(1),
+  topic: z.string().min(1),
+  issued_at: z.number(),
+  payload: z.string().optional(),
+  payload_summary: z.string().optional(),
+  source: z.string().optional(),
+  source_session: z.string().optional(),
+  dedupe_key: z.string().optional(),
+});
+
+const line = (value: Record<string, unknown>) =>
+  appendFileSync(outFile, `${JSON.stringify(value)}\n`);
+const now = () => new Date().toISOString();
+
 const nats = await connect({ servers: url, name: `skill-scenarios-record-${prefix}` });
 const subscription = nats.subscribe("notifications.>");
+// The flush is what makes the next line true: a subscription is registered with the server when
+// the server has answered, and without this the rig could boot an agent whose first message this
+// has not yet asked for.
+await nats.flush();
+line({ at: now(), recording: prefix });
 console.log(`recording ${outFile}`);
 
-const stop = async () => {
+/** The rig's stop, which is the only end this file is written for: the closing line says the
+ * record is whole. The rig sends TERM and waits (rig.sh's stop_run), so this runs. */
+let closing = false;
+const stop = () => {
+  if (closing) return;
+  closing = true;
+  line({ at: now(), closed: "stopped" });
   subscription.unsubscribe();
-  await nats.drain().catch(() => undefined);
-  process.exit(0);
+  nats.close().finally(() => process.exit(0));
 };
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
@@ -66,49 +99,46 @@ const ROLE_PREFIX = "notifications.role.";
 const written = new Set<string>();
 
 for await (const message of subscription) {
-  let envelope: Record<string, unknown> = {};
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(message.string());
-    if (typeof parsed === "object" && parsed !== null) envelope = parsed as Record<string, unknown>;
+    parsed = JSON.parse(message.string());
   } catch {
-    // A message that is not JSON carries no topic of this run, so it is none of this run's.
     continue;
   }
-  const topic = typeof envelope.topic === "string" ? envelope.topic : message.subject;
+  // The topic is read before the parse, so a frame that is none of this run's business is passed
+  // over in silence and one of this run's that cannot be read is reported.
+  const topic =
+    typeof parsed === "object" && parsed !== null && "topic" in parsed ? parsed.topic : undefined;
+  if (typeof topic !== "string") continue;
   if (!topic.startsWith(ROLE_PREFIX) || !topic.slice(ROLE_PREFIX.length).startsWith(prefix)) {
     continue;
   }
-  const id =
-    typeof envelope.event_id === "string"
-      ? envelope.event_id
-      : typeof envelope.dedupe_key === "string"
-        ? envelope.dedupe_key
-        : `${topic}\u0000${message.string()}`;
-  if (written.has(id)) continue;
-  written.add(id);
-  // The message as the listener carries it: a message of one line is its summary and its payload
-  // is empty, a longer one is the payload whole (`messageEnvelope`,
-  // `packages/envoy/cmd/listener/api.go`).
-  const payload = typeof envelope.payload === "string" ? envelope.payload : "";
-  const summary = typeof envelope.payload_summary === "string" ? envelope.payload_summary : "";
-  const body = payload !== "" ? payload : summary;
-  const issued = typeof envelope.issued_at === "number" ? envelope.issued_at : undefined;
-  // Who sent it, as the envelope records it: the publishing session where the listener knows one
-  // (`source_session`), else its source.
-  const sentBy =
-    typeof envelope.source_session === "string" && envelope.source_session !== ""
-      ? envelope.source_session
-      : typeof envelope.source === "string"
-        ? envelope.source
-        : "";
-  appendFileSync(
-    outFile,
-    `${JSON.stringify({
-      at: new Date(issued ?? Date.now()).toISOString(),
-      topic,
-      message: body,
-      sender: sentBy,
-      subject: message.subject,
-    })}\n`
-  );
+  const envelope = Envelope.safeParse(parsed);
+  if (!envelope.success) {
+    console.error(
+      `record-publishes.ts: ${message.subject} carries a ${topic} message this cannot read: ${envelope.error.message}`
+    );
+    continue;
+  }
+  const { event_id, issued_at, payload, payload_summary, source, source_session } = envelope.data;
+  if (written.has(event_id)) continue;
+  written.add(event_id);
+  line({
+    at: new Date(issued_at).toISOString(),
+    topic,
+    // A message of one line is its summary and its payload is empty; a longer one is the payload
+    // whole (`messageEnvelope`, `packages/envoy/cmd/listener/api.go`).
+    message: payload !== undefined && payload !== "" ? payload : (payload_summary ?? ""),
+    sender: source_session ?? source ?? "",
+    subject: message.subject,
+  });
 }
+
+// The subscription ended without a stop: the connection is gone, or the server closed it. No
+// closing line is written, so the record is unfinished and every run that reads it is a rig
+// error rather than a run that published nothing.
+const failure = await nats.closed();
+console.error(
+  `record-publishes.ts: the subscription ended before the run did${failure === undefined ? "" : `: ${failure}`}`
+);
+process.exit(1);

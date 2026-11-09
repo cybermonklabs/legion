@@ -154,8 +154,10 @@ and you tell it which; from `accepting` you send an issue back only to `implemen
 
 ## A conflicting head
 
-What returns the tree to review is no longer a path test: READY compares no head with another,
-and the daemon keeps no check of its own above the approved head. A passing result carries across
+What returns the tree to review is no longer a path test: READY never compares the approved head
+with the head it merges — of its refusals, only `READY_NOT_APPROVED` reads the approval, and only
+whether one was recorded — and the daemon keeps no check of its own above the approved head.
+A passing result carries across
 one push above the head the reviewer approved when that push's own diff changes no code that runs
 and the reviewer's approval of the new head states that reading — the diff it read, that it
 changes no code that runs, the head each result ran at and the head it approves. Anything else

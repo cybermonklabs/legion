@@ -776,7 +776,16 @@ stop_panes() {
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
-  for pid in "$daemon_pid" "$dispatch_pid" "$record_pid"; do
+  # The recorder first, and with TERM rather than stop_tree's STOP-then-KILL: it writes the
+  # closing line of `<run>/published.jsonl` on TERM, and that line is what tells a reader the
+  # record is whole (record-publishes.ts, score.ts's `unscored`). stop_pid gives it ten seconds
+  # and kills it after, so a recorder that will not stop leaves an unfinished record rather than
+  # holding the run open.
+  if [ -n "$record_pid" ]; then
+    stop_pid "$record_pid" && wait "$record_pid" 2>/dev/null || true
+    record_pid=''
+  fi
+  for pid in "$daemon_pid" "$dispatch_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -1993,13 +2002,6 @@ worker_boot() {
     sessions_dir=$R/sessions
   fi
   mkdir -p "$sessions_dir"
-  # Where the run keeps a record of what Envoy accepted (the two scenarios cmd_run starts the
-  # recorder for), it gets a line for this agent's start, which opens the window of the file its
-  # own sends sit in: the run's agents never overlap, since the one before this has exited and
-  # its stand-in is stopped just above, so every message after this line and before the next is
-  # this agent's (record-publishes.ts, score.ts's `publishes`).
-  [ ! -f "$R/published.jsonl" ] ||
-    printf '{"at":"%s","boot":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$role" >>"$R/published.jsonl"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
@@ -2062,6 +2064,7 @@ run_tester_proof() {
 # reads back and holds to the name.
 run_reviewer_text_findings() {
   local name=$1 n=$2 index=$3 start=$4 review=$5 pr head version
+  start_recorder
   worker_run_world "$index" "$start" "$review"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   version=$(jq -r .test.version "$R/fixture.json")
@@ -2075,14 +2078,37 @@ run_reviewer_text_findings() {
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
-# reviewer_wake prints the message the implementer published to the reviewer's role topic, as one
-# JSON object of its topic and its text, or `null` when it published none. It asks score.ts, which
-# is the one reader of a publish this rig has: the harness and the score read the same code, so a
-# shape one of them reads and the other does not cannot score a wake that reached nobody. Two
-# readers disagreed until 2026-11-09 — this function read the `envoy_publish` tool's own arguments
-# and a write to `xd://envoy_publish`, while the score also read a publish made from `eval`, so a
-# run whose implementer published from a cell scored `toldReviewer` with its reviewer booted on an
-# empty prompt. Of several publishes it takes the last, the message the reviewer would have read.
+# start_recorder starts this run's record of what Envoy accepted on its own role topics
+# (record-publishes.ts): `<run>/published.jsonl` is what the score and reviewer_wake both read, so
+# neither works out what was sent from what an agent wrote. The two scenarios that score a message
+# call it before their first agent, and every other use of the rig starts none, since a scenario
+# that scores no message would take a dependency on the bus for nothing — `rig-isolation.test.ts`
+# gives its runs a services file with no NATS in it at all, and a recorder there ended every run
+# of that suite before its first agent (CI of 2026-11-09, run 42626483576).
+#
+# The bus comes from the batch's own services file: `rig.sh run` is a process of its own, and the
+# URL the batch resolved lives there and in no variable of this one. It is exported rather than
+# passed as an argument, since a URL may carry userinfo and an argument list is world-readable.
+start_recorder() {
+  : >"$R/published.jsonl"
+  export SKILL_SCENARIOS_NATS_URL
+  SKILL_SCENARIOS_NATS_URL=$(sed -n 's/^ENVOY_NATS_URL=//p' "$services_env")
+  start_process record bun "$here/record-publishes.ts" "$R/published.jsonl" \
+    "legion-$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")-"
+  await_start record "$record_pid" 30 "the publish recorder to subscribe" \
+    grep -q '^recording ' "$R/logs/record.log"
+}
+
+# reviewer_wake prints every message the implementer published to the reviewer's role topic, in
+# the order Envoy accepted them, as one JSON array; an implementer that published none prints an
+# empty one. It asks score.ts, which is the one reader of a publish this rig has: the harness and
+# the score read the same record, so a message one of them reads and the other does not cannot
+# score a wake that reached nobody. Two readers disagreed until 2026-11-09 — this function read
+# the `envoy_publish` tool's own arguments and a write to `xd://envoy_publish`, while the score
+# also read a publish made from `eval`, so a run whose implementer published from a cell scored
+# `toldReviewer` with its reviewer booted on an empty prompt. Every message is given, not the
+# last: Envoy delivers each one, and a reviewer handed only the last would be missing a wake its
+# own run sent.
 reviewer_wake() {
   bun "$here/score.ts" published "$R" reviewer
 }
@@ -2099,6 +2125,7 @@ reviewer_wake() {
 # run's name and in <run>/case.txt, which threadsClosed reads back and holds to the name.
 run_threads_closed() {
   local name=$1 n=$2 index=$3 start=$4 threads_case=$5 pr head open wake
+  start_recorder
   worker_run_world "$index" "$start" "$threads_case"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   seed_ts review-handoff "$R/fixture.json" "$R/review.json"
@@ -2116,11 +2143,10 @@ run_threads_closed() {
   # wake here would hand the reviewer the head the implementer never named. What the reviewer was
   # given is kept whole in <run>/reviewer-wake.json, the two cases apart in its `wake`.
   wake=$(reviewer_wake)
-  if [ "$wake" = null ]; then
-    : >"$R/prompt.txt"
-  else
-    printf 'Implementer → reviewer, %s. %s\n' "$worker_key" "$(jq -r .message <<<"$wake")" >"$R/prompt.txt"
-  fi
+  # One delivery per message, in Envoy's own order, which is what the reviewer's session would
+  # have been handed; an implementer that published none leaves the prompt empty.
+  jq -r --arg key "$worker_key" '.[] | "Implementer → reviewer, \($key). \(.message)"' \
+    <<<"$wake" >"$R/prompt.txt"
   jq -n --argjson wake "$wake" --rawfile prompt "$R/prompt.txt" \
     '{from:"implementer", wake:$wake, prompt:$prompt}' >"$R/reviewer-wake.json"
   worker_boot "$name-reviewer" "$n" reviewer
@@ -2184,30 +2210,6 @@ cmd_run() {
   # The run's own record of its case, which the scorer holds to the name above.
   [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
   cp "$P/built-from" "$R/built-from"
-  # What Envoy accepted on this run's role topics, recorded by a subscriber of the bus rather than
-  # read out of an agent's own code afterwards (record-publishes.ts): `<run>/published.jsonl` is
-  # what the score and reviewer_wake both read, so neither works out what was sent from what the
-  # agent wrote. Started before any agent of the run, stopped with the run (stop_run), and only
-  # for the two scenarios whose score reads what an agent sent: every other scenario measures one
-  # agent that publishes nothing, so a recorder there would be a bus dependency its runs do not
-  # have. The run reads the bus from its batch's services file, since `rig.sh run` is a process
-  # of its own and the URL the batch resolved is recorded there and in no variable of this one.
-  case $scenario in
-    reviewer-text-findings | threads-closed)
-      : >"$R/published.jsonl"
-      start_process record env \
-        "SKILL_SCENARIOS_NATS_URL=$(sed -n 's/^ENVOY_NATS_URL=//p' "$services_env")" \
-        bun "$here/record-publishes.ts" "$R/published.jsonl" \
-        "legion-$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")-"
-      await_start record "$record_pid" 30 "the publish recorder to subscribe" \
-        grep -q '^recording ' "$R/logs/record.log"
-      ;;
-  *)
-    # Said in the run's own log, so a reader of a run with no `published.jsonl` knows the recorder
-    # was never wanted rather than that it failed.
-    printf 'no publish recorder: %s scores no message of an agent\n' "$scenario" >"$R/logs/record.log"
-    ;;
-  esac
   case $scenario in
   ask-on-message) run_ask_on_message "$name" ;;
   measure-before-ask) run_measure_before_ask "$name" ;;
