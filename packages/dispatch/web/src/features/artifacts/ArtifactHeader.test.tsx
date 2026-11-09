@@ -3,12 +3,16 @@
 // it is meant to; the two things in it that tell a reader something no press of theirs would ask
 // for - the document's connection and what a review of it decided - stand there from the first
 // frame, because a reader cannot reach for a notice they were never given.
+//
+// And what the hold must not take from the reader: the landing highlight, which is two seconds
+// of ring on the chrome that waits, so it is counted from the chrome rather than from the box.
 import { afterEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import type { Artifact, ArtifactApproval } from "../../api/types";
+import { highlightRing } from "../../theme/classes";
 import type { ConnectionState } from "../doc/connection";
 import { theFirstBatchIsAwaited } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
@@ -46,7 +50,7 @@ function toolbarWith(connection: ConnectionState, pending: PendingState | undefi
   } satisfies DocumentToolbar;
 }
 
-function renderHeader(target: Artifact, toolbar: DocumentToolbar | undefined) {
+function renderHeader(target: Artifact, toolbar: DocumentToolbar | undefined, highlight = false) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -55,7 +59,7 @@ function renderHeader(target: Artifact, toolbar: DocumentToolbar | undefined) {
       <QueryClientProvider client={queryClient}>
         <ArtifactHeader
           artifact={target}
-          highlight={false}
+          highlight={highlight}
           isClosed={false}
           showDiff={false}
           showVersionPicker
@@ -118,4 +122,40 @@ test("the artifact header's box says what a review of the document decided, and 
   } finally {
     view.unmount();
   }
+});
+
+// The landing highlight is the mark that answers "which of these is the artifact I asked for"
+// (`ArtifactRoutePanel.tsx` arms it on the artifact an address names), and it is two seconds
+// long. The chrome that wears it is held behind the first batch, so a first batch slower than
+// two seconds would spend every one of them behind the hold and the reader would be shown
+// nothing: this row holds the chrome back past the two seconds and reads the ring after it.
+test("the landing highlight's two seconds run from the chrome, not from the box that waits", async () => {
+  await onFakeClock(async () => {
+    theFirstBatchIsAwaited(true);
+    const view = renderHeader(artifact, toolbarWith("connected", undefined), true);
+
+    try {
+      // A first batch that takes longer than the highlight itself.
+      await tick(3_000);
+      expect(screen.queryByTestId("artifact-header")).toBeNull();
+
+      // The chrome lands, and the reader gets the mark they navigated for in its first frame.
+      act(() => theFirstBatchIsAwaited(false));
+      const header = screen.getByTestId("artifact-header");
+      expect(header.className).toContain(highlightRing);
+      expect(header.getAttribute("data-landing-ring")).toBe("");
+
+      // Two seconds of it, counted from there and no shorter.
+      await tick(1_900);
+      expect(header.className).toContain(highlightRing);
+      expect(header.getAttribute("data-landing-ring")).toBe("");
+
+      // And gone at the end of them, as it is on a page whose chrome never waited.
+      await tick(200);
+      expect(header.className).not.toContain(highlightRing);
+      expect(header.getAttribute("data-landing-ring")).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  });
 });

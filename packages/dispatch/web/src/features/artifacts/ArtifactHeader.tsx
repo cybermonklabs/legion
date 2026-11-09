@@ -59,6 +59,58 @@ export function versionsNewestFirst(versions: readonly Version[] | null): Versio
   return [...(versions ?? [])].sort((left, right) => right.number - left.number);
 }
 
+/**
+ * The artifact header's own box, and the landing highlight on it: the accent ring that tells a
+ * reader who navigated to one artifact which thing on the page they navigated to
+ * (`ArtifactRoutePanel.tsx` arms it), gone two seconds later.
+ *
+ * Its own component, because those two seconds are the reader's and are counted from the commit
+ * that draws the ring. The header below is held behind the editor's first batch
+ * (`ChromeAfterTheFirstBatch`), so `ArtifactHeader`'s own mount is the mount of the PLACEHOLDER
+ * that stands in for it, and a timer armed there spends the mark behind the hold: 0.2 s of the
+ * two seconds in CI run 42628596511, and every one of them on a page whose first batch takes
+ * longer than two seconds, which leaves the reader no landing mark at all and nothing failing.
+ * This component is mounted by the chrome itself, so its first frame is the ring's first frame.
+ *
+ * `data-landing-ring` stands on the box for as long as the ring is painted. The visual review
+ * shoots each page in light and then in dark, and a two-second state is one either shot can
+ * catch, so that layer waits for this attribute to be gone rather than for a duration
+ * (`e2e/review-routes.ts`'s `waitForRouteSettled`). The name is the one
+ * cybermonklabs/legion#2813 gives the same state, so a forward merge joins the two rather than
+ * reconciling two spellings of it.
+ */
+function LandingHighlightHeader({
+  children,
+  highlight,
+}: {
+  children: ReactNode;
+  highlight: boolean;
+}): ReactNode {
+  const [highlighted, setHighlighted] = useState(highlight);
+
+  useEffect(() => {
+    if (!highlight) {
+      setHighlighted(false);
+      return;
+    }
+    setHighlighted(true);
+    const timeout = window.setTimeout(() => setHighlighted(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [highlight]);
+
+  return (
+    <header
+      className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
+        highlighted ? highlightRing : ""
+      }`}
+      data-landing-ring={highlighted ? "" : undefined}
+      data-testid="artifact-header"
+    >
+      {children}
+    </header>
+  );
+}
+
 export function ArtifactHeader({
   artifact,
   children,
@@ -80,23 +132,12 @@ export function ArtifactHeader({
   toolbar?: DocumentToolbar;
   version: number | undefined;
 }): ReactNode {
-  const [highlighted, setHighlighted] = useState(highlight);
   const navigate = useNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
   // issue or project; its page is under the agent's session.
   const agentRoute = documentRoute(artifact);
   const agentSession = agentRoute.kind === "agent-artifact" ? agentRoute.session : undefined;
-
-  useEffect(() => {
-    if (!highlight) {
-      setHighlighted(false);
-      return;
-    }
-    setHighlighted(true);
-    const timeout = window.setTimeout(() => setHighlighted(false), 2000);
-    return () => window.clearTimeout(timeout);
-  }, [highlight]);
 
   return (
     <section className="space-y-4">
@@ -136,12 +177,7 @@ export function ArtifactHeader({
           </header>
         }
       >
-        <header
-          className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
-            highlighted ? highlightRing : ""
-          }`}
-          data-testid="artifact-header"
-        >
+        <LandingHighlightHeader highlight={highlight}>
           <div className="min-w-0">
             {agentSession !== undefined ? (
               // The agent whose conversation owns the artifact, by its current name, linked to that
@@ -255,7 +291,7 @@ export function ArtifactHeader({
               )}
             </div>
           ) : null}
-        </header>
+        </LandingHighlightHeader>
       </ChromeAfterTheFirstBatch>
       {children}
     </section>
