@@ -241,11 +241,12 @@ prefix (`PI_SHELL_PREFIX`) before the command, and the environment it builds for
 location variables), with `-c` in place of the host's args and in the directory
 `SessionContext.cwd` names. `PI_BASH_NO_LOGIN` is never written into `process.env` for it,
 which would change every other command the session runs.
-That shell reads no startup file before the command: no profile, no `~/.bashrc`, no file
-`BASH_ENV` or `ENV` names - both names are taken out of the environment the command runs with -
-and no `.zshenv`, which a zsh is given `-f` for because no variable closes that one. Those files
-are listed in one place, `shellInvocation` in `src/typed-shell.ts`, which is where the door a
-later shell adds is closed.
+That shell reads none of the person's startup files before the command: no profile, no
+`~/.bashrc`, no file `BASH_ENV` or `ENV` names - both names are taken out of the environment the
+command runs with - and no `~/.zshenv`, which a zsh is given `-f` for because no variable closes
+that one. A zsh still reads the system `/etc/zshenv`, which no flag closes. Those files are
+listed in one place, `shellInvocation` in `src/typed-shell.ts`, which is where the door a later
+shell adds is closed.
 What this caller still does differently from the same line typed at the CLI, and the bounds it
 keeps of its own (a process group, both streams pipes read to their end with the first 32,000
 bytes kept, the ignored standard input, and the stop after `ENVOY_SHELL_COMMAND_LIMIT_MS`,

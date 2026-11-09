@@ -178,18 +178,10 @@ describe("running a person's command", () => {
   // session launched with it set hands the command a file that runs before it, so the person
   // reads a banner they did not ask for and the command runs wherever that file left it - the
   // two things the architect ruled on 2026-11-09 that R4 forbids, through another door.
-  // Measured at f9e21e78492b: with `BASH_ENV` naming a file that prints and runs a `cd`, the
-  // command `pwd -P` answered that file's banner and that file's directory. `ENV` is the same
-  // door for a `sh` the host resolves, and this row holds both out of the environment the
-  // command runs with. A zsh `$SHELL` has a door of its own that no environment closes, since
-  // zsh reads `.zshenv` whatever its args; this machine resolves bash, so this row cannot see
-  // it, and whether to pass `-f` there is the implementer's to decide.
-  // Corrected with the tester's agreement after its own measurement (2026-11-09): the two lines
-  // this row carried read `procmgr.getShellConfig().env`, the host package's own child-shell
-  // environment, which @oh-my-pi/pi-utils 18.8.3 builds with both names kept, so nothing in this
-  // package could make them hold. The claim is the same one, driven where a person meets it: the
-  // command itself reads neither name. `$ENV` is read by a `sh`, not by the bash this machine
-  // resolves, so what the row shows of it is that the name is absent.
+  // With `BASH_ENV` naming a file that prints and runs a `cd`, the command `pwd -P` would answer
+  // that file's banner and that file's directory. This row holds both `BASH_ENV` and `ENV` out
+  // of the environment the command runs with, and reads the claim where a person meets it: the
+  // command itself sees neither name. A zsh's own door, `~/.zshenv`, is the next row's.
   test("reads no `BASH_ENV` file, so nothing runs before the command", async () => {
     const directory = scratch();
     const home = scratch();
