@@ -84,8 +84,10 @@ name: CI
 # says why it is sourced rather than run, and why each attempt is bounded on its own. Where the
 # verb is curl no helper is needed: `--retry 7 --retry-all-errors --max-time <bound>` beside
 # `-fsSL` makes 8 attempts whose last starts 127 s after the first, and
-# .github/actions/install-changie/action.yml carries the one full explanation of that spelling,
-# `--fail` included. What retries is the download and never the work after it: each job's Go
+# .github/scripts/ci-tools.sh's `ci_tools_curl` carries the one full explanation of that
+# spelling, `--fail` and its `--retry-max-time 120` included: every tool install of
+# .github/ci-tools.yaml fetches through it, and the actions that fetch anything else write the
+# options themselves in the same shape. What retries is the download and never the work after it: each job's Go
 # modules come down in a `go mod download` step of its own, after that job's cache restore and
 # before its first Go step, so no `go build`, `go test`, `go vet` or `go run` is ever re-run by
 # a retry. Four bounds are the same wherever that kind of fetch is made, because the kind
@@ -494,7 +496,7 @@ jobs:
               - 'docs/site/package.json'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
-              # setup-bun's third step reads this runner's bun row through that helper and
+              # setup-bun's bun-second-source step reads this runner's bun row through that helper and
               # fetches the npm copy when the release asset served no Bun of the pinned version,
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
@@ -2107,6 +2109,10 @@ jobs:
             tool_fallback: &tool_fallback
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
+              # install-jj retries `mise install` through this helper (action.yml:60,93), so a
+              # change to the ladder changes what the primary half of this proof does
+              # (dispatch://INFRA-1545, R2).
+              - '.github/scripts/ci-retry.sh'
               - '.github/scripts/mirror-ci-tools.sh'
               - '.github/scripts/check-ci-tools.sh'
               - '.github/scripts/ci-tools-proof.sh'
@@ -2555,7 +2561,7 @@ jobs:
   # WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
   # Everything a case is read on is driven here: the fault, the origin that stands in for all
   # three sources, the corrupted payloads, and the removals each case makes before it.
-  # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's second step pins,
+  # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's setup-bun step pins,
   # restores a cached Bun into ~/.bun/bin/bun inside a step of its own, and the Actions cache it
   # restores from is on hosts this job's fault does not hold.
   # .bun-version holds an exact version, so that action builds its key and its URL without
@@ -2967,9 +2973,10 @@ jobs:
         run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
 
       # Case 7 of 8: the installed Bun is one byte changed and still answers the pinned revision,
-      # so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
-      # version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
-      # one writes for it is `existing-install` — and the fourth step refuses those bytes.
+      # so setup-bun's bun-second-source step takes the branch that installs nothing — a Bun of
+      # the pinned version is already at ~/.bun/bin/bun, and the bun-already-here step found it
+      # there with no cache hit to subtract, so the word this one writes for it is
+      # `existing-install` — and the last step refuses those bytes.
       # Measured on 2026-11-08: the 107308936-byte binary of the bun-linux-x64 row answers
       # `--revision 1.4.4+38afee6c8` with its final byte changed, as it does whole, so the
       # branch this case needs is the branch it takes. The step below reads that answer again
@@ -2997,11 +3004,12 @@ jobs:
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
 
-      # Case 8 of 8: with no Bun of the pinned version on this runner, setup-bun's third step
-      # must read the second source, and the npm package serves one byte changed.
+      # Case 8 of 8: with no Bun of the pinned version on this runner, setup-bun's
+      # bun-second-source step must read the second source, and the npm package serves one byte
+      # changed.
       # This case takes the pair away itself rather than leaning on the case before it. That
       # case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
-      # fourth step says so — but a case that must read the second source is held to its own
+      # last step says so — but a case that must read the second source is held to its own
       # state and not to the one the case before it happened to leave.
       - name: Take any Bun away, so the second source must serve this case
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
@@ -3078,7 +3086,8 @@ jobs:
           job-status: ${{ job.status }}
 
   # The same two halves of the Bun install, proved again on an arm64 runner.
-  # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
+  # .github/actions/setup-bun's bun-second-source step selects a row from `uname -m` —
+  # `bun-linux-aarch64`
   # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
   # python3 with PyYAML. No other step of this repository that runs on ubuntu-24.04-arm imports
   # yaml, so nothing says that runner image carries it until the arm64 leg of
@@ -4203,9 +4212,11 @@ jobs:
     # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry
     # on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
     # that names 18 minutes, and that branch carries 28, so both hold one value on this line.
-    # Every figure here is a cold-Bun one: off main the setup-bun wrapper passes no-cache, so a
-    # pull request's run and a merge group's both download the 34 MB release asset rather than
-    # restore it, and that download is the 2 s above.
+    # The 2 s above is a cold-Bun figure, measured before this branch: it is the release asset
+    # setup-bun downloaded when its own cache was the only one and no-cache held it off every
+    # ref but main. This branch restores ~/.bun/bin from a key of its own on every ref, so a
+    # pull request's run and a merge group's both start from a hit where main saved one, which
+    # moves that term down rather than up and leaves this ceiling where it is.
     # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
     # Its two terms, in the shape the header's Budgets note asks for: 600 s, the 10 minutes
     # this job carried, above both its 374 s measured maximum and the 742 s sum above, plus

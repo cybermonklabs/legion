@@ -22,8 +22,9 @@
 # has, because the file under test is sourced into such a shell and carries no `set` of its own.
 #
 # THE CURL ON THESE CASES' PATH: the helper pins `--retry 7 --retry-all-errors` with
-# `--retry-max-time 60`, so each case where a source refuses would sleep up to a minute before
-# curl gave up. The cases put a curl of their own first on PATH, a two-line script that runs the
+# `--retry-max-time 120`, so each case where a source refuses would sleep the whole of curl's
+# ladder - 127 s of waits, which is what reaching this repository's 120 s floor costs
+# (dispatch://INFRA-1545, R1) - before curl gave up. The cases put a curl of their own first on PATH, a two-line script that runs the
 # real curl with `--retry-max-time 1` appended after the helper's own arguments, which curl reads
 # as the last word on that option. It bounds the sleep and changes nothing else. A .curlrc cannot
 # do it, because curl reads its configuration file before the command line and the helper's own

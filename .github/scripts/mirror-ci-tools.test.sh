@@ -32,8 +32,8 @@
 # root.
 #
 # THE CURL ON THESE CASES' PATH: the script fetches through .github/scripts/ci-tools.sh, which
-# pins `--retry 7 --retry-all-errors` with `--retry-max-time 60`, so the case whose asset does
-# not answer would sleep up to a minute. The cases put a curl of their own first on PATH, a
+# pins `--retry 7 --retry-all-errors` with `--retry-max-time 120`, so the case whose asset does
+# not answer would sleep the whole of curl's 127 s ladder. The cases put a curl of their own first on PATH, a
 # two-line script that runs the real curl with `--retry-max-time 1` appended after the arguments
 # the helper wrote, which curl reads as the last word on that option. It bounds the sleep and
 # changes nothing else. A .curlrc cannot do it, because curl reads its configuration file before

@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  `skills/legion-worker/references/tools.md` now names the flag combination gVisor follows. The
+  item's heading and its rule said `O_NOFOLLOW`, which told a role that any walk opening each
+  component with that flag is defeated in a pod. Measured in a pod on 2026-11-08, `openat(dirfd,
+  <a link to a directory>, O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)` answers `ELOOP`, so what the
+  sandbox follows is `O_DIRECTORY|O_NOFOLLOW` and not `O_NOFOLLOW` itself. The page's
+  `O_PATH|O_NOFOLLOW|O_CLOEXEC` recommendation is unchanged.
