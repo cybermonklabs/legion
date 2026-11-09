@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -917,51 +920,263 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 			service, database := newRetiringRoomService(t)
 			ctx := context.Background()
 			const trials = 40
-			hung := 0
-			for trial := range trials {
+			hungTrial := -1
+			hungCommitReturned, hungCloseReturned := false, false
+			// Each trial runs in a function of its own so that what it defers goes back where it
+			// came from at the end of that trial, not at the end of the subtest. The transaction
+			// is not the reason it must: it runs on a connection this trial hijacks out of the
+			// pool, and the pool's Close does not wait for a connection it no longer owns (the
+			// comment below says so). Two other things are. The connection itself is closed when
+			// the trial that hijacked it ends, so the subtest holds one of them at a time rather
+			// than forty of them open against its database until it returns; and cancelClosing
+			// frees the pooled connection this trial's close is waiting on, which storetest.Open's
+			// cleanup does wait for -- it closes the pool, and Pool.Close returns only once every
+			// connection in use has come back, so a close still waiting there wedges that cleanup
+			// and the subtest never prints its result.
+			runTrial := func(trial int) bool {
 				number := 100 + trial
 				artifactID := createIssueDocument(t, database, number, markdown(paragraphs, "before"))
 				seedServiceText(t, service, artifactID, markdown(paragraphs, "before"))
-				tx, err := database.Pool.Begin(ctx)
+				// Every trial's transaction runs on a connection of its own that the pool does
+				// not own: Acquire takes one out of the pool and Hijack removes it from the
+				// pool altogether, which is how this repository's own Pool.Listener gets a
+				// connection no Close of the pool waits for (store/pool.go:318-335). A trial
+				// that ends while it owns the transaction gives the connection back by closing
+				// it in the release below; a trial whose commit is still in flight leaves it
+				// where it is, since nothing may take a connection a live Commit is writing,
+				// and because the pool no longer owns it the pool's Close does not wait for it.
+				// So a commit that never returns costs this trial its connection rather than
+				// the package's cleanup.
+				pooled, err := database.Pool.Acquire(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
+				conn := pooled.Hijack()
+				// Bounded, as Pool.Dedicated bounds the close of the connection it hijacked
+				// (pool.go:350-356): a connection that went half-open must not hold the trial
+				// in its Terminate.
+				closeConn := func() {
+					terminate, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = conn.Close(terminate)
+				}
+				tx, err := conn.Begin(ctx)
+				if err != nil {
+					closeConn()
+					t.Fatal(err)
+				}
 				joined, ledger := service.Join(ctx, tx)
+				// committing says the commit goroutine below owns the transaction, and while it
+				// does the release leaves it alone: a rollback beside a live Commit writes the
+				// same pgx transaction and the same connection from a second goroutine,
+				// which -race reports as a data race. Only the subtest's own goroutine ever
+				// touches the flag -- it sets it before the goroutine starts, clears it once a
+				// value has arrived on committed, and reads it in the deferred release, which
+				// runs on that same goroutine -- so the flag needs no atomic.
+				committing := false
+				defer func() {
+					if committing {
+						// The commit goroutine still owns the transaction and the hijacked
+						// connection under it, so leave both alone. Nothing here waits on
+						// them: the connection left the pool, so the pool's Close does not
+						// count it among the connections in use it waits for.
+						return
+					}
+					// After a commit only the ledger's read-backs are left to drop, and the
+					// rollback answers ErrTxClosed; both are what this file's other writers do.
+					// The connection is this trial's to close, since the pool gave it up when
+					// this trial hijacked it.
+					ledger.Discard()
+					tx.Rollback(ctx)
+					closeConn()
+				}()
 				if _, err := service.ReplaceText(joined, artifactID, markdown(paragraphs, "after"), alice); err != nil {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
 				closed := make(chan error, 1)
+				// The close runs on a connection of the pool and waits there on the issue row
+				// this trial's write holds, so it gets a context the trial can end. Cancelled
+				// when the trial leaves, its Exec stops waiting and the release below gives that
+				// connection up, which is what lets Pool.Close finish even when the commit that
+				// would have freed the row never arrives.
+				closing, cancelClosing := context.WithCancel(ctx)
+				defer cancelClosing()
+				// The connection is taken here, on the trial's own goroutine, before the
+				// goroutine below and before the sleep under it. This trial's transaction runs
+				// on the connection it hijacked, so the pool has no warm connection left to hand
+				// out, and a close that acquired inside the goroutine would spend the sleep
+				// dialling a new one -- a whole connection's handshake -- rather than waiting on
+				// the issue row. The case is written for the interleaving where the close is
+				// already waiting on the row the write holds by the time the commit starts, so a
+				// close that only reaches its Exec after the sleep exercises nothing.
+				closer, err := database.Pool.Acquire(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
 				go func() {
+					// Released whichever way this goroutine leaves, which hands the connection back
+					// to the pool's accounting, so Pool.Close stops waiting for it. A cancelled
+					// Exec closes the connection, and Release destroys a closed, busy or
+					// mid-transaction connection rather than putting it back (pgxpool
+					// conn.go:32-33).
+					defer closer.Release()
 					issueKey := fmt.Sprintf("DOC-%d", number)
 					// The close waits on the issue row the write holds until the write commits.
-					if _, err := database.Pool.Exec(ctx, `update issues set closed_at = now() where key = $1`, issueKey); err != nil {
+					if _, err := closer.Exec(closing, `update issues set closed_at = now() where key = $1`, issueKey); err != nil {
 						closed <- err
 						return
 					}
-					service.issueOpenChanged(ctx, issueKey)
+					service.issueOpenChanged(closing, issueKey)
 					closed <- nil
 				}()
 				time.Sleep(30 * time.Millisecond)
 				committed := make(chan error, 1)
-				go func() { committed <- ledger.Commit(ctx) }()
+				committing = true
+				go func() {
+					// The park is the hook of TestAWedgedCommitReportsRatherThanWedgingTheSuite,
+					// which runs this case in a child process of the test binary: the commit of
+					// the trial it names never returns, which is the write wedged before
+					// tx.Commit that this case exists to catch.
+					if parked, named := parkedCommitTrial(); named && parked == trial {
+						select {}
+					}
+					committed <- ledger.Commit(ctx)
+				}()
 				select {
 				case err := <-committed:
+					committing = false
 					if err != nil {
 						t.Errorf("trial %d: commit: %v", trial, err)
 					}
 				case <-time.After(10 * time.Second):
-					hung++
-					continue
+					hungTrial = trial
+					// A hang guard, not a measurement of anything: the commit that did not
+					// return still owns this trial's transaction, so give it ten more seconds
+					// to take the transaction back when it arrives late. They remove nothing
+					// for a commit that never arrives: that one keeps the transaction and the
+					// connection under it for good, which is why that connection is not one of
+					// the pool's.
+					select {
+					case <-committed:
+						committing = false
+						hungCommitReturned = true
+					case <-time.After(10 * time.Second):
+					}
+					// The close is a second goroutine of this trial's making, so say whether it
+					// came back rather than walk away from it unreported.
+					select {
+					case <-closed:
+						hungCloseReturned = true
+					case <-time.After(10 * time.Second):
+					}
+					return false
 				}
 				if err := <-closed; err != nil {
 					t.Fatalf("trial %d: close the issue: %v", trial, err)
 				}
+				return true
 			}
-			if hung > 0 {
-				t.Errorf("%d of %d writes never returned from their commit once their issue closed as they published (%d goroutine(s) in consumeSuppressedPersistence)",
-					hung, trials, goroutinesIn("consumeSuppressedPersistence"))
+			// The loop stops at the first hang, so at most one commit goroutine is ever in flight.
+			for trial := range trials {
+				if !runTrial(trial) {
+					break
+				}
+			}
+			if hungTrial >= 0 {
+				t.Errorf("trial %d of %d never returned from its commit once its issue closed as it published, and the loop stopped there (the commit returned within ten more seconds: %t; the close returned: %t; %d goroutine(s) in consumeSuppressedPersistence)",
+					hungTrial, trials, hungCommitReturned, hungCloseReturned, goroutinesIn("consumeSuppressedPersistence"))
 			}
 		})
+	}
+}
+
+// parkedCommitEnv names the trial of TestAWriteSurvivesItsIssueClosingAsItPublishes whose commit
+// is to park and never return, which only the child process of the test below sets.
+const parkedCommitEnv = "DOCS_RESIDENCY_PARK_COMMIT_TRIAL"
+
+// parkedCommitTrial is the trial parkedCommitEnv names, and whether it names one.
+func parkedCommitTrial() (int, bool) {
+	value, set := os.LookupEnv(parkedCommitEnv)
+	if !set {
+		return 0, false
+	}
+	trial, err := strconv.Atoi(value)
+	return trial, err == nil
+}
+
+// A write whose commit never returns is the defect TestAWriteSurvivesItsIssueClosingAsItPublishes
+// exists to catch, and the case must report it and end rather than hold its package's cleanup:
+// storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
+// (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
+// left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
+// envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
+// the case in a child process of this test binary with one trial's commit parked for good and
+// requires the child to print the case's own --- FAIL line inside a deadline of its own.
+func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
+	if os.Getenv(storetest.DatabaseURLEnv) == "" {
+		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
+	}
+	if _, parked := parkedCommitTrial(); parked {
+		t.Skip("the child process runs the case, not this test")
+	}
+	// The child reports at the end of the parked trial's own guard, thirty seconds of it (the
+	// commit's ten, ten more for a late commit, ten for the close), with its own storetest
+	// template migration and database clone before that, and storetest's drop of that clone
+	// after it: the parked commit's connection is still open on the clone, so the plain drop is
+	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
+	// (storetest.go:132, :147-161), and Main waits for that drop before the binary exits
+	// (storetest.go:110). Both measurements take it in: 54.56 s in this package's issue pod
+	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
+	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
+	// and it is minutes below the deadline of any run that holds this package (the -timeout
+	// .github/workflows/ci.yaml gives envoy-go-docs-finalizers and envoy-go-race-docs), so a child
+	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
+	const childDeadline = 180 * time.Second
+	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
+	// the deadline above watches none of what the child does after them: storetest.Main's wait for
+	// those drops (storetest.go:110), the admin Exec that drops the template on
+	// context.Background(), the leak report. A child stuck in one of those would hold this row
+	// until the run that holds this package reached its own deadline, which is the end this row
+	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is
+	// what that teardown is worth: the 15 s the plain drop is retried for, the forced drop behind
+	// it and the template drop after that, which a minute covers with room to spare while leaving
+	// this row minutes inside the shortest run that holds the package.
+	const childTeardown = time.Minute
+	killing, cancelKilling := context.WithTimeout(context.Background(), childDeadline+childTeardown)
+	defer cancelKilling()
+	command := exec.CommandContext(killing, os.Args[0],
+		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
+		"-test.timeout="+childDeadline.String())
+	command.Env = append(os.Environ(), parkedCommitEnv+"=0")
+	// Killing the child closes its end of the pipe CombinedOutput reads, so Wait returns. A
+	// process the child started would keep that pipe open after the kill, and WaitDelay bounds
+	// that case: ten seconds after the kill, Wait closes the pipe itself and returns what was
+	// read.
+	command.WaitDelay = 10 * time.Second
+	started := time.Now()
+	output, err := command.CombinedOutput()
+	took := time.Since(started).Round(time.Millisecond)
+	if killing.Err() != nil {
+		t.Fatalf("the child outlived its own %v deadline and was killed %v in, so it wedged past the end of its tests, where -test.timeout no longer watches it:\n%s", childDeadline, took, output)
+	}
+	if err == nil {
+		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
+	}
+	// This row is the only run of the committing flag's early return in the release and of a
+	// close cancelled while it waits on the issue row, so a race in either is reported here or
+	// nowhere: the child fails for its parked commit either way, and the checks below, which ask
+	// only why it failed, would pass straight over the race.
+	if strings.Contains(string(output), "WARNING: DATA RACE") {
+		t.Fatalf("the child reported a data race in %v:\n%s", took, output)
+	}
+	if strings.Contains(string(output), "panic: test timed out") {
+		t.Fatalf("the case held its package's cleanup to the child's %v deadline (%v) instead of reporting the wedged commit:\n%s", childDeadline, took, output)
+	}
+	if !strings.Contains(string(output), "--- FAIL: TestAWriteSurvivesItsIssueClosingAsItPublishes") {
+		t.Fatalf("the child printed no --- FAIL line for the case in %v:\n%s", took, output)
+	}
+	if !strings.Contains(string(output), "never returned from its commit") {
+		t.Fatalf("the child failed in %v for something other than the parked commit:\n%s", took, output)
 	}
 }
 
