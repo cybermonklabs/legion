@@ -1123,3 +1123,5 @@ No lifecycle labels carry worker state.
 
 > Many docs in `docs/plans/` and `docs/solutions/` predate the TypeScript rewrite and contain Python-era references.
 > These are marked with `[HISTORICAL]` headers.
+
+<!-- INFRA-1413 selection probe, never merged. -->
