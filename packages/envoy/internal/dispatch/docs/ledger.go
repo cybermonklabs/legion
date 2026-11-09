@@ -669,7 +669,8 @@ func (l *Ledger) QueueAskParts(
 	}
 	// Every read below runs under this ledger's context, so a `#id` naming a question block
 	// this transaction has only queued resolves to the ask it will name (refs.Pending); the
-	// route's own context carries no ledger where the route passed the request's.
+	// route's own context carries no ledger where the route passed the request's, and a caller
+	// that derived its own from this ledger already hands one that does (ReadContext).
 	ctx = l.ReadContext(ctx)
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
 	// that reconciles the question too builds one and reconciles through it
@@ -841,10 +842,11 @@ func withLedger(ctx context.Context, ledger *Ledger) context.Context {
 // derives its own from the ledger it was handed and no reference read of the transaction can
 // miss the rows that transaction has queued (refs.Pending).
 //
-// A nil ledger is a write outside a route's two phases - a background pass, a transaction that
-// joined nothing - which has queued no row and leaves ctx as it is.
+// A context already carrying this ledger - the one Join returned, or one a caller above derived
+// from the same ledger - is returned as it is, so the context a helper hands on to another is
+// wrapped once however many of them derive their own (api.queueNewAskReferences, QueueAskParts).
 func (l *Ledger) ReadContext(ctx context.Context) context.Context {
-	if l == nil {
+	if ledgerFrom(ctx) == l {
 		return ctx
 	}
 	return withLedger(ctx, l)

@@ -257,7 +257,7 @@ func TestHorizonStallWarningNamesTheHolderAndNeverFailsSafe(t *testing.T) {
 	}
 }
 
-// A long-lived Await (the delivery hub's event seed, the relay's start and its reseed) waits on a
+// A long-lived Await (the event relay, at the start of each generation of it) waits on a
 // lifetime, so an observation that fails every time (a horizon pool that cannot dial) must reach
 // its caller as an error to log and retry on once observations have failed for
 // horizonAwaitFailFor, not only when ctx ends. One success between failures restarts the bound:

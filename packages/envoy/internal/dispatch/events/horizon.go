@@ -125,8 +125,8 @@ const (
 	horizonBackoffMax = 250 * time.Millisecond
 	// horizonAwaitFailFor is how long Await keeps re-observing while every observation fails
 	// before it returns the last one's error; one observation that succeeds starts it again. Its
-	// long-lived callers (the delivery hub's event seed, the event relay's start and its reseed)
-	// wait on a lifetime, not a request, so without it an observation that never succeeds (a
+	// long-lived caller (the event relay, at the start of each generation of it) waits on a
+	// lifetime, not a request, so without it an observation that never succeeds (a
 	// horizon pool that cannot dial, say) would leave them waiting for ever with no error to log
 	// or retry on. Ten seconds is forty retries at Await's longest backoff: long enough to ride
 	// out a redial, short enough that the caller's own warning and retry come soon.

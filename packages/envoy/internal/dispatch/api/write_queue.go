@@ -140,13 +140,16 @@ type pendingItem struct {
 // hold none either: its blocks alone are indexed, and it moves nothing. The transaction has only
 // queued the item's insert, so what no read of that row can answer - the context its blocks'
 // windows embed them under and the document its `#id`s resolve against - is read from the fields
-// source says the row will hold and handed over with it (pendingItem).
+// source says the row will hold and handed over with it (pendingItem). Every read below runs
+// under the ledger the write queues on, whatever context the route passed
+// (docs.Ledger.ReadContext).
 func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, source refs.PendingSource, at time.Time, cites bool) (model.ReferenceChanges, error) {
+	ctx = ledger.ReadContext(ctx)
 	pending, err := s.pendingItemOf(ctx, tx, string(kind), source)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	changes, write, err := s.planItemWrite(ctx, tx, ledger, kind, itemID, body, pending, at, cites, nil, nil)
+	changes, write, err := s.planItemWrite(ctx, tx, kind, itemID, body, pending, at, cites, nil, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -171,7 +174,8 @@ func (s *server) pendingItemOf(ctx context.Context, tx pgx.Tx, kind string, sour
 // the edit moves the head of its text, which each of its edges shows (refs.EditedTargets). A
 // carried id the index refuses returns its *itemblocks.CarriedError.
 func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit) (model.ReferenceChanges, error) {
-	changes, write, err := s.planItemWrite(ctx, tx, ledger, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
+	ctx = ledger.ReadContext(ctx)
+	changes, write, err := s.planItemWrite(ctx, tx, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
 		return refs.EditedTargets(previous, body, found)
 	})
 	if err != nil {
@@ -186,9 +190,11 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // both, for the route to queue where it makes the write: on its ledger (queueItemReferences), or
 // on the batch of a transaction that runs its write phase itself (createStoredMessage).
 //
-// Every read it makes runs under the ledger the write queues on (docs.Ledger.ReadContext), so a
-// mention of a row this transaction has queued resolves to that row (refs.Pending); the ledger
-// is nil for a write that queues on no ledger and has queued no row (createStoredMessage).
+// Every read it makes runs under the context it is given, which its caller derives from the
+// ledger the write queues on (queueItemReferences, docs.Ledger.ReadContext), so a mention of a
+// row this transaction has queued resolves to that row (refs.Pending). A transaction that runs
+// its own write phase has queued no row and reads under the context it holds
+// (createStoredMessage).
 //
 // pending is what the route hands over for an item whose insert this transaction has queued, so
 // that no read of the item's own row can answer it: the context its blocks' windows embed them
@@ -198,7 +204,6 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 func (s *server) planItemWrite(
 	ctx context.Context,
 	tx pgx.Tx,
-	ledger *docs.Ledger,
 	kind refs.ItemKind,
 	itemID, body string,
 	pending *pendingItem,
@@ -207,7 +212,6 @@ func (s *server) planItemWrite(
 	carried *refs.CarriedEdit,
 	edited func(found []text.Ref) []refs.Target,
 ) (model.ReferenceChanges, docs.WriteStep, error) {
-	ctx = ledger.ReadContext(ctx)
 	index, err := refs.ReadItemIndex(ctx, tx, kind, itemID)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err

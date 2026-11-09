@@ -536,7 +536,7 @@ func TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone(t *testing.T) {
 // It is a function rather than a run of assertions inside the test so a test can feed it a
 // sequence no appendRoomTx sends and watch it red (TestTheRoomAppendXidCheckRedsOnAFedSequence),
 // which the test above cannot show of itself: a guard whose rule is never seen to fail guards
-// nothing. The fault the committed code carries for the same reason is commitAppendApart.
+// nothing.
 func appendXidWindowFailure(trips []roundTrip) string {
 	labels := roundTripLabels(trips)
 	writing, committing := -1, -1
@@ -545,7 +545,7 @@ func appendXidWindowFailure(trips []roundTrip) string {
 			continue
 		}
 		for _, sql := range trip.sql {
-			if xidAssigningSQL(sql) && writing < 0 {
+			if storetest.XidAssigningSQL(sql) && writing < 0 {
 				writing = index
 			}
 			if oneLineSQL(sql) == "commit" {
@@ -568,40 +568,11 @@ func appendXidWindowFailure(trips []roundTrip) string {
 	return ""
 }
 
-// The negative control of the guard above, run against the fault committed beside it: with
-// commitAppendApart set, appendRoomTx sends its writes and then its commit a round trip later,
-// which is the gap INFRA-636 is about, and the guard must name it. The append itself still
-// commits exactly what it would otherwise, so nothing but the guard tells the two runs apart.
-func TestTheRoomAppendXidGuardRedsOnACommitSentApartFromTheWrites(t *testing.T) {
-	ctx := context.Background()
-	service, artifactID, recorder := tracedRoomService(t)
-	versioned := service.persistence.(*PgVersioned)
-	versioned.commitAppendApart = true
-
-	recorder.reset()
-	stored, err := versioned.AppendUpdatesWithCredit(ctx, artifactID,
-		[]BrowserUpdate{{Update: paragraphUpdate(), ContentChanged: true}})
-	if err != nil {
-		t.Fatalf("append the room's update with its commit sent apart: %v", err)
-	}
-	if stored == 0 {
-		t.Fatal("the faulted append stored no version, so the fault changed more than where the commit went")
-	}
-	trips := recorder.recorded()
-	failure := appendXidWindowFailure(trips)
-	if failure == "" {
-		t.Fatalf("the guard passed an append whose commit left its writes pipeline, so it passes whatever the code does:\n\t%s",
-			strings.Join(roundTripLabels(trips), "\n\t"))
-	}
-	if !strings.Contains(failure, "holds a transaction id across") {
-		t.Fatalf("the guard reds on the fault with %q, want it to name the round trips the window spans", failure)
-	}
-	t.Logf("the guard reds against the committed fault: %s", failure)
-}
-
 // The guard's check fed round-trip sequences by hand, each a shape appendRoomTx does not send,
 // and the one it does. It needs no database: the check reads the SQL each trip carried and
-// nothing else.
+// nothing else. The gap INFRA-636 is about is among them - the commit sent a round trip after
+// the writes, which the append's own pipeline rules out - so the check is known to red on the
+// one fault this transaction's shape exists to keep out, and on what each red says.
 func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
 	lock := `select pg_advisory_lock(hashtext($1))`
 	unlock := roundTrip{sql: []string{`select pg_advisory_unlock(hashtext($1))`}}
@@ -616,12 +587,16 @@ func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
 		what  string
 		trips []roundTrip
 		red   bool
+		// says is what the check must name when it reds on the sequence: a guard that reds
+		// without naming where the window ran says nothing the next reader can act on.
+		says string
 	}{
-		{"the shape the append sends", []roundTrip{opening, writesAndCommit, unlock}, false},
-		{"a read between the writes and the commit", []roundTrip{opening, writes, read, commit, unlock}, true},
-		{"a prune's delete in the opening pipeline", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, appendGateStatement}}, writesAndCommit, unlock}, true},
-		{"a window that is no pipeline of writes", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, `commit`}}, unlock}, true},
-		{"an append that neither wrote nor committed", []roundTrip{opening, read, unlock}, true},
+		{"the shape the append sends", []roundTrip{opening, writesAndCommit, unlock}, false, ""},
+		{"a commit sent a round trip after the writes", []roundTrip{opening, writes, commit, unlock}, true, "holds a transaction id across"},
+		{"a read between the writes and the commit", []roundTrip{opening, writes, read, commit, unlock}, true, "holds a transaction id across"},
+		{"a prune's delete in the opening pipeline", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, appendGateStatement}}, writesAndCommit, unlock}, true, "holds a transaction id across"},
+		{"a window that is no pipeline of writes", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, `commit`}}, unlock}, true, "want the writes pipeline"},
+		{"an append that neither wrote nor committed", []roundTrip{opening, read, unlock}, true, "sent no write and no commit"},
 	} {
 		t.Run(fed.what, func(t *testing.T) {
 			failure := appendXidWindowFailure(fed.trips)
@@ -632,27 +607,23 @@ func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
 				t.Fatalf("the check red on %s, the shape appendRoomTx sends: %s", fed.what, failure)
 			}
 			if fed.red {
+				if !strings.Contains(failure, fed.says) {
+					t.Fatalf("the check reds on %s with %q, want it to say %q", fed.what, failure, fed.says)
+				}
 				t.Logf("the check reds on %s: %s", fed.what, failure)
 			}
 		})
 	}
 }
 
-// xidAssigningSQL reports whether a statement gives its transaction a transaction id. It reads
-// the SQL rather than the command tag because a statement queued into a pipeline is recorded
-// before it runs, so no tag of it exists yet. The rule is the xid rig's own
-// (storetest.XidAssigningSQL), so this guard, which stands in for the rig over a transaction the
-// rig sees nothing of, judges a statement exactly as the rig would.
-func xidAssigningSQL(sql string) bool {
-	return storetest.XidAssigningSQL(sql)
-}
-
-// What xidAssigningSQL takes for a statement that assigns a transaction id, and what it does not.
-// The two an append's own writes do not cover are the pg_current_xact_id() an event's write phase
-// takes its id with (events.lockEventOwner) and a trailing row lock: neither writes a row, and
-// each opens the window all the same, so a pipeline that queued one before the commit would be a
-// gap this guard must see. The call that asks whether an id was assigned without assigning one is
-// the near miss they must not drag in.
+// What storetest.XidAssigningSQL takes for a statement that assigns a transaction id, and what
+// it does not: the rule appendXidWindowFailure judges an append's queued statements by, which
+// stands in for the xid rig over a transaction the rig sees nothing of (room_appends.go's
+// appendRoomTx). The two an append's own writes do not cover are the pg_current_xact_id() an
+// event's write phase takes its id with (events.lockEventOwner) and a trailing row lock: neither
+// writes a row, and each opens the window all the same, so a pipeline that queued one before the
+// commit would be a gap this guard must see. The call that asks whether an id was assigned
+// without assigning one is the near miss they must not drag in.
 func TestXidAssigningSQLKnowsWhatTakesATransactionId(t *testing.T) {
 	for sql, want := range map[string]bool{
 		`insert into doc_updates (artifact_id) values ($1)`:       true,
@@ -669,8 +640,8 @@ func TestXidAssigningSQLKnowsWhatTakesATransactionId(t *testing.T) {
 		`begin`:                                                       false,
 		`commit`:                                                      false,
 	} {
-		if got := xidAssigningSQL(sql); got != want {
-			t.Errorf("xidAssigningSQL(%q) = %v, want %v", sql, got, want)
+		if got := storetest.XidAssigningSQL(sql); got != want {
+			t.Errorf("storetest.XidAssigningSQL(%q) = %v, want %v", sql, got, want)
 		}
 	}
 }

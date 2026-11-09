@@ -995,11 +995,11 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
 				closed := make(chan error, 1)
-				// The close runs on a connection of the pool and waits there on the issue row
+				// The close runs on a connection of the pool and waits there on the owner lock
 				// this trial's write holds, so it gets a context the trial can end. Cancelled
 				// when the trial leaves, its Exec stops waiting and the release below gives that
 				// connection up, which is what lets Pool.Close finish even when the commit that
-				// would have freed the row never arrives.
+				// would have freed the lock never arrives.
 				closing, cancelClosing := context.WithCancel(ctx)
 				defer cancelClosing()
 				// The connection is taken here, on the trial's own goroutine, before the
@@ -1007,8 +1007,8 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				// on the connection it hijacked, so the pool has no warm connection left to hand
 				// out, and a close that acquired inside the goroutine would spend the sleep
 				// dialling a new one -- a whole connection's handshake -- rather than waiting on
-				// the issue row. The case is written for the interleaving where the close is
-				// already waiting on the row the write holds by the time the commit starts, so a
+				// the owner lock. The case is written for the interleaving where the close is
+				// already waiting on the lock the write holds by the time the commit starts, so a
 				// close that only reaches its Exec after the sleep exercises nothing.
 				closer, err := database.Pool.Acquire(ctx)
 				if err != nil {
@@ -1183,7 +1183,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
 	}
 	// This row is the only run of the committing flag's early return in the release and of a
-	// close cancelled while it waits on the issue row, so a race in either is reported here or
+	// close cancelled while it waits on the owner lock, so a race in either is reported here or
 	// nowhere: the child fails for its parked commit either way, and the checks below, which ask
 	// only why it failed, would pass straight over the race.
 	if strings.Contains(string(output), "WARNING: DATA RACE") {

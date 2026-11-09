@@ -198,8 +198,9 @@ func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []
 // their own (storetest.XidShape), and this one sends both inside pipelines, so the rig sees no
 // transaction of it and the window is asserted over the round trips it sent instead
 // (TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone, appendXidWindowFailure). That
-// assertion has a fault committed beside it to red against, which sends the commit a round trip
-// after the writes (commitAppendApart).
+// assertion is fed by hand the round-trip sequences this transaction must not send - a commit
+// sent a round trip after the writes among them - and reds on each of them
+// (TestTheRoomAppendXidCheckRedsOnAFedSequence).
 //
 // No pg_advisory_xact_lock is taken: the session already holds the document's lock on this very
 // connection, so a second acquisition would grant what the session has (appendUpdatesTx's rule
@@ -393,14 +394,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		statement.queue(second)
 	}
 	// The commit ends the writes pipeline, so the transaction's whole id window is that one
-	// round trip. Under the fault its guard is measured against (commitAppendApart), the writes
-	// go first and the commit follows on its own, which opens the window a round trip early.
-	if p.commitAppendApart {
-		if err := send(ctx, second); err != nil {
-			return 0, fmt.Errorf("write document update: %w", err)
-		}
-		second = &pgx.Batch{}
-	}
+	// round trip.
 	second.Queue(`commit`)
 	if err := send(ctx, second); err != nil {
 		return 0, fmt.Errorf("commit document update: %w", err)
