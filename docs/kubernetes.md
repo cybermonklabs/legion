@@ -1066,7 +1066,8 @@ it is in the generation's private directory, not in the providers mount the work
 
 What the operator supplies is the three values of `session_database`, the pods' cloud identity — the ServiceAccount `runtime.kubernetes.pod.service_account` names, which is what the connector signs in as — and the login's rights in the database.
 Those rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
-`legion sessions import` is unchanged and keeps `--dsn-file`: it runs on an operator's machine, where there is no launcher and no proxy, so the operator supplies a connection URL that machine can reach.
+`legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
+A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: `scripts/sessions-import-pods.sh` runs it in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
 ### Starting fresh when a session is lost or wedged
 
