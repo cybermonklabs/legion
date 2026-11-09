@@ -76,7 +76,7 @@ stays live to read the person's comments and replies. Read `issues.<KEY>.waiting
 it or start anything, and take nothing for its wait: the wait frees no slot and is no reason to
 label or admit an issue ([Free slots](skill://legion-controller/SKILL.md#free-slots)). The
 person's answer puts it in `admission.waiting` by itself, among the issues whose work came back,
-oldest first, and its promotion gives its architect the answer task, taking no further slot, so
+oldest first, and its promotion hands its architect the answer task, taking no further slot, so
 it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
 `unslotted` wake.
 
