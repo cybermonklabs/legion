@@ -71,18 +71,23 @@
 #
 #      A `no_second_source` entry records a URL that has no second source anywhere, and allows
 #      that one URL. It carries `url`, `digest`, `pinned_in` and `why`, and the gate holds it to
-#      four rules, each refused in its own words:
+#      the rules below, each refused in its own words:
 #        * its `url` occurs verbatim in some file under .github/ that this rule reads, the
 #          manifest itself not counted, so an entry whose install was deleted is refused and the
 #          list prunes itself;
+#        * its `pinned_in` is neither this manifest nor a file whose name holds `.test.`: the
+#          entry's own `digest:` line is in the manifest and a fixture's digests are fed to a
+#          gate, so either would satisfy the rule below while nothing a job runs checked the
+#          bytes;
 #        * its `digest` is 64 lower-case bare hex, the file `pinned_in` names can be read as
 #          text, and that digest occurs in it, each refused in its own words, so one source
 #          never means no checksum;
-#        * no row's `primary` or `mirror_from` already covers its repository, so a decline never
-#          bypasses a tool that has a second source;
+#        * no row already covers its repository, compared without regard to case because
+#          github.com reads an owner and a repository that way, so a decline never bypasses a
+#          tool that has a second source;
 #        * `why` is a sentence rather than a placeholder.
-#      Whether that reason is TRUE is the reviewer's judgement and no gate's: the three rules
-#      before it are the whole of what a program can check here.
+#      Whether that reason is TRUE is the reviewer's judgement and no gate's: the rules above
+#      are the whole of what a program can check here.
 #
 #   4. No short reference to a tool blob.
 #      A `<the manifest's registry>@sha256:<d>` under .github/ whose <d> is a row's digest is
@@ -176,13 +181,30 @@ NPM_BASE = "https://registry.npmjs.org"
 # A `no_second_source` entry: the one way a URL with no second source anywhere is allowed.
 NO_SECOND_SOURCE = "no_second_source"
 ENTRY_FIELDS = ("url", "digest", "pinned_in", "why")
-# What rule 3's refusal of an unnamed URL ends with. Neither depends on the URL found, so both
-# are written once here rather than rebuilt at every match.
+# The repository the bun rows cover although no row of them writes its URL: `oven-sh/setup-bun`
+# fetches that release asset, so every bun row's `primary` is empty and its second source is
+# npm. A row contributes the repository of the URLs it writes, and these rows write none, so
+# without this the covered-repository rule below would read Bun as covered by nothing and let an
+# entry decline an asset that has npm behind it.
+BUN_REPOSITORY = "oven-sh/bun"
+# What a rule 3 refusal ends with, per kind of address and per reason it is refused. None of
+# them depends on the URL found, so each is written once here rather than rebuilt at every
+# match. The two built remedies differ in their last clause alone: an entry declines one GitHub
+# release-asset address, so advising an entry for a built npm URL is advice the entry shape rule
+# then refuses.
 ASSET_REMEDY = (
     f"Add a row naming its second source and fetch it with {HELPER}, or, where those bytes are "
     f"published nowhere but there, a {NO_SECOND_SOURCE} entry carrying {', '.join(ENTRY_FIELDS)}."
 )
+ASSET_BUILT_REMEDY = (
+    f"Read the address from the row with {HELPER} instead, or, where those bytes have no second "
+    f"source, write this URL's text verbatim as a {NO_SECOND_SOURCE} entry's url."
+)
 NPM_REMEDY = f"Add the row, or fetch it with {HELPER}."
+NPM_BUILT_REMEDY = (
+    f"Read the address from the row with {HELPER} instead. No {NO_SECOND_SOURCE} entry can "
+    f"decline this address: an entry takes a GitHub release-asset URL and nothing else."
+)
 # A reason that is one of these, or shorter than this, says nothing a reader could act on. The
 # bound is stated in the refusal, so the writer is told what the gate wants rather than guessing.
 REASON_PLACEHOLDERS = {"todo", "tbd", "n/a", "na", "none", "-", "--", "unknown", "?", "fixme"}
@@ -203,6 +225,28 @@ ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # canonical form) and an explicit port (`github.com:443`, 302; `http://github.com:80`, 301) are
 # the same host written two other ways, so both are read too, as is the `www.` prefix.
 #
+# THE SCHEME IS OPTIONAL AND READ WITHOUT REGARD TO CASE, AND USERINFO IS READ: a scheme is
+# case-insensitive, so `HTTPS://…` is the same address; `curl` and `wget` are given a bare
+# `github.com/…` and supply the scheme themselves; and `https://user@github.com/…` carries a
+# credential this server ignores. Each of the three fetches the asset, so each is one spelling
+# of one install.
+#
+# WHICH IS WHY THE START OF A MATCH IS GUARDED. An optional scheme would otherwise read any
+# host whose text ENDS in github.com: `https://notgithub.com/<o>/<r>/releases/download/…` is a
+# third party's address and no row of this manifest has anything to say about it. So a match
+# begins at the scheme, or at a position no host character precedes — no letter, digit, `_`,
+# `.`, `-`, `/` or `@`.
+# `https://evil.example/github.com/<o>/<r>/releases/download/…` is NOT read either, by the `/`
+# in that class, and that is a decision rather than a leftover: those bytes come from
+# evil.example, the class this rule closes is the release assets github.com serves, and reading
+# that address would name a repository of a host that has none. A third party that lays
+# GitHub's path under its own host is a rule about hosts, which this is not.
+#
+# AN ACTIONS EXPRESSION IS READ AS A PIECE OF PATH, because `${{ inputs.repo }}` holds spaces
+# and a job writes it where <owner>/<repo> stands, so no element class can match it. Such a URL
+# holds a `$` and is refused as an address the job builds, which is the refusal that sends its
+# writer to the row; what the expression stands for cannot be known here.
+#
 # THE PATH IS COMPARED LITERALLY, because github.com's path IS case-sensitive:
 # `/RELEASES/download/` and `/releases/DOWNLOAD/` each answered 404, so a rule that read the
 # whole address without regard to case would refuse an address GitHub does not answer. Two paths
@@ -216,7 +260,7 @@ ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # WHAT IS NOT READ, and why each one is out rather than in. Four spellings of the same path are
 # invisible to these patterns, and the reason is the patterns' own shape rather than anything a
 # server does: an extra slash before the owner or after it leaves a path element empty, which
-# `[^/\s"'`]+` cannot match; an extra slash after `releases` puts `/download` where `download`
+# PATH_ELEMENT cannot match; an extra slash after `releases` puts `/download` where `download`
 # must stand; and a `/.` segment takes the owner's place, so `/releases/download/` then falls in
 # the wrong element. Driven at this head, the gate exits 0 on all four.
 # An extra slash after `download` is NOT one of them: the trailing `[^\s"'`]*` swallows it, so
@@ -224,21 +268,28 @@ ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 # github.com answered 302 with the asset to each of the four, read between two readings of the
 # canonical address and counted only where both answered 302 — a release asset answering 504 in
 # an outage and one answering 504 because GitHub does not serve that shape look alike, and that
-# control is what tells them apart. For the after-`download` shape the server half is
-# UNESTABLISHED: it answered 302 four times in an hour and 504 ten minutes later with its own
-# canonical control at 504 beside it, so neither reading is readable while github.com 504s
-# intermittently. It changes nothing here, since that shape is read whatever the server does.
+# control is what tells them apart. Whether it serves the after-`download` shape is not stated
+# anywhere, here or in AGENTS.md, because it decides nothing: that shape is read whatever the
+# server answers, and a reading of the world cannot settle a question about the text.
 # Closing the four would mean normalising a path — percent-encoding and dot segments included —
 # which is not a class a text comparison can close. Nor is any other host that can serve the
 # bytes, the `release-assets.githubusercontent.com` address these redirects land on among them.
+URL_START = r"(?:(?i:https?)://(?:[^/\s\"'`@]*@)?|(?<![\w.\-/@]))"
 GITHUB_HOST = r"(?i:(?:www\.)?github\.com)\.?(?::(?:80|443))?"
+# One element of a path: anything up to the next `/`, or an Actions expression, which is one
+# element's worth of path however many spaces and slashes it holds.
+PATH_ELEMENT = r"(?:\$\{\{[^{}]*\}\}|[^/\s\"'`])+"
+# <owner>/<repo>, read as one group: every rule that uses it compares the pair. One expression
+# standing for the pair is the second branch — a job writing `${{ inputs.repo }}` there writes
+# the owner and the repository in one piece of path.
+REPOSITORY = "(?P<repository>" + PATH_ELEMENT + "/" + PATH_ELEMENT + r"|\$\{\{[^{}]*\}\})"
 ASSET_URL = re.compile(
-    rf"https?://{GITHUB_HOST}/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)"
-    r"/releases/(?:download|latest/download)/[^\s\"'`]*"
+    URL_START + GITHUB_HOST + "/" + REPOSITORY
+    + r"/releases/(?:download|latest/download)/[^\s\"'`]*"
 )
 API_ASSET_URL = re.compile(
-    r"https?://(?i:api\.github\.com)\.?(?::(?:80|443))?"
-    r"/repos/(?P<owner>[^/\s\"'`]+)/(?P<repo>[^/\s\"'`]+)/releases/assets/[0-9]+"
+    URL_START + r"(?i:api\.github\.com)\.?(?::(?:80|443))?"
+    + "/repos/" + REPOSITORY + r"/releases/assets/[0-9]+"
 )
 ASSET_PATTERNS = (ASSET_URL, API_ASSET_URL)
 NPM_URL = re.compile(r"(?:https://)?registry\.npmjs\.org/(?P<rest>[^\s\"'`]+)")
@@ -327,10 +378,12 @@ if not isinstance(rows, list) or not rows:
     fatal(f"{CI_TOOLS}:{key_line(document, 'tools')}: tools is empty, so nothing is checked")
 
 # ------------------------------------------------- the declines, read for their shape alone
-# An entry's four rules need the rows' repositories and the text of every file rule 3 reads, so
-# they are applied in rule 3's own section below. Shape is read here, because an entry the gate
-# cannot read at all allows nothing and is refused once rather than four times.
-declines: list[Mapping] = []
+# The rest of an entry's rules need the rows' repositories and the text of every file rule 3
+# reads, so they are applied in rule 3's own section below. Shape is read here, because an entry
+# the gate cannot read at all allows nothing and is refused once rather than rule by rule.
+# Each entry is kept with the <owner>/<repo> its url names, read by the pattern that matched it
+# here: the section below needs that pair and the url has been read once already.
+declines: list[tuple[Mapping, str]] = []
 entries = document.get(NO_SECOND_SOURCE)
 if entries is None:
     entries = []
@@ -358,7 +411,8 @@ for entry in entries:
         )
         continue
     url = str(entry["url"]).strip()
-    if not asset_whole(url):
+    url_match = asset_whole(url)
+    if not url_match:
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'url')}: this {NO_SECOND_SOURCE} entry's url is "
             f"{one_line(url)}, which is not a GitHub release-asset address. An entry declines "
@@ -374,7 +428,7 @@ for entry in entries:
         )
         continue
     declared_urls[url] = key_line(entry, "url")
-    declines.append(entry)
+    declines.append((entry, url_match.group("repository")))
 
 # ---------------------------------------------------------------- rule 1: shape
 readable: list[Mapping] = []  # the rows the rules below can read
@@ -566,10 +620,17 @@ if not own_match:
         f"GitHub release-asset address, so this gate cannot read this repository's own name out "
         f"of it."
     )
-OWN_REPOSITORY = f"{own_match.group('owner')}/{own_match.group('repo')}"
+OWN_REPOSITORY = own_match.group("repository").casefold()
 
 # The one address of each row a file under .github/ may name, the repositories the rows cover,
 # and the npm scopes they cover.
+# A REPOSITORY IS KEYED CASEFOLDED, and so is the comparison against this repository's own
+# name, because github.com reads an owner and a repository without regard to case: measured on
+# 2026-11-09, the owner in another case, the repository in another case and both at once each
+# answered 302 with the asset, between two readings of the canonical address that answered 302.
+# What a row writes in `allowed` stays the exact text it writes: the manifest names one address
+# per row, and a file that fetches a different spelling of it fetches something this manifest
+# does not say is pinned.
 row_repositories: dict[str, str] = {}
 covered_scopes: set[str] = set()
 allowed: set[str] = set()
@@ -584,8 +645,10 @@ for row in readable:
         match = asset_at(url)
         if match:
             row_repositories.setdefault(
-                f"{match.group('owner')}/{match.group('repo')}", f"the {name} row's {field}"
+                match.group("repository").casefold(), f"the {name} row's {field}"
             )
+    if name.startswith("bun-"):
+        row_repositories.setdefault(BUN_REPOSITORY.casefold(), f"the {name} row")
     package = str(row.get("npm_package") or "").strip()
     if package:
         scope = package.partition("/")[0]
@@ -595,7 +658,7 @@ for row in readable:
         # is the URL .github/scripts/ci-tools.sh builds for this row.
         derived = f"{NPM_BASE}/{package}/-/{package.rpartition('/')[2]}-{version}.tgz"
         allowed.add(derived)
-for entry in declines:
+for entry, _ in declines:
     allowed.add(str(entry["url"]).strip())
 
 # ------------------------------------------------- one pass: rule 3 and rule 4 over .github/
@@ -606,22 +669,28 @@ short_references = {f"{registry}@sha256:{str(row['digest']).strip()}": str(row["
                     for row in readable}
 # Rule 4's sweep already reads every file under .github/, so rule 3 rides it rather than opening
 # the tree twice. An entry's first rule — some file writes its url — is decided inside this pass:
-# deciding it afterwards would mean holding the text of every file rule 3 reads until then. The
-# manifest is left out of the pass, since an entry naming only itself names no install.
+# deciding it afterwards would mean holding the text of every file rule 3 reads until then.
+# Rule 4 sweeps the manifest like any other file; rule 3 is the half that passes over it, since
+# a row's own URL is not an install.
 written: set[str] = set()
 # The files the entries name as their pin. The pass keeps the text of any of them it reads, so
 # an entry's digest rule does not open .github/workflows/ci.yaml a second time; a path the pass
 # never reaches — the manifest, a .test. file, a file outside .github/ — is read where it is used.
-pinned_paths = {Path(str(entry["pinned_in"]).strip()) for entry in declines}
+pinned_paths = {Path(str(entry["pinned_in"]).strip()) for entry, _ in declines}
 pin_texts: dict[Path, str] = {}
 named = 0
 read_files = 0
 swept = 0
+# A file neither rule could read. Named in the summary, because a sweep that passes over a file
+# in silence claims a reach it did not have, and a reader of the line cannot tell a file that
+# was read from one that was skipped.
+unreadable: list[Path] = []
 for file in sorted(GITHUB.rglob("*")):
     if not file.is_file():
         continue
     text = read_text(file)
     if text is None:
+        unreadable.append(file)
         continue
 
     if file != CI_IMAGES:
@@ -649,11 +718,12 @@ for file in sorted(GITHUB.rglob("*")):
     if file in pinned_paths:
         pin_texts[file] = text
 
-    # offset, the URL as written, what it names, the repository it names, the remedy
-    found: list[tuple[int, str, str, str | None, str]] = []
+    # offset, the URL as written, what it names, the repository it names, the remedy where
+    # nothing names it, the remedy where the job builds it
+    found: list[tuple[int, str, str, str | None, str, str]] = []
     for pattern in ASSET_PATTERNS:
         for match in pattern.finditer(text):
-            repository = f"{match.group('owner')}/{match.group('repo')}"
+            repository = match.group("repository")
             found.append(
                 (
                     match.start(),
@@ -661,6 +731,7 @@ for file in sorted(GITHUB.rglob("*")):
                     f"a release asset of {repository}",
                     repository,
                     ASSET_REMEDY,
+                    ASSET_BUILT_REMEDY,
                 )
             )
     # Rule 3's npm half claims every *.yml and *.yaml under NPM_DIRECTORIES and nothing else.
@@ -678,15 +749,16 @@ for file in sorted(GITHUB.rglob("*")):
                     f"an npm package under {scope}",
                     None,
                     NPM_REMEDY,
+                    NPM_BUILT_REMEDY,
                 )
             )
 
     # Two address patterns and the npm one each sweep the file, so the refusals are put back
     # into the order a reader meets them in that file.
     found.sort()
-    for offset, url, what, repository, remedy in found:
+    for offset, url, what, repository, remedy, built_remedy in found:
         line = line_at(text, offset)
-        if repository == OWN_REPOSITORY:
+        if repository is not None and repository.casefold() == OWN_REPOSITORY:
             # This repository publishes those bytes; nothing here fetches them.
             continue
         if url in allowed:
@@ -696,9 +768,7 @@ for file in sorted(GITHUB.rglob("*")):
             problems.append(
                 f"{file}:{line}: this file builds the address of {what} ({one_line(url)}). A "
                 f"row of {CI_TOOLS} is the one place a tool asset's address is written, and a "
-                f"built URL cannot be compared with a row. Read the address from the row with "
-                f"{HELPER} instead, or, where those bytes have no second source, write this "
-                f"URL's text verbatim as a {NO_SECOND_SOURCE} entry's url."
+                f"built URL cannot be compared with a row. {built_remedy}"
             )
             continue
         problems.append(
@@ -707,11 +777,9 @@ for file in sorted(GITHUB.rglob("*")):
             f"source, and a fetch nothing names has none. {remedy}"
         )
 
-# ------------------------------------------- the four rules a no_second_source entry is held to
-for entry in declines:
+# ------------------------------------------- the rules a no_second_source entry is held to
+for entry, repository in declines:
     url = str(entry["url"]).strip()
-    url_match = asset_at(url)
-    repository = f"{url_match.group('owner')}/{url_match.group('repo')}"
 
     if url not in written:
         problems.append(
@@ -732,6 +800,16 @@ for entry in declines:
             f"which is not 64 lower-case hex characters. Write it bare, exactly as the file that "
             f"pins those bytes writes it."
         )
+    elif pinned_in == CI_TOOLS or TEST_FILE in pinned_in.name:
+        # Before the rule below reads that file, because it would find the digest there: the
+        # entry's own `digest:` line is in the manifest, and a fixture's digests are the ones a
+        # test feeds to a gate.
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'pinned_in')}: this entry names {pinned_in} as the file "
+            f"that pins these bytes, and that file fetches nothing and checks nothing, so it "
+            f"cannot be what pins them. Name the file whose install of these bytes checks the "
+            f"digest — the workflow, action or Dockerfile a job runs."
+        )
     elif pin_text is None:
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'pinned_in')}: this entry names {pinned_in} as the file "
@@ -746,7 +824,7 @@ for entry in declines:
             f"entry declines a second source for. One source never means no checksum."
         )
 
-    covered_by = row_repositories.get(repository)
+    covered_by = row_repositories.get(repository.casefold())
     if covered_by:
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'url')}: {covered_by} already covers {repository}, so "
@@ -768,11 +846,21 @@ for entry in declines:
 # The middle clause counts installs, not addresses: this manifest is not among the files rule 3
 # reads, so a row's own URL and an entry's own url are no part of it. A count that included them
 # would rise when the manifest grew and say nothing about what CI fetches.
+# A file neither rule could read is named at the end, and the clause is absent where there is
+# none: a reader is told which files the counts above left out rather than told a number of
+# them, since what a reader of this line does next is open them.
+unread = ""
+if unreadable:
+    unread = (
+        f"; {len(unreadable)} file(s) under {GITHUB} are not valid UTF-8, so neither rule read "
+        f"them: {', '.join(str(file) for file in unreadable)}"
+    )
 verdict(
     f"{CI_TOOLS} holds {len(readable)} row(s), each agreeing with the pin that installs it, and "
     f"{len(declines)} {NO_SECOND_SOURCE} entr{'y' if len(declines) == 1 else 'ies'}; "
     f"{named} tool asset URL(s) fetched by the {read_files} file(s) under {GITHUB} that rule 3 "
     f"reads, this manifest not among them, name one of those; "
     f"of {swept} file(s) under {GITHUB} swept, none names a tool blob by a registry reference"
+    f"{unread}"
 )
 PY
