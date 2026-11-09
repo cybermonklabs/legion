@@ -1640,15 +1640,18 @@ own lane's values under the plain names.
 
 A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one lane that names neither is refused naming both.
-`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names,
-which is CI's path: a runner has Docker and no Postgres binaries, and the shard
-and alone jobs of `.github/workflows/dispatch-browser.yaml` pass the pgvector
-digest on their browser step's own command line.
-`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`,
-which is a developer's and an issue pod's path, where there is a Postgres
-installation and no Docker; that provider runs `initdb` once per run and copies
-the data directory it made per lane, since `initdb` is the cost that grows with
-the lanes. Both keep the lane's data under the run's own temporary directory,
+`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
+a developer's path on a machine with Docker and no Postgres binaries, and the
+visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
+runner with only its Playwright command in a container.
+`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
+the shard and alone jobs' path and an issue pod's: those two jobs of
+`.github/workflows/dispatch-browser.yaml` run in a container that carries
+PostgreSQL 18 with `vector`, where there are Postgres binaries and no Docker
+socket, and they name that installation's directory. That provider runs
+`initdb` once per run and copies the data directory it made per lane, since
+`initdb` is the cost that grows with the lanes. Both keep the lane's data under
+the run's own temporary directory,
 which `e2e/run.ts` removes when it ends, and both answer on 127.0.0.1, which
 the server's dev sign-in requires of its database. With one worker and
 `DATABASE_URL` set, the run uses that database as lane 0 and starts no
@@ -2221,7 +2224,16 @@ instead of building one from this checkout, read before its environment sweep as
 `scripts/e2e/dispatch-claimant-delivery.sh` reads `DISPATCH_BIN`, and refused when it is not an
 executable file; the harness gives B its own as `DISPATCH_E2E_SERVER_BIN_B`, so a run puts two
 builds of the server against one database the way `DISPATCH_E2E_WEB_DIST_B` puts two builds of
-the dashboard there (`scripts/e2e/dispatch-two-builds.sh`). The proxy alternates each HTTP
+the dashboard there (`scripts/e2e/dispatch-two-builds.sh`). `DISPATCH_E2E_BROKER_BIN_DIR` is the
+same for the real secrets broker: a directory holding `broker`, `dev-oidc-issuer` and
+`requestseed` that the caller built, which `e2e/run-broker.sh` execs instead of building them
+from this checkout, and which it refuses when any of the three is not executable there. It
+serves one directory only, `packages/envoy/out/dispatch-e2e-broker` under this checkout, and
+refuses every other by name before anything starts, because
+`e2e/real-broker.ts` runs `requestseed` out of that path alone, resolved against its own module
+and from no variable; its one caller, the `shard` and `alone` jobs of
+`.github/workflows/dispatch-browser.yaml`, downloads that file's `binaries` job's artifact into
+exactly that path. The proxy alternates each HTTP
 request and each websocket upgrade between A and B (two turns, each starting at A), streams each
 response back as it arrives, and forwards `Host` and `Origin` unchanged. `X-Dispatch-E2E-Process: a|b` on any request
 pins it, over a `dispatch-e2e-process=a|b` cookie, which pins a whole browser context, websocket

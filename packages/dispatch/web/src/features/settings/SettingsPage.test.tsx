@@ -68,6 +68,7 @@ test("lists live grants once credential requests are configured, and Revoke is o
       {
         approver: "sami@example.com",
         created_at: "2026-09-30T00:00:00Z",
+        decided_by: "sami@example.com",
         enrollment: {
           kind: "session",
           operator: "sami@example.com",
@@ -121,6 +122,7 @@ test("names how each grant was granted: automatically, or approved by whom", asy
       {
         approver: "mallory@example.com",
         created_at: "2026-09-30T00:00:00Z",
+        decided_by: "mallory@example.com",
         enrollment,
         expires_at: "2026-09-30T01:00:00Z",
         grant_id: "grant-1",
@@ -131,6 +133,7 @@ test("names how each grant was granted: automatically, or approved by whom", asy
       {
         approver: null,
         created_at: "2026-09-30T00:00:00Z",
+        decided_by: null,
         enrollment,
         expires_at: "2026-09-30T01:00:00Z",
         grant_id: "grant-2",
@@ -168,6 +171,7 @@ test("two grants on one pod read apart by their slots", async () => {
   const grant = (grantId: string, slot: string | null) => ({
     approver: "sami@example.com",
     created_at: "2026-09-30T00:00:00Z",
+    decided_by: "sami@example.com",
     enrollment: { kind: "pod", operator: "", runtime_id: "3f9c-pod-uid", slot },
     expires_at: "2026-09-30T01:00:00Z",
     grant_id: grantId,
@@ -210,6 +214,7 @@ test("a grant with no expiry says it ends when its session ends", async () => {
   const grant = (grantId: string, expiresAt: string | null) => ({
     approver: null,
     created_at: "2026-09-30T00:00:00Z",
+    decided_by: null,
     enrollment: { kind: "session", operator: "sami@example.com", runtime_id: "box-1", slot: null },
     expires_at: expiresAt,
     grant_id: grantId,
