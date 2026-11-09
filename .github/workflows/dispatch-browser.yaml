@@ -123,19 +123,24 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: this job builds the Dispatch server and the real broker's three
-      # commands, not the listener and natsd ci-caches.yaml's envoy job builds to fill the
-      # family, and no job here saves it. Without it this build is a cold one. The shard and
-      # alone jobs restored the same family for exactly this build until it became a job of its
-      # own.
+      # go-envoy-test, restored only: this job builds the Dispatch server and the real broker's
+      # three commands, and that family's entry is the one that holds them. go-envoy is filled
+      # by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone
+      # (.github/workflows/ci-caches.yaml), so a job that restores it and builds these four
+      # downloads and compiles their closure on a key that hit: 115 `go: downloading` lines in
+      # job 129055096326 of run 42585736615, where this build still sat inside the alone job's
+      # 3-minute browser step. go-envoy-test is filled by `go test -c -o /dev/null ./...` over
+      # the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
+      # restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
+      # here saves either one.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
       # One `go build -o <directory>/` writes one binary per package, each named after it:
       # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
       # rather than left to the runner's default, so each binary is static by construction: the
@@ -944,17 +949,17 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: its modules are the envoy module's, but this job builds the
-      # Dispatch server and the dev OIDC issuer, not the listener and natsd the family's saving
-      # jobs build, so it saves none.
+      # go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
+      # this job builds the Dispatch server and the dev OIDC issuer, which only that family's
+      # entry holds. It saves none.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build the Dispatch server
@@ -1099,16 +1104,17 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only: this job's run-server.sh builds the Dispatch server, not the
-      # listener and natsd the family's saving jobs build, so it saves none.
+      # go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
+      # this job's run-server.sh builds the Dispatch server, which only that family's entry
+      # holds. It saves none.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e

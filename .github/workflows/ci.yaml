@@ -59,9 +59,10 @@ name: CI
 # it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the binaries and multiprocess
-# jobs of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
-# binary of every package of the envoy module, a set no other job builds), go-envoy-infra
+# listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
+# builds the test binary of every package of the envoy module, and the binaries, multiprocess
+# and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
+# broker's commands out of that same set), go-envoy-infra
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
@@ -1585,6 +1586,8 @@ jobs:
               # cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:13-14).
               - *legion_command
               - *dispatch_server
+              # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/agent-secrets/*'
               - 'packages/envoy/cmd/agent-secrets-helper/*'
               - 'packages/envoy/cmd/broker/*'
@@ -1598,6 +1601,7 @@ jobs:
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/helper/*'
+              - 'packages/envoy/internal/broker/judge/*'
               - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
@@ -1734,6 +1738,7 @@ jobs:
               - '!packages/daemon/internal/wakepace/**/*_test.go'
               - '!packages/daemon/internal/workflow/**/*_test.go'
               - '!packages/daemon/internal/workspace/**/*_test.go'
+              - '!packages/envoy/agentloop/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets-helper/**/*_test.go'
               - '!packages/envoy/cmd/broker-refgen/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/**/*_test.go'
@@ -1742,6 +1747,7 @@ jobs:
               - '!packages/envoy/internal/broker/airlockproxy/**/*_test.go'
               - '!packages/envoy/internal/broker/enroll/**/*_test.go'
               - '!packages/envoy/internal/broker/exchange/**/*_test.go'
+              - '!packages/envoy/internal/broker/judge/**/*_test.go'
               - '!packages/envoy/internal/broker/leasetime/**/*_test.go'
               - '!packages/envoy/internal/broker/machine/**/*_test.go'
               - '!packages/envoy/internal/broker/oauth/**/*_test.go'
@@ -1879,6 +1885,8 @@ jobs:
               # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
               # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
               # Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
+              # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -1891,6 +1899,7 @@ jobs:
               - 'packages/envoy/internal/broker/config/*'
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
+              - 'packages/envoy/internal/broker/judge/*'
               - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
@@ -3086,6 +3095,7 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-broker-multiprocess.yaml'
               - *go_workspace
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
               # cmd/broker/main_test.go:220 (sslrootcert).
@@ -3100,6 +3110,7 @@ jobs:
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/helper/*'
+              - 'packages/envoy/internal/broker/judge/*'
               - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
@@ -3116,6 +3127,9 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
+              # internal/broker/judge/model.go mints the account token it reads Dispatch with
+              # through brokertoken.
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
@@ -3135,6 +3149,7 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/agentloop/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
