@@ -156,3 +156,170 @@ func TestAnIssueReadAnswersWhileTheBackgroundPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("read the issue with the background pool held: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
 }
+
+// poolAcquires is how many connections the pool named has handed out since it opened, whether
+// they are still held or have come back: a pool it has never opened has handed out none.
+func poolAcquires(database *store.Store, name string) int64 {
+	use := database.Pool.Use(name)
+	return int64(use.InUse) + use.Returned
+}
+
+// settledAcquires is poolAcquires once the pool has stood still for 300 ms, so a measurement
+// starts from a pool nothing the test did not ask for is taking.
+func settledAcquires(t *testing.T, database *store.Store, name string) int64 {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for last, since := poolAcquires(database, name), time.Now(); ; {
+		if time.Since(since) >= 300*time.Millisecond {
+			return last
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the %s pool was still handing out connections after 10s", name)
+		}
+		time.Sleep(10 * time.Millisecond)
+		if got := poolAcquires(database, name); got != last {
+			last, since = got, time.Now()
+		}
+	}
+}
+
+// The delivery hub seeds its events through the live pool (seedEvents): the relay subscription it
+// takes and the open P0 issues it reads with it are live-path reads, so with every connection of
+// the request pool held - the requests of a burst - a generation still takes its feed, and the
+// connections that seed takes are the live pool's.
+func TestAHubSeedsItsEventsWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{
+		requestPoolSize: 4, acquireBound: partitionAcquireBound,
+	})
+	seedHubSettings(t, database)
+	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
+	before := poolAcquires(database, store.LivePool)
+
+	holdEveryConnection(t, database.Pool)
+	rig.hub.Subscribe(newFakeLiveConn(), subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	rig.waitFor(t, 0, eventFeedWait, "the hub's event feed with the request pool held", func(note deliveryHubNote) bool {
+		return note.what == "events seeded"
+	})
+
+	if got := poolAcquires(database, store.LivePool); got <= before {
+		t.Fatalf("live-pool acquires = %d, want more than the %d before the seed: the seed read through it", got, before)
+	}
+}
+
+// An events subscription's replay counts its backlog and reads its page through the live pool
+// (replayThrough): with every connection of the request pool held, a resume whose caller counted
+// nothing still answers, and both statements take live-pool connections.
+func TestAnEventReplayCountsItsBacklogOnTheLivePool(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{
+		requestPoolSize: 4, acquireBound: partitionAcquireBound,
+	})
+	served := directServer(deps)
+	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
+	from := appendEventOn(t, database.Pool, issue.Key)
+	published := appendEventOn(t, database.Pool, issue.Key)
+	live := settledAcquires(t, database, store.LivePool)
+
+	holdEveryConnection(t, database.Pool)
+	replay, err := served.replayThrough(t.Context(), from, published, true, -1)
+	if err != nil {
+		t.Fatalf("replay (%d, %d] with the request pool held: %v", from, published, err)
+	}
+
+	if !replay.complete || len(replay.events) == 0 || replay.events[len(replay.events)-1].Event.ID != published {
+		t.Fatalf("replay = %+v, want every event through %d", replay, published)
+	}
+	if got := poolAcquires(database, store.LivePool); got != live+2 {
+		t.Fatalf("live-pool acquires = %d, want %d: one for the backlog count and one for the page", got, live+2)
+	}
+}
+
+// The mention sender's own statements take their connections from the background pool
+// (mentionSenderPool): the claim refresh its ticker makes, the release its drain makes, and the
+// claim a keyed repeat takes before it queues an owed send again are each one background
+// connection and none of the request pool's.
+func TestTheMentionSendersOwnStatementsTakeBackgroundConnections(t *testing.T) {
+	listener, state := newMentionListener(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
+	})
+	release := state.hold("s1")
+	defer release()
+	issue := createInteractionIssue(t, handler, "TEST", "A held lane", "before")
+	postMentionOfS1(t, handler, issue.Key, "in flight")
+	state.awaitSend(t)
+	queued := postMentionOfS1(t, handler, issue.Key, "queued")
+	if !claimedPending(t, database, queued, "session:s1") {
+		t.Fatal("the attempt behind the held send is not held by the sender")
+	}
+	held := []mentionClaim{{
+		key:       mentionKey{comment: queued, target: "session:s1", attempt: 1},
+		claimedAt: attemptClaimedAt(t, database.Pool, queued, "session:s1"),
+	}}
+
+	requests := settledAcquires(t, database, store.RequestsPool)
+	background := settledAcquires(t, database, store.BackgroundPool)
+	refreshed, err := served.refreshMentionClaims(t.Context(), held)
+	if err != nil {
+		t.Fatalf("write the queued attempt's claim again: %v", err)
+	}
+	if len(refreshed) != 1 {
+		t.Fatalf("the refresh wrote %d claims, want the queued attempt's", len(refreshed))
+	}
+	if err := served.releaseMentionClaims(t.Context(), refreshed); err != nil {
+		t.Fatalf("give the queued attempt's claim back: %v", err)
+	}
+	if _, mine, err := served.claimQueuedMention(t.Context(), held[0].key); err != nil || !mine {
+		t.Fatalf("claim the attempt a repeat would queue again: mine=%v err=%v", mine, err)
+	}
+
+	if got := poolAcquires(database, store.BackgroundPool); got != background+3 {
+		t.Fatalf("background-pool acquires = %d, want %d: one for each of the sender's three statements", got, background+3)
+	}
+	if got := poolAcquires(database, store.RequestsPool); got != requests {
+		t.Fatalf("request-pool acquires = %d, want the %d before the sender's statements", got, requests)
+	}
+}
+
+// The mention sender's claim-refresh ticker runs after the requests that queued its sends were
+// answered: with every connection of the request pool held, it still writes the claim of a send
+// waiting on a held lane, so the delivery sweep goes on leaving that attempt to this process.
+func TestAMentionClaimRefreshRunsWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	listener, state := newMentionListener(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
+		requestPoolSize: 4, acquireBound: partitionAcquireBound,
+	})
+	withMentionClaimRefresh(t, served, 20*time.Millisecond)
+	release := state.hold("s1")
+	// The lane is released before the held connections go back, so the send it holds finishes on
+	// a pool that has them again (the cleanups run in reverse).
+	t.Cleanup(release)
+	issue := createInteractionIssue(t, handler, "TEST", "A held lane", "before")
+	postMentionOfS1(t, handler, issue.Key, "in flight")
+	state.awaitSend(t)
+	queued := postMentionOfS1(t, handler, issue.Key, "queued")
+	if !claimedPending(t, database, queued, "session:s1") {
+		t.Fatal("the attempt behind the held send is not held by the sender")
+	}
+	// With the pool held, the claim is moved back a lease on the row and in the sender's record
+	// together: a refresh already in flight when the pool filled carries the claim as it stood
+	// before that, which this write leaves the row no longer matching, so only a refresh made
+	// after it - one that took no request connection - can write the claim again.
+	holdEveryConnection(t, database.Pool)
+	background, err := database.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	ageQueuedClaims(t, background, served.mentions, model.DeliveryClaimLapse)
+	aged := attemptClaimedAt(t, background, queued, "session:s1")
+
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if attemptClaimedAt(t, background, queued, "session:s1").After(aged) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the claim on the queued attempt still stands at %s: nothing wrote it again while the request pool was held", aged)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -55,7 +55,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	sender.refreshHeldClaims(context.Background())
 	sender.refresh = realRefresh
 
-	row := attemptClaimedAt(t, database, queued, "session:s1")
+	row := attemptClaimedAt(t, database.Pool, queued, "session:s1")
 	sender.mu.Lock()
 	var held time.Time
 	for key, claimed := range sender.claims {
@@ -69,7 +69,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 			"own result over the repeat's claim", held, row)
 	}
 	sender.refreshHeldClaims(context.Background())
-	if again := attemptClaimedAt(t, database, queued, "session:s1"); !again.After(row) {
+	if again := attemptClaimedAt(t, database.Pool, queued, "session:s1"); !again.After(row) {
 		t.Fatalf("the claim on the queued attempt is still %v after the next refresh, want it written again: "+
 			"left alone it lapses a lease later and the sweep may send it out of order", again)
 	}

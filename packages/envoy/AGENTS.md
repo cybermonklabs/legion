@@ -1381,8 +1381,8 @@ The migrations run on this pool too (`Store.applyMigration`), and the bound cann
 | Pool | Connections | Acquire bound | What takes them |
 | --- | --- | --- | --- |
 | `requests` (`store.Open`) | 48 | 3 s | every API request; outside admission, the websockets' identity checks, the browsers' durable document appends, `/auth/*`, the GitHub proxy and the dashboard's assets of other builds (`dashboard.NewStore`) |
-| `background` (`Background`) | 6 | 30 s | the embedding queue and its coverage pass, the suggestion sweep, the term-statistics refresh, the delivery reconcile and intakes, the architecture importer's ticker, the settlement resumption's query, task progress, reference-excerpt and block-index reconciliation, the edit-notice sweep, the repair of closed and reopened issues' asks, the server process registry's prune, the fleet build announcer, the outbox lag sample |
-| `live` (`Live`) | 4 | 3 s | the event stream relay's and the delivery hub's reads, and the live socket's catch-up |
+| `background` (`Background`) | 6 | 30 s | the embedding queue and its coverage pass, the suggestion sweep, the term-statistics refresh, the delivery reconcile and intakes, the architecture importer's ticker, the settlement resumption's query, task progress, reference-excerpt and block-index reconciliation, the edit-notice sweep, the repair of closed and reopened issues' asks, the server process registry's prune, the fleet build announcer, the outbox lag sample, and the comment mention sender's own claim statements (`api/comment_mention_sender.go`) |
+| `live` (`Live`) | 4 | 3 s | the event stream relay's reads and the first cursor of each generation it starts, the delivery hub's intake, recompute and its seed of the open P0 issues, and an events subscription's replay: its backlog count and its page |
 | `settlements` (`Settlements`) | 4 | 30 s | document settlements, one connection per settlement slot |
 | `rooms` (`Rooms`) | 4 | 3 s | cold document loads |
 | `room-appends` (`RoomAppends`) | 8 | 30 s | the document rooms' batches of browser updates, one connection per batch (`docs/room_appends.go`) |
@@ -1574,6 +1574,7 @@ The post-commit sender (`mentionSender`, `api/comment_mention_sender.go`) runs a
 each recipient gets the comments this process accepted, on one lane, in the order it accepted them, at most 8 lanes send at once, and at most 4,096 sends wait.
 Each attempt is claimed when its comment commits it, and this process writes that claim again every `mentionClaimRefresh` (`model.DeliveryClaimLapse`/3) while its send waits on its lane, so a recipient keeps that order however long its first send takes:
 the sweep below takes no attempt a live process holds.
+The sender's own three statements - that refresh, the drain's release of the claims it never started, and the claim a keyed repeat takes before it queues an owed send again (`claimQueuedMention`) - run on the background pool (`mentionSenderPool`), since each belongs to work that outlives the request it came from, while the lane's send itself is `deliverResolvedCommentMention`, the statements a Retry request makes inside its own answer, on the request pool.
 The outbox counts such an attempt live for the `model.DeliveryClaimLapse` after its comment committed and no longer:
 past that lease it counts it resumed, holds that session's copy as a `comment_fallback_copies` row and publishes the comment's event, and the fallback pass settles that row with nothing published once the lane's send lands, or publishes the copy when that send fails.
 A Retry that overtook the queued attempt and was sent takes the mention over:

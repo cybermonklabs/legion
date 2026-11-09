@@ -309,11 +309,15 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 //
 // The replay's page comes off the live pool, as the relay that feeds this subscription reads
 // (eventStreamRelay): a socket's backlog never queues for a request's connection. The count
-// before it is the resume's own check, so it reads through the request pool the socket is served
-// on, as eventSubscriptionCheck does.
+// before it comes off the same pool, so the replay waits for one pool and not two; a resume
+// whose own check counted the backlog already (eventSubscriptionCheck) counts nothing here.
 func (s *server) replayThrough(ctx context.Context, from, published int64, complete bool, behind int) (eventReplay, error) {
+	live, err := s.deps.Store.Pool.Live()
+	if err != nil {
+		return eventReplay{}, fmt.Errorf("open the live pool: %w", err)
+	}
 	if behind < 0 {
-		if err := s.deps.Store.Pool.QueryRow(ctx, `
+		if err := live.QueryRow(ctx, `
 			select count(*) from (select 1 from events where id > $1 and id <= $2 order by id limit $3) as behind
 		`, from, published, maxLiveReplay+1).Scan(&behind); err != nil {
 			return eventReplay{}, err
@@ -321,10 +325,6 @@ func (s *server) replayThrough(ctx context.Context, from, published int64, compl
 	}
 	if behind > maxLiveReplay {
 		return eventReplay{start: published, after: published}, nil
-	}
-	live, err := s.deps.Store.Pool.Live()
-	if err != nil {
-		return eventReplay{}, fmt.Errorf("open the live pool: %w", err)
 	}
 	missed, err := s.readEventsAfterID(ctx, live, from, published, maxLiveReplay)
 	if err != nil {

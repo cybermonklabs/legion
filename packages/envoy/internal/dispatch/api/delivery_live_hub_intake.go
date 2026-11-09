@@ -92,7 +92,9 @@ type hubEventFeed struct {
 // write anywhere on the instance can hold back, which is why it does not run on the intake's
 // goroutine: the hub's ready, its delivery changes and its views' answers do not wait for the
 // event horizon. The open P0 issues are read after the subscription stands, so they hold every
-// event at or below its head, none of which arrives on the feed.
+// event at or below its head, none of which arrives on the feed. Both reads go through the live
+// pool (liveRead), as every other read of the hub and of the relay does, so a generation seeds
+// while the requests hold every connection of theirs.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
 // over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
@@ -102,10 +104,14 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 	go func() {
 		defer h.running.Done()
 		for attempt := 1; ; attempt++ {
-			feed, err := h.server.eventRelay.subscribe(g.readContext(), deliveryHubFeedBuffer)
+			ctx, live, err := h.liveRead(g)
+			var feed relaySubscription
+			if err == nil {
+				feed, err = h.server.eventRelay.subscribe(ctx, deliveryHubFeedBuffer)
+			}
 			var p0 map[string]struct{}
 			if err == nil {
-				if p0, err = delivery.OpenP0Keys(g.readContext(), h.server.deps.Store.Pool); err != nil {
+				if p0, err = delivery.OpenP0Keys(ctx, live); err != nil {
 					feed.cancel()
 				}
 			}

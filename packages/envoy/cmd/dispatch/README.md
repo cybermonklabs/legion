@@ -1052,8 +1052,8 @@ Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a s
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Requests (`store.SharedPoolSize`) | 48 | Every API request's reads and writes, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions); `application_name=dispatch-requests`. |
-| Background (`backgroundPoolSize`) | 6 | The background loops, so a request never queues behind one of their statements; `application_name=dispatch-background`. |
-| Live (`livePoolSize`) | 4 | The live-update readers: the event stream relay and the delivery hub; `application_name=dispatch-live`. |
+| Background (`backgroundPoolSize`) | 6 | The background loops and the work a request leaves running behind its answer - the comment mention sender's own claim statements among them - so a request never queues behind one of their statements; `application_name=dispatch-background`. |
+| Live (`livePoolSize`) | 4 | The live-update readers: the event stream relay, the delivery hub's intake, recompute and seed, and an events subscription's replay; `application_name=dispatch-live`. |
 | Settlements (`settlementsPoolSize`) | 4 | The document settlements, so a burst of them neither waits for the requests' connections nor takes them; `application_name=dispatch-settlements`. |
 | Leases (`store.LeasePoolSize`) | 17 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`): one per lease name on `duty`'s list (`store.LeaseNameCount`, 15) and two spare. |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |

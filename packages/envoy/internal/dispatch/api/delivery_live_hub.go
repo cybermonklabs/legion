@@ -470,18 +470,20 @@ func signal(wake chan struct{}) {
 	}
 }
 
-// readContext is a context for one of g's reads of the request pool, which ends with g and is
-// marked so the pool refuses it a second connection.
+// readContext is a context for one of g's reads, which ends with g and is marked so the pool
+// refuses it a second connection. Every read g makes is liveRead's, which pairs this context
+// with the live pool.
 func (g *hubGeneration) readContext() context.Context {
 	return store.WithTransactionTracking(g.ctx)
 }
 
-// liveRead is a context for one of the intake's or the worker's reads, which ends with g and is
-// marked so the pool refuses it a second connection, and the pool it reads through: the live pool
-// (store.Pool.Live), so an open page hears of a change while the requests hold every connection of
-// theirs. The intake reads one statement at a time and the worker's recompute at most
-// concurrentReadWeight at once, which with the event stream relay's one read are the live pool's
-// connections.
+// liveRead is a context for one of the intake's, the worker's or the seed's reads, which ends
+// with g and is marked so the pool refuses it a second connection, and the pool it reads
+// through: the live pool (store.Pool.Live), so an open page hears of a change while the requests
+// hold every connection of theirs. The intake reads one statement at a time, the worker's
+// recompute at most concurrentReadWeight at once and the seed one statement at a generation's
+// start (seedEvents), which with the event stream relay's one read and an events subscription's
+// replay (replayThrough) are the live pool's readers.
 func (h *deliveryHub) liveRead(g *hubGeneration) (context.Context, *store.Pool, error) {
 	live, err := h.server.deps.Store.Pool.Live()
 	if err != nil {

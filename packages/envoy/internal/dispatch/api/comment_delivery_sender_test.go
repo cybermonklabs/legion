@@ -296,11 +296,12 @@ func claimedPending(t *testing.T, database *store.Store, commentID, target strin
 	return claimed
 }
 
-// attemptClaimedAt is when the comment's attempt for target was last claimed.
-func attemptClaimedAt(t *testing.T, database *store.Store, commentID, target string) time.Time {
+// attemptClaimedAt is when the comment's attempt for target was last claimed, read through
+// pool: a test holding every request connection reads it through another pool.
+func attemptClaimedAt(t *testing.T, pool *store.Pool, commentID, target string) time.Time {
 	t.Helper()
 	var claimed time.Time
-	if err := database.Pool.QueryRow(context.Background(), `
+	if err := pool.QueryRow(context.Background(), `
 		select claimed_at from comment_deliveries where comment_id = $1 and target = $2 and attempt = 1
 	`, commentID, target).Scan(&claimed); err != nil {
 		t.Fatalf("read the claim on the attempt of %s for %s: %v", commentID, target, err)
@@ -940,8 +941,9 @@ func withMentionClaimRefresh(t *testing.T, served *server, period time.Duration)
 // ageQueuedClaims moves every claim the sender holds on a send that has not started back by by,
 // on the attempt row and in the sender's own record together: what a lane held that long leaves
 // behind when nothing writes those claims again. It holds the sender's lock throughout, so no
-// refresh records anything until every row and its record agree again.
-func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender, by time.Duration) {
+// refresh records anything until every row and its record agree again. It writes through pool,
+// which is the request pool unless the test holds that pool's connections.
+func ageQueuedClaims(t *testing.T, pool *store.Pool, sender *mentionSender, by time.Duration) {
 	t.Helper()
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
@@ -953,7 +955,7 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 		// than the map (refreshHeldClaims), so the claim aged is the one the row carries, and the
 		// map is set to it: that refresh then finds the map changed and records nothing over it.
 		var aged time.Time
-		if err := database.Pool.QueryRow(context.Background(), `
+		if err := pool.QueryRow(context.Background(), `
 			update comment_deliveries set claimed_at = claimed_at - make_interval(secs => $4)
 			where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and claimed_at is not null
 			returning claimed_at
@@ -1027,7 +1029,7 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	// ago, and the claims the sender took on the sends waiting on it are that old too.
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, database.Pool, served.mentions, model.DeliveryClaimLapse+time.Second)
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
@@ -1067,7 +1069,7 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 		postMentionOfS1(t, handler, issue.Key, "third"),
 	}
 	ageAttempts(t, database, append([]string{sending}, queued...)...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, database.Pool, served.mentions, model.DeliveryClaimLapse+time.Second)
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
 	}
@@ -1124,7 +1126,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 	}
 	// The lane has held it longer than a claim lease and nothing wrote its claim again, so the
 	// attempt reads as one no sender holds.
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, database.Pool, served.mentions, model.DeliveryClaimLapse+time.Second)
 
 	repeat := keyedRequest(t, handler, http.MethodPost, comments, keyed, "alice", "mention-queued")
 	if repeat.Code != http.StatusCreated || !replayed(repeat) {
@@ -1133,10 +1135,10 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 	if !claimedPending(t, database, queued, "session:s1") {
 		t.Fatal("the repeat left the queued attempt unclaimed")
 	}
-	claimed := attemptClaimedAt(t, database, queued, "session:s1")
+	claimed := attemptClaimedAt(t, database.Pool, queued, "session:s1")
 
 	served.mentions.refreshHeldClaims(context.Background())
-	if again := attemptClaimedAt(t, database, queued, "session:s1"); !again.After(claimed) {
+	if again := attemptClaimedAt(t, database.Pool, queued, "session:s1"); !again.After(claimed) {
 		t.Fatalf("the claim on the queued attempt is %v, want it written again past the repeat's %v: "+
 			"the sender is holding a claim the repeat replaced", again, claimed)
 	}

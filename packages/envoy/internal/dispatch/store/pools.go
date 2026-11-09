@@ -475,21 +475,28 @@ func (p *Pool) Horizon() (*RawPool, error) {
 // embedding queue and its coverage pass, the suggestion sweep, the delivery reconcile and intakes,
 // the architecture importer's ticker, the documents' resumption query, task progress,
 // reference-excerpt and block-index reconciliation, the edit-notice sweep, the repair of closed and
-// reopened issues' asks, the server process registry's prune and the fleet build announcer. Six is
-// the background's share of the budget SharedPoolSize describes; nobody waits on these loops, so
-// they wait for each other here (up to backgroundAcquireBound) instead of for the requests'
-// connections.
+// reopened issues' asks, the server process registry's prune and the fleet build announcer, and
+// what a request leaves running behind its answer: the comment mention sender's claim statements
+// (api/comment_mention_sender.go). Six is the background's share of the budget SharedPoolSize
+// describes; nobody waits on these loops, so they wait for each other here (up to
+// backgroundAcquireBound) instead of for the requests' connections.
 const backgroundPoolSize = 6
 
-// Background is the pool for background loops, so that under load a request never queues behind a
-// loop's statement for a connection, nor a loop behind the requests.
+// Background is the pool for background loops and the work a request leaves behind it, so that
+// under load a request never queues behind one of their statements for a connection, nor they
+// behind the requests.
 func (p *Pool) Background() (*Pool, error) {
 	return p.wrapped(BackgroundPool, backgroundPoolSize)
 }
 
-// livePoolSize bounds the pool for the live-update readers: the event stream relay and the
-// delivery hub, each reading what a notification announced and handing it to every open stream.
-// Four is their share of the budget SharedPoolSize describes.
+// livePoolSize bounds the pool for the live-update readers, which are the event stream relay's
+// one read loop and the first cursor of each generation it starts, the delivery hub's intake
+// (one statement at a time), its worker's recompute (at most concurrentReadWeight at once) and
+// its seed of the open P0 issues at a generation's start, and an events subscription's bounded
+// replay, its backlog count and its page (api/live_events.go). Four is their share of the budget
+// SharedPoolSize describes: the relay's read and the hub's intake and recompute are what read
+// continuously, while the seed runs once per generation and a replay once per resume, each one
+// statement waiting at most requestAcquireBound for a connection.
 const livePoolSize = 4
 
 // Live is the pool for the live-update readers, so an event reaches the open streams while the
