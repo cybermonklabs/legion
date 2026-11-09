@@ -30,7 +30,9 @@ name: Dispatch browser suite
 # floor of two minutes. A step that holds one carries its own retry arithmetic instead of a
 # measured maximum - five attempts at the call's own bound with the helper's sleeps between
 # them, 5 x <bound> + 150 s, or 8 x <bound> + 127 s where curl makes the attempts itself - at
-# the next whole minute strictly above it. A job carries its measured duration plus the
+# the next whole minute strictly above it. A job carries a first term - its measured duration,
+# or the budget it already carried where that stands above the measurement, which every job
+# below says of itself and which errs late rather than early - plus the
 # arithmetic of its single slowest retried step alone, never the sum of every retried step, and
 # it stands above its largest step budget, so it cancels no step the step's own bound was meant
 # to end. The sum answers the wrong case: a job whose every download exhausts every attempt at
@@ -92,7 +94,7 @@ jobs:
     # then counts it as reading every Go file of the repository. DISPATCH_E2E_FILE_STORE_ENDPOINT
     # and DISPATCH_E2E_FILE_STORE_BUCKET are in that set and stay in the browser step's `env:`.
     #
-    # The budgets below, this one and the two on steps, are measured, on the two runs of
+    # The two step budgets below are measured, on the two runs of
     # 2abfb4a0: 42499402537, the pull-request lane, and 42499408504, the full lane. Four legs each,
     # in shard order, in seconds:
     #
@@ -133,7 +135,7 @@ jobs:
     # The three cache steps are measured rather than allowed for: they are in the "every other
     # step summed" row of the table above.
     #
-    # So the job budget is this job's own duration plus the arithmetic of its one slowest
+    # So the job budget is this job's first term plus the arithmetic of its one slowest
     # retried step. The first term is not the measured maximum of the table above, which is
     # 583 s: it is main's own budget for this job, 2005 s, which main derives from the install
     # step's 1320 s, the browser step's 600 s and 85 s of every other step. That term is kept
@@ -538,7 +540,8 @@ jobs:
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row,
     # which this budget's first term stands far above.
     #
-    # So the job budget is this job's measured duration plus the arithmetic of its one slowest
+    # So the job budget is this job's first term, the budget it already carried, plus the
+    # arithmetic of its one slowest
     # retried step: 1620 s, the 27 minutes this job carried before this branch and above the
     # 259 s of its slowest leg in the table, plus the install step's whole wait - 1170 s of
     # bounded apt, 13.6 s of unpack, 0.4 s of decoder guard, 4650 s of browser download (five
@@ -823,7 +826,8 @@ jobs:
     # 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
     # for the sign-in step, and 28 min for the install step, which is that step's own retry
     # arithmetic and no measured maximum, for the reason its own comment gives.
-    # The job budget is this job's measured duration plus the arithmetic of its one slowest
+    # The job budget is this job's first term, the budget it already carried, plus the
+    # arithmetic of its one slowest
     # retried step: 780 s, the 13 minutes this job carried before this branch and above the
     # 516 s maximum in the table, plus the install step's one `retry_fetch` call,
     # 5 x 300 + 150 = 1650 s. 780 + 1650 = 2430 s -> 41 min. With budgets on the steps, the
@@ -1017,8 +1021,9 @@ jobs:
   #   the whole job                                  180           201           163           318           272
   #
   # The rule is in this file's head. The browser step's maximum is 106 s, so 106 x 1.15 = 122 s
-  # -> 3 min. The job budget is this job's measured duration plus the arithmetic of its one
-  # slowest retried step, which is the rule this branch's R1 writes for a job holding one:
+  # -> 3 min. The job budget is this job's first term, its measured maximum, plus the
+  # arithmetic of its one slowest retried step, which is the rule this branch's R1 writes for a
+  # job holding one:
   # 318 s, the largest of the five columns above, plus the install step's 1050 s
   # (5 x 180 + 150), is 1368 s -> 23 min. It stands above that step's own 18 minutes, so no
   # job budget fires before a step's own.
@@ -1147,7 +1152,8 @@ jobs:
     needs: [shard, alone, multiprocess, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    # The budget is measured, and four of this job's steps now carry one of their own. Over the
+    # The budget is derived below rather than measured, and four of this job's steps carry one
+    # of their own. Over the
     # 32 concluded `dispatch-browser / merge` jobs of the last 43 completed ci.yaml runs, read
     # from the jobs API on 2026-11-08, the job's maximum is 34 s: job 128737694112 of run
     # 42481906495, 12:57:25Z to 12:57:59Z.
@@ -1165,17 +1171,19 @@ jobs:
     # is what rule 8 asks of any step that calls that file, since it credits the file's whole
     # ladder to every step that runs it whichever mode the step asks for, 5 x 40 + 150 = 350 s;
     # and the ci-ok report, whose two `gh api` ladders are 2 x (5 x 30 + 150) = 600 s -> 12 min.
-    # Only one of the four really waits on a host here: "Reading one, the rows" makes the jobs
-    # read, where `blobs-refused` is one `echo` and makes no request at all. A step reaches any
-    # of those ceilings only against a host that accepts the connection and then sends nothing,
-    # which is the one fault where every attempt runs its whole bound.
+    # Of the two steps that run that file only "Reading one, the rows" waits on a host at all:
+    # `blobs-refused` is one `echo` and makes no request. The install and the ci-ok report
+    # reach a host too. A step reaches any of those ceilings only against a host that accepts
+    # the connection and then sends nothing, which is the one fault where every attempt runs
+    # its whole bound.
     #
-    # So by the rule in this file's head the job's budget is this job's own duration plus the
-    # arithmetic of its one slowest retried step. The first term is not the 34 s maximum above:
-    # it is main's own budget for this job, 240 s, kept rather than tightened and named here
-    # rather than passed off as a measurement, since it stands above the measurement and so
-    # only loosens this ceiling. Those 4 minutes already hold "Reading one", as the shard job's
-    # first term holds its install. The second term is the workspace install's 1050 s.
+    # So the job's budget is main's budget for this job, kept as the first term, plus the
+    # arithmetic of its one slowest retried step. That first term departs from the rule at the
+    # head of this file, which says a measured duration: it is 240 s, main's own 4 minutes,
+    # rather than the 34 s maximum measured above, kept rather than tightened because it stands
+    # far above that measurement and so only loosens this ceiling. What those 4 minutes hold of
+    # "Reading one, the rows" is its measured 4 s, not its 350 s ladder, which is why the
+    # ladder is a step budget of its own. The second term is the workspace install's 1050 s.
     # 240 + 1050 = 1290 s -> 22 min, which stands above the largest step budget, the install's
     # 18, so no job budget fires before a step's own.
     #
