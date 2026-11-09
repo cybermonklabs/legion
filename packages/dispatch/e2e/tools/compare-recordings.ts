@@ -17,7 +17,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { canonical, type Har } from "../stub/recording";
+import { type Har, shapes } from "../stub/recording";
 
 const usage =
   "usage: bun e2e/tools/compare-recordings.ts <committed copy> [fresh]\n" +
@@ -75,9 +75,19 @@ for (const name of committedFiles) {
     gone.push(name);
     continue;
   }
-  const before = canonical(JSON.parse(readFileSync(join(committedRoot, name), "utf8")) as Har);
-  const after = canonical(JSON.parse(readFileSync(join(fresh, name), "utf8")) as Har);
-  if (before !== after) moved.push(`  ${name}\n${firstDifference(before, after)}`);
+  const before = shapes(JSON.parse(readFileSync(join(committedRoot, name), "utf8")) as Har);
+  const after = shapes(JSON.parse(readFileSync(join(fresh, name), "utf8")) as Har);
+  // The routes both recordings hold, and nothing else. A route only one of them holds is the
+  // page's own racing reads - a poll that fired once more, a prefetch that won - and reporting
+  // it would make this job red every night on nothing. A route that really goes away goes away
+  // from the row too, and the row then fails its own replay against the committed recording,
+  // which is louder than a line here.
+  for (const [asked, answered] of before) {
+    const now = after.get(asked);
+    if (now !== undefined && now !== answered) {
+      moved.push(`  ${name}\n    ${asked}\n${firstDifference(answered, now)}`);
+    }
+  }
 }
 const uncommitted = freshFiles.filter((name) => !committedFiles.includes(name));
 

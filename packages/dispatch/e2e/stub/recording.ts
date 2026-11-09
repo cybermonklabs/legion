@@ -224,19 +224,60 @@ export function refuseACredential(har: Har): void {
   }
 }
 
-/** An RFC 3339 instant, which the server stamps on what it answers (`as_of`, `created_at`). */
-const timePattern = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g;
-/** A UUID, which is what the server mints an id as. */
+/** A UUID, which is what the server mints an id as. It is masked in a URL, so two recordings of
+ *  one row name the same route rather than two. */
 const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
-/** The comparison form of a normalised recording: every id the server minted and every time it
- *  stamped replaced by a token, in URLs and in bodies alike. Written nowhere; the re-record job
- *  compares two of these.
+/** What the dashboard asked of the server in one recording, and how the server answered: each
+ *  route it asked, with the statuses that route answered with.
  *
- *  A changed value in a body is not a time and not a UUID, so it survives this and the comparison
- *  still fails - which is the claim `e2e/__tests__/stub-recording.test.ts` holds this to. */
+ *  **It compares routes and statuses, never a body's values and never a body's shape, and that
+ *  is the whole of the judgement in this file.** Two recordings of one row are made against two
+ *  databases the harness built minutes apart, and the server answers each with ids it minted,
+ *  counters it incremented, times it stamped, lists that are empty in one run and not the
+ *  other, and nullable fields that are null in one and an object in the other. A comparison of
+ *  values, or even of key paths, is red every night on all of that and tells a reader nothing;
+ *  masking enough of it to be green would mask the very things the job exists to watch.
+ *
+ *  So the two guards divide the work. A body is held to its declared shape on **every pull
+ *  request**, against the contract the Go route table generates
+ *  (`e2e/__tests__/stub-recordings.test.ts`), which is where a renamed, removed or retyped
+ *  field fails - on the commit that causes it. This job watches what a schema cannot see and
+ *  what does not vary with the data: a route that answers another status than the recording
+ *  holds. A recording whose row now gets a 404 or a 403 where it was given a 200 is stale, and
+ *  a stubbed row would keep passing on the old answer until someone looked. A route one
+ *  recording holds and the other does not is left alone, because a page's reads race: the
+ *  comparison is over the routes both recordings asked (`e2e/tools/compare-recordings.ts`). */
+export function shapes(har: Har): Map<string, string> {
+  const statuses = new Map<string, Set<number>>();
+  for (const entry of har.log.entries) {
+    // A request the page cancelled, which a HAR records with a status of -1 or 0: the server
+    // answered nothing, so there is nothing of the server's to compare, and whether a
+    // navigation beat a read is the run's own race.
+    if (entry.response.status <= 0) continue;
+    // The route, not the URL: the ids the server minted are masked, and the query is left out
+    // because a page polls - two recordings of one row ask `?limit=1&order=desc` and
+    // `?after=2&limit=1` of the same route depending on what the first read answered. A query
+    // that changed for a reason is caught where it matters: `routeFromHAR` matches a request by
+    // its whole URL, so such a row fails its own replay, which is louder than this job.
+    const route = new URL(entry.request.url).pathname.replace(uuidPattern, "<uuid>");
+    const asked = `${entry.request.method} ${route}`;
+    const answered = statuses.get(asked) ?? new Set<number>();
+    answered.add(entry.response.status);
+    statuses.set(asked, answered);
+  }
+  const byRoute = new Map<string, string>();
+  for (const [asked, answered] of statuses) {
+    byRoute.set(asked, [...answered].sort().join(", "));
+  }
+  return byRoute;
+}
+
 export function canonical(har: Har): string {
-  return JSON.stringify(har, null, 2).replace(timePattern, "<time>").replace(uuidPattern, "<uuid>");
+  return `${[...shapes(har)]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([asked, answered]) => `${asked} ${answered}`)
+    .join("\n")}\n`;
 }
 
 /** A committed recording's text with the placeholder origin replaced by `origin`, which is the

@@ -8,7 +8,14 @@
 import { describe, expect, test } from "bun:test";
 
 import { recordedOrigin } from "../stub/origin";
-import { canonical, type Har, normalise, refuseACredential, retargeted } from "../stub/recording";
+import {
+  canonical,
+  type Har,
+  normalise,
+  refuseACredential,
+  retargeted,
+  shapes,
+} from "../stub/recording";
 
 const from = "http://127.0.0.1:51234";
 
@@ -19,6 +26,7 @@ function recorded(options: {
   body?: string;
   cookie?: string;
   frame?: string;
+  status?: number;
   time?: number;
   url?: string;
 }): Har {
@@ -65,7 +73,7 @@ function recorded(options: {
               { name: "Date", value: options.at ?? "Mon, 09 Nov 2026 00:00:00 GMT" },
               { name: "Content-Type", value: "application/json" },
             ],
-            status: 200,
+            status: options.status ?? 200,
           },
         },
       ],
@@ -130,12 +138,26 @@ describe("a committed recording", () => {
 });
 
 describe("comparing two recordings of one row", () => {
-  test("a recording that differs only in what is erased compares equal", () => {
-    const first = canonical(normalise(recorded({}), from));
+  test("two recordings that differ only in what a run decides compare equal", () => {
+    // Every one of these differs between two runs of one row against two databases the harness
+    // built minutes apart, and none of them is the server's shape changing.
+    const first = canonical(
+      normalise(
+        recorded({
+          at: "2026-11-09T00:00:00Z",
+          body: '{"as_of":"2026-11-09T00:51:05.7Z","id":"42017c43-4482-482a-8604-f183face92e3","rows":[],"total":0}',
+          cookie: "dsession=2.YWxpY2U.0.1",
+          frame: "frame@1",
+          time: 12.5,
+        }),
+        from
+      )
+    );
     const second = canonical(
       normalise(
         recorded({
           at: "2026-11-09T01:17:42Z",
+          body: '{"as_of":"2026-11-09T02:11:09.3Z","id":"343a818f-e378-4d4b-9dc6-83512adccc7a","rows":[{"anchor":null}],"total":1}',
           cookie: "dsession=2.YWxpY2U.0.9",
           frame: "frame@beef",
           time: 44.25,
@@ -146,54 +168,28 @@ describe("comparing two recordings of one row", () => {
     expect(second).toBe(first);
   });
 
-  test("a server-minted id and timestamp inside a body compare equal", () => {
-    const first = canonical(
-      normalise(
-        recorded({
-          body: '{"as_of":"2026-11-09T00:51:05.7Z","id":"42017c43-4482-482a-8604-f183face92e3"}',
-        }),
-        from
-      )
+  test("a route that answers another status differs", () => {
+    // The drift this job exists to find: a row's recording holds a 200 and the server now
+    // answers 404, so the stubbed row keeps passing on an answer nobody serves any more.
+    const before = canonical(normalise(recorded({}), from));
+    const after = canonical(normalise(recorded({ status: 404 }), from));
+    expect(after).not.toBe(before);
+  });
+
+  test("a route the page no longer asks for is not read as drift", () => {
+    // A page's reads race: one run makes a poll the next does not. The comparison is over the
+    // routes both recordings asked (e2e/tools/compare-recordings.ts), and this holds the
+    // comparison form to the shape that makes that intersection possible.
+    const one = shapes(normalise(recorded({}), from));
+    const two = shapes(normalise(recorded({ url: "/api/v1/inbox/threads" }), from));
+    expect([...one.keys()]).toEqual(["GET /api/v1/inbox"]);
+    expect([...two.keys()]).toEqual(["GET /api/v1/inbox/threads"]);
+  });
+
+  test("the ids the server mints are masked out of a route", () => {
+    const one = shapes(
+      normalise(recorded({ url: "/api/v1/artifacts/42017c43-4482-482a-8604-f183face92e3" }), from)
     );
-    const second = canonical(
-      normalise(
-        recorded({
-          body: '{"as_of":"2026-11-09T02:11:09.3Z","id":"343a818f-e378-4d4b-9dc6-83512adccc7a"}',
-        }),
-        from
-      )
-    );
-    expect(second).toBe(first);
-  });
-
-  test("a changed value in a body survives both passes and still differs", () => {
-    // The claim the eraser's list is held to: this is the drift the job exists to find.
-    const first = canonical(normalise(recorded({ body: '{"rows":[],"total":0}' }), from));
-    const second = canonical(normalise(recorded({ body: '{"rows":[],"total":1}' }), from));
-    expect(second).not.toBe(first);
-  });
-
-  test("a changed route still differs", () => {
-    const first = canonical(normalise(recorded({ url: "/api/v1/inbox" }), from));
-    const second = canonical(normalise(recorded({ url: "/api/v1/inbox/threads" }), from));
-    expect(second).not.toBe(first);
-  });
-
-  test("two entries of one route and method keep the order they were answered in", () => {
-    // `routeFromHAR` answers with the first matching entry, so a row that reads one URL twice
-    // and is answered twice would be given the second answer first if the sort reordered them.
-    const twice = recorded({ body: "first" });
-    twice.log.entries.push({
-      ...twice.log.entries[0],
-      response: {
-        ...twice.log.entries[0].response,
-        content: { mimeType: "text/plain", text: "second" },
-      },
-    });
-    const written = normalise(twice, from);
-    expect(written.log.entries.map((entry) => entry.response.content.text)).toEqual([
-      "first",
-      "second",
-    ]);
+    expect([...one.keys()]).toEqual(["GET /api/v1/artifacts/<uuid>"]);
   });
 });
