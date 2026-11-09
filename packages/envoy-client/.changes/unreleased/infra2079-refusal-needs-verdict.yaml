@@ -56,8 +56,9 @@ body: |-
   discarding everything but a refusal there posted a non-markdown suffix silently while the
   identical bytes under `.md` were held, in a session that had merely lost a verdict. Every
   artifact upload of such a session is now refused in block mode.
-  A refusal that advises sending the write again carries, on the clause and in the state that
-  make it true and nowhere else, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
+  Advice is a lead and up to two clauses — one that works wherever the call ran, one that works
+  only by getting a marker bound to this write — and a refusal carries, on the clause and in the
+  state that make it true and nowhere else, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
   argv-only marker and an argv-only marker answers no uncertainty. Advice is a lead and an
   optional resend clause, and the renderer appends that caveat to any advice carrying one, so a
   refusal added later cannot describe a resend a subagent cannot make. A changed file is one of
@@ -102,8 +103,9 @@ body: |-
   The cost is measured rather than bounded by a phrase: a session whose record carries no
   verdict capability refuses every unmarked write in block mode for the rest of its life,
   including a subagent's, a script's and an eval cell's, and sessions on this fleet run 22 to 50
-  hours. Restarting the session clears it, since a new session gets a record from the gate
-  running now; nothing else does.
+  hours. Restarting the Oh My Pi process clears it, since the capabilities come from the module loaded
+  there and a new session inside the same process writes another record without them; nothing
+  else does.
   Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
   leave the loser refused, and now both post, one with the warning. A resent literal call is read
   by the gate and reviewed afresh. dispatch://INFRA-2079, row 3.5.

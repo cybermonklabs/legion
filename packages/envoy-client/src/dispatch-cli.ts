@@ -179,7 +179,9 @@ const advise = (
   state: { readonly refusal: boolean; readonly persistent: boolean }
 ): string => {
   const said = [lead, anywhere, viaMarker].filter((part) => part !== undefined);
-  if (!state.refusal) return said.join(" ");
+  // Nothing to caveat where the advice asks for no action of the agent's — telling whoever
+  // owns the session is not something a subagent cannot do.
+  if (!state.refusal || (anywhere === undefined && viaMarker === undefined)) return said.join(" ");
   if (state.persistent) return [...said, SUBAGENT_HELD_ALL_SESSION].join(" ");
   return [
     lead,
@@ -219,9 +221,13 @@ const NO_VERDICT_CAPABILITY: Advice = {
  */
 const FOREIGN_VERDICTS: Advice = {
   ...resendThen(
-    "The store named above sits in the session's own directory and outlives any restart: it goes when that directory is pruned, or when someone who knows what it held removes it."
+    "The path named above sits in the session's own directory and outlives any restart: it goes when that directory is pruned, or when someone who knows what it held removes it."
   ),
-  lead: "No marker was tampered with and nothing of the call is at fault. This session holds AskGate verdicts of a scheme this version of the dispatch CLI does not read, so a refusal of this very write cannot be ruled out and it is not sent.",
+  // The reason beside this names which of the four it is, and the path: a store of another
+  // scheme, this write's own verdict file, this session's store, or the mark of a lost
+  // verdict. Asserting the first of those as fact sent an operator to prune a session
+  // directory when the reason had already named the one path to look at.
+  lead: "No marker was tampered with and nothing of the call is at fault. A verdict this session holds cannot be read by this version of the dispatch CLI, so a refusal of this very write cannot be ruled out and it is not sent.",
 };
 
 /**
@@ -230,10 +236,16 @@ const FOREIGN_VERDICTS: Advice = {
  * write cannot be looked up at all — and no identity is never no verdict.
  */
 const UPLOAD_UNREADABLE: Advice = {
-  // No caveat: the first clause repairs the real fault, and this state is reached through the
-  // upload's own bytes rather than through the marker ranking, so a subagent that fixes the
-  // path is not held by anything a resend cannot clear.
-  lead: "An upload is identified by the bytes it sends, which are what AskGate reviews, so a file this command cannot read leaves no way to ask whether AskGate refused this write. Check the path, then send the upload again as one bash call of literal words.",
+  // Fixing the path repairs the fault this names and nothing else: the state is reached
+  // through the upload's own bytes but left through `readVerdict`, so a session carrying its
+  // own uncertainty still holds a subagent after the repair, and the renderer reads that from
+  // the state rather than from this object.
+  lead: "An upload is identified by the bytes it sends, which are what AskGate reviews, so a file this command cannot read leaves no way to ask whether AskGate refused this write.",
+  // In a clause rather than written into the lead, which is what the renderer reads: a resend
+  // hidden in prose was the hole this type was introduced with, and it is the one that let
+  // this advice promise a repair that is not enough in a session also holding its own
+  // uncertainty.
+  anywhere: "Check the path, then send the upload again as one bash call of literal words.",
 };
 
 /**
@@ -581,8 +593,15 @@ export async function runDispatchCli(
            * that no clause of it works from a task subagent. True of the three verdict-side
            * states a per-write repair cannot clear: a gate that records none, a store of
            * another scheme, and a verdict that was lost.
+           *
+           * Required, and that is the point. As an optional field defaulting to false it was
+           * the permissive default moved from a branch into a type: the one finding whose
+           * author did not write it — a recorded refusal — left its "send the corrected write"
+           * clause standing as true for a subagent in a session that had also lost a verdict,
+           * and the body claimed a later round could not be wrong in that way. A field the
+           * compiler asks for cannot be forgotten; a convention can.
            */
-          readonly persistent?: boolean;
+          readonly persistent: boolean;
         }
       | undefined;
     try {
@@ -677,6 +696,10 @@ export async function runDispatchCli(
             verdict: "refused",
             mode: gate.kind === "on" ? gate.mode : "block",
             why: "AskGate reviewed this write and did not send it",
+            // A refusal can stand beside a fault of the session's own, and then even "send
+            // the corrected write" is held: the corrected write is a different write, but the
+            // session's uncertainty covers every write of it.
+            persistent: !capable || uncertainSession(dir),
             reason: `AskGate reviewed this write and did not send it: ${said.reason}`,
             advice: { refused: REFUSAL_STANDS, posted: REFUSAL_STANDS },
           };
@@ -697,6 +720,7 @@ export async function runDispatchCli(
             mode: "block",
             why: gate.problem,
             reason: `AskGate's record for this session, ${gate.problem}, so whether AskGate refused this write cannot be told`,
+            persistent: true,
             advice: { refused: RECORD_RECOVERY, posted: RECORD_RECOVERY },
           };
         else if (said === undefined || said.kind === "unknown") {
@@ -742,7 +766,12 @@ export async function runDispatchCli(
                         // body's `createdAt`, so a marker old by the clock is old by both, the
                         // resend's own mint sweeps it, and the subagent's argv-only marker is
                         // then honoured.
-                        ...(spent.expired
+                        // An expired marker is swept by the resend's own mint, so a
+                        // subagent's resend posts — but `mintMarker` sweeps the store its gate
+                        // mints into, and `askgateState` returns every live owner's. Where
+                        // this session has more than one, the marker may sit in a store no
+                        // mint here touches, and nothing but a bound marker gets past it.
+                        ...(spent.expired && gate.stores.length === 1
                           ? {
                               anywhere:
                                 "Send the write again in that form, as a bash call of its own.",
@@ -806,6 +835,7 @@ export async function runDispatchCli(
                     mode: gate.mode,
                     why: spent.why,
                     reason: `AskGate is on for this session, and ${spent.why}`,
+                    persistent: false,
                     // Nothing holds this write: it posts, and a subagent's posts too, so it
                     // has no refusal rendering at all.
                     advice: {
@@ -820,6 +850,7 @@ export async function runDispatchCli(
         mode: "block",
         why: messageFor(error),
         reason: `AskGate's marker for this call could not be checked: ${messageFor(error)}`,
+        persistent: true,
         advice: { refused: STORE_RECOVERY, posted: STORE_RECOVERY },
       };
     }
@@ -863,7 +894,7 @@ export async function runDispatchCli(
         (finding.verdict === "refused" || (finding.verdict !== "none" && finding.mode === "block"))
       )
         return refuse(
-          `${notCalled} ${finding.reason}. ${advise(held, { refusal: true, persistent: finding.persistent === true })}`,
+          `${notCalled} ${finding.reason}. ${advise(held, { refusal: true, persistent: finding.persistent })}`,
           REFUSED,
           parsed.tool,
           {

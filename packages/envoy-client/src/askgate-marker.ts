@@ -1299,6 +1299,14 @@ export type VerdictRead =
  */
 export function uncertainSession(session: string): boolean {
   if (foreignVerdicts(session).kind !== "none") return true;
+  // This session's own store, which `foreignVerdicts` passes over as not foreign: a store that
+  // cannot be listed is exactly the uncertainty this answers, and skipping it said a session
+  // whose own verdicts are unreadable is certain.
+  try {
+    readdirSync(verdictDir(session));
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) return true;
+  }
   return readVerdictFile(join(session, VERDICTS_LOST)) !== "gone";
 }
 

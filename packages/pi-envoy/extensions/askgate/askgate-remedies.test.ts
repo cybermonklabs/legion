@@ -11,6 +11,8 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -295,6 +297,37 @@ describe("every remedy the CLI prints, followed", () => {
       holds: true,
     },
     {
+      // Three states the enumeration missed for three rounds, each counted by hand against
+      // `dispatch-cli.ts` rather than against the previous round's list — and each time the
+      // missing row was where a defect lived.
+      name: "an upload whose own bytes cannot be read",
+      call: () => ({
+        command: "dispatch artifact --issue DSP-1 --name plan --path missing.md",
+        argv: ["artifact", "--issue", "DSP-1", "--name", "plan", "--path", "missing.md"],
+      }),
+      arrange: (s) => clearVerdict(s.dir(), identity()),
+      repair: (s) => writeFileSync(join(s.work, "missing.md"), "# Plan\n"),
+      holds: true,
+    },
+    {
+      name: "a marker store that cannot be listed",
+      arrange: (s) => {
+        clearVerdict(s.dir(), identity());
+        chmodSync(join(s.store, "markers"), 0o000);
+      },
+      repair: (s) => chmodSync(join(s.store, "markers"), 0o700),
+      holds: true,
+    },
+    {
+      name: "a session record that cannot be read",
+      arrange: (s) => {
+        clearVerdict(s.dir(), identity());
+        writeFileSync(join(s.dir(), "askgate", "99999999-0-stray.json"), "{not json");
+      },
+      repair: (s) => rmSync(join(s.dir(), "askgate", "99999999-0-stray.json"), { force: true }),
+      holds: true,
+    },
+    {
       // The state this whole change exists for: no review ever saw the write, so it posts with
       // a warning, and a subagent's posts too.
       name: "nothing recorded against the write",
@@ -352,7 +385,9 @@ describe("every remedy the CLI prints, followed", () => {
           const made = call?.(s) ?? { command: COMMAND, argv: BASE };
           const printed = await s.cli(made.argv);
           expect({ name, who, holds: printed.code === 1 }).toEqual({ name, who, holds });
-          const caveat = /a task subagent/.test(printed.out);
+          const caveat =
+            /That is the main agent's to send/.test(printed.out) ||
+            /None of that works from a task subagent/.test(printed.out);
           repair?.(s);
           // From here the review allows, so only what the resend's marker binds decides.
           s.allow();
@@ -371,71 +406,112 @@ describe("every remedy the CLI prints, followed", () => {
     }, 60_000);
   }
 
-  // Compounds. Every control so far has been single-fault, and the caveat turned out to be a
-  // property of the clause **and** the state: a repair-then-resend is true in a healthy session
-  // and false in a persistently uncertain one, because the repair clears the fault it names and
-  // leaves the verdict fault standing. Each repair-advising state crossed with each persistent
-  // one.
-  for (const repairing of ["a marker of this call that cannot be read", "an unreadable upload"])
-    for (const persistent of ["no verdict capability", "a foreign verdict store", "a lost verdict"])
-      test(`${repairing} with ${persistent}: the repair clears one fault and not the other`, async () => {
-        const s = session();
-        try {
-          expect((await s.gate("main"))?.block).toBe(true);
-          clearVerdict(s.dir(), identity());
-          const made =
-            repairing === "an unreadable upload"
-              ? {
-                  command: "dispatch artifact --issue DSP-1 --name plan --path missing.md",
-                  argv: ["artifact", "--issue", "DSP-1", "--name", "plan", "--path", "missing.md"],
-                }
-              : { command: COMMAND, argv: BASE };
-          if (repairing !== "an unreadable upload")
-            writeFileSync(
-              mintMarker(
-                s.store,
-                { argv: BASE, args: ARGS, files: [], toolCallId: "x", outcome: "verdict" },
-                Date.now()
-              ),
-              "{not-json"
-            );
-          if (persistent === "no verdict capability") {
-            const file = join(
-              s.dir(),
-              "askgate",
-              `${process.pid}-${processStart(process.pid)}-${pidNamespace()}.json`
-            );
-            const record = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-            delete record.caps;
-            writeFileSync(file, JSON.stringify(record));
-          } else if (persistent === "a foreign verdict store") {
-            const older = join(s.dir(), "askgate-verdicts-v9");
-            mkdirSync(older, { recursive: true });
-            writeFileSync(join(older, "deadbeef"), "{}");
-          } else markVerdictsLost(s.dir(), Date.now());
-          const printed = await s.cli(made.argv);
-          expect({ repairing, persistent, code: printed.code }).toEqual({
-            repairing,
-            persistent,
-            code: 1,
+  /**
+   * The inputs `persistent` reads, each arm of each. The derivation is
+   * `!capable || uncertainSession(dir)` on one arm and `said.kind === "lost"` on others, so the
+   * suite is the product of the faults that reach those arms with the session conditions those
+   * inputs range over — generated, not listed.
+   *
+   * Four rounds running, a hand-listed suite omitted the one cell where the defect lived: a row
+   * that never reached its state, one that minted a different argv, one that built a marker no
+   * clock produces, and one that omitted the very arm its round's derivation was written for. A
+   * product cannot omit the cell nobody thought of, which is the only property that has
+   * mattered here. Fifty rows is the right size for that.
+   */
+  const conditions: Array<[string, (s: Fixture) => void]> = [
+    ["a healthy session", () => {}],
+    [
+      "no verdict capability",
+      (s) => {
+        const file = join(
+          s.dir(),
+          "askgate",
+          `${process.pid}-${processStart(process.pid)}-${pidNamespace()}.json`
+        );
+        const record = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+        delete record.caps;
+        writeFileSync(file, JSON.stringify(record));
+      },
+    ],
+    [
+      "a foreign verdict store",
+      (s) => {
+        const older = join(s.dir(), "askgate-verdicts-v9");
+        mkdirSync(older, { recursive: true });
+        writeFileSync(join(older, "deadbeef"), "{}");
+      },
+    ],
+    ["a lost verdict", (s) => markVerdictsLost(s.dir(), Date.now())],
+    [
+      "its own verdict store unreadable",
+      (s) => {
+        mkdirSync(join(s.dir(), "askgate-verdicts-v2"), { recursive: true });
+        chmodSync(join(s.dir(), "askgate-verdicts-v2"), 0o000);
+      },
+    ],
+  ];
+
+  for (const { name, arrange, repair, call } of states)
+    for (const [condition, apply] of conditions)
+      test(`${name} with ${condition}`, async () => {
+        const held = async (who: "main" | "sub") => {
+          const s = session();
+          try {
+            expect((await s.gate("main"))?.block).toBe(true);
+            if (name !== "a recorded refusal of this write") clearVerdict(s.dir(), identity());
+            arrange(s);
+            apply(s);
+            const made = call?.(s) ?? { command: COMMAND, argv: BASE };
+            const printed = await s.cli(made.argv);
+            // The two caveat sentences themselves, not any mention of a subagent: the
+            // record-recovery lead says a subagent never rewrites the record, which is its own
+            // true statement and not a caveat on a resend.
+            const caveat =
+              /That is the main agent's to send/.test(printed.out) ||
+              /None of that works from a task subagent/.test(printed.out);
+            repair?.(s);
+            s.allow();
+            const again = await resend(s, who, made);
+            return { printed: printed.code, caveat, posted: again.posts === 1, out: printed.out };
+          } finally {
+            for (const locked of [
+              "askgate-verdicts-v2",
+              join("..", "..", "..", "store", "markers"),
+            ])
+              if (existsSync(join(s.dir(), locked))) chmodSync(join(s.dir(), locked), 0o700);
+            if (existsSync(join(s.store, "markers"))) chmodSync(join(s.store, "markers"), 0o700);
+            s.stop();
+          }
+        };
+        const sub = await held("sub");
+        // Advice that asks nothing of the agent — tell whoever owns the session — has no
+        // resend to caveat, and the rule is about resends. Read from the message itself, so a
+        // state that gains a resend later is covered without anyone listing it.
+        if (!/\bsend (it|the |this |a write)/i.test(sub.out)) {
+          expect({ name, condition, caveat: sub.caveat }).toEqual({
+            name,
+            condition,
+            caveat: false,
           });
-          // The advice must not promise that repairing one fault is enough.
-          expect(printed.out).toContain("None of that works from a task subagent");
-          // And following it as a subagent is still refused, which is what that says.
-          if (repairing === "an unreadable upload") writeFileSync(join(s.work, "missing.md"), "x");
-          else
-            for (const name of readdirSync(join(s.store, "markers")))
-              rmSync(join(s.store, "markers", name), { force: true });
-          s.allow();
-          const again = await resend(s, "sub", made);
-          expect({ repairing, persistent, posts: again.posts }).toEqual({
-            repairing,
-            persistent,
-            posts: 0,
-          });
-        } finally {
-          s.stop();
+          return;
         }
+        // The rule, as one fact for the renderer and this suite: a refusal carries the caveat
+        // exactly where following its advice as a subagent is refused. The cell it does not
+        // cover is named in the body: an unreadable upload whose repaired write is itself
+        // refused needs two steps, and the CLI cannot compute an identity while the bytes are
+        // unreadable, so step two is where the caveat lands.
+        if (sub.printed === 1)
+          expect({ name, condition, caveat: sub.caveat }).toEqual({
+            name,
+            condition,
+            caveat: !sub.posted,
+          });
+        else
+          expect({ name, condition, caveat: sub.caveat }).toEqual({
+            name,
+            condition,
+            caveat: false,
+          });
       }, 60_000);
 
   // The one state no resend clears, for either kind, and the reason it is worse than a refusal:

@@ -481,12 +481,14 @@ review refused that very write (dispatch://INFRA-2079, row 3.5):
   refused (`dispatch <command> was not called: AskGate is on for this session, …`, which names
   the form to send, or, for a changed file, says to send the call again in a later message), and
   in `warn` mode it posts with a `dispatch: warning:` line. Everything else is a write no review
-  stands behind: a call with no marker at all, which the gate never read (a subagent, a script,
-  an eval cell, `xargs`, any form outside the literal grammar), a record that cannot be read or
-  that names a store that is gone, and a marker check that threw. Each of those posts, in every
-  mode, with `dispatch: warning: dispatch <command> posted without review: …` naming the call and
-  why no review ran, on both the command's output and its standard error, since a trailing
-  `| tail` that the literal form itself blesses would otherwise take the only account of it. The
+  stands behind. One of those posts: a call with no marker at all, which the gate never read (a
+  subagent, a script, an eval cell, `xargs`, any form outside the literal grammar), in every
+  mode, with `dispatch: warning: dispatch <command> posted without review: …` naming the call
+  and why no review ran, on both the command's output and its standard error, since a trailing
+  `| tail` that the literal form itself blesses would otherwise take the only account of it.
+  The others do not: a record that cannot be read, a live record naming a store that is gone,
+  and a marker check that threw are each held in **both** modes, since what the gate would have
+  said cannot be told and the session's own mode is unreadable with its record. The
   CLI records the write in the session's ledger before it sends, and a ledger that cannot take
   that line no longer holds the write back: the warning says the record failed instead, and
   pi-envoy then has no `advisor-gate` entry for it, the warnings being the whole account. Where
