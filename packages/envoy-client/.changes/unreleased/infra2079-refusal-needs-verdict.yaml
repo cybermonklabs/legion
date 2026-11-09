@@ -57,14 +57,15 @@ body: |-
   identical bytes under `.md` were held, in a session that had merely lost a verdict. Every
   artifact upload of such a session is now refused in block mode.
   Advice is a lead and up to two clauses — one that works wherever the call ran, one that works
-  only by getting a marker bound to this write — and a refusal carries, on the clause and in the
-  state that make it true and nowhere else, the one thing that makes the advice true: a task subagent cannot use the resend path, since the gate mints it an
-  argv-only marker and an argv-only marker answers no uncertainty. Advice is a lead and an
-  optional resend clause, and the renderer appends that caveat to any advice carrying one, so a
-  refusal added later cannot describe a resend a subagent cannot make. A changed file is one of
-  those: `consumeMarker` reads every marker of that argv in the store, and a task subagent
-  shares its parent's, so a bound marker the parent left behind reports the change against the
-  subagent's call and only a bound marker of its own would get it past. A message announcing that
+  only by getting a marker bound to this write — and a refusal carries, on the clause and in
+  the state that make it true and nowhere else, the one thing that makes the advice true: a
+  task subagent cannot use the resend path, since the gate mints it an argv-only marker and an
+  argv-only marker answers no uncertainty. The field saying whether the session's own
+  uncertainty outlives the advice's repair is required, so a refusal added later cannot omit it
+  and default to the permissive reading. A changed file needs the caveat: `consumeMarker` reads
+  every marker of that argv in the store, and a task subagent shares its parent's, so a bound
+  marker the parent left behind reports the change against the subagent's call and only a bound
+  marker of its own would get it past. A message announcing that
   the write posted never carries it, since nothing was refused and the resend it would forbid is
   the one that works; nor does a clause that works whatever ran the call, such as sending a
   corrected write. Repairing a fault the advice names and resending works in a healthy session
