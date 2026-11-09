@@ -736,16 +736,17 @@ const retiredStrandedContract = 56
 // without the key: one built before sjawhar/legion#2788 reads it with a strict schema and would
 // refuse the whole body for a key it does not name, and one built after strips the key instead.
 //
-// It is 59 because that is the number DaemonAPIVersion took at the bump this record forced: main
-// landed the record itself at 57 and its own waiting line at 58, and this branch's shape changes
-// ride the number above every number main declares, so the record reaches a deployment as 59. It
+// It is 60 because that is the number DaemonAPIVersion took at the bump this record forced: main
+// landed the record itself at 57, its own waiting line at 58 and the end of fix-attempt counting
+// at 59, and this branch's shape changes ride the number above every number main declares, so
+// the record reaches a deployment as 60. It
 // is this daemon's own contract, so every pod at it is served the record and only a pod still
 // running an older plugin is not.
 const stallRecordContract = 60
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line
-// to the state (version.go's 59: main declared it 58 and this branch, landing second, carries
-// both releases' shapes at 59). A plugin before it is served the state without the field:
+// to the state (version.go's 60: main declared it 58 and this branch, landing second above
+// main's own 59, carries both releases' shapes at 60). A plugin before it is served the state without the field:
 // one built before sjawhar/legion#2788 reads it with a strict schema and would refuse the
 // whole body for a key it does not name, and one built after strips the key instead, so the
 // strip is what keeps the field from a caller that did not ask for it rather than what keeps

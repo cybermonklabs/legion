@@ -83,8 +83,11 @@ as the fingerprint decides (*The reviewer*, below, and
   `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
   and a `comments[]` array of `{path, line, side, body}`, one entry per
   finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
-  That `head` is the full 40-character SHA and is read from GitHub as you submit
-  (`gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid`), never remembered:
+  That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
+  the `commit_id` you submit with, and never the head GitHub shows at the moment you submit:
+  read `gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid` before you
+  submit, and where it names another head a push landed under you, so review that head and
+  submit at it rather than renaming the footer to a head you have not read.
   the daemon takes it as the review's own word for the code it read, and cannot take GitHub's
   `commit_id` for the review instead, which GitHub rewrites onto the pull request's current head,
   so its record of a review can name a head the review never saw.

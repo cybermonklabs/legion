@@ -625,10 +625,11 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 // the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
 // so a reviewer whose prompt teaches the footer without the head submits a review every round
 // sets aside. The composed reviewer prompt therefore carries the footer's own shape with the
-// head in it, the read that gives that head (`--json headRefOid`, run as the review is
-// submitted, since a head remembered from the start of the round may have moved), the reason
-// GitHub's own `commit_id` cannot stand in for it, and what a wrong head costs. This shows the
-// text is loaded, never that a reviewer follows it.
+// head in it, which head that is — the one whose diff and checks the review read, never the head
+// GitHub happens to show at the moment of submission, since a review of an unread head is the
+// fault the rule exists to stop — the read that tells the reviewer a push landed under it
+// (`--json headRefOid`), the reason GitHub's own `commit_id` cannot stand in for the footer, and
+// what a wrong head costs. This shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -639,6 +640,8 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 		`"phase":"review","head":"<the head you reviewed>"`,
 		`\"phase\":\"review\",\"head\":\"<head-sha>\"`,
 		"gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid",
+		"the head whose diff and checks you read",
+		"rather than renaming the footer to a head you have not read",
 		"GitHub rewrites `commit_id` to the pull request's current head",
 		"A review whose footer names another head, or no head, decides no round",
 	} {

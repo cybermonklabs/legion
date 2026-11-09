@@ -100,7 +100,7 @@ func TestTheReadFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 			// Each case names the clock the record holds before the read, the zero time
-			// included: the fixture records one (seedCapture, captureHeadArrived), and the zero
+			// included: the fixture records one (seedCapture, captureHeadUpdated), and the zero
 			// time is a record whose lifecycle events left none, which this test's second case
 			// is about.
 			if _, err := pool.Exec(context.Background(), "update pull_requests set head_updated_at = $1 where issue = 'CAPTURE-1'",
