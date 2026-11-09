@@ -331,6 +331,14 @@ function ownerLive(owner: AskgateOwner, now: number): boolean {
     try {
       return now - storeTouched(owner.store) <= MARKER_MAX_AGE_MS;
     } catch (error) {
+      // Deliberately unguarded, and this says so rather than leaving the next reader to
+      // wonder. No row detects a change here: every arrangement tried refuses for the other
+      // reason, because `askgateState`'s own store check answers `broken` on the same fault
+      // and short-circuits it. A detecting state needs a store `askgateState` can stat but
+      // `storeTouched` cannot read, which nothing found. A row that passes because something
+      // else refused is worse than none — this branch has shipped two of those and caught
+      // both late.
+      //
       // Only ENOENT is the store being gone — its process removed it at exit, or it ended long
       // ago. Anything else (EACCES, ENOTDIR, EIO, ELOOP) is a store that cannot be read, which
       // says nothing about whether its owner lives, and swallowing it dropped the only live
