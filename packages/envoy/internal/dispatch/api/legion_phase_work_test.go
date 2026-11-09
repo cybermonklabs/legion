@@ -10,8 +10,8 @@ import (
 )
 
 // The phase-work set of the Legion board: when it is read again, and when it answers from what
-// it holds (legion_phase_work.go). seedLegionRoleEvent is shared with legion_board_test.go; the
-// other fixtures here are these tests' own.
+// it holds (legion_phase_work.go). These tests build on legion_board_test.go's board fixtures;
+// the four helpers at the end of this file are theirs alone.
 
 // TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename: the issues that carry Legion phase
 // work are one read (legion.PhaseWorkKeys), which takes each session's newest title the one way
