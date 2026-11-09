@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
@@ -8,9 +8,11 @@ import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, pillClassName } from "../../components/Pill";
+import { useMarkedKeys } from "../../hooks/useMarkedKeys";
 import {
   borderDefault,
   cardHoverBorder,
+  checkboxAccent,
   dangerText,
   focusVisibleRing,
   linkHoverText,
@@ -26,6 +28,7 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { setSelectedIssues } from "../search/bar-scope";
 import { useKeymap } from "../shell/keymap";
 import { closestMatching, reachableRows, roveFocus } from "../shell/roving";
 import { issueStatuses, statusLabel } from "./board-model";
@@ -35,22 +38,41 @@ import { issueIsUnread, UnreadDot } from "./UnreadDot";
 /** What each row is marked with, for the keys that rove them. */
 const ROW_SELECTOR = "[data-issue-row]";
 
-/** A row is a keyboard target for the `j`/`k`/`o`/`Enter` this file registers: `tabIndex={-1}`
+/** A row is a keyboard target for the `j`/`k`/`o`/`Enter`/`x` this file registers: `tabIndex={-1}`
  *  so those keys reach it and Tab does not, and `data-issue-row` names it for them, as the board's
  *  cards do. The focus ring is the row's own, since the row is what focus lands on. */
-function IssueRow({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
+function IssueRow({
+  issue,
+  marked,
+  onMark,
+  unread,
+}: {
+  issue: IssueSummary;
+  /** Whether the reader has selected this issue, which is what the bar says it will act on. */
+  marked: boolean;
+  /** Selects or deselects it; `x` and this checkbox are the two ways in, as the Inbox's are. */
+  onMark: (key: string) => void;
+  unread: boolean;
+}): ReactNode {
   return (
     <li
       aria-label={`${issue.key} ${issue.title}`}
-      className={`border-t py-3 outline-none first:border-t-0 focus-visible:ring-2 ${borderDefault} ${focusVisibleRing}`}
+      className={`flex min-w-0 items-start gap-2 border-t py-3 outline-none first:border-t-0 focus-visible:ring-2 ${borderDefault} ${focusVisibleRing}`}
       data-issue-row={issue.key}
       tabIndex={-1}
     >
+      <input
+        aria-label={`Select ${issue.key}`}
+        checked={marked}
+        className={`mt-1 size-4 shrink-0 ${checkboxAccent}`}
+        onChange={() => onMark(issue.key)}
+        type="checkbox"
+      />
       {/* One grid, two arrangements. From `sm` the reference and the timestamp share the first
           line and the metadata runs below. On a phone the reference takes the whole first line
           and the timestamp moves down beside the metadata: beside the title it would leave the
           title a column about 130 px wide. */}
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
         <Link
           className={`col-span-2 row-start-1 min-w-0 text-sm sm:col-span-1 ${linkText} ${linkHoverText}`}
           data-issue-link
@@ -117,6 +139,17 @@ export function IssueList({ project }: { project: string }): ReactNode {
       ),
     [issues.data, matches, state.data, statuses]
   );
+  // The issues the reader has selected, by key: `x` and a row's own checkbox are the two ways
+  // in, as the Inbox's marks are. A key the list no longer holds - another filter, another
+  // project - drops out, so a row that is listed again comes back unselected.
+  const listedKeys = visibleIssues.map((issue) => issue.key).join(" ");
+  const { marked, onMark } = useMarkedKeys(listedKeys);
+  // What the bar says it will act on when it opens over this list. It belongs to the list while
+  // the list is on the page and to nobody after that, so leaving the page clears it.
+  useEffect(() => {
+    setSelectedIssues([...marked]);
+    return () => setSelectedIssues([]);
+  }, [marked]);
 
   // The keys that rove these rows register with the page's `project` scope, and they live
   // here because this component mounts only while the List is the view showing: on the Board,
@@ -165,6 +198,18 @@ export function IssueList({ project }: { project: string }): ReactNode {
       run: openFocusedRow,
       when: () => document.activeElement?.matches(ROW_SELECTOR) === true,
     },
+    {
+      // Selecting walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
+      id: "list-select",
+      keys: "x",
+      label: "Select or deselect the focused issue",
+      palette: false,
+      run: () => {
+        const key = focusedRow()?.dataset.issueRow;
+        if (key !== undefined) onMark(key);
+      },
+      when: () => focusedRow() !== null,
+    },
   ]);
 
   if (issues.isPending || state.isPending) {
@@ -207,6 +252,8 @@ export function IssueList({ project }: { project: string }): ReactNode {
                 <IssueRow
                   issue={issue}
                   key={issue.key}
+                  marked={marked.has(issue.key)}
+                  onMark={onMark}
                   unread={issueIsUnread(issue, state.data?.[issue.key]?.last_read_seq ?? 0)}
                 />
               ))}

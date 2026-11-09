@@ -1,4 +1,4 @@
-import { BLOCK_ID_ATTRIBUTE } from "../doc/scroll-block";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 
 /**
  * Putting the caret in a node's own text, where that text lives (dispatch://INFRA-1196 R9,

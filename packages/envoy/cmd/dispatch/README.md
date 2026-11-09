@@ -826,7 +826,7 @@ What the two processes share, and what each keeps to itself:
 
 - The delivery live hub, the event-stream relay and the events outbox run in every process, each on a `LISTEN` connection of its own (`api/delivery_live_hub.go`, `api/event_stream_relay.go`, `outbox/lease.go`), and the document rooms' room sync shares the process's listener hub with the woken background loops (`docs/room_sync.go`, Background loops, above).
   Each process serves its own browser sockets - the Delivery and Pipeline pages' `GET /ws/delivery`, every SSE stream, every live document - so each needs the notifications and the recomputed views for them, and sharing them would need a cache across the processes.
-  The cost is up to five Postgres connections per process outside the shared pool (`store.permanentListeners`): those three, the shared listener hub and the room sync's NOTIFY sender.
+  The cost is up to five Postgres connections per process outside the shared pool (`store.listenerConnections`): those three, the shared listener hub and the room sync's NOTIFY sender, the hub's and the relay's held only while something subscribes to them.
 
 - A Delivery page configuration warning is logged once across the processes.
   Every read judges each deploy run, and a successful run holding none of `production_job_names`, or whose production job lists no step named `production_apply_step_name`, is named in the log;
@@ -1014,7 +1014,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Outbox (`outboxPoolSize`) | 2 | The events outbox's scan and, beside it, the renewal of its publisher hold (`duty.Hold`). |
 | Horizon (`horizonPoolSize`) | 2 | The event log's safe horizon (`events.Horizon`): its observations, its marks and the reads beside them, its stall diagnosis and its persist write. |
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
-| Listeners (`permanentListeners`) | 5 | Held for the life of the process: the delivery hub, the event stream relay, the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each on a connection of its own. |
+| Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
 Two processes at their ceiling hold 208, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
@@ -1226,17 +1226,22 @@ Versions are applied by their number, not by file name, and the store's tests re
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
+Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
+That holds at each of the three places a boot waits for the key (`createVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
 If recording the version fails after a successful build, the next boot safely repeats the idempotent statement.
-An existing INVALID index is not success: the runner refuses with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command to run outside a transaction after investigating the failed build, then retry.
-It does not drop that index automatically.
+An INVALID index of the migration's own index name, on the table the migration builds on, is the runner's own leftover, from a build its lock bound cancelled or a boot that was killed mid-build: the runner drops it with `drop index concurrently if exists`, logged at WARN, and builds the index again, so one failed build no longer stops every later boot.
+An index of that name on another table, valid or INVALID, is refused with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command, because `IF NOT EXISTS` skips on any relation of that name in the schema and the index would never be built on the target table.
+A relation of that name that is no index at all is refused by name, with its relkind, to be renamed or removed: `DROP INDEX` on a table fails, so the runner does not offer it.
+An index of another name, INVALID or not, is neither dropped nor refused.
 The broker's all-in-one-transaction runner refuses a marked file before applying any migration.
 
 Every migration's lock waits are bounded at five seconds (`pgmigrate.LockTimeout`), set after the runner's advisory lock: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
 A migration queued behind a long transaction gives up instead of holding every read and write of its table behind its request.
 The runner then rolls the transaction back or closes the owned connection, holds nothing for two seconds (`pgmigrate.LockTimeoutRetryPause`) so queued requests run, and tries again, up to three attempts (`pgmigrate.LockTimeoutAttempts`, `pgmigrate.RetryLockTimeouts`).
-A failed concurrent build may leave an INVALID index, which the next attempt refuses rather than skipping it as already built.
+A build that failed, or one still running, may leave an INVALID index of the migration's own name, which the next attempt drops and builds again; each of the drop's lock waits is bounded at the same five seconds and watched the same way, so a drop queued behind a lock is a timed-out attempt like any other.
+An attempt is several lock waits, the drop's and the build's, so three attempts bound no total: five seconds bounds each wait, not the migration.
 Each timed-out attempt is logged at WARN.
-A migration that times out on every attempt fails the boot; it has then held its table's reads and writes for at most three waits of five seconds.
+A migration that times out on every attempt fails the boot; each of its lock waits lasted at most five seconds, so it has held its table's reads and writes for no single wait longer than that.
 The failure names the migration, the lock it wanted, the sessions it was queued behind with each one's diagnosis (as the census's refusals carry it, "Pre-deploy census" below), and a `pg_stat_activity` query for the sessions holding the lock;
 end the holder or let it finish and start the server again.
 That query can come back empty: a prepared transaction's locks carry no pid, so the join to `pg_stat_activity` drops them (LEGION-432).
@@ -1702,6 +1707,12 @@ The release before it takes no publisher hold and still claims and publishes bat
 an issue's events can arrive out of order, as they could between two processes of the earlier release, and one event can be sent by both, its second copy dropped by JetStream's MsgId or by its receiver's dedupe.
 A deployment that wants neither, nor the earlier release's whole-table claim scans, replaces the running server rather than rolling it for this one release (`strategy: Recreate`).
 
+Migration `20261101180039_comment_fallback_copies` creates `comment_fallback_copies`, the copies of a new comment the outbox held back for a mention it waits on no longer - one the delivery sweep resends, one a sender still holds queued behind a lane held past a claim lease, and one a Retry overtook while its sender holds it - one row per comment and destination topic, which the outbox's fallback pass publishes once that send fails and settles with nothing published once it lands (`publishFallbackCopies` in `internal/dispatch/outbox/mentions.go`), and its partial index of the unsettled rows.
+It names no other table, so a plain `create table` and `create index` in the runner's transaction lock only the new table, and the release before it neither reads nor writes it, so that release runs over the new schema unchanged and the census answers `0`.
+That release does not publish a `comment_fallback_copies` row either:
+it has no fallback pass, and its outbox skips an event already published, so a copy a row holds is never sent once it serves alone.
+Before rolling back past `20261101180039`, run `select count(*) from comment_fallback_copies where settled_at is null` and roll back only when it answers `0`, or let this build drain the rows first.
+
 Migration `20261101144855_block_pointer_links` gives `block_refs` a nullable `to_types text[]`, the types a typed block's `block[]` pointer may point at (null:
 any), creates the function `block_ref_listed(to_types, to_id)`, true when `to_types` is null or no current `document_blocks` row of the target has a type outside it, and re-states `graph_edges` with `0142`'s arms, its `block_refs` arm listing a row only while `block_ref_listed` holds (`packages/envoy/AGENTS.md`, the typed block rules).
 The column is added with no default, so no row is rewritten, and the previous release, which neither reads nor writes it, keeps writing rows that hold null and so are listed as before.
@@ -1986,6 +1997,18 @@ No index served that lookup: `pull_request_heads_issue_head` is keyed `(issue_ke
 `create index` takes `SHARE` on `pull_request_heads` while it builds, holding that table's writes for one read of a table that holds a row per pull request Dispatch has seen an event for;
 the release before it neither reads nor writes the index, an index deciding a plan and never an answer, so it rolls beside this one.
 Its census answers `0`.
+
+Migrations `20261105145242_issues_search_spec` and `20261105145243_artifact_versions_issues_search_trigger` put an issue's primary document into the issue's own keyword vector ([Search](#search)), as `0140` put it into the issue's embedding.
+`20261105145242` creates `issue_search_vector(key, title, spec)`, the one definition of that vector — the key and the title at weight `A`, exactly what `0088` wrote, joined with the spec's lexemes at weight `C` — has the issues trigger build `search` with it, and re-indexes the issues whose primary document holds text.
+It keeps `0087`'s bound over the joined vector, halving the spec's part until it fits, so no write fails because an issue's spec is large.
+The re-index writes `search` directly rather than `0062`'s no-op write of the title, which would queue every issue for re-embedding through `0073`'s trigger;
+a direct write of `search` is still seen by `20261101182522`'s `issues_search_term_queue`, which must count those vectors again.
+It takes `issues` in `ROW EXCLUSIVE`, and `search_term_queue` through that trigger, and reads each issue's latest primary version under `ACCESS SHARE` through `0140`'s `issue_embedding_spec`, so it names neither `artifacts` nor `artifact_versions` and no deploy is refused over the size of the 5.2 GiB table.
+Its census answers `0`: `search` is a derived column no application code writes, every row it rewrites keeps at weight `A` every lexeme its key and title gave, and an issue whose document holds no text is not written at all.
+`20261105145243` adds the function and the `after insert` trigger on `artifact_versions` that re-indexes an issue when its primary document gains a version, with `0140`'s join to the primary artifact and `20261101182454`'s `when (new.markdown is not null)` guard.
+A function and a trigger are its only two statements, which is what exempts it from the census's table-size limit, and the re-index is the other migration's for that reason: an update is not such a statement, and one in this file would cost the exemption and refuse every deploy carrying it.
+It is applied second so that a version an older build writes between the two commits meets no function the database does not have yet; such a version does not re-index its issue, which the next write of that document does.
+Its census answers `0`: the trigger runs only on versions written after it.
 
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
@@ -2280,12 +2303,30 @@ Migration 0010 added stored generated `search` columns.
 Migrations `0057`–`0061` made them plain columns that a `BEFORE INSERT OR UPDATE` trigger per table fills (`issues_search`, `artifact_versions_search`, `comments_search`, `asks_search`, `messages_search`), so no application code writes or refreshes a search vector.
 Every indexed text, headline, and duplicate-title comparison first passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
 A query is not normalised and is limited to 1,000 characters.
+`websearch_to_tsquery` ANDs a person's words, so a question of theirs answers nothing as soon as one of its words is in no item at all.
+That AND is what every search runs, whatever the question's length, and a question it answers is answered from it and nothing else.
+Only a question it answers nothing at all for is searched a second time, for the `searchBroadenWords` (5) rarest words of the question ORed, each stemmed by the same `websearch_to_tsquery`, the words the question excludes ANDed onto them so that a `-word` still leaves its rows out (`searchRarestWords`).
+Rarest is the document frequency the project's own term statistics hold (`search_term_stats`, the counts the related-item check weighs its terms by: `relatedCoordinationRank`), and a word those statistics do not know is kept only once the words they do know are spent.
+The bound is what keeps that second search a search:
+ORing all thirty of one ask's own words matched about 43,000 items of a corpus of 79,555, where the AND of them matched the one ask the question was written from, and with each leg read `contracts.SearchKindDepth` deep that ask left the page altogether.
+`ts_rank_cd` ranks what either search matched, which puts a row holding all of the words first.
+The operator forms a person writes — a `"phrase"`, an `OR`, a `-word` — are `websearch_to_tsquery`'s own reading throughout, and the answer names the ones it read (`query.operators`, `contracts.SearchOperator*`) and whether that second search is what answered (`query.broadened`).
+
+Three filters narrow every leg of a search beside `project`, each in the arm itself rather than over the page, so a filtered search reads its own matches as deep as any other search reads (`searchRowFilters`):
+`status` is the status of the issue a row belongs to, and a row whose kind has no issue — a project document, and a comment or ask on one — matches no status at all;
+`author` is the actor that wrote the item the row names, matched on its id (a person's login or a session's id), an issue's and a document's being their creator;
+and `updated_since` (RFC 3339) is when the item itself was last written, not when anything on its issue moved, since an issue's `updated_at` moves whenever anything on it does.
+The answer carries the filters it applied (`filters`), as it carries how it read the words.
+
 Search covers issue titles, the latest settled document text, comments, asks (questions, option labels and descriptions, free-text answers and the options an answer chose), and messages.
+An issue's own vector carries its key and its title at weight `A`, as `0088` left them, and the markdown of the latest version of its primary document at weight `C` (`20261105145242`), so an issue whose title holds none of its spec's words is still found by them, and below every issue whose key or title holds them:
+`ts_rank_cd`, which ranks every keyword arm, scores `A` at 1.0 and `C` at 0.2.
+The spec is read as the document arm reads that same document, through `search_text` with the ask blocks stripped, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
 An ask hit's excerpt is cut from that same indexed text (the question, then `ask_search_suffix`), never from the options' raw JSON, and the hit carries `ask`, where the ask stands when the search ran:
 `open`, `answered` with its latest answer, or `resolved` with its resolution and, when anyone answered it, the last answer it had, which for an ask that document settlement retracted while it was answered is read from its `ask.answered` events, since its row keeps none.
 Live document text takes up to the 2 s settle delay to appear in search results.
 
-Every trigger builds its vector with `search_vector` (0087; the issues trigger's from 0088).
+Every trigger builds its vector with `search_vector` (0087; the issues trigger's through `issue_search_vector`, `20261105145242`, which bounds the key, the title and the spec joined and cuts the spec's half alone).
 Postgres holds at most 1,048,575 bytes of lexemes and positions in one vector.
 Prose stays far below that, since its words repeat, but text of words no two alike passes it well inside a document's 1 MiB:
 about 700 KB of `w000001 w000002 …`, or 475 KB of UUIDs.
@@ -2320,6 +2361,8 @@ a live write enqueues its own text through its trigger or its indexer, and what 
 Each step is a statement of at most 500 rows in its own short transaction, repeated until it changes nothing, and is safe beside a live write and beside another process's pass, so the pass takes no lease.
 `GET /api/v1/search/coverage` reports what that leaves:
 the identity, its place and model (all three null with no embedder), and in total and per kind the searchable items, how many carry a current vector of that identity, how many lack one, how many failed for good, and how long the oldest lacking item has waited.
+The same report names, under `not_indexed`, every kind of node neither leg of search holds a row of — a component, a session, a document version, a result and a handoff — each with how many of it the database holds, read from the table that holds it.
+A kind nothing indexes is named rather than left out, so a reader cannot read it as a kind that is covered with nothing left to embed; it carries no current, lacking or failed count, and it is in no total.
 The `backfill-embeddings` subcommand, which did the pass's first job by hand, is gone, with its checkpoint table (0119).
 
 Every process of one deployment runs the same embedder configuration, since each one's pass drops the vectors any other identity made.
@@ -2328,12 +2371,21 @@ search finds by meaning only what the new identity has embedded, and the coverag
 a new place that cannot embed leaves the old vectors in the database, unused by search, until it can.
 A model change on Azure takes a new deployment name, since the identity names the deployment, not the model behind it.
 
-Each kind of content is ranked on a list of its own, by `ts_rank_cd`, then recency, then id, and the five lists are merged by reciprocal rank fusion:
-a hit at position p of its list scores 1/(60 + p), which is its `rank`.
-The page therefore takes each kind's best in turn, the best issue, document, ask, comment and message first, rather than a run of long documents that repeat the query's words.
-Hits that score alike are ordered issue, document, ask, comment, message, then by recency and id, so the order is total and consecutive `offset`s walk it once while the corpus holds still.
-An issue whose key is the whole query heads the issue list.
-Each list keeps its best `contracts.SearchKindDepth` (100) hits:
+Every match is ranked on one list across the kinds, by one score, rather than on a list of its own merged with the others by the position it holds there.
+Each leg contributes its own score — the keyword leg's `ts_rank_cd` with length normalisation (flag 32), the meaning leg's cosine similarity — weighted onto the one scale the two can be added on (`searchKeywordWeight` 1, `searchMeaningWeight` 0.4), and the sum is divided by 61, the score reciprocal rank fusion gave the first row of a list, which is the scale `rank` has been published on since LEGION-386.
+A row both legs find scores the sum of both, which is above what either leg alone gives it.
+No kind is ranked ahead of another, in the legs or in the page: a kind leads only by scoring highest.
+Hits that score alike are ordered by recency and id, so the order is total and consecutive `offset`s walk it once while the corpus holds still.
+An issue the query names by key leads the page by `searchOwnKeyLead`, which is above every score the legs can reach together.
+A query that is one issue key is read in each form a person writes it (`searchKeyForms`): `INFRA-1042`, `infra-1042`, `INFRA 1042` with a space where the hyphen is, and the number alone.
+Only the first two match an issue's own vector, which holds its key as one hyphenated lexeme (`'infra' <-> '-1042'`), so the statement is given the keys themselves (`q.own_keys`) and its issue arm matches an issue named by key as well as one its tsquery finds.
+The number alone names the issue of that number in the project the request reads it in, or in every project at once, and then every one of them heads the list, in project order, before any other row.
+That project is `project` when the request narrows by one, since an issue the filter leaves out cannot be on the page whatever else a request says, and otherwise `number_project`, the project of the page the search was made from.
+`number_project` narrows nothing: a search carrying it answers every project's rows, as a search carrying nothing does, and the answer's `filters` never echoes it.
+It is the one thing the page a person searches from decides, so the bar can search everything from an issue page and still put that issue first for its own number.
+The forms are read in Go rather than by a pattern inside the statement, because the statement then matches a list of keys against the issues primary key, which an index answers, where a pattern tested over every row of `issues` is a scan of that table on every search.
+A number alone is the one form that costs a read of its own (`searchOwnIssueKeys`), since only `issues` knows which projects hold that number.
+Each leg keeps its best `contracts.SearchKindDepth` (100) hits:
 the answer's `total` counts every match of every kind, and `reachable` the hits the pages can return, so an `offset` at or past `reachable` answers no hits with both counts.
 
 Search snippets are escaped text with only server-inserted `<mark>` elements around matches.
@@ -2741,6 +2793,12 @@ Each item below names a path with its method and identity, then its purpose.
   Answer `204` with no body, reading nothing: it says only that the process answers.
   A liveness or startup probe asks it rather than `/healthz`, so a slow or unreachable Postgres, NATS or file store neither restarts the process nor adds load on every probe period.
 
+- `/api/v1/events/log?after=&limit=` (GET; cookie, trusted header, or bearer)
+
+  Page the whole event log by id, whatever owns each event (an issue, a document, a project or none):
+  the events with id greater than `after` (default 0), oldest first, at most `limit` (1–1000, default 1000), each as the issue and document event lists serve it.
+  An invalid value is `400 INVALID_QUERY`.
+
 - `/metrics` (GET; none)
 
   The process's metrics in the Prometheus text format:
@@ -2815,11 +2873,23 @@ Each item below names a path with its method and identity, then its purpose.
   It arms the process the call reached, not every process.
   Not mounted otherwise.
 
+- `/api/v1/settings/new-issue/_test` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  `{label, session}` replaces what `GET /api/v1/settings/new-issue` answers on the process the call reached, in place of what that process's environment set; an empty value is none, and a bad body is `400`.
+  A browser test reads the bar with a label and a session configured and then with the session cleared, which no deployment setting can change while the server runs.
+  Not mounted otherwise.
+
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
   An events subscription resumes after a decimal event id;
-  its `events_start` says `replay_complete: true` when that id is at or below the log's head, so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume or one above the head (a log that was reset).
+  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
+  An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
+  past them, or once the log is reset, it ends as `behind` and the page subscribes again.
+  An agent view holds at most 8 MiB of queued frames and ends as `behind` past that.
+  A page that stops reading meets the socket's own bounds first (#2449):
+  the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
+  the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
   A socket rotates with 4001 at a random age from 30 to 60 minutes;
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
 
@@ -2929,6 +2999,13 @@ Each item below names a path with its method and identity, then its purpose.
   List every project that names a default assignee, by project key, as `[{project, assignee}]`; a project with no default is left out.
   It needs the `person` scope, since the default names a person.
 
+- `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
+
+  What the dashboard's search bar files a person's typed words as when those words match nothing it found:
+  `{label, session}`, the label that new issue carries and the session it is routed to and its first message goes to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
+  Each is `""` where the deployment set none: the issue then carries no label, and the bar makes it and starts no conversation on it.
+  The bar writes the issue itself, through `POST /api/v1/issues` and the issue's own artifact, patch and message routes, so this read is all the configuration adds to the API.
+
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
   Set a project's default assignee `{assignee}` (the email of a person who has signed in, or `null` to clear it):
@@ -2998,12 +3075,12 @@ Each item below names a path with its method and identity, then its purpose.
   `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
   A refilling list never makes a route `no_holder`.
 
-- `/api/v1/search?q=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/search?q=&project=&number_project=&keywords_only=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   Full-text search over issue titles, latest document text, comments, asks, and messages;
-  each kind ranked on its own and merged by reciprocal rank fusion (above), with `<mark>` snippets and SPA `href`s.
+  every match ranked on one list across the kinds by one score (above), with `<mark>` snippets and SPA `href`s.
   One page `{results, total, reachable, limit, offset, took_ms}`:
-  `limit` 1–50 (default 20), `offset` 0 or more (default 0), `total` every match, `reachable` the hits the pages can return (each kind's best 100).
+  `limit` 1–50 (default 20), `offset` 0 or more (default 0), `total` every match, `reachable` the hits the pages can return (each leg's best 100).
   Every `ask` hit carries `ask`, where the ask stands when the search ran:
   `{state: "open"}`, `{state: "answered", answer}` with its latest answer, or `{state: "resolved", resolution, answer?}` with the last answer it had, absent when nobody answered;
   its excerpt is cut from the ask's indexed text ([Search](#search)).
@@ -3012,16 +3089,32 @@ Each item below names a path with its method and identity, then its purpose.
   An under-two-character query returns `400 INVALID_QUERY`;
   a stop-word-only query returns `200` with no results;
   `400 CAP_EXCEEDED` over 1,000 characters (`contracts.SearchQueryMax`, UTF-16 units after trimming), since the query rides in the URL;
-  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project); `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.
+  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project), and `400 INVALID_NUMBER_PROJECT` for a `number_project` that is not one; `400 INVALID_LIMIT`; `400 INVALID_OFFSET`; `400 INVALID_KEYWORDS_ONLY` for a `keywords_only` that is neither `true` nor `false`.
+  `number_project` is the project of the page the search was made from, which a query that is a bare issue number is read in ([Search](#search));
+  it narrows nothing, so a search from a project or issue page answers every project's rows.
+  `keywords_only=true` runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured, and its answer is not stamped `degraded`, because nothing is unavailable: the caller asked for the words alone.
+  The command bar sends it on every keystroke, so a person typing waits on no model call; a request that leaves it out searches as it always did, by meaning too wherever an embedder is configured.
   Keyword search finds a text whose search vector would pass Postgres's limit on one vector by the words in its opening part only ([Search](#search)).
 
 - `/api/v1/search/coverage` (GET; cookie, trusted header, or bearer)
 
   Meaning search's coverage, counted in one statement ([Search](#search)):
-  `{identity, place, model, total, kinds}`, the configured embedder's identity, its place (`bedrock`, `azure`, or `dev` for a local harness's) and its model, all three null with no embedder;
+  `{identity, place, model, total, kinds, not_indexed}`, the configured embedder's identity, its place (`bedrock`, `azure`, or `dev` for a local harness's) and its model, all three null with no embedder;
   then, in `total` and for each kind in `kinds` (`issue`, `document_block`, `comment_block`, `message_block`, `ask_part`), `items` (the searchable ones, a text with nothing to embed left out), `current` (embedded at the item's current text by that identity), `failed` (dead and not current), `lacking` (the rest) and `oldest_lacking_seconds`, how long the longest-waiting lacking item has waited (null when none lacks).
   A window kind's items are its own rows, since the indexers own which windows exist.
   With no embedder nothing is current.
+  `not_indexed` is every kind of node neither leg of search holds a row of, each `{kind, items}`: `component`, `session`, `document_version`, `result` and `handoff`, with how many of that kind the database holds.
+  Each count is read from the table that holds the kind — `components`, the listener's stored session list (`route_roster`, which is Dispatch's whole record of which sessions exist, and counts 0 before the listener has answered), `artifact_versions`, `check_results` and `handoffs` — in the statement that counts the covered kinds, so every number of the report reads one snapshot.
+  Such a kind is named rather than left out, because a reader of a report carrying the covered kinds alone cannot tell a kind that is covered with nothing left to embed from one nothing indexes.
+  It carries no `current`, `lacking` or `failed`, none of which is defined for a kind that has no vector to be behind on, and it is in no total.
+
+- `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
+
+  The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
+  Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
+  A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
+  A write no tool performs is named by the catalogue's own test instead, since it is work still to do rather than an error.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -3295,7 +3388,7 @@ Each item below names a path with its method and identity, then its purpose.
   Nothing is written on a push: a push that moves a pull request's head makes the result at the old head older by itself.
   An issue with no Verification document answers no checks.
 
-  POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
+- POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   `{key}` is the issue the result is recorded on; `check` names a check of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical block reference (`409 CHECK_AMBIGUOUS`); any other id is `400 UNKNOWN_CHECK`.
   `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0; a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
   Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything, and refuses a result at one it does not with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.

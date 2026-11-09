@@ -777,3 +777,28 @@ func TestDigest(t *testing.T) {
 		}
 	}
 }
+
+// TestJudgeSeconds pins the one reader of the judge's bound: an entry that names a judge answers
+// its seconds, an entry that names none answers no bound rather than zero seconds of one, and so
+// does a name the file does not hold at all.
+func TestJudgeSeconds(t *testing.T) {
+	judge := uint32(300)
+	rules := Rules{Secrets: []SecretRule{
+		{Name: "judged", Hosts: []string{"api.example.com"}, Judge: &judge},
+		{Name: "unjudged", Hosts: []string{"api.example.com"}},
+	}}
+	for _, c := range []struct {
+		name    string
+		seconds uint32
+		ok      bool
+	}{
+		{"judged", 300, true},
+		{"unjudged", 0, false},
+		{"absent", 0, false},
+	} {
+		seconds, ok := rules.JudgeSeconds(c.name)
+		if seconds != c.seconds || ok != c.ok {
+			t.Errorf("JudgeSeconds(%q) = %d, %v; want %d, %v", c.name, seconds, ok, c.seconds, c.ok)
+		}
+	}
+}

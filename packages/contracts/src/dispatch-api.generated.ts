@@ -1083,6 +1083,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/events/log": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). */
+    get: operations["getApiV1EventsLog"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/github/app-installation/{owner}/{repo}": {
     parameters: {
       query?: never;
@@ -1109,6 +1126,23 @@ export interface paths {
     };
     /** @description Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included. */
     get: operations["getApiV1GoingCapability"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/catalogue": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2466,7 +2500,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: each kind ranked on its own and merged by reciprocal rank fusion, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each kind's best 100); a q over 1000 characters is 400 CAP_EXCEEDED, and a project that is not a project key is 400 INVALID_PROJECT. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -2483,7 +2517,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Meaning search's coverage {identity, place, model, total, kinds}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). */
+    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. */
     get: operations["getApiV1SearchCoverage"];
     put?: never;
     post?: never;
@@ -2522,6 +2556,40 @@ export interface paths {
     /** @description Set the delivery timeline's configuration after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem. */
     put: operations["putApiV1SettingsDelivery"];
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/settings/new-issue": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is "" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes. */
+    get: operations["getApiV1SettingsNewIssue"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/settings/new-issue/_test": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: {label, session} replaces, on the process the call lands on, the new-issue label and session GET /api/v1/settings/new-issue answers from its environment; an empty value is none. */
+    post: operations["postApiV1SettingsNewIssueTest"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2815,6 +2883,7 @@ export interface components {
       approver: null | string;
       /** Format: date-time */
       created_at: string;
+      decided_by: null | string;
       enrollment: components["schemas"]["RecordEnrollmentResp"];
       /** Format: date-time */
       expires_at: null | string;
@@ -4075,8 +4144,20 @@ export interface components {
       kind?: string;
       url: string;
     };
+    GoingAction: {
+      action: string;
+      description: string;
+      example: unknown;
+      relations?: string[];
+      request: components["schemas"]["ToolField"][] | null;
+      routes: components["schemas"]["GoingRoute"][] | null;
+    };
     GoingCapability: {
       model_configured: boolean;
+    };
+    GoingCatalogueBody: {
+      actions: components["schemas"]["GoingAction"][] | null;
+      total: number;
     };
     GoingRequest: {
       author: components["schemas"]["Actor"];
@@ -4087,6 +4168,10 @@ export interface components {
       id: string;
       project: string;
       words: string;
+    };
+    GoingRoute: {
+      method: string;
+      pattern: string;
     };
     GraphEdge: {
       block?: components["schemas"]["GraphNode"];
@@ -4692,6 +4777,14 @@ export interface components {
       id: string;
       name: string;
     };
+    NewIssueSettings: {
+      label: string;
+      session: string;
+    };
+    NewIssueSettingsInput: {
+      label: string;
+      session: string;
+    };
     OpenAsk: {
       /** Format: int64 */
       age_seconds: number;
@@ -4982,6 +5075,7 @@ export interface components {
       identity: null | string;
       kinds: components["schemas"]["SearchCoverageKinds"];
       model: null | string;
+      not_indexed: components["schemas"]["SearchCoverageNotIndexed"][] | null;
       place: null | string;
       total: components["schemas"]["SearchCoverageCounts"];
     };
@@ -5003,6 +5097,17 @@ export interface components {
       issue: components["schemas"]["SearchCoverageCounts"];
       message_block: components["schemas"]["SearchCoverageCounts"];
     };
+    SearchCoverageNotIndexed: {
+      /** Format: int64 */
+      items: number;
+      kind: string;
+    };
+    SearchFilters: {
+      author?: string;
+      project?: string;
+      status?: string;
+      updated_since?: string;
+    };
     SearchIssue: {
       key: string;
       status: string;
@@ -5019,10 +5124,16 @@ export interface components {
       status?: string;
       title?: string;
     };
+    SearchQueryReading: {
+      broadened: boolean;
+      operators: string[] | null;
+    };
     SearchResponse: {
       degraded?: string;
+      filters: components["schemas"]["SearchFilters"];
       limit: number;
       offset: number;
+      query: components["schemas"]["SearchQueryReading"];
       reachable: number;
       results: components["schemas"]["SearchResult"][] | null;
       /** Format: int64 */
@@ -5144,6 +5255,16 @@ export interface components {
       window_index: number;
       window_name: string;
       zoomed: boolean;
+    };
+    ToolField: {
+      description?: string;
+      fields?: components["schemas"]["ToolField"][];
+      item?: components["schemas"]["ToolField"];
+      kind: string;
+      name?: string;
+      nullable?: boolean;
+      required?: boolean;
+      values?: string[];
     };
     UnparsedOpeners: {
       count: number;
@@ -7968,6 +8089,40 @@ export interface operations {
       };
     };
   };
+  getApiV1EventsLog: {
+    parameters: {
+      query?: {
+        after?: number;
+        limit?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Event"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1GithubAppInstallationByOwnerByRepo: {
     parameters: {
       query?: {
@@ -8022,6 +8177,38 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GoingCapability"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1GoingCatalogue: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingCatalogueBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11533,6 +11720,11 @@ export interface operations {
       query?: {
         q?: string;
         project?: string;
+        number_project?: string;
+        status?: string;
+        author?: string;
+        updated_since?: string;
+        keywords_only?: boolean;
         limit?: number;
         offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -11683,6 +11875,74 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DeliverySettings"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1SettingsNewIssue: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NewIssueSettings"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1SettingsNewIssueTest: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["NewIssueSettingsInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NewIssueSettings"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12175,8 +12435,11 @@ export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMi
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type ExternalLink = components["schemas"]["ExternalLink"];
+export type GoingAction = components["schemas"]["GoingAction"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
+export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
+export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];
@@ -12239,6 +12502,8 @@ export type MyRepliesResponse = components["schemas"]["MyRepliesResponse"];
 export type MyReplyReply = components["schemas"]["MyReplyReply"];
 export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
+export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
+export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type OpenAsk = components["schemas"]["OpenAsk"];
 export type OpenAskDocument = components["schemas"]["OpenAskDocument"];
 export type OpenAskIssue = components["schemas"]["OpenAskIssue"];
@@ -12285,8 +12550,11 @@ export type SearchAsk = components["schemas"]["SearchAsk"];
 export type SearchCoverage = components["schemas"]["SearchCoverage"];
 export type SearchCoverageCounts = components["schemas"]["SearchCoverageCounts"];
 export type SearchCoverageKinds = components["schemas"]["SearchCoverageKinds"];
+export type SearchCoverageNotIndexed = components["schemas"]["SearchCoverageNotIndexed"];
+export type SearchFilters = components["schemas"]["SearchFilters"];
 export type SearchIssue = components["schemas"]["SearchIssue"];
 export type SearchOwner = components["schemas"]["SearchOwner"];
+export type SearchQueryReading = components["schemas"]["SearchQueryReading"];
 export type SearchResponse = components["schemas"]["SearchResponse"];
 export type SearchResult = components["schemas"]["SearchResult"];
 export type SessionAnswer = components["schemas"]["SessionAnswer"];
@@ -12304,6 +12572,7 @@ export type TestHookOK = components["schemas"]["TestHookOK"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
 export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];
+export type ToolField = components["schemas"]["ToolField"];
 export type UnparsedOpeners = components["schemas"]["UnparsedOpeners"];
 export type UpdateAgentTokenScopesInput = components["schemas"]["UpdateAgentTokenScopesInput"];
 export type UpdateDeliverySessionGroupInput =
