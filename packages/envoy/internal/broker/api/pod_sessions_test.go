@@ -2,11 +2,15 @@ package api_test
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/oauth"
 )
 
 // registerPodSession posts a registration to POST /v1/oauth/exchange/pod-sessions with bearer as
@@ -135,4 +139,77 @@ func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withExchangeAccounts is withProvider with a token exchange that lists accounts, none of them
+// fixing a session, as withOAuth is withProvider with the machine-login routes' device login.
+// The rig's own entry fixes a session (brokertest.ExchangeSession), and a registration is
+// written only for an entry that fixes none, so a test that registers anything lists the
+// accounts it registers here.
+func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
+	t.Helper()
+	entries := make([]exchange.AccountEntry, 0, len(accounts))
+	for _, account := range accounts {
+		entries = append(entries, exchange.AccountEntry{Account: account, Project: brokertest.ExchangeProject, Person: brokertest.ExchangePerson})
+	}
+	policy, err := exchange.NewSet(entries, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	return withProvider(t, func(config *oauth.Config) {
+		config.Exchange = oauth.ExchangeConfig{Policy: policy}
+	})
+}
+
+// wirePodSession is POST /v1/oauth/exchange/pod-sessions's answer as a registrar reads it.
+type wirePodSession struct {
+	PodUID  string `json:"pod_uid"`
+	Session string `json:"session"`
+}
+
+// TestARegistrarRegistersAnyPodButTheOneItRunsIn: the route writes a registration for any pod but
+// the caller's own. BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service,
+// and then every pod of that account logs the service in and is a caller here. The registration
+// is the one thing that tells two pods of one account apart at the exchange, so a pod that could
+// write its own row would choose the session name it writes under, including a name a sibling
+// pod holds. A registrar registering a pod it is not — a deployment's daemon registering the pods
+// it starts, and a daemon of one account registering a sibling pod of that account across a
+// rollout — is unchanged, as is a registrar whose own token names no pod at all.
+func TestARegistrarRegistersAnyPodButTheOneItRunsIn(t *testing.T) {
+	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	// The daemon's own token, which it presents as its login and which names the pod it runs in:
+	// an account BROKER_SERVICE_LOGINS and BROKER_EXCHANGE_ACCOUNTS both list.
+	own := ts.accountToken(t, daemonAccount, "pod-uid-daemon", time.Hour)
+
+	t.Run("the pod it runs in", func(t *testing.T) {
+		status, body := ts.registerPodSession(t, own, own, "implementer-g1")
+		refusal := decode[wireError](t, body)
+		if status != http.StatusForbidden || refusal.Code != "POD_CALLER_IS_THE_POD" {
+			t.Fatalf("a caller registering the pod it runs in = %d %s, want 403 POD_CALLER_IS_THE_POD", status, body)
+		}
+		if !strings.Contains(refusal.Error, "pod-uid-daemon") || !strings.Contains(refusal.Error, daemonAccount) {
+			t.Fatalf("the refusal reads %q, which does not name pod pod-uid-daemon of %s", refusal.Error, daemonAccount)
+		}
+		if rows := ts.column(t, `select pod_uid from oauth_pod_sessions`); len(rows) != 0 {
+			t.Fatalf("the refused registration wrote %v", rows)
+		}
+	})
+
+	t.Run("a sibling pod of its own account", func(t *testing.T) {
+		sibling := ts.accountToken(t, daemonAccount, "pod-uid-daemon-two", time.Hour)
+		status, body := ts.registerPodSession(t, own, sibling, "implementer-g1")
+		if registration := decode[wirePodSession](t, body); status != http.StatusOK || registration.PodUID != "pod-uid-daemon-two" {
+			t.Fatalf("registering a sibling pod of %s = %d %s, want 200 naming that pod: one generation of a rollout registers the next", daemonAccount, status, body)
+		}
+	})
+
+	t.Run("a pod of another account", func(t *testing.T) {
+		status, body := ts.registerPodSession(t, own, ts.accountToken(t, workerAccount, "pod-uid-worker", time.Hour), "implementer-g2")
+		if registration := decode[wirePodSession](t, body); status != http.StatusOK || registration.PodUID != "pod-uid-worker" || registration.Session != "implementer-g2" {
+			t.Fatalf("registering a pod of %s = %d %s, want 200 naming that pod and that session", workerAccount, status, body)
+		}
+		if rows := ts.column(t, `select pod_uid || ' ' || session from oauth_pod_sessions order by pod_uid`); !slices.Equal(rows, []string{"pod-uid-daemon-two implementer-g1", "pod-uid-worker implementer-g2"}) {
+			t.Fatalf("oauth_pod_sessions holds %v, want the two registrations the registrar wrote", rows)
+		}
+	})
 }

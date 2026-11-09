@@ -177,7 +177,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				State:          string(pr.State),
 				ChecksVerdict:  classify.HeadVerdict(*pr),
 				ReviewDecision: reviewDecision,
-				FixAttempts:    pr.FixAttempts,
 			}
 		}
 
@@ -281,8 +280,17 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	trees := record.LiveRoots(own, facts)
 	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
 	projected.Admission.Waiting = make([]string, len(waiting))
+	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
+	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
+	// Dispatch link blocks stands in the line and takes its place like every other member, and
+	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
+	// already, so the place is set where the key is listed: the line is built from `own`, the
+	// issues of this project among the issues the loop above gave a view to, each of them.
 	for i, issue := range waiting {
 		projected.Admission.Waiting[i] = issue.Key
+		view := projected.Issues[issue.Key]
+		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
+		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))

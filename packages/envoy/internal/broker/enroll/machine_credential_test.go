@@ -46,6 +46,19 @@ func issueMachineCredential(t *testing.T, svc *Service, subject, thumbprint stri
 	return id.String()
 }
 
+// machineCredentialFor is issueMachineCredential followed by the read a request the machine's
+// own launcher proof authenticated makes: the row by its id and the key that proof proved
+// together (Service.CredentialForKey).
+func machineCredentialFor(t *testing.T, svc *Service, subject, thumbprint string) Credential {
+	t.Helper()
+	id := issueMachineCredential(t, svc, subject, thumbprint)
+	cred, err := svc.CredentialForKey(context.Background(), id, thumbprint)
+	if err != nil {
+		t.Fatalf("CredentialForKey(%s): %v", subject, err)
+	}
+	return cred
+}
+
 // TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed: the credential the exchange mints
 // is keyed by the machine and the key it holds (exchange.MachineSubject) and authenticates on
 // the account alone — where the machine runs was the exchange entry's decision, taken before
@@ -104,6 +117,35 @@ func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
 	}
 }
 
+// TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves: CredentialForKey answers the row while that
+// row is still pinned to the thumbprint the caller's proof proved, and ErrNoCredential once
+// another login has moved the row onto a key the caller never proved. That is the race it closes
+// for authLauncher, whose two reads of one credential — the proof's own lookup of the pinned key
+// and the handler's read of the identity it acts under — are two queries with no lock between
+// them, while one row is shared by every login of a subject.
+func TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-one")
+	id := issueMachineCredential(t, svc, subject, "tp-proved")
+
+	cred, err := svc.CredentialForKey(ctx, id, "tp-proved")
+	if err != nil || cred.ID.String() != id {
+		t.Fatalf("CredentialForKey under the proved key = %+v, %v; want the row it names", cred, err)
+	}
+	if again := issueMachineCredential(t, svc, subject, "tp-moved"); again != id {
+		t.Fatalf("the second login = credential %s, want the one row %s this test turns on", again, id)
+	}
+	if _, err := svc.CredentialForKey(ctx, id, "tp-proved"); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("CredentialForKey under a key the row has left = %v, want ErrNoCredential", err)
+	}
+	// The row is there and live: the key that holds it now reads it, and nothing was revoked.
+	if _, err := svc.CredentialForKey(ctx, id, "tp-moved"); err != nil {
+		t.Fatalf("CredentialForKey under the key the row holds now: %v", err)
+	}
+}
+
 // TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson: the credential the exchange minted
 // is the bridge to every secrets route. It carries its fleet's service and no person, so the
 // session it enrols carries no operator either and records the credential's subject, which is
@@ -116,10 +158,7 @@ func TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson(t *testing.T) {
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
 	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
 
-	cred, err := svc.Credential(ctx, issueMachineCredential(t, svc, subject, "tp-machine"))
-	if err != nil {
-		t.Fatalf("Credential: %v", err)
-	}
+	cred := machineCredentialFor(t, svc, subject, "tp-machine")
 	if cred.Operator != nil || cred.Service == nil || *cred.Service != machineFleet {
 		t.Fatalf("the machine's credential = operator %v, service %v; want its fleet's service and no person", cred.Operator, cred.Service)
 	}
@@ -144,7 +183,7 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
 	svc.ServiceLogins = map[string]string{"system:serviceaccount:example:example-daemon": "legion-daemon"}
 
-	daemon, err := svc.Credential(ctx, func() string {
+	daemon, err := svc.CredentialForKey(ctx, func() string {
 		tx, err := svc.Store.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -162,9 +201,9 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		return id.String()
-	}())
+	}(), "tp-daemon")
 	if err != nil {
-		t.Fatalf("Credential: %v", err)
+		t.Fatalf("CredentialForKey: %v", err)
 	}
 	if _, err := svc.Create(ctx, daemon, Enrollment{Kind: "session", RuntimeID: "daemon-1", Thumbprint: "tp-daemon-session"}); !errors.Is(err, ErrOperatorMismatch) {
 		t.Fatalf("a Kubernetes service login's session enrollment = %v, want ErrOperatorMismatch: it enrols the pods its tokens prove", err)
@@ -172,14 +211,8 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 
 	one := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-one")
 	two := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-two")
-	credOne, err := svc.Credential(ctx, issueMachineCredential(t, svc, one, "tp-one"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	credTwo, err := svc.Credential(ctx, issueMachineCredential(t, svc, two, "tp-two"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	credOne := machineCredentialFor(t, svc, one, "tp-one")
+	credTwo := machineCredentialFor(t, svc, two, "tp-two")
 	enrolled, err := svc.Create(ctx, credOne, Enrollment{Kind: "session", RuntimeID: "machine-one", Thumbprint: "tp-session-one"})
 	if err != nil {
 		t.Fatalf("the first machine's session enrollment: %v", err)
@@ -205,10 +238,7 @@ func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
 	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
-	cred, err := svc.Credential(ctx, issueMachineCredential(t, svc, subject, "tp-machine"))
-	if err != nil {
-		t.Fatalf("Credential: %v", err)
-	}
+	cred := machineCredentialFor(t, svc, subject, "tp-machine")
 	enrolled, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "machine-1", Thumbprint: "tp-session"})
 	if err != nil {
 		t.Fatalf("a machine's session enrollment: %v", err)
@@ -267,9 +297,9 @@ func TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	cred, err := svc.Credential(ctx, credID.String())
+	cred, err := svc.CredentialForKey(ctx, credID.String(), "tp-box")
 	if err != nil {
-		t.Fatalf("Credential: %v", err)
+		t.Fatalf("CredentialForKey: %v", err)
 	}
 	operator := person
 	enrolled, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "box-1", Operator: &operator, Thumbprint: "tp-person-session"})

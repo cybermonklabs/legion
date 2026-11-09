@@ -63,16 +63,10 @@ func TestASessionNameAnotherPrincipalHoldsIsRefusedAndTakesNothing(t *testing.T)
 			boxes: func(t *testing.T, svc *Service) (Credential, Credential) {
 				t.Helper()
 				other := "other-fleet@example-project.iam.gserviceaccount.com"
-				first, err := svc.Credential(ctx, issueMachineCredential(t, svc,
-					exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-first"), "tp-first"))
-				if err != nil {
-					t.Fatalf("Credential: %v", err)
-				}
-				second, err := svc.Credential(ctx, issueMachineCredential(t, svc,
-					exchange.MachineSubject(exchange.GoogleIdentity{Account: other}, "tp-second"), "tp-second"))
-				if err != nil {
-					t.Fatalf("Credential: %v", err)
-				}
+				first := machineCredentialFor(t, svc,
+					exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-first"), "tp-first")
+				second := machineCredentialFor(t, svc,
+					exchange.MachineSubject(exchange.GoogleIdentity{Account: other}, "tp-second"), "tp-second")
 				return first, second
 			},
 		},

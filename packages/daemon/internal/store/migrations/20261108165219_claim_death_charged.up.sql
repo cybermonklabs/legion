@@ -1,0 +1,39 @@
+-- 20261108165219_claim_death_charged.up.sql — what the daemon has already charged for the death
+-- of the process a claim records, so a restart charges it no second time (INFRA-956).
+--
+-- claims.death_charged is supervise.Claim.DeathCharged: the decision supervise's died made for
+-- the process the claim still records — the death charged, or nothing found to charge — written
+-- with the deaths it charged, in the same statement. One dead process is one death however often
+-- the runtime reports that process gone, and the report that is read again is the daemon's own
+-- orphan sweep, over a claim a refused or parked relaunch left standing over its dead process.
+-- The release this upgrades from kept that decision in memory, so the sweep's first report after
+-- a restart charged the death a second time; what a second charge costs such a claim is
+-- supervise.Claim.DeathCharged's.
+--
+-- False for every row the table already holds, and nothing backfills it. There is nothing to read
+-- a backfill from: the release this upgrades from recorded the charge nowhere, and false is
+-- exactly what that release's own restart read. A claim upgraded in that window is charged one
+-- more death than it owes, once, as it would have been without this column; every death charged
+-- by this release is written with it.
+--
+-- A claim that records no process carries false, because the charge goes with the process it was
+-- made for (supervise's letGo), and so does a claim whose process a later report found running
+-- again: that process is alive, so the death a report of it finds next is a death of its own.
+--
+-- Rolling the image back needs no restore of the database: store's claims.go is the only
+-- reader and writer of this column, and the release before it names it in no statement, so an
+-- upsert of that release leaves whatever the column last held. A stored true survives the
+-- relaunch that release makes and stands over the process it starts, and a daemon of this
+-- release rolled forward again reads it back: that process's first death is charged nothing,
+-- until a report that finds the process running clears the flag (supervise's judge). It is one
+-- death at most, and the claim is relaunched for that death as it would be for one charged.
+--
+-- A clear this column's writer made and the store refused leaves the same one death uncharged,
+-- with no rollback in it. The report that finds the process running again writes the clear
+-- (supervise's judge), and a write the store does not take is left owed to a repair the machine
+-- holds in memory (internal/supervise/owed.go), which dies with the daemon. A restart before
+-- that repair runs reads the stored true back over a process that is alive, so the next death of
+-- that process is charged nothing — until a report that finds the process running clears the
+-- flag again. It is one death at most, as the rollback above is, and the claim is relaunched for
+-- that death as it would be for one charged.
+alter table claims add column death_charged boolean not null default false;

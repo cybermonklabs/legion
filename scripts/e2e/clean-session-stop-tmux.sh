@@ -52,6 +52,10 @@
 #   operator's explicit choice and the summary line says which selection ran.
 # - CLEAN_SESSION_STOP_EVIDENCE_DIR (default a fresh directory under $TMPDIR, kept and printed)
 #   holds the run's transcript, every service's log, the daemon's log and each check's answers.
+# - CLEAN_SESSION_STOP_HEARTBEAT_MS (default 5000) is how often every session of the run
+#   heartbeats its registration, the panes' ENVOY_HEARTBEAT_MS and the control's. The window
+#   section below says what it is for; 5000 is the value the rig used before this input existed,
+#   so a caller that names none runs what it always ran.
 #
 # Everything the run installs — the Go binaries, Claude Code and the two plugin builds — goes under
 # $TMPDIR, never /tmp and never the home directory: a pod's own disk is small, and filling it
@@ -78,11 +82,19 @@
 #                                     by an order of magnitude; ten minutes would measure it no
 #                                     better and would hold the run for half an hour
 #   ENVOY_SESSION_REAP_INTERVAL=10s   the reaper acts promptly once a record passes the horizon
-# and every pane heartbeats at ENVOY_HEARTBEAT_MS=5000 (runtime.tmux.pane_env), so a live pane
-# refreshes six times inside the live window; the plugin's own default is 90 s, which no 30 s
-# window could hold. The ten seconds the clean stop is held to are this issue's acceptance, not a
-# number this rig chose: the daemon's probe runs the moment the shim's stream closes, and the
-# delete is one HTTP call after it.
+# and every pane heartbeats at ENVOY_HEARTBEAT_MS, CLEAN_SESSION_STOP_HEARTBEAT_MS's 5000 by
+# default (runtime.tmux.pane_env), so a live pane refreshes six times inside the live window; the
+# plugin's own default is 90 s, which no 30 s window could hold. The ten seconds the clean stop is
+# held to are this issue's acceptance, not a number this rig chose: the daemon's probe runs the
+# moment the shim's stream closes, and the delete is one HTTP call after it.
+#
+# The heartbeat is an input because it decides how often a kill lands just after a registration,
+# which is the window a clean stop dated before the moment its probe judged refuses a stop that
+# is owed in (dispatch://INFRA-2064). A small value makes a kill inside that window likely —
+# 3 of 4 runs at main with 500 — so the defect's reproduction is a command rather than an edit,
+# and 5000, the value before this input existed, leaves every run as it was. It moves nothing
+# else: the live window, the gone horizon, the reap interval and the ten-second acceptance are
+# the numbers above whatever it is.
 #
 # ---- the named checks ---------------------------------------------------------------------------
 # Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
@@ -100,6 +112,13 @@
 # killed, the run's database is dropped and its work directory removed. The run is re-runnable: it
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
 # NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_* or CLAUDE_* variable of the caller's.
+# Several runs at once out of one jj checkout leave divergent commits behind, whatever that
+# checkout's own state. The build step reads the working copy with jj to report what it built
+# from (lib/built-from.sh), and jj snapshots the working copy at every read; the plugin pack
+# before it rewrites packages/<plugin>/package.json in place and puts it back (lib/pack-plugin.sh),
+# so each run has a window in which a tracked file differs. Two runs snapshotting that window at
+# once leave the checkout with divergent working-copy commits for someone to abandon by hand.
+# Commit the tree before the runs and expect to check `jj log` after them.
 set -Eeuo pipefail
 
 # This script's own inputs are read first: the sweep below drops every variable of those families
@@ -108,6 +127,7 @@ set -Eeuo pipefail
 pg_dsn=${CLEAN_SESSION_STOP_PG_DSN:-}
 wanted=${CLEAN_SESSION_STOP_CHECKS:-}
 evidence=${CLEAN_SESSION_STOP_EVIDENCE_DIR:-}
+heartbeat_ms=${CLEAN_SESSION_STOP_HEARTBEAT_MS:-5000}
 model_base_url=${LEGION_E2E_MODEL_BASE_URL:-}
 model_key_file=${LEGION_E2E_MODEL_KEY_FILE:-}
 model_id=${LEGION_E2E_MODEL_ID:-}
@@ -250,11 +270,11 @@ state_dir=$work/state
 omp_home=$work/omp-home
 profile=clean-session-stop-$$
 # The windows the listener judges every record against; the header says why each is this number.
+# The heartbeat every session of the run keeps is CLEAN_SESSION_STOP_HEARTBEAT_MS, read above.
 live_window=30s
 gone_horizon=90s
 gone_horizon_seconds=90
 reap_interval=10s
-heartbeat_ms=5000
 # The acceptance this proof measures: a role's record is gone this many seconds after the kill.
 clean_stop_limit_seconds=10
 
@@ -502,22 +522,36 @@ daemon_said() {
 }
 daemon_said_at_least() { [ "$(daemon_said "$1")" -ge "$2" ]; }
 
-# clean_stop_recorded SESSION reports whether the daemon acted on SESSION's death, by either of the
-# two lines its clean stop can end in, and leaves the one it found in stop_record.
+# clean_stop_recorded SESSION reports whether the daemon's clean stop of SESSION ended in one of
+# the two lines that mean the registration is gone because the daemon acted, and leaves the one it
+# found in stop_record.
 #
-# The first is the stop it made. The second is the stop the listener refused because the
-# registration was written after it: a heartbeat that landed under a second before the probe judged
-# the process gone, inside cleanSessionStopSkewAllowance, after which the session's own plugin
-# deregisters it instead. Both are triggered by the one kill, so which of them wins is a race this
-# change admits rather than a fact it promises, and a check that pins either is a coin flip. What
-# the clause claims is that the session is gone well inside the horizon, and gone_within above is
-# what measures that; this asks only that the daemon saw the death and acted on it, which is what
-# keeps the measurement from passing on the reaper (dispatch://INFRA-392).
+# The first is the stop it made. The second is the listener answering that it holds no
+# registration of the session, which the daemon reports rather than sending a delete: on the
+# Claude arm claude-envoy's own deregistration can land first, and a record already gone is the
+# outcome the stop asked for.
+#
+# The line this does NOT accept is the stop the listener kept. Until dispatch://INFRA-2064 it
+# did, on the ground that the session's own plugin would deregister it instead — which is false
+# for a SIGKILL of the process that plugin runs in (packages/pi-envoy/src/registration-state.ts,
+# unregisterSession is an explicit call). The listener keeps a registration for three reasons
+# (packages/envoy/internal/session/delete.go): another client instance wrote it, it was written
+# after the moment the delete belongs to, or the delete lost its compare-and-swap twice. For a
+# role this run SIGKILLed, each of the three is a defect worth failing on. The first cannot
+# happen inside the relaunch's first backoff and a process boot. The second is the stop dated
+# before the probe's own moment, which is the defect this issue fixed, or a heartbeat whose
+# write landed after the probe. The third is a registration that changed under a delete nothing
+# should have been writing. So the check fails on a kept answer whichever reason it carries, and
+# the daemon's line names that reason for whoever reads the failure.
+#
+# What the clause claims is that the session is gone well inside the horizon, and gone_within
+# above is what measures that; this asks that the daemon's own stop is why, which is what keeps
+# the measurement from passing on the reaper (dispatch://INFRA-392).
 stop_record=
 clean_stop_recorded() {
   local session=$1 line
   for line in "the Envoy session of a role whose process is gone was stopped" \
-    "it was written after the stop"; do
+    "the Envoy listener answered no registration of a dead role's session, so none was stopped"; do
     if grep -F -- "$line" "$evidence/logs/daemon.log" 2>/dev/null | grep -qF -- "$session"; then
       stop_record=$line
       return 0
@@ -593,6 +627,8 @@ fi
   fail "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>, the provider Oh My Pi reaches the endpoint through"
 [ -n "$claude_model" ] ||
   fail "LEGION_E2E_CLAUDE_MODEL is required: the model id Claude Code runs against that endpoint"
+[[ $heartbeat_ms =~ ^[1-9][0-9]*$ ]] ||
+  fail "CLEAN_SESSION_STOP_HEARTBEAT_MS is '$heartbeat_ms'; it must be a positive whole number of milliseconds"
 [ -n "$pg_dsn" ] ||
   fail "CLEAN_SESSION_STOP_PG_DSN is required: a loopback PostgreSQL the run creates the daemon's own database in"
 case $pg_dsn in
@@ -751,7 +787,7 @@ start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=
   ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
   ENVOY_SESSION_REAP_INTERVAL="$reap_interval" "$work/bin/envoy-listener"
 await_start listener "$listener_pid" 60 "the Envoy listener to serve" serving "$listener_port"
-note "the listener on 127.0.0.1:$listener_port judges records with a ${live_window} live window and a ${gone_horizon} gone horizon"
+note "the listener on 127.0.0.1:$listener_port judges records with a ${live_window} live window and a ${gone_horizon} gone horizon, against sessions that heartbeat every ${heartbeat_ms}ms"
 
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||

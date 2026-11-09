@@ -117,9 +117,14 @@ func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.
 	})
 	assertCreatedOnClosedIssue(t, "a mentioning comment", created)
 	comment := decodeMentionedComment(t, created)
-	if len(comment.Deliveries) != 1 || comment.Deliveries[0].State != "sent" || comment.Deliveries[0].Attempt != 1 ||
+	// The comment answers as soon as it commits, its attempt pending and pinned to s1; the mention
+	// sender delivers it after that response (INFRA-606).
+	if len(comment.Deliveries) != 1 || comment.Deliveries[0].State != "pending" || comment.Deliveries[0].Attempt != 1 ||
 		comment.Deliveries[0].SessionID == nil || *comment.Deliveries[0].SessionID != "s1" {
-		t.Fatalf("closed issue's mention delivery = %#v, want attempt 1 sent to s1", comment.Deliveries)
+		t.Fatalf("closed issue's mention delivery = %#v, want attempt 1 pending for s1", comment.Deliveries)
+	}
+	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].State != "sent" {
+		t.Fatalf("closed issue's mention attempts = %#v, want attempt 1 sent", settled)
 	}
 	if got := commentAttemptRow(t, database, comment.ID, "session:s1", 1); !strings.HasPrefix(got, "sent/") {
 		t.Fatalf("closed issue's mention attempt row = %q, want it recorded as sent", got)

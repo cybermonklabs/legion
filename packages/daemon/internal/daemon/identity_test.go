@@ -33,9 +33,9 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	if err := os.WriteFile(rolePromptPath(stateDir, token), []byte("implement\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The six below are the whole of Env only for a daemon holding none of the stall limits a
-	// launch is told beside them (stallLimitVariables): this specs names no environment to read
-	// them from, so it holds none.
+	// The six below are the whole of Env only for a daemon holding none of the passthrough
+	// variables a launch is told beside them (stallLimitVariables, refusalCooldownVariables): this
+	// specs names no environment to read them from, so it passes none.
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
 	s := specs{stateDir: stateDir, project: "s1", repositories: noRepositoriesView,
