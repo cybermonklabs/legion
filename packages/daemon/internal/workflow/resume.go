@@ -44,9 +44,10 @@ import (
 // again, and a queued root's members are started by the promotion that opens the tree, which
 // gives each mid-phase member its own start (admit's startMidPhaseMembers): a start queued here
 // instead would re-point the claim at a tree with no lifecycle, and would put the member in the
-// line's first part ahead of its own root. It is the lifecycle rather than the root's slot
-// because a slot now counts one issue at work, and a running tree holds none of its own while
-// its issues wait in the line.
+// line's first part ahead of its own root. It is the lifecycle rather than the root's row
+// because a row says the daemon has started that one issue and nothing about the tree: a root
+// that arrived from another tree carries one while the tree of its own has still to be opened
+// (record.KeepsSlot).
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
 // mid-phase child, through the outbox's start like every other start (StartOrOwe): one row that
@@ -117,13 +118,14 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if err != nil {
 			return intake.Result{}, err
 		}
-		// The row waits for a slot only where the issue is at work by the one rule the cap
-		// counts with. record.AtWork is false for an issue in merging while a closed design gate
-		// holds the READY its merger already built, and merging is the one phase with a phase
-		// worker that can be not at work: a row marked for a slot there would wait for a slot no
-		// admission pass ever offers, and the merger would stay down until a person approved the
-		// spec. record.TreeGate{} is exact here: the loop never reaches a phase whose role is
-		// empty, and AtWork reads the gate only at admitted.
+		// The row waits for a slot only where a worker of the issue has work where it stands.
+		// The cap counts the issues the daemon has started (record.KeepsSlot), and what the
+		// mark is for is the start that puts a worker to work: record.AtWork is false for
+		// exactly one claim this resumes — the merger of an issue in merging while a closed
+		// design gate holds the READY it already built — which comes back to wait on a person
+		// rather than to work, and admission's own repair passes over that same holder for that
+		// same reason (admit's resumeSlottedWorkers). record.TreeGate{} is exact here: the loop
+		// never reaches a phase whose role is empty, and AtWork reads the gate only at admitted.
 		if err := StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
 			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true},
 			record.AtWork(issue, record.TreeGate{}), e.now()); err != nil {

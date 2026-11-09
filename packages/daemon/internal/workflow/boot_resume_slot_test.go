@@ -32,13 +32,14 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 // issue is at work, and a row of an issue that is not is runnable the moment it is written.
 //
 // A start is one row since INFRA-1573, and that row carries the worker's task, so the mark that
-// holds it for a slot now decides whether the worker comes back at all. The cap offers a slot to
-// exactly the issues record.AtWork answers true for (record.NeedsSlot, admit's Waiting), and a
-// merger standing in merging while a closed design gate holds the READY it already built is the
-// one phase owner that is not one of them: marked for a slot, its row would wait for a slot no
-// admission pass ever offers, and the merger would stay down — its session never resumed, its
-// questions unanswered — until a person approved the spec. Marked for none, it comes back at
-// once, which is what the boot before INFRA-1573 did with its task-less relaunch row.
+// holds it for a slot now decides when the worker comes back. The mark is for the start that
+// puts a worker to work, and a merger standing in merging while a closed design gate holds the
+// READY it already built is the one phase owner that puts none to work: it comes back to wait
+// on a person. Marked for a slot it would stand unclaimable until an admission pass gave its
+// issue a row, for work it does not have, and the session a person may still want to talk to
+// would stay down meanwhile; marked for none it comes back at once, which is what the boot
+// before INFRA-1573 did with its task-less relaunch row. Admission's own repair reads the same
+// holder the same way (admit's resumeSlottedWorkers, record.AtWork).
 //
 // The two issues differ in nothing but their phase and that held READY: each is a root of its
 // own running tree whose phase owner the daemon's rule suspended, and neither holds a slot.
@@ -82,7 +83,7 @@ func TestTheBootsResumeWaitsForASlotOnlyWhereTheIssueIsAtWork(t *testing.T) {
 		t.Fatalf("the start rows of %s = %+v, want one row for its merger carrying its resume task", heldReady, waiting)
 	}
 	if waiting[0].needsSlot || !waiting[0].claimable {
-		t.Fatalf("the boot's resume of %s = %+v, want it runnable at once and marked for no slot: a merger whose READY a closed design gate holds is at work by nobody's reading, and no admission pass offers it a slot",
+		t.Fatalf("the boot's resume of %s = %+v, want it runnable at once and marked for no slot: a merger whose READY a closed design gate holds has no work where it stands, so this row brings its session back rather than putting a worker to work",
 			heldReady, waiting[0])
 	}
 }

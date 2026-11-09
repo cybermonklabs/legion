@@ -316,12 +316,15 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // needsSlot says whether that row waits for the issue's admission slot, which the outbox holds
 // unclaimable while the issue holds none (store.go's outboxInOrder); it is the caller's to state
 // rather than something read here, because the answer is a fact about the caller's issue and not
-// about the request. A transition's start (Engine.started) and admission's start of a
-// mid-phase member both put a worker to work on an issue the cap counts, so both wait. The
-// boot's resume by rule asks record.AtWork, because an issue that is not at work is offered no
-// slot by any admission pass and a row marked for one would wait for ever. A row that waits for
-// no slot is claimable at once and carries its task all the same: the delivery is the same
-// delivery, made as soon as the worker is up.
+// about the request. The cap counts the issues the daemon has started, each holding its row from
+// its start until its work ends (record.KeepsSlot), and what must wait for one is the start that
+// puts a worker to work: a transition's start (Engine.started) and admission's start of a
+// mid-phase member both do, so both wait. The boot's resume by rule asks record.AtWork instead,
+// because the one claim it brings back whose issue has no work where it stands — a merger whose
+// READY a closed design gate holds (record.ReadyPending) — puts no worker to work, and the slot
+// repair passes over that same holder for the same reason (admit's resumeSlottedWorkers). A row
+// that waits for no slot is claimable at once and carries its task all the same: the delivery is
+// the same delivery, made as soon as the worker is up.
 //
 // The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
 // nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at
@@ -333,13 +336,14 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // already leased because the slot came — is a row of its own enqueued, which is what the daemon
 // has always done for back-to-back transitions.
 //
-// No other start of the daemon's comes through here, and none may: the tree architect's start,
-// which takes no slot of its own (admit's promotion, awaiting_reconcile.go), the production
-// check's look (check.go), the pod wake (wake.go), the resume of a cancelled idle release (the
-// daemon's outbox) and the roles admission brings back beside a member's phase worker (admit's
-// startMidPhaseMembers) are enqueued directly and stay claimable at once. None of them puts a
-// worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
-// might never be offered.
+// No other start of the daemon's comes through here, and none may: the tree architect's start
+// (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
+// the cap counts is its root's and the root holds it from its promotion until its work ends
+// (record.KeepsSlot), the production check's look (check.go), the pod wake (wake.go), the resume
+// of a cancelled idle release (the daemon's outbox) and the roles admission brings back beside a
+// member's phase worker (admit's startMidPhaseMembers) are enqueued directly and stay claimable
+// at once. None of them puts a worker to work on a phase, so none of them is the cap's to hold,
+// and a slot they waited for might never be offered.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, needsSlot bool, at time.Time) error {
 	payload.NeedsSlot = needsSlot
 	row, err := record.NewOutboxRow(issue, payload, at)
