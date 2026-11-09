@@ -109,10 +109,22 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*re
 		return nil, nil
 	}
 	repo := w.heardSpelling(issue.GitHubRepo)
+	// The head's own arrival is GitHub's push timestamp, never this read's clock: a read of the
+	// pull request sees its updated_at, which every later activity moves again. A read that cannot
+	// find the push leaves the arrival unrecorded, and no listed review of that head applies until
+	// a later read finds it (internal/daemon's headArrivedAt).
+	arrived, err := w.headArrivedOn(ctx, issue.GitHubRepo, branch, pull.Head.SHA)
+	if err != nil {
+		w.log.Warn("workflow: the read could not ask GitHub when a pull request's head arrived; it records none, so no listed review of that head applies yet",
+			"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA, "error", err)
+	} else if arrived.IsZero() {
+		w.log.Warn("workflow: GitHub's activity of the branch names no push that left it at this head; the read records no arrival, so no listed review of that head applies yet",
+			"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA)
+	}
 	w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
-		"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
+		"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt, "arrived", arrived)
 	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
-		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number, Read: true}
+		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, ArrivedAt: arrived, Reopened: pr != nil && pr.Number == pull.Number}
 	eventID := fmt.Sprintf("opened-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, repo, pull.Number, time.Now().UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return nil, fmt.Errorf("apply the open pull request %s#%d read from GitHub: %w", repo, pull.Number, err)

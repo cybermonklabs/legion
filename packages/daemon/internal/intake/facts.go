@@ -478,10 +478,17 @@ type PullRequestOpened struct {
 	// Reopened is GitHub's reopened action; false is opened, which GitHub sends once per pull
 	// request.
 	Reopened bool
-	// Read says the fact stands for a read of GitHub rather than a webhook, so UpdatedAt is the
-	// pull request's updated_at at the moment of that read and not the time this head arrived:
-	// the workflow records no arrival for it (record.PullRequest.HeadArrivedAt).
-	Read bool
+	// ArrivedAt is GitHub's own time of this head arriving on the pull request, zero when the
+	// fact's source does not know it. A webhook knows it: UpdatedAt is the time of the event
+	// itself. A read of GitHub does not — the pull request's updated_at is the moment of the read,
+	// which every later activity moves again — and answers it from the push timestamp GitHub's
+	// activity of the branch carries for the entry that left the branch at this head, or zero when
+	// no entry names it. The workflow records it as the head's arrival
+	// (record.PullRequest.HeadArrivedAt), which is what a listed review of that head is held to:
+	// the head commit's own committer date is no answer, since a commit pushed later than it was
+	// made would let an approval of the previous head stand for this one
+	// (dispatch://INFRA-714/spec R12).
+	ArrivedAt time.Time
 }
 
 func (PullRequestOpened) isFact() {}
@@ -499,7 +506,7 @@ func (PullRequestOpened) isFact() {}
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
 	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
-		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number, Read: true}
+		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {
 		against = fmt.Sprintf("%d/%s/%s", recorded.Number, recorded.State, recorded.HeadUpdatedAt.UTC().Format(time.RFC3339Nano))
@@ -527,9 +534,8 @@ type PullRequestSynchronized struct {
 	Base      string
 	Body      string
 	UpdatedAt time.Time
-	// Read says the fact stands for a read of GitHub rather than a webhook, as
-	// PullRequestOpened.Read does.
-	Read bool
+	// ArrivedAt is GitHub's own time of this head arriving, as PullRequestOpened.ArrivedAt is.
+	ArrivedAt time.Time
 }
 
 func (PullRequestSynchronized) isFact() {}

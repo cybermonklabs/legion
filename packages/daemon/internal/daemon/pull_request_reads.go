@@ -62,12 +62,13 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 		return current, nil
 	}
 	pr = current
-	pushes, err := w.headPushes(ctx, github, pr, pull.Head.SHA)
+	pushes, arrived, err := w.headPushes(ctx, github, pr, pull.Head.SHA)
 	if err != nil {
 		return pr, err
 	}
 	w.log.Warn("workflow: GitHub shows a pull request at a head the daemon has not recorded; applying the synchronize its webhook would",
-		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt, "pushes", len(pushes))
+		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt,
+		"pushes", len(pushes), "arrived", arrived)
 	for _, push := range pushes {
 		if _, err := intake.ApplyFact(ctx, w.pool, "github", push.eventID, push.fact, w.handlers...); err != nil {
 			return pr, fmt.Errorf("apply the push to %s: %w", push.fact.After, err)
@@ -75,7 +76,7 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 	}
 	eventID := fmt.Sprintf("head-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, time.Now().UnixNano())
 	fact := intake.PullRequestSynchronized{Repo: pr.Repo, Number: pr.Number, Branch: pr.Branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
-		UpdatedAt: pull.UpdatedAt, Read: true}
+		UpdatedAt: pull.UpdatedAt, ArrivedAt: arrived}
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return pr, fmt.Errorf("apply the synchronize to %s: %w", pull.Head.SHA, err)
 	}
@@ -144,17 +145,23 @@ type readPush struct {
 // the branch shows took it there (lostPushes); when that activity cannot be followed, which it
 // logs, there are none either, and the pushes are left to their webhooks. A rate-limit answer, or
 // ctx ending, is an error.
-func (w *workflowRuntime) headPushes(ctx context.Context, github githubrest.Client, pr record.PullRequest, head string) ([]readPush, error) {
-	if classify.HeadPushKnown(pr, head) {
-		return nil, nil
+func (w *workflowRuntime) headPushes(ctx context.Context, github githubrest.Client, pr record.PullRequest, head string) ([]readPush, time.Time, error) {
+	pushes, arrived, unfollowed, err := w.lostPushes(ctx, github, pr, head)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
-	pushes, unfollowed, err := w.lostPushes(ctx, github, pr, head)
-	if err != nil || unfollowed == "" {
-		return pushes, err
+	// The record already holding the push that moved the branch to this head makes the pushes
+	// none, as it always did; the arrival still stands, since it is the entry's own timestamp and
+	// not a push this read would apply.
+	if classify.HeadPushKnown(pr, head) {
+		return nil, arrived, nil
+	}
+	if unfollowed == "" {
+		return pushes, arrived, nil
 	}
 	w.log.Warn("workflow: the read cannot rebuild from GitHub's activity the pushes that moved a pull request's head; it applies none of them, and the synchronize",
 		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "branch", pr.Branch, "recorded", pr.HeadSHA, "head", head, "reason", unfollowed)
-	return nil, nil
+	return nil, arrived, nil
 }
 
 // lostPushes is the pushes that took pr's branch from the recorded head to head, oldest first, as
@@ -174,19 +181,20 @@ func (w *workflowRuntime) headPushes(ctx context.Context, github githubrest.Clie
 // unfollowed says why the pushes cannot be rebuilt, and then there are none: the page does not
 // lead back from head to the recorded head, an entry on the way is no push, or GitHub answered the
 // read with an error. A rate-limit answer, or ctx ending, is an error: the read ends there.
-func (w *workflowRuntime) lostPushes(ctx context.Context, github githubrest.Client, pr record.PullRequest, head string) ([]readPush, string, error) {
+func (w *workflowRuntime) lostPushes(ctx context.Context, github githubrest.Client, pr record.PullRequest, head string) ([]readPush, time.Time, string, error) {
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	activity, err := github.BranchActivity(read, pr.Branch)
 	cancel()
 	if err != nil {
 		if endsRead(ctx, err) {
-			return nil, "", fmt.Errorf("read the activity of %s: %w", pr.Branch, err)
+			return nil, time.Time{}, "", fmt.Errorf("read the activity of %s: %w", pr.Branch, err)
 		}
-		return nil, fmt.Sprintf("the read of the branch's activity failed: %v", err), nil
+		return nil, time.Time{}, fmt.Sprintf("the read of the branch's activity failed: %v", err), nil
 	}
+	arrived := arrivalInActivity(activity, head)
 	chain, unfollowed := followActivity(activity, pr.HeadSHA, head)
 	if unfollowed != "" {
-		return nil, unfollowed, nil
+		return nil, arrived, unfollowed, nil
 	}
 	recorded := map[[2]string]bool{}
 	for _, p := range pr.Pushes {
@@ -205,7 +213,25 @@ func (w *workflowRuntime) lostPushes(ctx context.Context, github githubrest.Clie
 			fact:    intake.Push{Repo: pr.Repo, Branch: pr.Branch, Before: entry.Before, After: entry.After, Pusher: entry.Actor.Login},
 		})
 	}
-	return pushes, "", nil
+	return pushes, arrived, "", nil
+}
+
+// arrivalInActivity is when head arrived on the branch, as GitHub's activity of that branch states
+// it: the timestamp of the newest entry that left the branch at head, and the zero time when the
+// page holds no such entry — the push is older than its hundred entries, or GitHub has not listed
+// it yet. That timestamp is GitHub's own record of the push, which is what a listed review of this
+// head is held to (internal/daemon's headArrivedAt). The head commit's committer date is no answer:
+// it is the commit's own metadata, earlier than the push whenever a commit is pushed later than it
+// was made, and an approval of the previous head submitted in between would count for this one
+// (dispatch://INFRA-714/spec R12, the architect's ruling on review-rounds v92). An entry that is no
+// push answers nothing either, since only a push puts a head on a pull request.
+func arrivalInActivity(activity []githubrest.Activity, head string) time.Time {
+	for _, entry := range activity {
+		if entry.After == head && pushActivity[entry.Type] {
+			return entry.Timestamp
+		}
+	}
+	return time.Time{}
 }
 
 // endsRead says whether err, a read of GitHub that failed, ends the whole per-issue read: GitHub's
@@ -282,6 +308,31 @@ func (w *workflowRuntime) heardSpelling(repo string) string {
 // names an owner, so a listing made under the recorded name would ask the wrong installation for
 // heads of an owner that holds none and find no pull request at all — which the caller reports as
 // a pull request that has gone missing.
+// headArrivedOn is GitHub's own time of head arriving on branch of repo, for a read that found a
+// pull request the record holds none of: the timestamp of the entry of the branch's activity that
+// left it at head (arrivalInActivity), and the zero time when the page holds no such entry or the
+// read failed, which the caller logs and which holds every listed review of that head to nothing
+// until a later read finds the entry. It mints the implement App's token for the repository the
+// project serves, as the read of the pull request itself does.
+func (w *workflowRuntime) headArrivedOn(ctx context.Context, repo, branch, head string) (time.Time, error) {
+	recorded, err := ghrepo.Parse("the issue's repository", repo)
+	if err != nil {
+		return time.Time{}, err
+	}
+	repository := w.repositories.serving(recorded)
+	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+	}
+	read, cancel := context.WithTimeout(ctx, issueRead)
+	activity, err := github.BranchActivity(read, branch)
+	cancel()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return arrivalInActivity(activity, head), nil
+}
+
 func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch string) (githubPullRequest, bool, error) {
 	recorded, err := ghrepo.Parse("the issue's repository", repo)
 	if err != nil {

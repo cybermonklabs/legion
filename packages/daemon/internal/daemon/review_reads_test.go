@@ -575,101 +575,57 @@ func TestAListedReviewOlderThanTheHeadItNamesDecidesNothing(t *testing.T) {
 	}
 }
 
-// A record that holds no arrival of its own — a head the daemon's own read found, and a row
-// written before the column existed — is answered by the head commit's own committer date, read
-// from GitHub: the earliest
-// moment any review of that head could have been submitted. A commit GitHub will not answer
-// applies nothing this read, whatever the review says, since a review the daemon cannot place
-// against its head is one it has not verified; the next read of the issue asks again, so the cost
-// is a read rather than a decision (dispatch://INFRA-1557, the architect's ruling on the first
-// shape of this guard, which let such a review decide).
-func TestAListedReviewOfAClocklessRecordIsHeldToTheHeadsCommitDate(t *testing.T) {
+// The lost synchronize is the case this listed read exists for, and what it must be judged against
+// is GitHub's own record of the push, never the head commit's committer date: a commit is pushed
+// whenever its author pushes it, so an approval of the previous head submitted between the commit
+// and the push is newer than that date and older than the head, and GitHub's REST list rewrites
+// such a review's commit_id to the current head (dispatch://INFRA-1557). Taking the committer date
+// would let it approve a head nobody reviewed. So a read that finds a head takes its arrival from
+// the push timestamp of the entry of the branch's activity that left the branch there
+// (arrivalInActivity), and a head no entry names records no arrival at all, which holds every
+// listed review of it to nothing until a later read finds the entry (the architect's ruling on
+// review-rounds v92).
+func TestAListedReviewIsHeldToTheHeadsOwnPushTime(t *testing.T) {
+	committed := time.Date(2026, 10, 26, 17, 0, 0, 0, time.UTC)
+	pushed := time.Date(2026, 10, 26, 19, 0, 0, 0, time.UTC)
+	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name      string
-		committed string
-		submitted string
+		activity  []string
+		submitted time.Time
 		want      phase.Phase
 		decision  string
 	}{
-		{name: "submitted before the head was committed", committed: captureHeadCommitted.Format(time.RFC3339),
-			submitted: "2026-10-08T22:15:59Z", want: phase.Reviewing},
-		{name: "submitted after the head was committed", committed: captureHeadCommitted.Format(time.RFC3339),
-			submitted: "2026-10-08T22:16:01Z", want: phase.Accepting, decision: "approved"},
-		{name: "GitHub will not answer the commit, so this read applies nothing", committed: "",
-			submitted: "2026-10-08T22:16:01Z", want: phase.Reviewing},
+		// The reviewer's own probe: the commit is dated 17:00, the approval of the head before it
+		// is submitted at 18:00 while its webhook sits in the backlog, and the head is pushed at
+		// 19:00 with its synchronize lost.
+		{name: "submitted after the commit was made and before its push", submitted: committed.Add(time.Hour), want: phase.Reviewing},
+		{name: "submitted after the push", submitted: pushed.Add(30 * time.Minute), want: phase.Accepting, decision: "approved"},
+		{name: "no entry of the activity names the head", activity: []string{}, submitted: pushed.Add(30 * time.Minute), want: phase.Reviewing},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-			// The column is not null, so a record with no arrival holds the zero time. The
-			// pull request's own updated_at is left where seedCapture put it, since the arrival
-			// is the only clock this read judges a review against.
-			if _, err := pool.Exec(context.Background(),
-				"update pull_requests set head_arrived_at = $1 where issue = 'CAPTURE-1'", time.Time{}); err != nil {
-				t.Fatalf("seed a record with no arrival: %v", err)
+			github := &activityGitHub{}
+			entries := []string{activityEntry("legion/CAPTURE-1", "push", "code", "pushed", implementerLogin, pushed)}
+			if tc.activity != nil {
+				entries = tc.activity
 			}
-			var reads, outsiderReads atomic.Int64
-			var commitReads atomic.Int64
-			api := reviewsStandInCounting(t, func() string {
-				return "[" + listedReview(5463503611, reviewReadApp, "APPROVED", "code", tc.submitted) + "]"
-			}, &reads, func() string { return "read" }, &outsiderReads, func() string { return tc.committed }, &commitReads).URL
-			readCapture(t, reviewReadRuntime(pool, api))
-			if got := commitReads.Load(); got != 1 {
-				t.Fatalf("the read read the head commit %d times, want once: a record with no arrival is judged against the head's own date", got)
-			}
+			github.moved("pushed", read, entries...)
+			github.lists("[" + listedReview(5463503611, reviewReadApp, "APPROVED", "pushed", tc.submitted.Format(time.RFC3339)) + "]")
+			readCapture(t, reviewReadRuntime(pool, github.serve(t).URL))
 
-			if got, _ := capturePhase(t, pool); got != tc.want {
-				t.Fatalf("after the read the issue is in %s, want %s: the head was committed at %q and the review submitted at %s",
-					got, tc.want, tc.committed, tc.submitted)
+			got, pr := capturePhase(t, pool)
+			if pr.HeadSHA != "pushed" {
+				t.Fatalf("after the read the record is at %q, want the head GitHub showed", pr.HeadSHA)
 			}
-			if got, _ := reviewerDecision(t, pool); got != tc.decision {
-				t.Fatalf("the round's recorded decision = %q, want %q", got, tc.decision)
+			if got != tc.want {
+				t.Fatalf("after the read the issue is in %s, want %s: the head was pushed at %v and the review submitted at %v, with the record's arrival %v",
+					got, tc.want, pushed, tc.submitted, pr.HeadArrivedAt)
+			}
+			if decision, _ := reviewerDecision(t, pool); decision != tc.decision {
+				t.Fatalf("the round's recorded decision = %q, want %q", decision, tc.decision)
 			}
 		})
-	}
-}
-
-// The lost synchronize is the case this listed read exists for, and the record it leaves must not
-// refuse the review it came for. When the webhook is lost the daemon's own read moves the head
-// (followHead) and the fact it applies carries the pull request's updated_at at the moment of that
-// read, which is later than any review of that head and which every later activity on the pull
-// request moves later still. So a read records no arrival for a head it found itself
-// (record.PullRequest.HeadArrivedAt), and the head commit's own committer date answers for it:
-// otherwise the approval this read is for would be refused at this read and at every read after
-// it, and the round would never get its decision (dispatch://INFRA-714/spec R12, the architect's
-// ruling on the second shape of this guard).
-func TestAReviewOfAHeadTheReadFoundItselfIsHeldToItsCommitDate(t *testing.T) {
-	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
-	pool := isolatedOutboxPool(t)
-	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-	readCapture(t, readRuntime(pool, pullRequestStandIn(t, "pushed", read, &atomic.Int32{}).URL, quietLogger()))
-
-	_, pr := capturePhase(t, pool)
-	if pr.HeadSHA != "pushed" {
-		t.Fatalf("after the read the record is at %q, want the head GitHub showed", pr.HeadSHA)
-	}
-	if !pr.HeadUpdatedAt.Equal(read) {
-		t.Fatalf("the record's clock = %v, want the read's own stamp %v", pr.HeadUpdatedAt, read)
-	}
-	if !pr.HeadArrivedAt.IsZero() {
-		t.Fatalf("the record's head arrival = %v, want none: a read of GitHub knows no arrival of the head it found", pr.HeadArrivedAt)
-	}
-
-	// The review was submitted before the read that found the head and after the head was
-	// committed, which is every real review of a head whose synchronize was lost.
-	committed := read.Add(-2 * time.Hour)
-	submitted := read.Add(-time.Hour)
-	var reads, outsiderReads, commitReads atomic.Int64
-	api := reviewsStandInCounting(t, func() string {
-		return "[" + listedReview(5463503611, reviewReadApp, "APPROVED", "pushed", submitted.Format(time.RFC3339)) + "]"
-	}, &reads, func() string { return "read" }, &outsiderReads, func() string { return committed.Format(time.RFC3339) }, &commitReads).URL
-	readCapture(t, reviewReadRuntime(pool, api))
-
-	if got, _ := capturePhase(t, pool); got != phase.Accepting {
-		t.Fatalf("after the read the issue is in %s, want %s: the review was submitted at %v, after the head was committed at %v",
-			got, phase.Accepting, submitted, committed)
-	}
-	if got, _ := reviewerDecision(t, pool); got != "approved" {
-		t.Fatalf("the round's recorded decision = %q, want %q", got, "approved")
 	}
 }

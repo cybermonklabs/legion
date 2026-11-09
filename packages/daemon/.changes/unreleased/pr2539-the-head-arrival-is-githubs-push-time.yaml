@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A listed review is held to GitHub's own time of the push that put the head on the pull request,
+  which a head move records (`head_arrived_at`), and never to the head commit's committer date. A
+  commit is pushed whenever its author pushes it, so an approval of the previous head submitted
+  between the commit and the push is newer than that date: taking it would let such a review, whose
+  `commit_id` GitHub's REST list rewrites to the current head, approve a head nobody reviewed. A
+  read that finds a head the daemon has not recorded takes the arrival from the branch activity's
+  push entry, and a head no entry names records none, which holds every listed review of it to
+  nothing until a later read finds the entry.

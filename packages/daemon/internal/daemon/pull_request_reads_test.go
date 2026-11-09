@@ -456,7 +456,17 @@ type activityGitHub struct {
 	updated        time.Time
 	activity       []string
 	activityStatus int
-	reads          pathReads
+	// reviews is the JSON array GET /pulls/86/reviews answers, empty for the cases about the head
+	// alone; a case about what a listed review decides at a read-found head sets its own (lists).
+	reviews string
+	reads   pathReads
+}
+
+// lists has GitHub answer reviews, a JSON array, for pull request 86's reviews.
+func (g *activityGitHub) lists(reviews string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.reviews = reviews
 }
 
 // moved has GitHub show pull request 86 at head, last updated at updated, and the branch's
@@ -492,7 +502,13 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(pull))
 		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
+			if g.reviews == "" {
+				w.Write([]byte(`[]`))
+				return
+			}
+			w.Write([]byte(g.reviews))
+		case "/repos/acme/widgets/collaborators/a-writer/permission":
+			w.Write([]byte(`{"permission":"write","user":{"login":"a-writer"}}`))
 		case "/repos/acme/widgets/rules/branches/main":
 			w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-checks-result"}]}}]`))
 		case "/repos/acme/widgets/branches/main":
