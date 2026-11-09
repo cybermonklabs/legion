@@ -63,7 +63,9 @@ type workflowRuntime struct {
 	stateDir        string
 	log             *slog.Logger
 	conn            *nats.Conn
-	consumers       *intake.Consumers
+	// stopOnce runs stop's body once, whichever of its two callers reaches it first (stop).
+	stopOnce  sync.Once
+	consumers *intake.Consumers
 	// answers is the answer loop with `answers` set, nil without it.
 	answers *answering
 	outbox  *outbox
@@ -1447,14 +1449,21 @@ func (w *workflowRuntime) releaseReadied(ctx context.Context) {
 // stop closes the workflow's connections and ends every token_command its token manager still runs
 // (appauth.Manager.Close), waiting for each to exit, so a command waiting on a person's approval
 // does not outlive the daemon.
+//
+// It runs once, whichever of its two callers reaches it first: the goroutine that serves, once its
+// work has ended, and run itself, once the stop's budget has run out on work that has not
+// (awaitStop). Either way the NATS connection this runtime opened is closed by the stop that asked
+// for it, and not whenever work the stop gave up on happens to end.
 func (w *workflowRuntime) stop() {
 	if w == nil {
 		return
 	}
-	if w.conn != nil {
-		w.conn.Close()
-	}
-	if closer, ok := w.tokens.(interface{ Close() }); ok {
-		closer.Close()
-	}
+	w.stopOnce.Do(func() {
+		if w.conn != nil {
+			w.conn.Close()
+		}
+		if closer, ok := w.tokens.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	})
 }

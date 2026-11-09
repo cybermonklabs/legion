@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -349,6 +351,68 @@ func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T
 	if stopped := lastBootStopped(t, cfg); stopped == nil {
 		t.Fatalf("the boot was not stamped stopped; the stop logged:\n%s", stopLog)
 	}
+}
+
+// A daemon that stopped waiting for work which ignores the stop still closed the workflow's NATS
+// connection: the budget bounds how long the stop waits for that work, never what the stop
+// closes. workflowRuntime.stop is that connection's only close, and before run called it itself
+// the connection stayed open for as long as the abandoned work held the goroutine that would —
+// here for the rest of the test, and in CI long enough for the next tests taking the shared NATS
+// server to fail their reset on a connection no test of theirs opened (dispatch://INFRA-1964,
+// internal/testnats's drain).
+func TestRunClosesTheWorkflowsNATSConnectionWhenItStopsWaitingForItsWork(t *testing.T) {
+	cfg := workflowConfig(t, workflowNATS(t))
+	// The connections this test holds itself: workflowNATS keeps one for the stream it made, and
+	// keeps it until the test ends. The daemon's own is what must be gone once run has returned.
+	own := sortedClients(t)
+	logs := &syncBuffer{}
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.workflowTokens = &workflowTokenRecorder{}
+	o.stopBudget = time.Second
+	// A launch whose check answers to no context and ends only with the test, as a call into a
+	// process that will not end does: the claim's decision is in flight when the stop begins and
+	// still in flight when the budget runs out. The check is the launch's first step, before the
+	// workspace this daemon has no repository to provision.
+	checking, release := make(chan claim.Token, 1), make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	o.checkLaunch = func(_ context.Context, c supervise.Claim) error {
+		select {
+		case checking <- c.Token:
+		default:
+		}
+		<-release
+		return nil
+	}
+	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
+	body, err := json.Marshal(architect())
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims", body)
+	var launching claim.Token
+	select {
+	case launching = <-checking:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the operator's spawn never reached the launch's check; log:\n%s", logs)
+	}
+
+	took, stopLog := stopWithin(t, d, logs, stopBound(o.stopBudget))
+
+	t.Logf("stopped in %s with the launch of %s still in its check", took, launching)
+	leftDeciding(t, stopLog, "supervise.RequestSpawn", launching)
+	// That check answers to no context and ends only with the test, so the goroutine that serves
+	// cannot reach its own stop meanwhile: a server that reports the daemon's connection gone
+	// reports the close run made.
+	testwait.Eventually(t, "the NATS server to hold no connection of the stopped daemon", func() bool {
+		return slices.Equal(sortedClients(t), own)
+	})
+}
+
+// sortedClients is every client connection the shared NATS server holds, in a stable order, so
+// two reads of an unchanged server compare equal.
+func sortedClients(t *testing.T) []string {
+	t.Helper()
+	return slices.Sorted(slices.Values(testnats.Clients(t)))
 }
 
 // The operator's claim listing answers while relaunches wait on the cluster, and shows each such

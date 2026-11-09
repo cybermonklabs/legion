@@ -209,6 +209,20 @@ func drained(t testing.TB) {
 	}
 }
 
+// Clients lists the server's open client connections, each by id and name, as the reset's own wait
+// reads them (drained). A test that stops something which held a connection asserts on them
+// itself, so the leak reds in the test that caused it rather than in the next test to take the
+// server, where the drain names a connection and no cause (dispatch://INFRA-1964). The test must
+// hold the server already, through URL or JetStream.
+func Clients(t testing.TB) []string {
+	t.Helper()
+	connections, err := clientConnections()
+	if err != nil {
+		t.Fatalf("read the NATS server's client connections: %v", err)
+	}
+	return connections
+}
+
 // monitorClient bounds each monitoring request, so one the server never answers cannot outlast the
 // drain's own bound.
 var monitorClient = &http.Client{Timeout: 5 * time.Second}

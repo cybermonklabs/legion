@@ -539,6 +539,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		lived <- err
 	}()
 	liveErr := s.awaitStop(lived, failed, bootID)
+	// The budget bounds how long the stop waits for the daemon's own work, never what the stop
+	// closes: work it gave up on holds the workflow's NATS connection, whose only close is
+	// workflowRuntime.stop, and a run that returned without it left that connection open until
+	// that work happened to end — in a test binary, for the tests that follow to find
+	// (dispatch://INFRA-1964). stop runs once, so the goroutine's own call above is then a no-op,
+	// and the store this closes under the same work is closed here already (closeStore).
+	workflow.stop()
 	stopHistory()
 
 	// The stop cancelled store queries in flight, and a pooled connection one of them ran on can
