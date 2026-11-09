@@ -76,7 +76,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		_ = cmd.Wait()
 	}()
 	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
-		client: &http.Client{Timeout: 10 * time.Second}}
+		client: &http.Client{Timeout: serverReplyTimeout}}
 	var once sync.Once
 	l.stop = func() {
 		once.Do(func() {

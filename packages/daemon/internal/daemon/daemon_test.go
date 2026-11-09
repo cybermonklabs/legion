@@ -296,6 +296,30 @@ func heldListen(network, address string) (net.Listener, error) {
 
 // pollClient bounds each poll of a daemon's port: holdPortOn's listener queues a connection until a
 // daemon takes the listener and serves it, and a daemon that exits before then never answers it.
+// arrivalBound is how long a select waits for something the daemon must deliver — a launch
+// reaching the runtime, a hello reaching the listener, a stop reaching a session route — before
+// the test fails. A minute, clamped to the test binary's own deadline, for the reason the clients
+// above take the same bound: every one of these waits on work a two-core pod does beside the rest
+// of this package, so a literal of five, ten or fifteen seconds bounded the machine rather than
+// the daemon, and three such literals failed that way in this change's own campaigns. A wait that
+// never arrives still fails with its own sentence; a wait whose SHORTNESS is the proposition
+// ("refused within one second", "rejected at once") keeps its literal and says so beside it.
+func arrivalBound(t *testing.T) time.Duration {
+	t.Helper()
+	return testwait.Bounded(t, time.Minute, time.Second)
+}
+
+// serverReplyTimeout is how long a test waits for a server process this pod started to answer
+// one request: the daemon's own API, a scratch Dispatch, the Envoy listener of the idle rig, a
+// role process. A minute, which is this package's standard wait, and not the ten seconds these
+// clients carried: a handler can be behind a lock a test holds on purpose, and the package runs
+// beside the module's other binaries on two cores, so ten seconds bounded the machine's load
+// rather than the server's answer — measured, TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine
+// timing out at 12.00 s on a shuffled run against the operator stop route. A request that never
+// answers still fails, naming its route; a client that POLLS keeps a short timeout of its own,
+// since a poll that waits a minute is a poll that cannot retry (pollClient, probeClient).
+const serverReplyTimeout = time.Minute
+
 var pollClient = &http.Client{Timeout: time.Second}
 
 func quietLogger() *slog.Logger {
@@ -983,7 +1007,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(arrivalBound(d.t)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }
@@ -1517,7 +1541,7 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "ENVOY_NOTIFICATIONS") {
 			t.Fatalf("run = %v, want a boot refusal naming ENVOY_NOTIFICATIONS", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the daemon booted with no notification stream")
 	}
 }
@@ -1559,7 +1583,7 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), consumer) {
 			t.Fatalf("run = %v, want the daemon stopped by its intake naming %s", err, consumer)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the daemon kept running after its intake ended")
 	}
 }

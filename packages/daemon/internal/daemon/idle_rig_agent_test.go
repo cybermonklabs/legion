@@ -367,7 +367,7 @@ type idleRigRoleProcess struct {
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
-	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}, recorded: map[uint64]bool{}}
+	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: serverReplyTimeout}, recorded: map[uint64]bool{}}
 	p.pod = os.Getenv("LEGION_SANDBOX")
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")

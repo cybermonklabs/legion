@@ -424,7 +424,7 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 			case <-rt.entered:
 			case err := <-done:
 				t.Fatalf("run returned %v before it relaunched the unfinished launch; log:\n%s", err, logs)
-			case <-time.After(30 * time.Second):
+			case <-time.After(arrivalBound(t)):
 				t.Fatalf("the daemon never relaunched the unfinished launch; log:\n%s", logs)
 			}
 			testwait.Eventually(t, "the daemon to say it started while its relaunch waits in the runtime", func() bool {
@@ -467,7 +467,7 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 	case <-rt.reconciling:
 	case err := <-done:
 		t.Fatalf("run returned %v before its boot reconciled orphans; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
 	}
 
@@ -569,7 +569,7 @@ func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
 	var spawning claim.Token
 	select {
 	case spawning = <-rt.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the operator's spawn never reached the runtime; log:\n%s", logs)
 	}
 
@@ -619,7 +619,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
 	select {
 	case <-rt.stopping:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the operator's suspension never reached the runtime; log:\n%s", logs)
 	}
 
@@ -720,7 +720,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/suspend", nil)
 	select {
 	case <-rt.stopping:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the operator's suspension never reached the runtime; log:\n%s", logs)
 	}
 
@@ -773,7 +773,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	var conn net.Conn
 	select {
 	case conn = <-accepted:
-	case <-time.After(15 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the shim never redialled the next daemon; its log:\n%s", shimLog)
 	}
 	t.Cleanup(func() { conn.Close() })
@@ -859,7 +859,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(root)+"/close", nil)
 	select {
 	case <-rt.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the root's release never reached the runtime; log:\n%s", logs)
 	}
 
@@ -926,7 +926,7 @@ func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
 	case <-rt.reconciling:
 	case err := <-done:
 		t.Fatalf("run returned %v before its boot reconciled orphans; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
 	}
 	rec.mu.Lock()

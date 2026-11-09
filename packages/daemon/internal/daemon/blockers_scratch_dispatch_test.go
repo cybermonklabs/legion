@@ -965,7 +965,7 @@ func blockersGitHub(t *testing.T) string {
 
 // scratchDispatchClient is the test's own client of the scratch Dispatch server; the daemon has
 // its own.
-var scratchDispatchClient = &http.Client{Timeout: 10 * time.Second}
+var scratchDispatchClient = &http.Client{Timeout: serverReplyTimeout}
 
 // dispatchCall sends one request to the scratch Dispatch server as the person `smoke` — the
 // trusted identity header the harness starts the server with — and decodes its answer into `into`

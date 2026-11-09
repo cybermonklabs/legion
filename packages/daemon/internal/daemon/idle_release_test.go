@@ -710,7 +710,7 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 			go func() { defer close(done); tc.w.tickIdle(context.Background()) }()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(arrivalBound(t)):
 				t.Fatal("tickIdle kept running with release off")
 			}
 		})

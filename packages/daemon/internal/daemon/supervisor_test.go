@@ -90,7 +90,7 @@ func TestHelloResolverHoldsAKnownTokenUntilRestoredRatherThanRejectingItAfterThe
 	close(sup.restored)
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the resolver never returned after restoration closed")
 	}
 }
@@ -124,7 +124,7 @@ func TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingRea
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the resolver never returned after the boot's context was cancelled; a held hello would pin a goroutine and a connection forever")
 	}
 }
@@ -184,7 +184,7 @@ func TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal(t *test
 		if event != (stream.Hello{Claim: token, Generation: 1}) {
 			t.Fatalf("the listener reported %#v, want the redial's hello", event)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the redial's hello never reached the listener's events")
 	}
 
@@ -348,7 +348,7 @@ func TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNot
 					t.Fatalf("resolve(%q) = known %t, stale %t, err %v; want known and stale, no error",
 						boot1, got.known, got.stale, got.err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(arrivalBound(t)):
 				t.Fatal("the resolver never returned after restoration closed")
 			}
 
@@ -401,7 +401,7 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 	go func() { launched <- m.Handle(stopping, supervise.RequestSpawn{Claim: token}) }()
 	select {
 	case <-launches.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the launch never reached the runtime")
 	}
 	registered := make(chan error, 1)

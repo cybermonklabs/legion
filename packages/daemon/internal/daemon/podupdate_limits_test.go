@@ -512,7 +512,7 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 	}()
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the architect's machine never reached the Resume this test holds it in")
 	}
 
@@ -614,7 +614,7 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the architect's machine never reached the Resume this test holds it in")
 	}
 

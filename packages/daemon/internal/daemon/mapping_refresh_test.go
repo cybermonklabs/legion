@@ -273,7 +273,7 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 	}()
 	select {
 	case <-store.reached:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the admission never reached its record write")
 	}
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})

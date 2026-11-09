@@ -297,7 +297,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 	go func() { _ = machine.Handle(context.Background(), supervise.RequestSpawn{Claim: architect}) }()
 	select {
 	case <-rt.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the architect's launch never reached the runtime")
 	}
 	runner := &outbox{log: quietLogger(), supervisor: sup, project: "legion"}
@@ -310,7 +310,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the check before a start of LEGION-1 in its own tree = %v, want nothing to wait for", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the check before a start waited on its architect's launch in the runtime")
 	}
 }

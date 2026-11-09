@@ -2443,7 +2443,7 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 	var live []supervise.Claim
 	select {
 	case live = <-read:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		close(released)
 		t.Fatal("the live read did not answer while a claim's machine was inside a Resume; it waited on the decision")
 	}
@@ -2524,7 +2524,7 @@ func TestPodUpdateTellsNobodyOfARoundWaitingOnlyOnAClaimMidDecision(t *testing.T
 				}()
 				select {
 				case <-entered:
-				case <-time.After(10 * time.Second):
+				case <-time.After(arrivalBound(t)):
 					t.Fatal("the tester's machine never reached the Resume this test holds it in")
 				}
 			}

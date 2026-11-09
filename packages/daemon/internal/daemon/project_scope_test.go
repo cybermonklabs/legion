@@ -161,7 +161,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 
 	select {
 	case <-ownRun:
-	case <-time.After(60 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the outbox never reached Dispatch for %s after admitting it", own)
 	}
 

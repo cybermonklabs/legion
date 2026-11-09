@@ -176,7 +176,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 
 	select {
 	case <-listener.settled:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the clean stop never reached the listener's session route")
 	}
 	if !listener.entryRemoved {
@@ -395,12 +395,12 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the clean stop held the machine's decision until the listener answered")
 	}
 	select {
 	case <-arrived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the clean stop never reached the listener")
 	}
 }

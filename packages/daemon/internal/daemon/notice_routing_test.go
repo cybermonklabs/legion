@@ -248,7 +248,7 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	go func() { _ = machine.Handle(context.Background(), supervise.RequestSpawn{Claim: architect}) }()
 	select {
 	case <-rt.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the architect's launch never reached the runtime")
 	}
 	publisher := &holderPublisher{}
@@ -262,7 +262,7 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("execute the notice: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the notice waited on its architect's launch in the runtime")
 	}
 	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {
@@ -306,7 +306,7 @@ func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
 	}()
 	select {
 	case <-rt.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the sub-architect's suspension never reached the runtime")
 	}
 	publisher := &holderPublisher{}

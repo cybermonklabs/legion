@@ -151,7 +151,7 @@ func messageCreatedEvent(t *testing.T, baseURL, token, issue string) (string, bo
 		t.Fatalf("create the events request: %v", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := (&http.Client{Timeout: serverReplyTimeout}).Do(request)
 	if err != nil {
 		t.Fatalf("GET the issue's events: %v", err)
 	}
@@ -409,7 +409,7 @@ func (d *scratchDispatch) stop() {
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 	t.Helper()
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: testwait.Bounded(t, serverReplyTimeout, time.Second)}
 	request := func(path string, body any) *http.Response {
 		t.Helper()
 		encoded, err := json.Marshal(body)
