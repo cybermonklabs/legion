@@ -2122,8 +2122,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(*p.live.Snapshot(), c) },
 		// The harness a role's claims run on is read as the route asks, like every other value
-		// the live holder keeps: a `worker_backends` change reaches the compaction refusal with
-		// no server rebuilt.
+		// the live holder keeps. `worker_backends` is a launch key, so between a change and a
+		// role's relaunch this answers for the new harness while the session still runs the old
+		// one; the claim records no backend, so the live value is the closest there is.
 		Backend:            func(role claim.Role) runtime.Backend { return p.live.Snapshot().BackendFor(role) },
 		Stopping:           s.stopping,
 		Drained:            s.draining,
