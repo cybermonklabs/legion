@@ -84,12 +84,12 @@ export type UploadBase = { readonly token: string | undefined } | { readonly unr
  * Two answers mean there is no base to name, and no others: `404 ARTIFACT_NOT_FOUND`, where the
  * owner holds no document under that name and this upload is its first; and `409 DOC_SCHEMA`,
  * where the document's tree is outside the Proof schema, so it renders no markdown and has no
- * token, and an upload is the only way to repair it, which the server takes naming no base
- * (`refuseUploadNamingNoBase`). Every other failure - the request never reached Dispatch, the
- * session lapsed, Dispatch answered a 5xx, or the name is one that more than one document
- * answers to (`400 ARTIFACT_REFERENCE_AMBIGUOUS`) - comes back as `unreadable` and ends the
- * upload (`UploadBaseUnreadableError`): the page does not know what it would be replacing, and
- * an upload naming no base replaces it without saying so.
+ * token, and an upload is the only way to repair it, which the server takes naming no base (the
+ * repair exception in `docs.Service.ReplaceText`). Every other failure - the request never
+ * reached Dispatch, the session lapsed, Dispatch answered a 5xx, or the name is one that more
+ * than one document answers to (`400 ARTIFACT_REFERENCE_AMBIGUOUS`) - comes back as `unreadable`
+ * and ends the upload (`UploadBaseUnreadableError`): the page does not know what it would be
+ * replacing, and Dispatch refuses an upload over an existing document that names no base.
  *
  * Only a document has a base, and Dispatch decides that by the media type alone (`artifactKind`
  * in the server's `api/artifacts.go`: a `text/markdown` upload is a document and everything else

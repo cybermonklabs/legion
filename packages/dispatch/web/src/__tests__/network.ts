@@ -72,11 +72,11 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/agents/state", () => Response.json({})),
   // The base an upload names: before it posts a markdown file, the Upload control reads the
   // token of the document the owner already holds under that name
-  // (`features/artifacts/ArtifactUpload.tsx`'s `uploadBase`), so every page that can take a
-  // dropped or pasted `.md` reads this route. The owner holds no such document in a unit test's
-  // world, which is Dispatch's own `404` and what `uploadBase` takes as no base, so the upload
-  // it sends is the one those pages asserted before this read existed. A test about the base
-  // spies `api.ownerArtifactText` and never reaches this handler.
+  // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can
+  // take a dropped or pasted `.md` reads this route. The owner holds no such document in a unit
+  // test's world, which is Dispatch's own `404` and what `captureUploadBase` takes as no base,
+  // so the upload it sends is the one those pages asserted before this read existed. A test
+  // about the base spies `api.ownerArtifactText` and never reaches this handler.
   http.get("/api/v1/issues/:key/artifacts/:slug/text", () =>
     Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
   ),
