@@ -459,6 +459,192 @@ check "names the URL and the version it does not hold" \
 check "and says what such a row does" \
   "$(contains "$out" 'installs one version and pins another')"
 
+echo "case: rule 1 — a second_member left at a version the row does not name"
+# The raise this rule exists for: the row's version and both of its URLs move, the member of
+# the wheel does not, and the install fetches the new wheel and looks inside it for the old
+# path. Only ci.yaml's tool-fallback job runs that install.
+root=$(fixture shape-second-member-version)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: adrift-wheel
+    version: 4.4.4
+    digest: $BUN
+    digest_of: the binary inside the wheel
+    primary_source: github-release
+    primary: https://github.com/example/adrift/releases/download/4.4.4/adrift-x86_64.tar.gz
+    primary_digest: $SOLO
+    primary_digest_of: the release tarball, whole
+    primary_member: adrift-x86_64/adrift
+    second_source: pypi
+    max_time: 60
+    second_url: https://files.pythonhosted.org/packages/py3/a/adrift/adrift-4.4.4-py3-none-any.whl
+    second_member: adrift-4.4.3.data/scripts/adrift
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the field, the version it holds and the row's own" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the adrift-wheel row's second_member is adrift-4.4.3.data/scripts/adrift, which holds the version 4.4.3, and this row's version is 4.4.4.")"
+check "says what such a member is" \
+  "$(contains "$out" "A member is the path inside what this row.s address served, so a member at another version is a path that archive does not hold")"
+check "and says which of the two to move" \
+  "$(contains "$out" 'move this member to 4.4.4, or the row to the version its member holds.$')"
+
+echo "case: rule 1 — a primary_member left at a version the row does not name"
+# The same hole on the primary side: the rule reads all four member fields, because a member
+# of the primary's archive goes stale in the same raise the second source's does.
+root=$(fixture shape-primary-member-version)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: adrift-tarball
+    version: 4.4.4
+    digest: $BUN
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    primary_digest: $SOLO
+    primary_digest_of: the release tarball, whole
+    primary_member: adrift-4.4.3/adrift
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the field, the version it holds and the row's own" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the adrift-tarball row's primary_member is adrift-4.4.3/adrift, which holds the version 4.4.3, and this row's version is 4.4.4.")"
+
+echo "case: rule 1 — a mirror_member and an npm_member left at such a version"
+# The other two of the four fields, in the two shapes that write them: a copy's member and the
+# npm package's. One tree holds both, so the rule is shown to read each field of a row and not
+# the first member it finds.
+root=$(fixture shape-other-member-versions)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: adrift-copy
+    version: 4.4.4
+    digest: $BUN
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    mirror_member: ./adrift-4.4.3
+
+  - name: adrift-packaged
+    version: 4.4.4
+    digest: $SOLO
+    digest_of: the installed binary
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: npm
+    max_time: 60
+    npm_package: "@example/adrift"
+    npm_member: package/bin/adrift-4.4.3
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the mirror_member, the version it holds and the row's own" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the adrift-copy row's mirror_member is ./adrift-4.4.3, which holds the version 4.4.3, and this row's version is 4.4.4.")"
+check "and the npm_member beside it" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the adrift-packaged row's npm_member is package/bin/adrift-4.4.3, which holds the version 4.4.3, and this row's version is 4.4.4.")"
+
+echo "case: rule 1 — a member that holds no version at all"
+# The three shapes the manifest writes today, in one row apiece: the jj row's ./jj, a bun row's
+# package/bin/bun, and the uv row's uv-x86_64-unknown-linux-gnu/uv, whose digits are no dotted
+# run. A rule that read a version into any of them would refuse a member that is right.
+root=$(fixture shape-member-without-version)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: unversioned-copy
+    version: 4.4.4
+    digest: $BUN
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    mirror_member: ./adrift
+
+  - name: unversioned-packaged
+    version: 4.4.4
+    digest: $SOLO
+    digest_of: the installed binary
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: npm
+    max_time: 60
+    npm_package: "@example/adrift"
+    npm_member: package/bin/adrift
+
+  - name: unversioned-member
+    version: 4.4.4
+    digest: $TOOL
+    digest_of: the binary inside the release tarball
+    primary_source: github-release
+    primary: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    primary_digest: $PLUGIN
+    primary_digest_of: the release tarball, whole
+    primary_member: adrift-x86_64-unknown-linux-gnu/adrift
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    mirror_member: ""
+YAML
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: rule 1 — an empty member and a member holding the row's own version"
+# The two shapes that are right and hold a token: nothing at all, which is what every row but
+# four writes, and the row's own version, which is what a raise leaves behind it.
+root=$(fixture shape-member-own-version)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: adrift-held
+    version: 4.4.4
+    digest: $BUN
+    digest_of: the binary inside the wheel
+    primary_source: github-release
+    primary: https://github.com/example/adrift/releases/download/4.4.4/adrift-x86_64.tar.gz
+    primary_digest: $SOLO
+    primary_digest_of: the release tarball, whole
+    primary_member: adrift-4.4.4/adrift
+    second_source: pypi
+    max_time: 60
+    second_url: https://files.pythonhosted.org/packages/py3/a/adrift/adrift-4.4.4-py3-none-any.whl
+    second_member: adrift-4.4.4.data/scripts/adrift
+
+  - name: adrift-whole
+    version: 4.4.4
+    digest: $PLUGIN
+    digest_of: the release tarball, whole
+    primary_source: pulumi-releases
+    primary: https://get.pulumi.com/releases/sdk/adrift-v4.4.4.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: github-release
+    max_time: 60
+    second_url: https://github.com/example/adrift/releases/download/v4.4.4/adrift-4.4.4.tar.gz
+    second_member: ""
+YAML
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: rule 1 — a primary_member with no primary_digest"
 # The member is taken out of an archive nothing held to anything, so the row's own digest
 # answers for the member and no literal answers for what it came out of.

@@ -36,6 +36,21 @@
 #      A row's `primary`, where it is not empty, holds the row's `version`, and so do its
 #      `mirror_from` and its `second_url`: a row whose version and URL disagree installs one
 #      version and pins another, and no URL of this manifest escapes that rule.
+#      A member field that holds a version-shaped token holds the row's own version and no
+#      other, in all four of the fields a row can write one in: `primary_member`,
+#      `mirror_member`, `npm_member` and `second_member`. A member left behind at the old
+#      version while the row and its URLs move names a path the new archive does not hold, so
+#      that install fetches the right bytes and then fails to find the tool inside them. Only
+#      ci.yaml's `tool-fallback` job runs that install, 75 minutes after this gate could have
+#      said so in a second.
+#      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
+#      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
+#      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.
+#      This rule compares text, as every rule of this gate does, and that cuts both ways. A
+#      member that writes its version in some other shape — a date as 20260812, a tag with no
+#      dots — holds no token this rule can see, and it is the one rule here that can refuse a
+#      member that is right: a dotted run of digits that is not a version at all, as in a path
+#      like lib/python3.11/site-packages/x. No row writes such a member today.
 #      `primary_digest`, where it is set, is 64 lower-case bare hex too. A row that sets
 #      `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets
 #      `primary_digest_of`: a digest that does not say what it is of is how an archive comes to
@@ -257,6 +272,13 @@ PRIMARY_SOURCES = ("github-release", "pypi", "pulumi-releases")
 # `github-release` is left to the release-asset half that already owns github.com.
 URL_SOURCES = ("pypi", "pulumi-releases")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+# The four fields a row writes a member in, one per side of each shape: the member taken out of
+# the primary's archive, and the one taken out of the second source's, whichever word that
+# source is written in.
+MEMBER_FIELDS = ("primary_member", "mirror_member", "npm_member", "second_member")
+# A version as this gate reads one inside a member: a dotted run of digits, 1.2, 0.13.5 or
+# 2026.8.12. What that shape can and cannot see is stated with rule 1 in the header.
+VERSION_TOKEN = re.compile(r"\d+(?:\.\d+)+")
 
 
 def one_of(words: tuple[str, ...]) -> str:
@@ -678,6 +700,25 @@ for row in rows:
                 f"and this row's version is {version}, which that URL does not hold. A row whose "
                 f"version and URL disagree installs one version and pins another."
             )
+    # And a member that holds a version holds this row's. The rule above moves every URL of a
+    # row with its version; a member is the path inside what one of those URLs served, so a
+    # member left behind names a path the new archive does not hold.
+    # A version the row's own version holds is this row's: the jj row's version carries a
+    # suffix its member would not, so the tokens of the version are what a member is read
+    # against.
+    own = {version, *VERSION_TOKEN.findall(version)}
+    for field in MEMBER_FIELDS:
+        member = str(row.get(field) or "").strip()
+        other = next((held for held in VERSION_TOKEN.findall(member) if held not in own), None)
+        if other is None:
+            continue
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, field)}: the {name} row's {field} is {one_line(member)}, "
+            f"which holds the version {other}, and this row's version is {version}. A member is "
+            f"the path inside what this row's address served, so a member at another version is "
+            f"a path that archive does not hold: move this member to {version}, or the row to "
+            f"the version its member holds."
+        )
     readable.append(row)
 
 # ---------------------------------------------------------------- rule 2: the pins
