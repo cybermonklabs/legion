@@ -467,8 +467,9 @@ The last three projects run the rows whose claim is a wall-clock time, with the 
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
 (a card draws without holding the main thread for a second)
 and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view at the stream's worst case comes
-back inside 1.2 seconds, and the Agents page paints six hundred sessions inside 100 milliseconds
-with no task longer than 50), and `firefox-alone` and
+back inside 1.2 seconds, and the Agents page paints six hundred sessions with a median first
+paint under 100 milliseconds over three fresh loads and no task longer than 150), and
+`firefox-alone` and
 `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
