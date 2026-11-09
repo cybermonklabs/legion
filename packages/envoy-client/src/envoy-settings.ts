@@ -5,7 +5,6 @@ import {
   brokerCredential,
   brokerRouteConfigured,
 } from "./broker-credential";
-import { withoutTrailingSlashes } from "./trailing-slashes";
 import {
   type EnvoyConfig,
   type EnvoyConfigEnvironment,
@@ -20,6 +19,7 @@ import {
 } from "./envoy-config";
 import { messageFor } from "./errors";
 import { readSecretFile } from "./secret-file";
+import { withoutTrailingSlashes } from "./trailing-slashes";
 
 /** The listener's address when neither `envoy.url` nor `ENVOY_URL` names one. */
 export const DEFAULT_ENVOY_URL = "http://127.0.0.1:9020";

@@ -62,7 +62,6 @@ export type DispatchConfigResolution = ActiveDispatchConfig | SectionOff;
 
 type ValidCheckout = Extract<CheckoutEnvoyConfig, { readonly kind: "valid" }>;
 
-
 /** A checkout's own server and the token written beside it, which only that server gets. Throws
  * when the checkout names no token. */
 function checkoutPair(checkout: ValidCheckout, serverUrl: string): BearerSource {
