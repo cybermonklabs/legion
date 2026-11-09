@@ -367,9 +367,23 @@ func (w *Webhook) attempt(rw http.ResponseWriter, r *http.Request) {
 // carries the claims GitHub requires of an App JWT.
 func (w *Webhook) verifyAppJWT(r *http.Request) {
 	w.t.Helper()
-	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	authorization := r.Header.Get("Authorization")
+	raw, ok := strings.CutPrefix(authorization, "Bearer ")
 	if !ok {
-		w.t.Errorf("%s %s called with Authorization %q, want an App JWT", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		// The scheme alone, never the credential behind it: this check is about the scheme,
+		// and a failure's text is kept by CI and pasted into issues. A header with no space
+		// in it is one whole word, which could be the credential itself, so it is counted
+		// rather than printed.
+		var carried string
+		switch scheme, _, found := strings.Cut(authorization, " "); {
+		case authorization == "":
+			carried = "no Authorization header"
+		case found:
+			carried = fmt.Sprintf("the %q scheme", scheme)
+		default:
+			carried = fmt.Sprintf("one word of %d characters and no scheme", len(authorization))
+		}
+		w.t.Errorf("%s %s called with %s, want an App JWT", r.Method, r.URL.Path, carried)
 		return
 	}
 	parts := strings.Split(raw, ".")
