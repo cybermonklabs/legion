@@ -675,7 +675,7 @@ Each item below names a task and where its code is, then notes on it.
 
   A job of `ci.yaml` holds its steps in a reusable workflow of its own, `.github/workflows/ci-job-<job id>.yaml`, which the job calls with `uses:` and hands `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of its own.
   What decides whether those steps run stays in the router: the job's filter in `changes`, its `needs: changes` and its `if:`.
-  Seven jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser` and `worker-image` call `docs-site.yaml`, `dispatch-browser.yaml` and `worker-image.yaml` instead.
+  Eight jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser`, `worker-image` and `browser-image` call `docs-site.yaml`, `dispatch-browser.yaml`, `worker-image.yaml` and `browser-image.yaml` instead.
   The `changes` job runs two `dorny/paths-filter` steps, `filter` and `filter2`, because one `filters` input over 131,072 bytes is a string the kernel refuses to pass the action, which a run measured; a new filter goes in either step and its `changes` output names that step, which `check-ci-filters.sh` holds.
   Most of each filter's `!` patterns are generated: `.github/scripts/check-ci-filters.sh write` writes, into a marked block of each filter, the patterns that keep it off the Go test files its job does not run, and the check refuses a block that is not what it computes.
   Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
